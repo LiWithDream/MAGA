@@ -269,65 +269,87 @@
     return dock;
   }
 
+  function isAllTodoCompleted(items) {
+    return Boolean(items && items.length > 0 && items.every((it) => it.status === 'completed'));
+  }
+
   function syncTodoCards() {
     const allTaskUls = document.querySelectorAll('ul.contains-task-list');
-    const byTurn = new Map();
-    let orphanIdx = 0;
+    const byPane = new Map();
+    let orphanPaneIdx = 0;
 
     for (const ul of allTaskUls) {
       const items = parseTodoUl(ul);
       if (!items) continue;
-      const turnEl = ul.closest('[data-testid="agent-response"]') || `orphan-${orphanIdx++}`;
-      let list = byTurn.get(turnEl);
-      if (!list) {
-        list = [];
-        byTurn.set(turnEl, list);
+      const turnEl = ul.closest('[data-testid="agent-response"]');
+      const paneKey = (turnEl && findPaneRoot(turnEl)) || `orphan-pane-${orphanPaneIdx++}`;
+      let entries = byPane.get(paneKey);
+      if (!entries) {
+        entries = [];
+        byPane.set(paneKey, entries);
       }
-      list.push({ ul, items });
+      entries.push({ ul, items, turnEl });
     }
 
     const activeDocks = new Set();
 
-    for (const [turnKey, entries] of byTurn.entries()) {
+    for (const [paneKey, entries] of byPane.entries()) {
       const clusters = [];
       for (const entry of entries) {
         const lastCluster = clusters[clusters.length - 1];
-        if (lastCluster && isChecklistEvolution(lastCluster.items, entry.items)) {
+        const sameTurn = Boolean(lastCluster && entry.turnEl && lastCluster.lastTurnEl === entry.turnEl);
+        const prevUnfinished = Boolean(lastCluster && !isAllTodoCompleted(lastCluster.items));
+        const evolved = Boolean(lastCluster && isChecklistEvolution(lastCluster.items, entry.items));
+
+        /* 跨轮接力：同轮演化、上一张未全部打勾完成（中途追问/改需求）或跨轮词条演化均合并进同一张卡片；
+           仅当上一张已 100% 全部打勾完结且新清单是全新独立任务时，才保留旧完工卡并另起新卡 */
+        if (lastCluster && (sameTurn ? evolved : prevUnfinished || evolved)) {
           lastCluster.lists.push(entry.ul);
           lastCluster.items = entry.items;
+          if (entry.turnEl) lastCluster.lastTurnEl = entry.turnEl;
         } else {
-          clusters.push({ lists: [entry.ul], items: entry.items });
+          clusters.push({
+            lists: [entry.ul],
+            items: entry.items,
+            lastTurnEl: entry.turnEl || null
+          });
         }
       }
 
-      const isElementTurn = typeof turnKey !== 'string';
-      const pane = isElementTurn ? findPaneRoot(turnKey) : null;
-      let isLiveTurn = false;
-      if (pane && isPaneActivelyGenerating(pane)) {
-        const paneTurns = pane.querySelectorAll('[data-testid="agent-response"]');
-        const latestPaneTurn = paneTurns.length ? paneTurns[paneTurns.length - 1] : null;
-        if (latestPaneTurn === turnKey) {
-          isLiveTurn = true;
-        }
+      const isRealPane = typeof paneKey !== 'string';
+      const paneLive = isRealPane && isPaneActivelyGenerating(paneKey);
+      let latestPaneTurn = null;
+      if (isRealPane) {
+        const paneTurns = paneKey.querySelectorAll('[data-testid="agent-response"]');
+        latestPaneTurn = paneTurns.length ? paneTurns[paneTurns.length - 1] : null;
       }
 
       for (let i = 0; i < clusters.length; i++) {
         const cluster = clusters[i];
-        const isDockedLiveCluster = isLiveTurn && i === clusters.length - 1;
-        const mountedDock = isDockedLiveCluster ? renderLiveDockedTodoCard(pane, cluster.items) : null;
+        const isDockedLiveCluster =
+          paneLive &&
+          i === clusters.length - 1 &&
+          Boolean(cluster.lastTurnEl && cluster.lastTurnEl === latestPaneTurn);
+
+        const mountedDock = isDockedLiveCluster ? renderLiveDockedTodoCard(paneKey, cluster.items) : null;
 
         if (mountedDock) {
           activeDocks.add(mountedDock);
           for (const ul of cluster.lists) {
             markMergedUl(ul);
           }
-        } else {
-          /* 轮次结束后停靠在该轮最后一次清单节点处（紧贴总结上方，不再缩回轮次最顶端） */
+        } else if (isAllTodoCompleted(cluster.items)) {
+          /* 方案一：已 100% 全部打勾完工的卡片留在轮次末尾作为完工记录 */
           const anchorUl = cluster.lists[cluster.lists.length - 1];
           for (let j = 0; j < cluster.lists.length - 1; j++) {
             markMergedUl(cluster.lists[j]);
           }
           renderInlineTodoCard(anchorUl, cluster.items);
+        } else {
+          /* 半途打断没做完且当前已不在运行的半截旧卡直接自动收起隐藏，不留僵尸转圈卡片 */
+          for (const ul of cluster.lists) {
+            markMergedUl(ul);
+          }
         }
       }
     }
@@ -476,6 +498,10 @@
           el.remove();
         } else if (/^Out\b/i.test(txt)) {
           outText = txt;
+          const prev = el.previousElementSibling;
+          if (prev && prev.classList.contains('ag-sep')) prev.remove();
+          el.remove();
+        } else if (el.classList.contains('ag-sub-badge') || /^\+?\d+\s*sub\b/i.test(txt)) {
           const prev = el.previousElementSibling;
           if (prev && prev.classList.contains('ag-sep')) prev.remove();
           el.remove();
@@ -801,6 +827,9 @@
   }
 
   function openQuotaPopover() {
+    if (typeof closeClaudeModelPopover === 'function' && modelPopoverOpen) {
+      closeClaudeModelPopover();
+    }
     quotaPopoverOpen = true;
     selectedQuotaGroupIdx = -1;
     const ring = document.getElementById('ag-claude-ctx-ring');
@@ -912,10 +941,509 @@
   };
   const onWindowResizePopover = () => {
     if (quotaPopoverOpen) positionQuotaPopover();
+    if (modelPopoverOpen) positionModelPopovers();
   };
   document.addEventListener('pointerdown', onOutsidePopoverPointerDown, true);
   document.addEventListener('keydown', onPopoverKeyDown, true);
   window.addEventListener('resize', onWindowResizePopover);
+
+  /* ==========================================================================
+   * 6. Claude-Style Stratified Model Selector Popover
+   *    - Replaces crowded 9-row flat native list & noisy `新 / 快速` badges
+   *    - Top: `模型 · 本次会话` + 4 core Gemini models (full names, `1-4` keys, blue `✓`)
+   *    - Bottom: unified `思考强度 >` flyout (`Low/Medium/High/XHigh`) & `更多模型 >` flyout
+   *    - Calls Antigravity's native React Fiber `setSelectedModel(option)` directly
+   * ========================================================================== */
+  const EFFORT_LABEL_RE = /^(.*?)\s*\((Low|Medium|High|XHigh|Max)\)\s*$/i;
+  const EFFORT_NORM = { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'XHigh', max: 'Max' };
+  const EFFORT_RANK = { Low: 0, Medium: 1, High: 2, XHigh: 3, Max: 4 };
+  const EFFORT_DESC = {
+    Low: '最快响应，轻量日常问答',
+    Medium: '速度与推理均衡（默认）',
+    High: '深度推演与复杂问题排障',
+    XHigh: '极限长链深度推理',
+    Max: '最高推理强度'
+  };
+  const SVG_CM_CHECK =
+    '<svg class="ag-cm-check" width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3.2 8.4L6.5 11.7L13 4.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  const SVG_CM_CHEVRON =
+    '<svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M6 3.5L10.5 8L6 12.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+  let modelPopoverOpen = false;
+  let activeModelSubmenu = null; // null | 'effort' | 'more'
+  let activeModelTriggerBtn = null;
+  let lastPreferredEffort = 'Medium';
+  let currentCatalogSnapshot = null;
+
+  function escapeHtml(str) {
+    return String(str || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function findModelTriggerBtn() {
+    if (activeModelTriggerBtn && document.body.contains(activeModelTriggerBtn)) {
+      return activeModelTriggerBtn;
+    }
+    return document.querySelector('button[data-testid="model-selector-trigger"]');
+  }
+
+  function discoverModelSelectorApi(btnEl) {
+    const btn = btnEl || findModelTriggerBtn();
+    if (!btn) return null;
+    const fk = Object.keys(btn).find((k) => k.startsWith('__reactFiber$'));
+    let f = fk ? btn[fk] : null;
+    for (let i = 0; i < 26 && f; i++, f = f.return) {
+      const p = f.memoizedProps;
+      if (p && typeof p.setSelectedModel === 'function' && Array.isArray(p.modelOptions) && p.modelOptions.length > 0) {
+        return p;
+      }
+    }
+    return null;
+  }
+
+  function buildModelCatalog(api) {
+    const rawOpts = (api.modelOptions || []).filter((o) => o && !o.disabled && o.label);
+    const customOpts = Array.isArray(api.customModels)
+      ? api.customModels.filter((o) => o && !o.disabled && o.label)
+      : [];
+    const allOpts = rawOpts.concat(customOpts);
+
+    const familyMap = new Map();
+    for (const opt of allOpts) {
+      const m = String(opt.label).match(EFFORT_LABEL_RE);
+      const baseName = m ? m[1].trim() : String(opt.label).trim();
+      const effort = m ? EFFORT_NORM[m[2].toLowerCase()] || m[2] : null;
+      let fam = familyMap.get(baseName);
+      if (!fam) {
+        fam = { baseName, variants: [] };
+        familyMap.set(baseName, fam);
+      }
+      fam.variants.push({ effort, opt });
+    }
+
+    for (const fam of familyMap.values()) {
+      fam.variants.sort((a, b) => {
+        const ra = a.effort && EFFORT_RANK[a.effort] !== undefined ? EFFORT_RANK[a.effort] : 99;
+        const rb = b.effort && EFFORT_RANK[b.effort] !== undefined ? EFFORT_RANK[b.effort] : 99;
+        return ra - rb;
+      });
+    }
+
+    const families = Array.from(familyMap.values());
+    const isOrch = (f) => /orchestrator/i.test(f.baseName);
+    const isCoreGemini = (f) => /^gemini\b/i.test(f.baseName) && !isOrch(f);
+
+    const coreRank = (name) => {
+      if (/carbon/i.test(name)) return 0;
+      if (/argon/i.test(name)) return 1;
+      if (/hydrogen/i.test(name)) return 2;
+      if (/flash/i.test(name)) return 3;
+      return 10;
+    };
+
+    const primaryFamilies = families
+      .filter(isCoreGemini)
+      .sort((a, b) => coreRank(a.baseName) - coreRank(b.baseName))
+      .slice(0, 4);
+
+    const primarySet = new Set(primaryFamilies);
+    const moreFamilies = families
+      .filter((f) => !primarySet.has(f))
+      .map((f) => ({
+        group: isOrch(f) ? '多智能体编排' : '其他模型',
+        fam: f
+      }))
+      .sort((a, b) => (a.group === b.group ? 0 : a.group === '多智能体编排' ? -1 : 1));
+
+    const sel = api.selectedModel || null;
+    let activeFamily = null;
+    let activeVariant = null;
+
+    if (sel) {
+      for (const fam of families) {
+        for (const v of fam.variants) {
+          if (
+            (sel.value !== undefined && v.opt.value === sel.value) ||
+            (sel.modelId && v.opt.modelId === sel.modelId) ||
+            v.opt.label === sel.label
+          ) {
+            activeFamily = fam;
+            activeVariant = v;
+            break;
+          }
+        }
+        if (activeFamily) break;
+      }
+    }
+
+    if (!activeFamily && primaryFamilies.length > 0) {
+      activeFamily = primaryFamilies[0];
+      activeVariant = activeFamily.variants[0] || null;
+    }
+
+    if (activeVariant && activeVariant.effort) {
+      lastPreferredEffort = activeVariant.effort;
+    }
+
+    return {
+      primaryFamilies,
+      moreFamilies,
+      activeFamily,
+      activeVariant
+    };
+  }
+
+  function pickVariantForFamily(fam, desiredEffort) {
+    if (!fam || !fam.variants.length) return null;
+    if (desiredEffort) {
+      const exact = fam.variants.find((v) => v.effort === desiredEffort);
+      if (exact) return exact.opt;
+      if (desiredEffort === 'XHigh' || desiredEffort === 'Max') {
+        const high = fam.variants.find((v) => v.effort === 'High');
+        if (high) return high.opt;
+      }
+    }
+    const med = fam.variants.find((v) => v.effort === 'Medium');
+    return (med || fam.variants[0]).opt;
+  }
+
+  function ensureModelPopovers() {
+    let mainPop = document.getElementById('ag-claude-model-popover');
+    if (!mainPop) {
+      mainPop = document.createElement('div');
+      mainPop.id = 'ag-claude-model-popover';
+      mainPop.setAttribute('data-ag-i18n-ignore', '1');
+      mainPop.setAttribute('data-open', 'false');
+      mainPop.addEventListener('mouseover', (e) => {
+        const row = e.target.closest('[data-ag-cm-hover]');
+        if (!row) return;
+        const kind = row.getAttribute('data-ag-cm-hover');
+        const nextSub = kind === 'none' ? null : kind;
+        if (activeModelSubmenu !== nextSub) {
+          activeModelSubmenu = nextSub;
+          renderModelPopovers();
+        }
+      });
+      mainPop.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const famBtn = e.target.closest('[data-ag-cm-family]');
+        if (famBtn) {
+          const baseName = famBtn.getAttribute('data-ag-cm-family');
+          const api = discoverModelSelectorApi();
+          if (api) {
+            const cat = buildModelCatalog(api);
+            const fam = cat.primaryFamilies.find((f) => f.baseName === baseName);
+            const targetOpt = pickVariantForFamily(fam, lastPreferredEffort);
+            if (targetOpt) api.setSelectedModel(targetOpt);
+          }
+          closeClaudeModelPopover();
+          return;
+        }
+        const subTrigger = e.target.closest('[data-ag-cm-subtrigger]');
+        if (subTrigger) {
+          if (subTrigger.getAttribute('data-disabled') === 'true') return;
+          const kind = subTrigger.getAttribute('data-ag-cm-subtrigger');
+          activeModelSubmenu = activeModelSubmenu === kind ? null : kind;
+          renderModelPopovers();
+        }
+      });
+      document.body.appendChild(mainPop);
+    }
+
+    let subPop = document.getElementById('ag-claude-model-subpop');
+    if (!subPop) {
+      subPop = document.createElement('div');
+      subPop.id = 'ag-claude-model-subpop';
+      subPop.setAttribute('data-ag-i18n-ignore', '1');
+      subPop.setAttribute('data-open', 'false');
+      subPop.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const effBtn = e.target.closest('[data-ag-cm-effort]');
+        if (effBtn) {
+          const eff = effBtn.getAttribute('data-ag-cm-effort');
+          const api = discoverModelSelectorApi();
+          if (api) {
+            const cat = buildModelCatalog(api);
+            if (cat.activeFamily) {
+              const v = cat.activeFamily.variants.find((x) => x.effort === eff);
+              if (v && v.opt) {
+                lastPreferredEffort = eff;
+                api.setSelectedModel(v.opt);
+              }
+            }
+          }
+          closeClaudeModelPopover();
+          return;
+        }
+        const moreBtn = e.target.closest('[data-ag-cm-more-family]');
+        if (moreBtn) {
+          const baseName = moreBtn.getAttribute('data-ag-cm-more-family');
+          const api = discoverModelSelectorApi();
+          if (api) {
+            const cat = buildModelCatalog(api);
+            const entry = cat.moreFamilies.find((x) => x.fam.baseName === baseName);
+            const targetOpt = entry ? pickVariantForFamily(entry.fam, lastPreferredEffort) : null;
+            if (targetOpt) api.setSelectedModel(targetOpt);
+          }
+          closeClaudeModelPopover();
+        }
+      });
+      document.body.appendChild(subPop);
+    }
+
+    return { mainPop, subPop };
+  }
+
+  function positionModelPopovers() {
+    const btn = findModelTriggerBtn();
+    const mainPop = document.getElementById('ag-claude-model-popover');
+    const subPop = document.getElementById('ag-claude-model-subpop');
+    if (!btn || !mainPop) return;
+
+    const r = btn.getBoundingClientRect();
+    const mainW = 254;
+    const left = Math.max(12, Math.min(Math.round(r.left), window.innerWidth - mainW - 14));
+    const bottom = Math.max(12, Math.round(window.innerHeight - r.top + 8));
+    mainPop.style.left = `${left}px`;
+    mainPop.style.bottom = `${bottom}px`;
+
+    if (subPop && subPop.getAttribute('data-open') === 'true') {
+      const mr = mainPop.getBoundingClientRect();
+      const subW = 236;
+      let subLeft = Math.round(mr.right + 6);
+      if (subLeft + subW > window.innerWidth - 10) {
+        subLeft = Math.max(10, Math.round(mr.left - subW - 6));
+      }
+      subPop.style.left = `${subLeft}px`;
+      subPop.style.bottom = `${bottom}px`;
+    }
+  }
+
+  function renderModelPopovers() {
+    const api = discoverModelSelectorApi();
+    if (!api) return;
+    const { mainPop, subPop } = ensureModelPopovers();
+    const cat = buildModelCatalog(api);
+    currentCatalogSnapshot = cat;
+
+    const multiEfforts = cat.activeFamily
+      ? cat.activeFamily.variants.filter((v) => Boolean(v.effort))
+      : [];
+    const hasAdjustableEffort = multiEfforts.length > 1;
+    const curEffortText =
+      cat.activeVariant && cat.activeVariant.effort
+        ? cat.activeVariant.effort
+        : hasAdjustableEffort
+          ? lastPreferredEffort
+          : '固定';
+
+    const activeInMore = cat.moreFamilies.some((x) => cat.activeFamily && x.fam.baseName === cat.activeFamily.baseName);
+    const moreShortLabel =
+      activeInMore && cat.activeFamily
+        ? cat.activeFamily.baseName.replace(/^Orchestrator\s*/i, 'Orch ').replace(/^Claude\s+/i, '')
+        : '';
+
+    const primaryRowsHtml = cat.primaryFamilies
+      .map((fam, idx) => {
+        const isSelected = Boolean(cat.activeFamily && cat.activeFamily.baseName === fam.baseName);
+        const rightHtml = isSelected ? SVG_CM_CHECK : `<span class="ag-cm-key">${idx + 1}</span>`;
+        return `<button type="button" class="ag-cm-row" data-ag-cm-hover="none" data-ag-cm-family="${escapeHtml(
+          fam.baseName
+        )}">
+          <span>${escapeHtml(fam.baseName)}</span>
+          ${rightHtml}
+        </button>`;
+      })
+      .join('');
+
+    const effSubActive = activeModelSubmenu === 'effort' && hasAdjustableEffort ? ' data-active-sub="true"' : '';
+    const effDisabled = hasAdjustableEffort ? '' : ' data-disabled="true"';
+    const moreSubActive = activeModelSubmenu === 'more' ? ' data-active-sub="true"' : '';
+
+    mainPop.innerHTML = `
+      <div class="ag-cm-sec-hdr">模型 · 本次会话</div>
+      <div>${primaryRowsHtml}</div>
+      <div class="ag-cm-divider"></div>
+      <button type="button" class="ag-cm-row" data-ag-cm-hover="${
+        hasAdjustableEffort ? 'effort' : 'none'
+      }" data-ag-cm-subtrigger="effort"${effSubActive}${effDisabled}>
+        <span>思考强度</span>
+        <span class="ag-cm-right"><span>${escapeHtml(curEffortText)}</span>${
+          hasAdjustableEffort ? SVG_CM_CHEVRON : ''
+        }</span>
+      </button>
+      <button type="button" class="ag-cm-row" data-ag-cm-hover="more" data-ag-cm-subtrigger="more"${moreSubActive}>
+        <span style="display:inline-flex;align-items:center;gap:6px;">
+          <span>更多模型</span>
+          ${activeInMore ? '<span class="ag-cm-dot"></span>' : ''}
+        </span>
+        <span class="ag-cm-right">
+          ${moreShortLabel ? `<span style="font-size:12px;">${escapeHtml(moreShortLabel)}</span>` : ''}
+          ${SVG_CM_CHEVRON}
+        </span>
+      </button>
+    `;
+
+    if (activeModelSubmenu === 'effort' && hasAdjustableEffort) {
+      const famTitle = cat.activeFamily ? cat.activeFamily.baseName : '';
+      subPop.innerHTML =
+        `<div class="ag-cm-sec-hdr">思考强度 · ${escapeHtml(famTitle)}</div>` +
+        multiEfforts
+          .map((v) => {
+            const on = Boolean(cat.activeVariant && v.effort === cat.activeVariant.effort);
+            const desc = EFFORT_DESC[v.effort] || '';
+            return `<button type="button" class="ag-cm-row" data-ag-cm-effort="${escapeHtml(v.effort)}">
+              <span>
+                <span style="display:block;line-height:1.25;">${escapeHtml(v.effort)}</span>
+                ${desc ? `<span class="ag-cm-sub-desc" style="display:block;">${escapeHtml(desc)}</span>` : ''}
+              </span>
+              ${on ? SVG_CM_CHECK : ''}
+            </button>`;
+          })
+          .join('');
+      subPop.setAttribute('data-open', 'true');
+    } else if (activeModelSubmenu === 'more' && cat.moreFamilies.length > 0) {
+      let lastGrp = '';
+      subPop.innerHTML = cat.moreFamilies
+        .map(({ group, fam }) => {
+          let hdr = '';
+          if (group !== lastGrp) {
+            hdr = `${lastGrp ? '<div class="ag-cm-divider"></div>' : ''}<div class="ag-cm-sec-hdr">${escapeHtml(
+              group
+            )}</div>`;
+            lastGrp = group;
+          }
+          const on = Boolean(cat.activeFamily && cat.activeFamily.baseName === fam.baseName);
+          return `${hdr}<button type="button" class="ag-cm-row" style="min-height:34px;font-size:13.5px;" data-ag-cm-more-family="${escapeHtml(
+            fam.baseName
+          )}">
+            <span>${escapeHtml(fam.baseName)}</span>
+            ${on ? SVG_CM_CHECK : ''}
+          </button>`;
+        })
+        .join('');
+      subPop.setAttribute('data-open', 'true');
+    } else {
+      subPop.setAttribute('data-open', 'false');
+    }
+
+    positionModelPopovers();
+  }
+
+  function openClaudeModelPopover(btnEl) {
+    const btn = btnEl || findModelTriggerBtn();
+    const api = discoverModelSelectorApi(btn);
+    if (!api) return false;
+    if (quotaPopoverOpen) closeQuotaPopover();
+    if (api.open && typeof api.setIsOpen === 'function') {
+      try {
+        api.setIsOpen(false);
+      } catch {}
+    }
+    activeModelTriggerBtn = btn;
+    modelPopoverOpen = true;
+    activeModelSubmenu = null;
+    if (btn) btn.setAttribute('data-ag-model-open', 'true');
+    const { mainPop } = ensureModelPopovers();
+    renderModelPopovers();
+    mainPop.setAttribute('data-open', 'true');
+    positionModelPopovers();
+    return true;
+  }
+
+  function closeClaudeModelPopover() {
+    modelPopoverOpen = false;
+    activeModelSubmenu = null;
+    currentCatalogSnapshot = null;
+    if (activeModelTriggerBtn) {
+      activeModelTriggerBtn.removeAttribute('data-ag-model-open');
+    }
+    document.querySelectorAll('button[data-ag-model-open]').forEach((el) => el.removeAttribute('data-ag-model-open'));
+    const mainPop = document.getElementById('ag-claude-model-popover');
+    const subPop = document.getElementById('ag-claude-model-subpop');
+    if (mainPop) mainPop.setAttribute('data-open', 'false');
+    if (subPop) subPop.setAttribute('data-open', 'false');
+  }
+
+  function toggleClaudeModelPopover(btnEl) {
+    if (modelPopoverOpen) {
+      closeClaudeModelPopover();
+      return true;
+    }
+    return openClaudeModelPopover(btnEl);
+  }
+
+  const onModelTriggerPointerDown = (e) => {
+    const trigger = e.target && e.target.closest && e.target.closest('button[data-testid="model-selector-trigger"]');
+    if (trigger) {
+      if (e.button !== undefined && e.button !== 0) return;
+      const api = discoverModelSelectorApi(trigger);
+      if (!api) return;
+      e.preventDefault();
+      e.stopPropagation();
+      e.stopImmediatePropagation();
+      toggleClaudeModelPopover(trigger);
+      return;
+    }
+    if (!modelPopoverOpen) return;
+    const mainPop = document.getElementById('ag-claude-model-popover');
+    const subPop = document.getElementById('ag-claude-model-subpop');
+    if ((mainPop && mainPop.contains(e.target)) || (subPop && subPop.contains(e.target))) return;
+    closeClaudeModelPopover();
+  };
+
+  const onModelTriggerSwallowMouseClick = (e) => {
+    const trigger = e.target && e.target.closest && e.target.closest('button[data-testid="model-selector-trigger"]');
+    if (!trigger) return;
+    const api = discoverModelSelectorApi(trigger);
+    if (!api) return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.stopImmediatePropagation();
+  };
+
+  const onModelPopoverKeyDown = (e) => {
+    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key === '/') {
+      const btn = findModelTriggerBtn();
+      if (btn && discoverModelSelectorApi(btn)) {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+        toggleClaudeModelPopover(btn);
+        return;
+      }
+    }
+    if (!modelPopoverOpen) return;
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      closeClaudeModelPopover();
+      return;
+    }
+    if (!e.metaKey && !e.ctrlKey && !e.altKey && /^[1-4]$/.test(e.key)) {
+      const idx = Number(e.key) - 1;
+      const api = discoverModelSelectorApi();
+      if (api) {
+        const cat = currentCatalogSnapshot || buildModelCatalog(api);
+        const fam = cat.primaryFamilies[idx];
+        if (fam) {
+          e.preventDefault();
+          e.stopPropagation();
+          const targetOpt = pickVariantForFamily(fam, lastPreferredEffort);
+          if (targetOpt) api.setSelectedModel(targetOpt);
+          closeClaudeModelPopover();
+        }
+      }
+    }
+  };
+
+  document.addEventListener('pointerdown', onModelTriggerPointerDown, true);
+  document.addEventListener('mousedown', onModelTriggerSwallowMouseClick, true);
+  document.addEventListener('click', onModelTriggerSwallowMouseClick, true);
+  document.addEventListener('keydown', onModelPopoverKeyDown, true);
 
   function scheduleSync() {
     if (rafPending) return;
@@ -966,20 +1494,27 @@
       document.removeEventListener('click', onDocClick, true);
       document.removeEventListener('pointerdown', onOutsidePopoverPointerDown, true);
       document.removeEventListener('keydown', onPopoverKeyDown, true);
+      document.removeEventListener('pointerdown', onModelTriggerPointerDown, true);
+      document.removeEventListener('mousedown', onModelTriggerSwallowMouseClick, true);
+      document.removeEventListener('click', onModelTriggerSwallowMouseClick, true);
+      document.removeEventListener('keydown', onModelPopoverKeyDown, true);
       window.removeEventListener('resize', onWindowResizePopover);
       if (window.__ag_render_metrics && window.__ag_render_metrics.__agOrig) {
         window.__ag_render_metrics = window.__ag_render_metrics.__agOrig;
       }
       document
         .querySelectorAll(
-          '.ag-collapse-ghost, .ag-orbit-dots, .ag-elapsed-timer, [data-ag-todo-mount], [data-ag-todo-dock], #ag-claude-ctx-ring, #ag-claude-quota-popover'
+          '.ag-collapse-ghost, .ag-orbit-dots, .ag-elapsed-timer, [data-ag-todo-mount], [data-ag-todo-dock], #ag-claude-ctx-ring, #ag-claude-quota-popover, #ag-claude-model-popover, #ag-claude-model-subpop'
         )
         .forEach((el) => el.remove());
-      document.querySelectorAll('[data-ag-todo-primary], [data-ag-todo-merged], [data-ag-todo-empty-wrap]').forEach((el) => {
-        el.removeAttribute('data-ag-todo-primary');
-        el.removeAttribute('data-ag-todo-merged');
-        el.removeAttribute('data-ag-todo-empty-wrap');
-      });
+      document
+        .querySelectorAll('[data-ag-todo-primary], [data-ag-todo-merged], [data-ag-todo-empty-wrap], [data-ag-model-open]')
+        .forEach((el) => {
+          el.removeAttribute('data-ag-todo-primary');
+          el.removeAttribute('data-ag-todo-merged');
+          el.removeAttribute('data-ag-todo-empty-wrap');
+          el.removeAttribute('data-ag-model-open');
+        });
     });
   }
 })();

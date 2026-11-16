@@ -933,6 +933,231 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) [data-testid="settings-sid
 /* ============================================================================
  * 3.11 输入框底栏 Claude 上下文圆环按钮 + 上弹套餐限额卡片（模型右侧紧邻）
  * ============================================================================ */
+/* 3.11 输入框底栏瘦身 + 模型旁 Claude 上下文圆环 + 套餐限额上弹卡片 + Claude 极简模型菜单 */
+#antigravity\.agentSidePanelInputBox #ag-live-metrics-pill .ag-sub-badge,
+#ag-live-metrics-pill .ag-sub-badge {
+  display: none !important;
+}
+
+/* 底栏模型选择按钮：对齐 Claude 柔和浅灰胶囊 + 主名深黑 / 档位次灰 */
+#antigravity\.agentSidePanelInputBox button[data-testid="model-selector-trigger"] {
+  border-radius: 8px !important;
+  height: 28px !important;
+  padding: 0 8px 0 9px !important;
+  gap: 5px !important;
+  font-size: 13px !important;
+  font-weight: 400 !important;
+  transition: background-color 130ms ease !important;
+}
+
+html:not([data-ag-theme-mode="dark"]) body:not(.dark) #antigravity\.agentSidePanelInputBox button[data-testid="model-selector-trigger"] {
+  color: #191918 !important;
+}
+
+html:not([data-ag-theme-mode="dark"]) body:not(.dark) #antigravity\.agentSidePanelInputBox button[data-testid="model-selector-trigger"]:is(:hover, [data-ag-model-open="true"]) {
+  background-color: #EFEFED !important;
+}
+
+:is(html[data-ag-theme-mode="dark"] body, body.dark) #antigravity\.agentSidePanelInputBox button[data-testid="model-selector-trigger"] {
+  color: #ECECEA !important;
+}
+
+:is(html[data-ag-theme-mode="dark"] body, body.dark) #antigravity\.agentSidePanelInputBox button[data-testid="model-selector-trigger"]:is(:hover, [data-ag-model-open="true"]) {
+  background-color: rgba(255, 255, 255, 0.09) !important;
+}
+
+html:not([data-ag-theme-mode="dark"]) body:not(.dark) #antigravity\.agentSidePanelInputBox button[data-testid="model-selector-trigger"] span.opacity-70 {
+  opacity: 1 !important;
+  color: #676767 !important;
+  margin-left: 3px !important;
+}
+
+:is(html[data-ag-theme-mode="dark"] body, body.dark) #antigravity\.agentSidePanelInputBox button[data-testid="model-selector-trigger"] span.opacity-70 {
+  opacity: 1 !important;
+  color: #9A9994 !important;
+  margin-left: 3px !important;
+}
+
+/* Claude 极简分层模型菜单（主面板 + 右侧二级面板） */
+#ag-claude-model-popover,
+#ag-claude-model-subpop,
+#ag-claude-model-popover :is(div, span, button),
+#ag-claude-model-subpop :is(div, span, button) {
+  font-family: var(--font-sans) !important;
+  letter-spacing: 0 !important;
+  text-shadow: none !important;
+  -webkit-font-smoothing: antialiased !important;
+}
+
+#ag-claude-model-popover,
+#ag-claude-model-subpop {
+  position: fixed !important;
+  z-index: 10000 !important;
+  padding: 8px !important;
+  border-radius: 16px !important;
+  user-select: none !important;
+  transform-origin: bottom left !important;
+  transition: opacity 140ms cubic-bezier(0.16, 1, 0.3, 1), transform 140ms cubic-bezier(0.16, 1, 0.3, 1) !important;
+}
+
+#ag-claude-model-popover {
+  width: 254px !important;
+}
+
+#ag-claude-model-subpop {
+  width: 236px !important;
+}
+
+#ag-claude-model-subpop::before {
+  content: "" !important;
+  position: absolute !important;
+  top: 0 !important;
+  bottom: 0 !important;
+  left: -12px !important;
+  width: 12px !important;
+}
+
+#ag-claude-model-popover[data-open="false"],
+#ag-claude-model-subpop[data-open="false"] {
+  opacity: 0 !important;
+  transform: translateY(5px) scale(0.985) !important;
+  pointer-events: none !important;
+}
+
+#ag-claude-model-popover[data-open="true"],
+#ag-claude-model-subpop[data-open="true"] {
+  opacity: 1 !important;
+  transform: translateY(0) scale(1) !important;
+  pointer-events: auto !important;
+}
+
+html:not([data-ag-theme-mode="dark"]) body:not(.dark) :is(#ag-claude-model-popover, #ag-claude-model-subpop) {
+  background-color: #FFFFFF !important;
+  border: 1px solid #E6E6E4 !important;
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.10), 0 2px 6px rgba(0, 0, 0, 0.04) !important;
+  color: #191918 !important;
+}
+
+:is(html[data-ag-theme-mode="dark"] body, body.dark) :is(#ag-claude-model-popover, #ag-claude-model-subpop) {
+  background-color: #252523 !important;
+  border: 1px solid rgba(255, 255, 255, 0.11) !important;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.44) !important;
+  color: #ECECEA !important;
+}
+
+.ag-cm-sec-hdr {
+  padding: 5px 12px 6px 12px !important;
+  font-size: 12px !important;
+  font-weight: 400 !important;
+  color: #787774 !important;
+}
+
+:is(html[data-ag-theme-mode="dark"] body, body.dark) .ag-cm-sec-hdr {
+  color: #9A9994 !important;
+}
+
+.ag-cm-divider {
+  height: 1px !important;
+  margin: 6px 6px !important;
+  background-color: #ECECE9 !important;
+}
+
+:is(html[data-ag-theme-mode="dark"] body, body.dark) .ag-cm-divider {
+  background-color: rgba(255, 255, 255, 0.08) !important;
+}
+
+.ag-cm-row {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  width: 100% !important;
+  min-height: 36px !important;
+  padding: 6px 12px !important;
+  border: none !important;
+  border-radius: 9px !important;
+  background: transparent !important;
+  font-size: 14px !important;
+  font-weight: 400 !important;
+  text-align: left !important;
+  cursor: pointer !important;
+  transition: background-color 110ms ease !important;
+}
+
+html:not([data-ag-theme-mode="dark"]) body:not(.dark) .ag-cm-row {
+  color: #191918 !important;
+}
+
+:is(html[data-ag-theme-mode="dark"] body, body.dark) .ag-cm-row {
+  color: #ECECEA !important;
+}
+
+html:not([data-ag-theme-mode="dark"]) body:not(.dark) .ag-cm-row:is(:hover, [data-active-sub="true"]) {
+  background-color: #EFEFED !important;
+}
+
+:is(html[data-ag-theme-mode="dark"] body, body.dark) .ag-cm-row:is(:hover, [data-active-sub="true"]) {
+  background-color: rgba(255, 255, 255, 0.08) !important;
+}
+
+.ag-cm-row[data-disabled="true"] {
+  opacity: 0.45 !important;
+  cursor: default !important;
+}
+
+.ag-cm-row[data-disabled="true"]:hover {
+  background: transparent !important;
+}
+
+.ag-cm-key {
+  font-size: 12px !important;
+  color: #9A9994 !important;
+  font-variant-numeric: tabular-nums !important;
+  padding-right: 2px !important;
+}
+
+.ag-cm-right {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 5px !important;
+  font-size: 13.5px !important;
+  color: #676767 !important;
+}
+
+:is(html[data-ag-theme-mode="dark"] body, body.dark) .ag-cm-right {
+  color: #9A9994 !important;
+}
+
+.ag-cm-sub-desc {
+  font-size: 11.5px !important;
+  color: #787774 !important;
+  margin-top: 1px !important;
+}
+
+:is(html[data-ag-theme-mode="dark"] body, body.dark) .ag-cm-sub-desc {
+  color: #9A9994 !important;
+}
+
+.ag-cm-dot {
+  width: 6px !important;
+  height: 6px !important;
+  border-radius: 999px !important;
+  background-color: #2F75C3 !important;
+  display: inline-block !important;
+}
+
+:is(html[data-ag-theme-mode="dark"] body, body.dark) .ag-cm-dot {
+  background-color: #5E9EFF !important;
+}
+
+.ag-cm-check {
+  color: #2F75C3 !important;
+  flex-shrink: 0 !important;
+}
+
+:is(html[data-ag-theme-mode="dark"] body, body.dark) .ag-cm-check {
+  color: #5E9EFF !important;
+}
+
 #antigravity\.agentSidePanelInputBox #ag-claude-ctx-ring {
   display: inline-flex !important;
   align-items: center !important;

@@ -33,7 +33,11 @@
 - **同轮次就地合并任务卡片**：基于零侵入旁路挂载（绝不改写 React 自有虚拟 DOM 节点，流式输出零冲突），自动识别同一轮回答中的 `- [ ]`（浅灰虚线圈 `pending`）、`- [/]`（旋转实线圈 `in_progress`）、`- [x]`（柔和打勾 `completed`）清单，**把后续所有进度更新静默合并刷新到首张圆角白卡片上**，绝不重复刷屏。
 - **运行中陶土橙双点旋转 + 实时秒表**：三重条件精确锁定当前正在跑的最后一步工具行，行首挂载 `#D97757` 双子星旋转点，行尾挂载 `1s / 2s...` 实时读秒计时器；执行完毕立即清理并销毁定时器（空闲 `0%` CPU 占用）。
 
-### 4. Claude 式「边做边汇报」协作规则（`rules/claude-execution-sync.md`）
+### 4. 客户端版本更新自动跟随（0 Token 事件监听守护）
+- macOS 安装时默认注册轻量级 `launchd` `WatchPaths` 守护（`com.antigravity.claude-ux.autosync`）：实时监听 `/Applications/Antigravity.app` 的 `Info.plist` 与 `app.asar` 变动（外加每 12 小时轻量巡检）。
+- **只要 Antigravity 发生版本升级**，系统秒级自动从 GitHub 拉取最新的上游 `core/` 内核与本仓库 `user/` 扩展层、自动自愈被升级重置的开发者步骤流开关，并热注入到新版本窗口——**全程零人工干预、零 AI Token 消耗**。
+
+### 5. Claude 式「边做边汇报」协作规则（`rules/claude-execution-sync.md`）
 - 自动在 `~/.gemini/AGENTS.md` 注入幂等规则块：驱动模型在多步排查/开发任务中每次调工具前先输出 1～2 句简短进展同步，使用自然中文 `toolSummary`，并在 3 阶段以上复杂任务中自动维护实时任务清单卡片。
 
 ---
@@ -58,12 +62,19 @@ node ~/Developer/antigravity-claude-ux/install.mjs install
 > - 如果你尚未安装底层 CDP 注入守护（[`Anarcadia/chuanban-antigravity-theme-patch`](https://github.com/Anarcadia/chuanban-antigravity-theme-patch)），`install.mjs` 会自动从上游拉取并完成守护注册（包含 1,740 条母语级界面汉化与 SQLite 实时 `tok/s · Ctx` 指标胶囊）。
 > - 如果你的 Mac 上已安装官方 `/Applications/Claude.app`，脚本会自动提取其中的官方 `Anthropic Sans / Serif` 可变字体到 `~/Library/Fonts/`。
 
-### 常用诊断与无损卸载
+### 常用诊断、手动同步与无损卸载
 ```bash
-# 检查各层健康状态
+# 检查各层健康状态（含版本守护开关状态）
 node ~/Developer/antigravity-claude-ux/install.mjs doctor
 
-# 一键无损还原（恢复原有 user/ 配置并移除 AGENTS.md 规则块，即时热生效）
+# 手动立即从 GitHub 拉取双端更新并重部署热生效
+node ~/Developer/antigravity-claude-ux/install.mjs sync-upgrade --force
+
+# 单独开启 / 关闭客户端更新自动跟随守护
+node ~/Developer/antigravity-claude-ux/install.mjs auto-update-on
+node ~/Developer/antigravity-claude-ux/install.mjs auto-update-off
+
+# 一键无损还原（移除更新守护、恢复原有 user/ 配置并移除 AGENTS.md 规则块）
 node ~/Developer/antigravity-claude-ux/install.mjs uninstall
 ```
 

@@ -1,15 +1,19 @@
 #!/usr/bin/env node
 /**
  * antigravity-claude-ux — install.mjs
- * Zero-dependency CLI installer, step-stream unlocker, doctor & uninstaller (Node.js >= 22)
+ * Zero-dependency CLI installer, step-stream unlocker, auto-updater, doctor & uninstaller (Node.js >= 22)
  *
  * Commands:
- *   node install.mjs install     Install/update UX layer, unlock native step stream, inject AGENTS.md rule
- *   node install.mjs doctor      Non-destructive health check across all layers
- *   node install.mjs sync-fonts  Copy Anthropic variable fonts from local macOS Claude.app if available
- *   node install.mjs uninstall   Restore previous theme-patch user/ config and remove AGENTS.md rule block
+ *   node install.mjs install          Install/update UX layer, unlock step stream, inject AGENTS.md rule
+ *   node install.mjs sync-upgrade     Pull latest GitHub updates & re-apply cleanly on Antigravity app update
+ *   node install.mjs auto-update-on   Register macOS LaunchAgent watching Antigravity.app updates + 12h sync
+ *   node install.mjs auto-update-off  Remove auto-update LaunchAgent
+ *   node install.mjs doctor           Non-destructive health check across all layers
+ *   node install.mjs sync-fonts       Copy Anthropic variable fonts from local macOS Claude.app if available
+ *   node install.mjs uninstall        Restore previous user/ config, remove auto-updater & AGENTS.md rule block
  */
 
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -23,14 +27,78 @@ const AGY_DIR = path.join(GEMINI_DIR, 'antigravity');
 const THEME_PATCH_DIR = path.join(AGY_DIR, 'theme-patch');
 const THEME_USER_DIR = path.join(THEME_PATCH_DIR, 'user');
 const BACKUP_DIR = path.join(THEME_USER_DIR, '.backup-before-claude-ux');
+const SYNC_STATE_FILE = path.join(THEME_USER_DIR, '.claude-ux-sync-state.json');
+const SYNC_LOG_FILE = path.join(THEME_USER_DIR, 'auto-sync.log');
 const AGY_STATE_PBTXT = path.join(AGY_DIR, 'antigravity_state.pbtxt');
 const AGY_CONFIG_JSON = path.join(GEMINI_DIR, 'config', 'config.json');
 const AGENTS_MD = path.join(GEMINI_DIR, 'AGENTS.md');
 
+const AUTOSYNC_LABEL = 'com.antigravity.claude-ux.autosync';
+const AUTOSYNC_PLIST = path.join(HOME, 'Library', 'LaunchAgents', `${AUTOSYNC_LABEL}.plist`);
+
 const UPSTREAM_REPO = 'https://github.com/Anarcadia/chuanban-antigravity-theme-patch.git';
+const SELF_REPO = 'https://github.com/hongqi7/antigravity-claude-ux.git';
 const RULE_BEGIN = '<!-- BEGIN antigravity-claude-ux -->';
 const RULE_END = '<!-- END antigravity-claude-ux -->';
 const LEGACY_HEADING = '## 执行过程同步（Claude 式边做边汇报）';
+const USER_LAYER_FILES = ['config.json', 'custom.css', 'custom.js', 'i18n.override.json'];
+
+function readTextSafe(p) {
+  try {
+    return fs.readFileSync(p, 'utf8');
+  } catch {
+    return null;
+  }
+}
+
+function readJsonSafe(p, fallback = null) {
+  try {
+    return JSON.parse(fs.readFileSync(p, 'utf8'));
+  } catch {
+    return fallback;
+  }
+}
+
+function sha256File(p) {
+  try {
+    return crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex');
+  } catch {
+    return '';
+  }
+}
+
+function appendSyncLog(msg) {
+  try {
+    fs.mkdirSync(THEME_USER_DIR, { recursive: true });
+    const line = `[${new Date().toISOString()}] ${msg}`;
+    const prev = readTextSafe(SYNC_LOG_FILE);
+    const lines = prev ? prev.trim().split('\n').slice(-199) : [];
+    lines.push(line);
+    fs.writeFileSync(SYNC_LOG_FILE, `${lines.join('\n')}\n`, 'utf8');
+  } catch {}
+}
+
+function getAntigravityAppFingerprint() {
+  if (process.platform === 'darwin') {
+    const plist = '/Applications/Antigravity.app/Contents/Info.plist';
+    const asar = '/Applications/Antigravity.app/Contents/Resources/app.asar';
+    let version = 'unknown';
+    try {
+      version = execFileSync('plutil', ['-extract', 'CFBundleShortVersionString', 'raw', '-o', '-', plist], {
+        encoding: 'utf8'
+      }).trim();
+    } catch {}
+    let asarSig = 'missing';
+    let asarMtimeMs = 0;
+    try {
+      const st = fs.statSync(asar);
+      asarMtimeMs = st.mtimeMs;
+      asarSig = `${st.size}:${Math.floor(st.mtimeMs)}`;
+    } catch {}
+    return { version, asarSig, asarMtimeMs, sig: `${version}|${asarSig}` };
+  }
+  return { version: 'unknown', asarSig: 'unknown', asarMtimeMs: 0, sig: process.platform };
+}
 
 function getDevToolsPortFile() {
   if (process.platform === 'darwin') {
@@ -50,14 +118,6 @@ function getUserFontsDir() {
     return path.join(localAppData, 'Microsoft', 'Windows', 'Fonts');
   }
   return path.join(HOME, '.local', 'share', 'fonts');
-}
-
-function readTextSafe(p) {
-  try {
-    return fs.readFileSync(p, 'utf8');
-  } catch {
-    return null;
-  }
 }
 
 function checkFontsInstalled() {
@@ -95,19 +155,57 @@ function syncFontsFromLocalClaudeApp() {
   return { synced: true, copied };
 }
 
-function ensureUpstreamThemePatch() {
+function ensureOrUpgradeUpstreamThemePatch({ checkRemoteUpdate = false } = {}) {
   const upstreamEntry = path.join(THEME_PATCH_DIR, 'install.mjs');
-  if (fs.existsSync(upstreamEntry)) {
-    return { alreadyInstalled: true, path: THEME_PATCH_DIR };
+  const localInstalled = fs.existsSync(upstreamEntry);
+  if (localInstalled && !checkRemoteUpdate) {
+    return { alreadyInstalled: true, upgraded: false, path: THEME_PATCH_DIR };
   }
+
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'chuanban-base-'));
   try {
-    console.log(`[claude-ux] Base theme-patch not found; cloning upstream ${UPSTREAM_REPO}...`);
-    execFileSync('git', ['clone', '--depth', '1', UPSTREAM_REPO, tmpDir], { stdio: 'inherit' });
-    execFileSync(process.execPath, [path.join(tmpDir, 'install.mjs'), 'install'], { stdio: 'inherit' });
-    return { alreadyInstalled: false, installedFromUpstream: true, path: THEME_PATCH_DIR };
+    execFileSync('git', ['clone', '--depth', '1', UPSTREAM_REPO, tmpDir], {
+      stdio: localInstalled ? 'pipe' : 'inherit',
+      timeout: 25000
+    });
+    const remoteManifestSha = sha256File(path.join(tmpDir, 'core', 'manifest.json'));
+    const localManifestSha = sha256File(path.join(THEME_PATCH_DIR, 'core', 'manifest.json'));
+    if (localInstalled && remoteManifestSha && remoteManifestSha === localManifestSha) {
+      return { alreadyInstalled: true, upgraded: false, upToDate: true, path: THEME_PATCH_DIR };
+    }
+    execFileSync(process.execPath, [path.join(tmpDir, 'install.mjs'), 'install'], {
+      stdio: localInstalled ? 'pipe' : 'inherit',
+      timeout: 30000
+    });
+    return { alreadyInstalled: localInstalled, upgraded: true, path: THEME_PATCH_DIR };
+  } catch (err) {
+    if (localInstalled) {
+      return { alreadyInstalled: true, upgraded: false, networkSkipped: String(err?.message || err) };
+    }
+    throw err;
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+function pullSelfRepoIfGit() {
+  if (!fs.existsSync(path.join(__dirname, '.git'))) {
+    return { pulled: false, reason: 'not_git_checkout' };
+  }
+  try {
+    const beforeHead = execFileSync('git', ['-C', __dirname, 'rev-parse', '--short', 'HEAD'], {
+      encoding: 'utf8'
+    }).trim();
+    execFileSync('git', ['-C', __dirname, 'pull', '--ff-only', '--quiet'], {
+      stdio: 'pipe',
+      timeout: 20000
+    });
+    const afterHead = execFileSync('git', ['-C', __dirname, 'rev-parse', '--short', 'HEAD'], {
+      encoding: 'utf8'
+    }).trim();
+    return { pulled: true, updated: beforeHead !== afterHead, beforeHead, afterHead };
+  } catch (err) {
+    return { pulled: false, reason: String(err?.message || err) };
   }
 }
 
@@ -130,14 +228,22 @@ async function unlockStepsViaLiveCdp() {
     ws = new WebSocket(target.webSocketDebuggerUrl);
     await new Promise((resolve, reject) => {
       const t = setTimeout(() => reject(new Error('ws_timeout')), 2500);
-      ws.addEventListener('open', () => {
-        clearTimeout(t);
-        resolve();
-      }, { once: true });
-      ws.addEventListener('error', (err) => {
-        clearTimeout(t);
-        reject(err);
-      }, { once: true });
+      ws.addEventListener(
+        'open',
+        () => {
+          clearTimeout(t);
+          resolve();
+        },
+        { once: true }
+      );
+      ws.addEventListener(
+        'error',
+        (err) => {
+          clearTimeout(t);
+          reject(err);
+        },
+        { once: true }
+      );
     });
 
     const evalFn = async function () {
@@ -224,8 +330,8 @@ function unlockStepsInConfigFiles() {
   return actions;
 }
 
-function injectAgentsMdRule() {
-  const ruleBlock = fs.readFileSync(path.join(__dirname, 'rules', 'claude-execution-sync.md'), 'utf8').trim();
+function injectAgentsMdRule(sourceRoot = __dirname) {
+  const ruleBlock = fs.readFileSync(path.join(sourceRoot, 'rules', 'claude-execution-sync.md'), 'utf8').trim();
   fs.mkdirSync(path.dirname(AGENTS_MD), { recursive: true });
   const existing = readTextSafe(AGENTS_MD) || '';
 
@@ -252,33 +358,121 @@ function removeAgentsMdRule() {
   return true;
 }
 
-function installUserLayer() {
+function installUserLayer(sourceRoot = __dirname) {
   fs.mkdirSync(THEME_USER_DIR, { recursive: true });
-  const targets = ['config.json', 'custom.css', 'custom.js', 'i18n.override.json'];
   if (!fs.existsSync(BACKUP_DIR)) {
     fs.mkdirSync(BACKUP_DIR, { recursive: true });
-    for (const f of targets) {
+    for (const f of USER_LAYER_FILES) {
       const cur = path.join(THEME_USER_DIR, f);
       if (fs.existsSync(cur)) {
         fs.copyFileSync(cur, path.join(BACKUP_DIR, f));
       }
     }
   }
-  for (const f of targets) {
-    fs.copyFileSync(path.join(__dirname, 'user', f), path.join(THEME_USER_DIR, f));
+  const copied = [];
+  for (const f of USER_LAYER_FILES) {
+    const src = path.join(sourceRoot, 'user', f);
+    const dst = path.join(THEME_USER_DIR, f);
+    if (fs.existsSync(src)) {
+      if (sha256File(src) !== sha256File(dst)) {
+        fs.copyFileSync(src, dst);
+        copied.push(f);
+      }
+    }
   }
-  return targets;
+  return copied;
 }
 
 function runUpstreamVerify() {
   const upstreamEntry = path.join(THEME_PATCH_DIR, 'install.mjs');
   if (!fs.existsSync(upstreamEntry)) return { ok: false, reason: 'upstream_missing' };
-  const out = execFileSync(process.execPath, [upstreamEntry, 'verify'], { encoding: 'utf8' });
-  return { ok: true, output: out.trim() };
+  try {
+    const out = execFileSync(process.execPath, [upstreamEntry, 'verify'], { encoding: 'utf8', timeout: 15000 });
+    return { ok: true, output: out.trim() };
+  } catch (err) {
+    return { ok: false, reason: String(err?.message || err) };
+  }
+}
+
+function saveSyncState(fp) {
+  fs.mkdirSync(THEME_USER_DIR, { recursive: true });
+  fs.writeFileSync(
+    SYNC_STATE_FILE,
+    `${JSON.stringify({ appVersion: fp.version, appSig: fp.sig, lastSyncAt: Date.now(), repoUrl: SELF_REPO }, null, 2)}\n`,
+    'utf8'
+  );
+}
+
+function enableMacAutoUpdateAgent() {
+  if (process.platform !== 'darwin') {
+    return { ok: false, reason: 'macos_launchd_only' };
+  }
+  fs.mkdirSync(path.dirname(AUTOSYNC_PLIST), { recursive: true });
+  const scriptPath = path.join(__dirname, 'install.mjs');
+  const envPath = Array.from(
+    new Set(['/opt/homebrew/bin', '/usr/local/bin', path.dirname(process.execPath), '/usr/bin', '/bin', '/usr/sbin', '/sbin'])
+  ).join(':');
+
+  const plistXml = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${AUTOSYNC_LABEL}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${process.execPath}</string>
+    <string>${scriptPath}</string>
+    <string>sync-upgrade</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>${envPath}</string>
+  </dict>
+  <key>WatchPaths</key>
+  <array>
+    <string>/Applications/Antigravity.app/Contents/Info.plist</string>
+    <string>/Applications/Antigravity.app/Contents/Resources/app.asar</string>
+  </array>
+  <key>StartInterval</key>
+  <integer>43200</integer>
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+  <key>RunAtLoad</key>
+  <false/>
+  <key>StandardOutPath</key>
+  <string>${SYNC_LOG_FILE}</string>
+  <key>StandardErrorPath</key>
+  <string>${SYNC_LOG_FILE}</string>
+</dict>
+</plist>
+`;
+  fs.writeFileSync(AUTOSYNC_PLIST, plistXml, 'utf8');
+  const uid = typeof process.getuid === 'function' ? process.getuid() : 501;
+  try {
+    execFileSync('launchctl', ['bootout', `gui/${uid}`, AUTOSYNC_PLIST], { stdio: 'ignore' });
+  } catch {}
+  execFileSync('launchctl', ['bootstrap', `gui/${uid}`, AUTOSYNC_PLIST], { stdio: 'inherit' });
+  return { ok: true, label: AUTOSYNC_LABEL, plist: AUTOSYNC_PLIST };
+}
+
+function disableMacAutoUpdateAgent() {
+  if (process.platform !== 'darwin' || !fs.existsSync(AUTOSYNC_PLIST)) {
+    return { removed: false };
+  }
+  const uid = typeof process.getuid === 'function' ? process.getuid() : 501;
+  try {
+    execFileSync('launchctl', ['bootout', `gui/${uid}`, AUTOSYNC_PLIST], { stdio: 'ignore' });
+  } catch {}
+  fs.rmSync(AUTOSYNC_PLIST, { force: true });
+  return { removed: true, label: AUTOSYNC_LABEL };
 }
 
 async function cmdDoctor() {
   const fonts = checkFontsInstalled();
+  const fp = getAntigravityAppFingerprint();
+  const syncState = readJsonSafe(SYNC_STATE_FILE, null);
   const pbtxt = readTextSafe(AGY_STATE_PBTXT) || '';
   const cfgRaw = readTextSafe(AGY_CONFIG_JSON);
   let verboseSteps = null;
@@ -289,9 +483,11 @@ async function cmdDoctor() {
   const report = {
     platform: process.platform,
     node: process.version,
+    antigravityAppVersion: fp.version,
     baseThemePatchInstalled: fs.existsSync(path.join(THEME_PATCH_DIR, 'install.mjs')),
-    userLayerInstalled:
-      (readTextSafe(path.join(THEME_USER_DIR, 'custom.js')) || '').includes('ag-claude-todo-card'),
+    userLayerInstalled: (readTextSafe(path.join(THEME_USER_DIR, 'custom.js')) || '').includes('ag-claude-todo-card'),
+    autoUpdateWatcherInstalled: fs.existsSync(AUTOSYNC_PLIST),
+    lastSyncState: syncState,
     fonts,
     developerStepSkinUnlocked: pbtxt.includes('PRODUCT_SKIN_DEVELOPER'),
     verboseConversationSteps: verboseSteps,
@@ -300,28 +496,34 @@ async function cmdDoctor() {
   console.log(JSON.stringify(report, null, 2));
 }
 
-async function cmdInstall() {
-  const base = ensureUpstreamThemePatch();
+async function cmdInstall({ enableAutoUpdate = true } = {}) {
+  const base = ensureOrUpgradeUpstreamThemePatch({ checkRemoteUpdate: false });
   const fontsBefore = checkFontsInstalled();
   let fontSync = null;
   if (!fontsBefore.hasAnthropicSans) {
     fontSync = syncFontsFromLocalClaudeApp();
   }
-  const copiedFiles = installUserLayer();
+  const copiedFiles = installUserLayer(__dirname);
   const cdpUnlock = await unlockStepsViaLiveCdp();
   const fileUnlock = unlockStepsInConfigFiles();
-  const ruleStatus = injectAgentsMdRule();
+  const ruleStatus = injectAgentsMdRule(__dirname);
   const verify = runUpstreamVerify();
+  const fp = getAntigravityAppFingerprint();
+  saveSyncState(fp);
+  const autoUpdate =
+    enableAutoUpdate && process.platform === 'darwin' ? enableMacAutoUpdateAgent() : { skipped: true };
 
   console.log(
     JSON.stringify(
       {
         ok: true,
+        antigravityVersion: fp.version,
         base,
         fontSync,
         copiedFiles,
         stepStreamUnlock: { cdpUnlock, fileUnlock },
         ruleStatus,
+        autoUpdate,
         verifyOk: verify.ok
       },
       null,
@@ -330,11 +532,46 @@ async function cmdInstall() {
   );
 }
 
+async function cmdSyncUpgrade({ force = false } = {}) {
+  const fp = getAntigravityAppFingerprint();
+  // 若 Antigravity.app 刚刚在 12 秒内完成包体写入，稍候片刻让新进程完成冷启动监听
+  if (fp.asarMtimeMs > 0 && Date.now() - fp.asarMtimeMs < 12000) {
+    await new Promise((r) => setTimeout(r, 4500));
+  }
+
+  const prev = readJsonSafe(SYNC_STATE_FILE, {});
+  const appChanged = prev?.appSig !== fp.sig;
+  const staleRemoteCheck = !prev?.lastSyncAt || Date.now() - Number(prev.lastSyncAt) > 20 * 3600 * 1000;
+  const shouldFetchRemote = force || appChanged || staleRemoteCheck;
+
+  let selfPull = { skipped: true };
+  let baseSync = { skipped: true };
+  if (shouldFetchRemote) {
+    selfPull = pullSelfRepoIfGit();
+    baseSync = ensureOrUpgradeUpstreamThemePatch({ checkRemoteUpdate: true });
+  }
+
+  const copiedFiles = installUserLayer(__dirname);
+  const cdpUnlock = await unlockStepsViaLiveCdp();
+  const fileUnlock = unlockStepsInConfigFiles();
+  const ruleStatus = injectAgentsMdRule(__dirname);
+
+  let verify = { skipped: true };
+  if (force || appChanged || selfPull.updated || baseSync.upgraded || copiedFiles.length > 0 || fileUnlock.length > 0) {
+    verify = runUpstreamVerify();
+  }
+
+  saveSyncState(fp);
+  const summary = `sync-upgrade ok | agy=${fp.version} | appChanged=${appChanged} | selfUpdated=${Boolean(selfPull.updated)} | coreUpgraded=${Boolean(baseSync.upgraded)} | copied=${copiedFiles.length}`;
+  appendSyncLog(summary);
+  console.log(JSON.stringify({ ok: true, summary, selfPull, baseSync, copiedFiles, cdpUnlock, fileUnlock, ruleStatus, verifyOk: verify.ok ?? null }, null, 2));
+}
+
 async function cmdUninstall() {
-  const targets = ['config.json', 'custom.css', 'custom.js', 'i18n.override.json'];
+  const autoUpdateRemoved = disableMacAutoUpdateAgent();
   const restored = [];
   if (fs.existsSync(BACKUP_DIR)) {
-    for (const f of targets) {
+    for (const f of USER_LAYER_FILES) {
       const bak = path.join(BACKUP_DIR, f);
       if (fs.existsSync(bak)) {
         fs.copyFileSync(bak, path.join(THEME_USER_DIR, f));
@@ -346,14 +583,23 @@ async function cmdUninstall() {
     fs.writeFileSync(path.join(THEME_USER_DIR, 'custom.css'), '/* user/custom.css */\n', 'utf8');
     fs.writeFileSync(path.join(THEME_USER_DIR, 'custom.js'), '/* user/custom.js */\n', 'utf8');
   }
+  fs.rmSync(SYNC_STATE_FILE, { force: true });
   const ruleRemoved = removeAgentsMdRule();
   const verify = runUpstreamVerify();
-  console.log(JSON.stringify({ ok: true, restored, ruleRemoved, verifyOk: verify.ok }, null, 2));
+  console.log(JSON.stringify({ ok: true, autoUpdateRemoved, restored, ruleRemoved, verifyOk: verify.ok }, null, 2));
 }
 
 const sub = process.argv[2] || 'doctor';
+const flags = new Set(process.argv.slice(3));
+
 if (sub === 'install') {
-  await cmdInstall();
+  await cmdInstall({ enableAutoUpdate: !flags.has('--no-auto-update') });
+} else if (sub === 'sync-upgrade') {
+  await cmdSyncUpgrade({ force: flags.has('--force') });
+} else if (sub === 'auto-update-on') {
+  console.log(JSON.stringify(enableMacAutoUpdateAgent(), null, 2));
+} else if (sub === 'auto-update-off') {
+  console.log(JSON.stringify(disableMacAutoUpdateAgent(), null, 2));
 } else if (sub === 'uninstall') {
   await cmdUninstall();
 } else if (sub === 'sync-fonts') {

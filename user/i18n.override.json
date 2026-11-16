@@ -1,5 +1,5 @@
 {
-  "_comment": "Keep Model Thinking Effort & Local Permission Presets in original English",
+  "_comment": "Keep Model Thinking Effort, Orchestrator names & Local Permission Presets in original English; concise Settings navigation labels",
   "Low": "Low",
   "Medium": "Medium",
   "High": "High",
@@ -31,5 +31,17 @@
   "Allow Once": "Allow Once",
   "Ask": "Ask",
   "Allow": "Allow",
-  "Deny": "Deny"
+  "Deny": "Deny",
+  "Settings": "设置",
+  "General": "常规",
+  "Application": "应用",
+  "Appearance": "外观",
+  "Notifications": "通知",
+  "Models": "模型",
+  "Browser": "浏览器",
+  "Account": "账号",
+  "Projects": "项目",
+  "Conversations": "对话",
+  "Give Feedback": "提交反馈",
+  "Provide Feedback": "提交反馈"
 }

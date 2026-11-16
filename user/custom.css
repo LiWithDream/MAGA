@@ -116,10 +116,10 @@ html:not([data-ag-theme-mode="dark"]):not(:has(> body.dark)),
 html:not([data-ag-theme-mode="dark"]):not(:has(> body.dark))[data-ag-preset],
 html:not([data-ag-theme-mode="dark"]) body:not(.dark),
 html:not([data-ag-theme-mode="dark"])[data-ag-preset] body:not(.dark) {
-  --primary: #191918 !important;
+  --primary: #2F75C3 !important;
   --primary-foreground: #FFFFFF !important;
-  --link: #3B5978 !important;
-  --editor-selection-background: rgba(25, 25, 24, 0.12) !important;
+  --link: #2F75C3 !important;
+  --editor-selection-background: rgba(47, 117, 195, 0.20) !important;
 
   --background: #FFFFFF !important;
   --content: #FFFFFF !important;
@@ -198,10 +198,10 @@ body[data-agy-theme].dark,
 html[data-ag-preset] body.dark,
 html[data-ag-preset] body[data-agy-theme].dark {
   color-scheme: dark !important;
-  --primary: #E5E5E2 !important;
-  --primary-foreground: #191918 !important;
-  --link: #93B4D8 !important;
-  --editor-selection-background: rgba(255, 255, 255, 0.16) !important;
+  --primary: #2F71E3 !important;
+  --primary-foreground: #FFFFFF !important;
+  --link: #6CA6F0 !important;
+  --editor-selection-background: rgba(47, 113, 227, 0.30) !important;
 
   --background: #212120 !important;
   --content: #212120 !important;
@@ -543,4 +543,131 @@ ul[data-ag-todo-merged="true"],
   margin-left: 4px;
   margin-right: 1px;
   flex-shrink: 0;
+}
+
+/* ============================================================================
+ * 3.10 设置界面 1:1 质感精修（修复文字主次倒挂 · Google 官方蓝控件 · 左栏分界 · 版心居中）
+ * ============================================================================ */
+
+/* 1) 修复船板 core/theme.css 第 478 行误把说明小字刷成浓黑加粗的 Bug，并舒展行留白 */
+.agy-card {
+  background-color: var(--card, #FFFFFF) !important;
+  border-color: var(--card-border, rgba(0, 0, 0, 0.085)) !important;
+  border-radius: 12px !important;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02) !important;
+}
+
+.agy-card > div:not([class*="p-0"]) {
+  padding: 13px 16px !important;
+}
+
+.agy-card > div > div.flex-1 > div:first-child > span:first-child:not([data-testid="settings-row-badge"]) {
+  font-size: 13.5px !important;
+  font-weight: 500 !important;
+  color: var(--foreground, #191918) !important;
+  letter-spacing: 0 !important;
+  text-shadow: none !important;
+}
+
+[role="dialog"] :is(.agy-card, [class*="agy-card"], [class*="divide-border"]) span.text-sm.text-muted-foreground,
+.agy-card span.text-sm.text-muted-foreground {
+  font-size: 12.5px !important;
+  font-weight: 400 !important;
+  line-height: 1.5 !important;
+  color: var(--muted-foreground, #787774) !important;
+  letter-spacing: 0 !important;
+  text-shadow: none !important;
+}
+
+/* 2) Switch 开关与音量滑块：启用 Google 官方强调色 (#2F75C3 / #2F71E3) 与精致白芯圆柄 */
+button[role="switch"][aria-checked="true"] {
+  background-color: var(--primary, #2F75C3) !important;
+}
+
+html:not([data-ag-theme-mode="dark"]) body:not(.dark) button[role="switch"][aria-checked="false"] {
+  background-color: #E2E2DF !important;
+}
+
+:is(html[data-ag-theme-mode="dark"] body, body.dark) button[role="switch"][aria-checked="false"] {
+  background-color: #3A3A38 !important;
+}
+
+.agy-card input[type="range"] {
+  height: 4px !important;
+  border-radius: 999px !important;
+}
+
+.agy-card input[type="range"]::-webkit-slider-thumb {
+  width: 14px !important;
+  height: 14px !important;
+  border-radius: 50% !important;
+  background-color: #FFFFFF !important;
+  border: 1.5px solid var(--primary, #2F75C3) !important;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18) !important;
+}
+
+/* 3) 左侧设置导航栏：补齐右侧 1px 分界线，消除悬停与激活“双选中”撞色 */
+[data-testid="settings-sidebar"] {
+  border-right: 1px solid var(--border, rgba(0, 0, 0, 0.07)) !important;
+}
+
+[data-testid="settings-sidebar"] :is(h1, h2) {
+  font-size: 11.5px !important;
+  font-weight: 500 !important;
+  color: var(--muted-foreground, #8A8985) !important;
+  letter-spacing: 0.01em !important;
+  text-shadow: none !important;
+}
+
+[data-testid="settings-sidebar"] button:not(.bg-sidebar-secondary),
+[data-testid="settings-sidebar"] button:not(.bg-sidebar-secondary) span {
+  font-size: 13.5px !important;
+  font-weight: 400 !important;
+  color: var(--secondary-foreground, #52524E) !important;
+  letter-spacing: 0 !important;
+  text-shadow: none !important;
+}
+
+html:not([data-ag-theme-mode="dark"]) body:not(.dark) [data-testid="settings-sidebar"] button:not(.bg-sidebar-secondary):hover {
+  background-color: rgba(0, 0, 0, 0.035) !important;
+}
+
+:is(html[data-ag-theme-mode="dark"] body, body.dark) [data-testid="settings-sidebar"] button:not(.bg-sidebar-secondary):hover {
+  background-color: rgba(255, 255, 255, 0.045) !important;
+}
+
+html:not([data-ag-theme-mode="dark"]) body:not(.dark) [data-testid="settings-sidebar"] button.bg-sidebar-secondary {
+  background-color: #E9E9E6 !important;
+}
+
+:is(html[data-ag-theme-mode="dark"] body, body.dark) [data-testid="settings-sidebar"] button.bg-sidebar-secondary {
+  background-color: #333330 !important;
+}
+
+[data-testid="settings-sidebar"] button.bg-sidebar-secondary,
+[data-testid="settings-sidebar"] button.bg-sidebar-secondary span {
+  font-size: 13.5px !important;
+  font-weight: 500 !important;
+  color: var(--foreground, #191918) !important;
+  letter-spacing: 0 !important;
+  text-shadow: none !important;
+}
+
+/* 4) 右侧设置内容版心适度水平居中，优化三级标题阶梯（兼容弹窗与全屏视图两种挂载方式） */
+:is([role="dialog"]:has([data-testid="settings-sidebar"]), div:has(> [data-testid="settings-sidebar"]), div:has(> div > [data-testid="settings-sidebar"])) [class*="max-w-"] {
+  margin-left: auto !important;
+  margin-right: auto !important;
+}
+
+:is([role="dialog"]:has([data-testid="settings-sidebar"]), div:has(> [data-testid="settings-sidebar"]), div:has(> div > [data-testid="settings-sidebar"])) h2.text-2xl {
+  font-size: 20px !important;
+  font-weight: 600 !important;
+  letter-spacing: -0.01em !important;
+}
+
+:is([role="dialog"]:has([data-testid="settings-sidebar"]), div:has(> [data-testid="settings-sidebar"]), div:has(> div > [data-testid="settings-sidebar"])) h3 {
+  font-size: 13px !important;
+  font-weight: 600 !important;
+  color: var(--secondary-foreground, #3D3D3A) !important;
+  letter-spacing: 0 !important;
 }

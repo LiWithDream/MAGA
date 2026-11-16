@@ -11,15 +11,17 @@
   const userToggled = new WeakSet();
   const openSnapshots = new WeakMap();
   const runningTimers = new WeakMap();
+  const paneLastActiveTs = new WeakMap();
+  const paneUndockTimers = new WeakMap();
   let timerIntervalId = null;
   let rafPending = false;
 
   const SVG_PENDING =
-    '<svg class="ag-todo-ico ag-todo-pending" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.35" stroke-dasharray="2.5 2.1" stroke-linecap="round"/></svg>';
+    '<svg class="ag-todo-ico ag-todo-pending" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="8" cy="8" r="6.6" stroke="currentColor" stroke-width="1.4"/></svg>';
   const SVG_ACTIVE =
-    '<svg class="ag-todo-ico ag-todo-active" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="8" cy="8" r="6" stroke="currentColor" stroke-opacity="0.26" stroke-width="1.45"/><path d="M8 2a6 6 0 0 1 6 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>';
+    '<svg class="ag-todo-ico ag-todo-active" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="8" cy="8" r="6.6" stroke="currentColor" stroke-opacity="0.22" stroke-width="1.5"/><path d="M8 1.4a6.6 6.6 0 0 1 6.6 6.6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
   const SVG_DONE =
-    '<svg class="ag-todo-ico ag-todo-done" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="currentColor" fill-opacity="0.09" stroke="currentColor" stroke-width="1.3"/><path d="M5.3 8.1l1.8 1.8 3.6-3.7" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    '<svg class="ag-todo-ico ag-todo-done" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="8" cy="8" r="7.2" fill="currentColor"/><path class="ag-todo-done-check" d="M5.1 8.15l1.95 1.95 3.95-4.1" stroke="#FFFFFF" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
   const PAST_LABEL_RE = /^(?:Explored|Ran\b|Edited\b|Done\b|已探索|已运行|已编辑|已完成)/i;
 
@@ -113,67 +115,228 @@
     return items;
   }
 
-  function renderTodoCard(primaryUl, items) {
-    primaryUl.setAttribute('data-ag-todo-primary', 'true');
-    primaryUl.removeAttribute('data-ag-todo-merged');
-    let card = primaryUl.nextElementSibling;
+  function normalizeTodoText(html) {
+    return html
+      .replace(/<[^>]*>/g, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .toLowerCase();
+  }
+
+  function isChecklistEvolution(prevItems, nextItems) {
+    if (!prevItems || !nextItems) return false;
+    const a = prevItems.map((it) => normalizeTodoText(it.html));
+    const b = nextItems.map((it) => normalizeTodoText(it.html));
+    let matches = 0;
+    for (const txtB of b) {
+      if (!txtB) continue;
+      const hit = a.some(
+        (txtA) =>
+          txtA === txtB ||
+          (txtA.length >= 6 && txtB.length >= 6 && (txtA.includes(txtB.slice(0, 6)) || txtB.includes(txtA.slice(0, 6))))
+      );
+      if (hit) matches += 1;
+    }
+    return matches >= Math.max(1, Math.ceil(Math.min(a.length, b.length) * 0.4));
+  }
+
+  function iconForStatus(status) {
+    return status === 'completed' ? SVG_DONE : status === 'in_progress' ? SVG_ACTIVE : SVG_PENDING;
+  }
+
+  function patchCardDom(card, items) {
+    const sig = JSON.stringify(items);
+    if (card.getAttribute('data-ag-todo-sig') === sig) return;
+    card.setAttribute('data-ag-todo-sig', sig);
+
+    const existingRows = Array.from(card.children).filter((el) => el.classList.contains('ag-claude-todo-row'));
+    if (existingRows.length === items.length) {
+      for (let i = 0; i < items.length; i++) {
+        const row = existingRows[i];
+        const it = items[i];
+        const prevStatus = row.getAttribute('data-status');
+        if (prevStatus !== it.status) {
+          row.setAttribute('data-status', it.status);
+          const ico = row.querySelector(':scope > .ag-todo-ico');
+          if (ico) {
+            ico.outerHTML = iconForStatus(it.status);
+          }
+        }
+        const lbl = row.querySelector(':scope > .ag-claude-todo-label');
+        if (lbl && lbl.innerHTML !== it.html) {
+          lbl.innerHTML = it.html;
+        }
+      }
+      return;
+    }
+
+    card.innerHTML = items
+      .map(
+        (it) =>
+          `<div class="ag-claude-todo-row" data-status="${it.status}">${iconForStatus(it.status)}<span class="ag-claude-todo-label">${it.html}</span></div>`
+      )
+      .join('');
+  }
+
+  function markMergedUl(ul) {
+    ul.removeAttribute('data-ag-todo-primary');
+    ul.setAttribute('data-ag-todo-merged', 'true');
+    if (ul.nextElementSibling && ul.nextElementSibling.hasAttribute('data-ag-todo-mount')) {
+      ul.nextElementSibling.remove();
+    }
+    const pWrap = ul.parentElement;
+    if (pWrap && pWrap.children.length === 1) {
+      pWrap.setAttribute('data-ag-todo-empty-wrap', 'true');
+    }
+  }
+
+  function renderInlineTodoCard(anchorUl, items) {
+    anchorUl.setAttribute('data-ag-todo-primary', 'true');
+    anchorUl.removeAttribute('data-ag-todo-merged');
+    let card = anchorUl.nextElementSibling;
     if (!card || !card.hasAttribute('data-ag-todo-mount')) {
       card = document.createElement('div');
       card.className = 'ag-claude-todo-card';
       card.setAttribute('data-ag-todo-mount', 'true');
-      primaryUl.insertAdjacentElement('afterend', card);
+      anchorUl.insertAdjacentElement('afterend', card);
     }
-    const sig = JSON.stringify(items);
-    if (card.getAttribute('data-ag-todo-sig') === sig) return;
-    card.setAttribute('data-ag-todo-sig', sig);
-    card.innerHTML = items
-      .map((it) => {
-        const icon = it.status === 'completed' ? SVG_DONE : it.status === 'in_progress' ? SVG_ACTIVE : SVG_PENDING;
-        return `<div class="ag-claude-todo-row" data-status="${it.status}">${icon}<span class="ag-claude-todo-label">${it.html}</span></div>`;
-      })
-      .join('');
+    patchCardDom(card, items);
+  }
+
+  function findPaneRoot(el) {
+    let cur = el;
+    for (let i = 0; i < 14 && cur; i++, cur = cur.parentElement) {
+      if (
+        cur.querySelector &&
+        cur.querySelector('[id="antigravity.agentSidePanelInputBox"]') &&
+        cur.querySelector('[data-testid="agent-response"]')
+      ) {
+        return cur;
+      }
+    }
+    return null;
+  }
+
+  function isPaneActivelyGenerating(pane) {
+    if (!pane) return false;
+    const inputBox = pane.querySelector('[id="antigravity.agentSidePanelInputBox"]');
+    if (!inputBox) return false;
+    const hasCancel = Boolean(inputBox.querySelector('button[data-testid="input-cancel-button"]'));
+    const now = Date.now();
+    if (hasCancel) {
+      paneLastActiveTs.set(pane, now);
+      const pendingTimer = paneUndockTimers.get(pane);
+      if (pendingTimer) {
+        clearTimeout(pendingTimer);
+        paneUndockTimers.delete(pane);
+      }
+      return true;
+    }
+    const lastTs = paneLastActiveTs.get(pane) || 0;
+    if (now - lastTs < 280) {
+      if (!paneUndockTimers.has(pane)) {
+        const tid = setTimeout(() => {
+          paneUndockTimers.delete(pane);
+          scheduleSync();
+        }, 300);
+        paneUndockTimers.set(pane, tid);
+      }
+      return true;
+    }
+    return false;
+  }
+
+  function renderLiveDockedTodoCard(pane, items) {
+    const inputBox = pane.querySelector('[id="antigravity.agentSidePanelInputBox"]');
+    if (!inputBox || !inputBox.parentElement) return false;
+    let dock = inputBox.parentElement.querySelector(':scope > [data-ag-todo-dock="true"]');
+    if (!dock) {
+      dock = document.createElement('div');
+      dock.className = 'ag-claude-todo-live-dock';
+      dock.setAttribute('data-ag-todo-dock', 'true');
+      inputBox.insertAdjacentElement('beforebegin', dock);
+    } else if (dock.nextElementSibling !== inputBox) {
+      inputBox.insertAdjacentElement('beforebegin', dock);
+    }
+    let card = dock.querySelector(':scope > .ag-claude-todo-card');
+    if (!card) {
+      card = document.createElement('div');
+      card.className = 'ag-claude-todo-card';
+      card.setAttribute('data-ag-todo-mount', 'true');
+      dock.appendChild(card);
+    }
+    patchCardDom(card, items);
+    return dock;
   }
 
   function syncTodoCards() {
-    const nodes = document.querySelectorAll('[data-testid="user-input-step"], ul.contains-task-list');
-    let currentPrimary = null;
-    let latestItems = null;
-    const turnGroups = [];
+    const allTaskUls = document.querySelectorAll('ul.contains-task-list');
+    const byTurn = new Map();
+    let orphanIdx = 0;
 
-    for (const node of nodes) {
-      if (node.getAttribute && node.getAttribute('data-testid') === 'user-input-step') {
-        if (currentPrimary && latestItems) {
-          turnGroups.push({ primary: currentPrimary, items: latestItems });
-        }
-        currentPrimary = null;
-        latestItems = null;
-        continue;
-      }
-      const items = parseTodoUl(node);
+    for (const ul of allTaskUls) {
+      const items = parseTodoUl(ul);
       if (!items) continue;
+      const turnEl = ul.closest('[data-testid="agent-response"]') || `orphan-${orphanIdx++}`;
+      let list = byTurn.get(turnEl);
+      if (!list) {
+        list = [];
+        byTurn.set(turnEl, list);
+      }
+      list.push({ ul, items });
+    }
 
-      if (!currentPrimary) {
-        currentPrimary = node;
-        latestItems = items;
-      } else if (node !== currentPrimary) {
-        latestItems = items;
-        node.removeAttribute('data-ag-todo-primary');
-        node.setAttribute('data-ag-todo-merged', 'true');
-        if (node.nextElementSibling && node.nextElementSibling.hasAttribute('data-ag-todo-mount')) {
-          node.nextElementSibling.remove();
+    const activeDocks = new Set();
+
+    for (const [turnKey, entries] of byTurn.entries()) {
+      const clusters = [];
+      for (const entry of entries) {
+        const lastCluster = clusters[clusters.length - 1];
+        if (lastCluster && isChecklistEvolution(lastCluster.items, entry.items)) {
+          lastCluster.lists.push(entry.ul);
+          lastCluster.items = entry.items;
+        } else {
+          clusters.push({ lists: [entry.ul], items: entry.items });
         }
-        const pWrap = node.parentElement;
-        if (pWrap && pWrap.children.length === 1) {
-          pWrap.setAttribute('data-ag-todo-empty-wrap', 'true');
+      }
+
+      const isElementTurn = typeof turnKey !== 'string';
+      const pane = isElementTurn ? findPaneRoot(turnKey) : null;
+      let isLiveTurn = false;
+      if (pane && isPaneActivelyGenerating(pane)) {
+        const paneTurns = pane.querySelectorAll('[data-testid="agent-response"]');
+        const latestPaneTurn = paneTurns.length ? paneTurns[paneTurns.length - 1] : null;
+        if (latestPaneTurn === turnKey) {
+          isLiveTurn = true;
+        }
+      }
+
+      for (let i = 0; i < clusters.length; i++) {
+        const cluster = clusters[i];
+        const isDockedLiveCluster = isLiveTurn && i === clusters.length - 1;
+        const mountedDock = isDockedLiveCluster ? renderLiveDockedTodoCard(pane, cluster.items) : null;
+
+        if (mountedDock) {
+          activeDocks.add(mountedDock);
+          for (const ul of cluster.lists) {
+            markMergedUl(ul);
+          }
+        } else {
+          /* 轮次结束后停靠在该轮最后一次清单节点处（紧贴总结上方，不再缩回轮次最顶端） */
+          const anchorUl = cluster.lists[cluster.lists.length - 1];
+          for (let j = 0; j < cluster.lists.length - 1; j++) {
+            markMergedUl(cluster.lists[j]);
+          }
+          renderInlineTodoCard(anchorUl, cluster.items);
         }
       }
     }
-    if (currentPrimary && latestItems) {
-      turnGroups.push({ primary: currentPrimary, items: latestItems });
-    }
 
-    for (const g of turnGroups) {
-      renderTodoCard(g.primary, g.items);
+    const existingDocks = document.querySelectorAll('[data-ag-todo-dock="true"]');
+    for (const dock of existingDocks) {
+      if (!activeDocks.has(dock)) {
+        dock.remove();
+      }
     }
   }
 
@@ -312,11 +475,12 @@
       }
       document.removeEventListener('click', onDocClick, true);
       document
-        .querySelectorAll('.ag-collapse-ghost, .ag-orbit-dots, .ag-elapsed-timer, [data-ag-todo-mount]')
+        .querySelectorAll('.ag-collapse-ghost, .ag-orbit-dots, .ag-elapsed-timer, [data-ag-todo-mount], [data-ag-todo-dock]')
         .forEach((el) => el.remove());
-      document.querySelectorAll('[data-ag-todo-primary], [data-ag-todo-merged]').forEach((el) => {
+      document.querySelectorAll('[data-ag-todo-primary], [data-ag-todo-merged], [data-ag-todo-empty-wrap]').forEach((el) => {
         el.removeAttribute('data-ag-todo-primary');
         el.removeAttribute('data-ag-todo-merged');
+        el.removeAttribute('data-ag-todo-empty-wrap');
       });
     });
   }

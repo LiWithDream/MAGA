@@ -434,24 +434,83 @@ div[data-ag-inline-stream="true"] > button[data-testid="worked-for-collapsible"]
   border-top: 1px solid var(--border, rgba(0, 0, 0, 0.06)) !important;
 }
 
-/* 3.9 Claude TodoWrite In-Place Live Checklist Card + Terracotta Orbiting Timer */
+/* 3.9 Claude TodoWrite Live Bottom-Following Card + Solid Circle Checkmark + Terracotta Orbiting Timer */
 ul[data-ag-todo-primary="true"],
 ul[data-ag-todo-merged="true"],
-[data-ag-todo-empty-wrap="true"]:has(> ul[data-ag-todo-merged="true"]:only-child) {
+[data-ag-todo-empty-wrap="true"]:has(> ul[data-ag-todo-merged="true"]:only-child),
+[data-testid="planner-response-text"]:has(> div[data-ag-todo-empty-wrap="true"]:only-child > ul[data-ag-todo-merged="true"]:only-child) {
   display: none !important;
+}
+
+@keyframes agTodoDockSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.ag-claude-todo-live-dock {
+  position: relative !important;
+  width: 100% !important;
+  padding: 0 8px !important;
+  margin: 2px 0 10px 0 !important;
+  z-index: 15 !important;
+  flex-shrink: 0 !important;
+  animation: agTodoDockSlideIn 180ms cubic-bezier(0.16, 1, 0.3, 1) both !important;
+}
+
+/* 复刻 Claude 滚动流靠近悬浮进度卡片上沿时的柔和渐隐遮罩 */
+html:not([data-ag-theme-mode="dark"]) body:not(.dark) .ag-claude-todo-live-dock::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -26px;
+  height: 26px;
+  pointer-events: none;
+  background: linear-gradient(to bottom, rgba(255, 255, 255, 0), #FFFFFF);
+}
+
+:is(html[data-ag-theme-mode="dark"] body, body.dark) .ag-claude-todo-live-dock::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -26px;
+  height: 26px;
+  pointer-events: none;
+  background: linear-gradient(to bottom, rgba(33, 33, 32, 0), #212120);
+}
+
+.ag-claude-todo-live-dock > .ag-claude-todo-card {
+  margin: 0 !important;
+  max-height: 220px !important;
+  overflow-y: auto !important;
 }
 
 .ag-claude-todo-card {
   list-style: none !important;
-  padding: 12px 16px !important;
-  margin: 8px 0 10px 0 !important;
-  border: 1px solid var(--border, rgba(0, 0, 0, 0.085)) !important;
-  border-radius: 12px !important;
+  padding: 14px 18px !important;
+  margin: 8px 0 12px 0 !important;
+  border-radius: 14px !important;
   background-color: var(--card, #FFFFFF) !important;
   display: flex !important;
   flex-direction: column !important;
-  gap: 9px !important;
+  gap: 10px !important;
+}
+
+html:not([data-ag-theme-mode="dark"]) body:not(.dark) .ag-claude-todo-card {
+  border: 1px solid #EBEBEB !important;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02) !important;
+}
+
+:is(html[data-ag-theme-mode="dark"] body, body.dark) .ag-claude-todo-card {
+  border: 1px solid rgba(255, 255, 255, 0.10) !important;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.18) !important;
 }
 
 .ag-claude-todo-card > .ag-claude-todo-row {
@@ -461,9 +520,9 @@ ul[data-ag-todo-merged="true"],
   margin: 0 !important;
   padding: 0 !important;
   font-family: var(--font-sans) !important;
-  font-size: 13.5px !important;
+  font-size: 14px !important;
   line-height: 1.45 !important;
-  color: var(--foreground, #191918) !important;
+  -webkit-font-smoothing: antialiased !important;
 }
 
 .ag-todo-ico {
@@ -472,8 +531,12 @@ ul[data-ag-todo-merged="true"],
   flex-shrink: 0 !important;
 }
 
-.ag-todo-pending {
-  color: #9B9A97 !important;
+html:not([data-ag-theme-mode="dark"]) body:not(.dark) .ag-todo-pending {
+  color: #B5B4B0 !important;
+}
+
+:is(html[data-ag-theme-mode="dark"] body, body.dark) .ag-todo-pending {
+  color: #686763 !important;
 }
 
 @keyframes agTodoSpin {
@@ -482,17 +545,75 @@ ul[data-ag-todo-merged="true"],
   }
 }
 
-.ag-todo-active {
-  color: #787774 !important;
-  animation: agTodoSpin 1.15s linear infinite !important;
+html:not([data-ag-theme-mode="dark"]) body:not(.dark) .ag-todo-active {
+  color: #191918 !important;
+  animation: agTodoSpin 0.95s linear infinite !important;
 }
 
-.ag-todo-done {
-  color: #8A8985 !important;
+:is(html[data-ag-theme-mode="dark"] body, body.dark) .ag-todo-active {
+  color: #ECECEA !important;
+  animation: agTodoSpin 0.95s linear infinite !important;
 }
 
-.ag-claude-todo-card > .ag-claude-todo-row[data-status="completed"] .ag-claude-todo-label {
-  color: var(--muted-foreground, #787774) !important;
+@keyframes agTodoDonePop {
+  0% {
+    transform: scale(0.84);
+  }
+  70% {
+    transform: scale(1.05);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+/* 1:1 复刻 Claude 实心深炭灰圆圈 (#666666) + 纯白粗对勾 */
+html:not([data-ag-theme-mode="dark"]) body:not(.dark) .ag-todo-done {
+  color: #666666 !important;
+  animation: agTodoDonePop 170ms cubic-bezier(0.16, 1, 0.3, 1) both !important;
+}
+
+html:not([data-ag-theme-mode="dark"]) body:not(.dark) .ag-todo-done .ag-todo-done-check {
+  stroke: #FFFFFF !important;
+}
+
+:is(html[data-ag-theme-mode="dark"] body, body.dark) .ag-todo-done {
+  color: #9E9D98 !important;
+  animation: agTodoDonePop 170ms cubic-bezier(0.16, 1, 0.3, 1) both !important;
+}
+
+:is(html[data-ag-theme-mode="dark"] body, body.dark) .ag-todo-done .ag-todo-done-check {
+  stroke: #212120 !important;
+}
+
+html:not([data-ag-theme-mode="dark"]) body:not(.dark) .ag-claude-todo-card > .ag-claude-todo-row[data-status="pending"] .ag-claude-todo-label {
+  color: #3D3D3A !important;
+  font-weight: 400 !important;
+}
+
+:is(html[data-ag-theme-mode="dark"] body, body.dark) .ag-claude-todo-card > .ag-claude-todo-row[data-status="pending"] .ag-claude-todo-label {
+  color: #D4D3CE !important;
+  font-weight: 400 !important;
+}
+
+html:not([data-ag-theme-mode="dark"]) body:not(.dark) .ag-claude-todo-card > .ag-claude-todo-row[data-status="in_progress"] .ag-claude-todo-label {
+  color: #191918 !important;
+  font-weight: 500 !important;
+}
+
+:is(html[data-ag-theme-mode="dark"] body, body.dark) .ag-claude-todo-card > .ag-claude-todo-row[data-status="in_progress"] .ag-claude-todo-label {
+  color: #FFFFFF !important;
+  font-weight: 500 !important;
+}
+
+html:not([data-ag-theme-mode="dark"]) body:not(.dark) .ag-claude-todo-card > .ag-claude-todo-row[data-status="completed"] .ag-claude-todo-label {
+  color: #666666 !important;
+  font-weight: 400 !important;
+}
+
+:is(html[data-ag-theme-mode="dark"] body, body.dark) .ag-claude-todo-card > .ag-claude-todo-row[data-status="completed"] .ag-claude-todo-label {
+  color: #9A9994 !important;
+  font-weight: 400 !important;
 }
 
 @keyframes agOrbitSpin {

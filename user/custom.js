@@ -788,8 +788,8 @@
       </div>
       <div class="ag-qp-item">
         <div class="ag-qp-row">
-          <span class="ag-qp-title ag-qp-title-strong">当前上下文</span>
-          <span class="ag-qp-meta"><span class="ag-qp-reset">${ctxSub}</span><span class="ag-qp-pct ag-qp-pct-strong">${ctxPct}%</span></span>
+          <span class="ag-qp-title">当前上下文</span>
+          <span class="ag-qp-meta"><span class="ag-qp-reset">${ctxSub}</span><span class="ag-qp-pct">${ctxPct}%</span></span>
         </div>
         <div class="ag-qp-track"><div class="ag-qp-fill" style="width:${ctxPct}%;background:${ctxColor}"></div></div>
       </div>

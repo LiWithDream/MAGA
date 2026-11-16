@@ -239,18 +239,33 @@ html[data-ag-preset] body[data-agy-theme].dark {
   --ag-user-bubble: #2C2C2A;
   --ag-composer-tray-bg: #2A2A28;
   --ag-composer-card-bg: #2A2A28;
-  --ag-seal-off-border: rgba(255, 255, 255, 0.12);
+  --ag-composer-card-border: transparent !important;
+  --ag-composer-card-shadow: none !important;
+  --ag-composer-card-focus-border: transparent !important;
+  --ag-composer-card-focus-shadow: none !important;
+  --ag-seal-off-border: rgba(255, 255, 255, 0.11);
+  --ag-composer-top-fg: #B8B7B2;
+  --ag-composer-top-hover-bg: rgba(255, 255, 255, 0.07);
+  --ag-composer-top-hover-fg: #ECECEA;
   --ag-composer-ctrl-fg: #B8B7B2;
   --ag-send-btn-bg: #ECECEA;
   --ag-send-btn-hover-bg: #FFFFFF;
   --ag-send-btn-border: #ECECEA;
+  --ag-send-btn-shadow: none !important;
+}
+
+/* 夜间侧栏选中胶囊：抹除底层冷蓝立体高光，对齐 Claude 扁平暖炭灰 */
+:is(html[data-ag-theme-mode="dark"] body, body.dark, body[data-agy-theme].dark) .agy-sidebar-row[data-selected="true"] {
+  background-color: #2F2F2D !important;
+  --row-bg: #2F2F2D !important;
+  box-shadow: none !important;
 }
 
 /* ============================================================================
  * 3. Component Polish (Single-Layer Composer · Neutral Bubbles · Step Stream)
  * ============================================================================ */
 
-/* 3.1 Single-layer rounded white composer card */
+/* 3.1 Single-layer rounded composer card (Light & Dark unified, zero nested inner border) */
 :is(#antigravity\.agentSidePanelInputBox, [id="antigravity.agentSidePanelInputBox"], .surface-composer.bg-card-border) {
   background-color: var(--ag-composer-card-bg, #FFFFFF) !important;
   border: 1px solid var(--ag-seal-off-border, rgba(0, 0, 0, 0.10)) !important;
@@ -259,39 +274,76 @@ html[data-ag-preset] body[data-agy-theme].dark {
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.04) !important;
 }
 
-:is(#antigravity\.agentSidePanelInputBox, [id="antigravity.agentSidePanelInputBox"], .surface-composer.bg-card-border):is(:hover, :focus-within) {
+html:not([data-ag-theme-mode="dark"]) body:not(.dark) :is(#antigravity\.agentSidePanelInputBox, [id="antigravity.agentSidePanelInputBox"], .surface-composer.bg-card-border):is(:hover, :focus-within) {
   border-color: rgba(0, 0, 0, 0.17) !important;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.06) !important;
 }
 
 :is(html[data-ag-theme-mode="dark"] body, body.dark) :is(#antigravity\.agentSidePanelInputBox, [id="antigravity.agentSidePanelInputBox"], .surface-composer.bg-card-border) {
-  border-color: rgba(255, 255, 255, 0.12) !important;
+  border-color: rgba(255, 255, 255, 0.11) !important;
   box-shadow: 0 4px 18px rgba(0, 0, 0, 0.28) !important;
 }
 
-[id="antigravity.agentSidePanelInputBox"] .surface-composer-card,
-.surface-composer > .surface-composer-card {
+:is(html[data-ag-theme-mode="dark"] body, body.dark) :is(#antigravity\.agentSidePanelInputBox, [id="antigravity.agentSidePanelInputBox"], .surface-composer.bg-card-border):is(:hover, :focus-within) {
+  border-color: rgba(255, 255, 255, 0.17) !important;
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.34) !important;
+}
+
+body[data-agy-theme][data-newux-theme="onyx"] .surface-composer > .surface-composer-card,
+body[data-agy-theme][data-newux-theme="onyx"] .surface-composer:focus-within > .surface-composer-card,
+#antigravity\.agentSidePanelInputBox .surface-composer-card,
+#antigravity\.agentSidePanelInputBox:focus-within .surface-composer-card,
+#antigravity\.agentSidePanelInputBox > div.bg-card,
+.surface-composer > .surface-composer-card,
+.surface-composer-card.bg-card {
   background-color: transparent !important;
   border: none !important;
+  border-color: transparent !important;
   box-shadow: none !important;
 }
 
-/* 3.2 Composer footer controls & sans-serif tabular-nums metrics pill */
+/* 3.2 Composer footer controls & 100% unified sans-serif metrics pill (12.5px, warm gray) */
 #antigravity\.agentSidePanelInputBox :is([class*="text-secondary-foreground"], button, span):not([data-lexical-editor="true"]):not([data-lexical-editor="true"] *) {
   font-weight: 400 !important;
   letter-spacing: 0 !important;
   text-shadow: none !important;
 }
 
+#antigravity\.agentSidePanelInputBox #ag-live-metrics-pill,
+#antigravity\.agentSidePanelInputBox #ag-live-metrics-pill #ag-live-metrics-text,
+#antigravity\.agentSidePanelInputBox #ag-live-metrics-pill span,
 #ag-live-metrics-pill,
 #ag-live-metrics-pill #ag-live-metrics-text,
 #ag-live-metrics-pill span {
   font-family: var(--font-sans) !important;
-  font-variant-numeric: tabular-nums !important;
-  color: #8A8985 !important;
+  font-variant-numeric: normal !important;
+  font-feature-settings: normal !important;
   font-weight: 400 !important;
-  font-size: 11.5px !important;
+  font-size: 12.5px !important;
+  line-height: 1.35 !important;
   letter-spacing: 0 !important;
+  text-shadow: none !important;
+  -webkit-font-smoothing: antialiased !important;
+}
+
+html:not([data-ag-theme-mode="dark"]) body:not(.dark) :is(#antigravity\.agentSidePanelInputBox #ag-live-metrics-pill, #ag-live-metrics-pill),
+html:not([data-ag-theme-mode="dark"]) body:not(.dark) :is(#antigravity\.agentSidePanelInputBox #ag-live-metrics-pill, #ag-live-metrics-pill) :is(#ag-live-metrics-text, span) {
+  color: #787774 !important;
+}
+
+html:not([data-ag-theme-mode="dark"]) body:not(.dark) :is(#antigravity\.agentSidePanelInputBox #ag-live-metrics-pill:hover, #ag-live-metrics-pill:hover),
+html:not([data-ag-theme-mode="dark"]) body:not(.dark) :is(#antigravity\.agentSidePanelInputBox #ag-live-metrics-pill:hover, #ag-live-metrics-pill:hover) :is(#ag-live-metrics-text, span) {
+  color: #52524E !important;
+}
+
+:is(html[data-ag-theme-mode="dark"] body, body.dark) :is(#antigravity\.agentSidePanelInputBox #ag-live-metrics-pill, #ag-live-metrics-pill),
+:is(html[data-ag-theme-mode="dark"] body, body.dark) :is(#antigravity\.agentSidePanelInputBox #ag-live-metrics-pill, #ag-live-metrics-pill) :is(#ag-live-metrics-text, span) {
+  color: #8E8D88 !important;
+}
+
+:is(html[data-ag-theme-mode="dark"] body, body.dark) :is(#antigravity\.agentSidePanelInputBox #ag-live-metrics-pill:hover, #ag-live-metrics-pill:hover),
+:is(html[data-ag-theme-mode="dark"] body, body.dark) :is(#antigravity\.agentSidePanelInputBox #ag-live-metrics-pill:hover, #ag-live-metrics-pill:hover) :is(#ag-live-metrics-text, span) {
+  color: #B8B7B2 !important;
 }
 
 #ag-live-metrics-pill {
@@ -306,7 +358,7 @@ html[data-ag-preset] body[data-agy-theme].dark {
   justify-content: center !important;
 }
 
-/* 3.3 Subtle idle voice pill */
+/* 3.3 Subtle idle voice pill & high-contrast Send button (Light & Dark symmetric) */
 html:not([data-ag-theme-mode="dark"]) body:not(.dark) #antigravity\.agentSidePanelInputBox [data-testid="voice-live-pill"],
 html:not([data-ag-theme-mode="dark"]) body:not(.dark) [data-testid="voice-live-pill"] {
   background-color: #F4F4F2 !important;
@@ -321,7 +373,70 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) #antigravity\.agentSidePan
 
 html:not([data-ag-theme-mode="dark"]) body:not(.dark) #antigravity\.agentSidePanelInputBox [data-testid="voice-live-pill"] * {
   color: #52524E !important;
+}
+
+html:not([data-ag-theme-mode="dark"]) body:not(.dark) #antigravity\.agentSidePanelInputBox [data-testid="voice-live-pill"] svg {
+  fill: none !important;
+}
+
+html:not([data-ag-theme-mode="dark"]) body:not(.dark) #antigravity\.agentSidePanelInputBox [data-testid="voice-live-pill"] :is(path, rect, circle, polygon):not([fill="none"]) {
   fill: #52524E !important;
+}
+
+/* 夜间待机语音钮：低调深炭灰圆钮 (#383835) + 清晰浅灰波形 (#D8D7D2)，告别刺眼白球 */
+:is(html[data-ag-theme-mode="dark"] body, body.dark) #antigravity\.agentSidePanelInputBox [data-testid="voice-live-pill"],
+:is(html[data-ag-theme-mode="dark"] body, body.dark) [data-testid="voice-live-pill"] {
+  background-color: #383835 !important;
+  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+  box-shadow: none !important;
+  color: #D8D7D2 !important;
+}
+
+:is(html[data-ag-theme-mode="dark"] body, body.dark) #antigravity\.agentSidePanelInputBox [data-testid="voice-live-pill"]:hover {
+  background-color: #444440 !important;
+}
+
+:is(html[data-ag-theme-mode="dark"] body, body.dark) #antigravity\.agentSidePanelInputBox [data-testid="voice-live-pill"] * {
+  color: #D8D7D2 !important;
+}
+
+:is(html[data-ag-theme-mode="dark"] body, body.dark) #antigravity\.agentSidePanelInputBox [data-testid="voice-live-pill"] svg {
+  fill: none !important;
+}
+
+:is(html[data-ag-theme-mode="dark"] body, body.dark) #antigravity\.agentSidePanelInputBox [data-testid="voice-live-pill"] :is(path, rect, circle, polygon):not([fill="none"]) {
+  fill: #D8D7D2 !important;
+}
+
+/* 夜间发送按钮：暖白圆钮 (#ECECEA) + 浓黑箭头 (#191918)，高反差清晰锐利 */
+:is(html[data-ag-theme-mode="dark"] body, body.dark) #antigravity\.agentSidePanelInputBox :is(button[data-testid="send-button"], .agy-send-button),
+:is(html[data-ag-theme-mode="dark"] body, body.dark) :is(button[data-testid="send-button"], .agy-send-button) {
+  background-color: #ECECEA !important;
+  border: 1px solid #ECECEA !important;
+  box-shadow: none !important;
+  color: #191918 !important;
+}
+
+:is(html[data-ag-theme-mode="dark"] body, body.dark) #antigravity\.agentSidePanelInputBox :is(button[data-testid="send-button"], .agy-send-button):hover,
+:is(html[data-ag-theme-mode="dark"] body, body.dark) :is(button[data-testid="send-button"], .agy-send-button):hover {
+  background-color: #FFFFFF !important;
+  border-color: #FFFFFF !important;
+}
+
+:is(html[data-ag-theme-mode="dark"] body, body.dark) #antigravity\.agentSidePanelInputBox :is(button[data-testid="send-button"], .agy-send-button) * {
+  color: #191918 !important;
+}
+
+:is(html[data-ag-theme-mode="dark"] body, body.dark) #antigravity\.agentSidePanelInputBox :is(button[data-testid="send-button"], .agy-send-button) svg {
+  fill: none !important;
+}
+
+:is(html[data-ag-theme-mode="dark"] body, body.dark) #antigravity\.agentSidePanelInputBox :is(button[data-testid="send-button"], .agy-send-button) :is(path, rect, circle, polygon):not([fill="none"]) {
+  fill: #191918 !important;
+}
+
+:is(html[data-ag-theme-mode="dark"] body, body.dark) #antigravity\.agentSidePanelInputBox :is(button[data-testid="send-button"], .agy-send-button) :is(path, line, polyline)[stroke]:not([stroke="none"]) {
+  stroke: #191918 !important;
 }
 
 /* 3.4 Borderless filled user message bubbles */

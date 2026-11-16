@@ -13,5 +13,8 @@
     "customCss": true,
     "customJs": true
   },
+  "selectors": {
+    "excludeI18n": "[data-testid=\"permissions-selector-trigger\"]"
+  },
   "themeVars": {}
 }

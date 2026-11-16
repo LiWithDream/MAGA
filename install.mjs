@@ -254,7 +254,7 @@ function removeAgentsMdRule() {
 
 function installUserLayer() {
   fs.mkdirSync(THEME_USER_DIR, { recursive: true });
-  const targets = ['config.json', 'custom.css', 'custom.js'];
+  const targets = ['config.json', 'custom.css', 'custom.js', 'i18n.override.json'];
   if (!fs.existsSync(BACKUP_DIR)) {
     fs.mkdirSync(BACKUP_DIR, { recursive: true });
     for (const f of targets) {
@@ -331,7 +331,7 @@ async function cmdInstall() {
 }
 
 async function cmdUninstall() {
-  const targets = ['config.json', 'custom.css', 'custom.js'];
+  const targets = ['config.json', 'custom.css', 'custom.js', 'i18n.override.json'];
   const restored = [];
   if (fs.existsSync(BACKUP_DIR)) {
     for (const f of targets) {

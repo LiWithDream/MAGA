@@ -295,8 +295,15 @@ html[data-ag-preset] body[data-agy-theme].dark {
 }
 
 #ag-live-metrics-pill {
-  border-left: 1px solid rgba(0, 0, 0, 0.10) !important;
+  border-left: none !important;
   opacity: 1 !important;
+}
+
+#ag-live-metrics-pill:not([data-ag-row-mode="bottom"]) {
+  margin-left: auto !important;
+  margin-right: auto !important;
+  padding: 0 8px !important;
+  justify-content: center !important;
 }
 
 /* 3.3 Subtle idle voice pill */

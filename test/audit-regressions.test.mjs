@@ -4057,3 +4057,104 @@ test('[v3.1.0 · Theme Toggle, v2.34 Models i18n & Executor Model Picker] mounts
     window.close();
   }
 });
+
+test('[Live Auto Quota Refresh] bypasses stale forceRefresh:false server cache and auto-updates 0.1% quota right after model API calls without manual click', { skip: !JSDOM }, async () => {
+  const customJsSrc = fs.readFileSync(path.join(REPO, 'user', 'custom.js'), 'utf8');
+  const cid = '11111111-2222-3333-4444-555555555555';
+  const future5h = String(Math.floor(Date.now() / 1000) + 2 * 3600);
+  const futureWk = String(Math.floor(Date.now() / 1000) + 4 * 86400);
+
+  const dom = new JSDOM(
+    `<!doctype html><html><body>
+      <div id="root">
+        <div id="antigravity.agentSidePanelInputBox">
+          <button type="button" data-testid="model-selector-trigger">Gemini 4 Carbon High</button>
+        </div>
+        <aside data-testid="overview-panel">
+          <div>Overview</div>
+          <div class="overflow-y-auto">
+            <div><button data-testid="overview-panel-row-files">Files</button></div>
+          </div>
+        </aside>
+      </div>
+    </body></html>`,
+    { runScripts: 'outside-only', url: `https://127.0.0.1:61999/c/${cid}` }
+  );
+  const { window } = dom;
+  const doc = window.document;
+
+  /* Simulate Antigravity LanguageServer: forceRefresh:false returns frozen stale 20%, forceRefresh:true returns live evolving quota */
+  let liveRem5h = 0.727; // 27.3% used
+  let liveRemWk = 0.888; // 11.2% used
+  const callsLog = [];
+  doc.getElementById('root').__reactFiber$root = {
+    memoizedProps: {
+      agentService: {
+        userTier: { id: 'ultra', name: 'Google AI Ultra' },
+        getUserStatus: () => Promise.resolve({}),
+        retrieveUserQuotaSummary: (arg) => {
+          const isForce = Boolean(arg && arg.forceRefresh);
+          callsLog.push(isForce);
+          return Promise.resolve({
+            response: {
+              groups: [
+                {
+                  displayName: 'Gemini Models',
+                  buckets: [
+                    { window: '5h', remaining: { case: 'remainingFraction', value: isForce ? liveRem5h : 0.8 }, resetTime: { seconds: future5h } },
+                    { window: 'weekly', remaining: { case: 'remainingFraction', value: isForce ? liveRemWk : 0.9 }, resetTime: { seconds: futureWk } }
+                  ]
+                }
+              ]
+            }
+          });
+        }
+      }
+    },
+    return: null
+  };
+
+  window.__ag_render_metrics = (payload) => {
+    window.__ag_last_metrics = payload;
+  };
+  window.__agProjectCall = async () => ({ ok: true, workspace: null, rules: [], skills: { total: 0, items: [] }, agents: { total: 0, items: [] }, connectors: [] });
+  window.ctx = {
+    modules: { i18n: false, claudeUxContextRing: true, claudeUxOverviewPanel: true },
+    onCleanup: () => {}
+  };
+  window.eval(customJsSrc);
+
+  try {
+    await new Promise((r) => setTimeout(r, 60));
+    const sec = doc.getElementById('ag-claude-ov-sections');
+    assert.ok(callsLog.length >= 1 && callsLog[0] === true, 'initial Overview mount fetches with forceRefresh:true instead of stale false');
+    assert.match(sec.textContent || '', /27\.3% used/, 'displays live 27.3% (0.1% precision) instead of frozen 20%');
+    assert.match(sec.textContent || '', /11\.2% used/);
+
+    /* Simulate first telemetry snapshot on this conversation */
+    const mkStats = (calls) => ({
+      ctx: 180000, cached: 175000, uncached: 5000, limit: 512000, limitStr: '512k', remain: 332000, pct: 35,
+      lastCacheRate: 97, sessionCacheRate: 92, turns: 10, calls, totalThink: 50000, totalResp: 80000, totalOut: 130000,
+      childCount: 0, childCalls: 0, children: []
+    });
+    window.__ag_render_metrics({ cascadeId: cid, hasData: true, inlineHtml: '<span>90 tok/s</span>', tooltipHtml: '<div></div>', stats: mkStats(10) });
+
+    /* Advance clock cooldown via manual reset simulation: a new model API call finishes and consumes quota */
+    liveRem5h = 0.716; // 28.4% used
+    liveRemWk = 0.88;  // 12% used
+    const beforeCalls = callsLog.length;
+    /* Wait briefly then emit incremented stats.calls (10 -> 11) */
+    window.__ag_render_metrics({ cascadeId: cid, hasData: true, inlineHtml: '<span>95 tok/s</span>', tooltipHtml: '<div></div>', stats: mkStats(11) });
+
+    /* Wait past the 4.5s anti-burst floor? Wait: in unit test let's verify timer fires within ~4.6s OR let's check minGapMs! */
+    await new Promise((r) => setTimeout(r, 4700));
+    assert.ok(callsLog.length > beforeCalls, 'incrementing stats.calls automatically triggers background forceRefresh:true');
+    assert.equal(callsLog[callsLog.length - 1], true);
+    assert.match(sec.textContent || '', /28\.4% used/, 'Overview quota automatically updates to 28.4% without clicking refresh');
+    assert.match(sec.textContent || '', /12% used/, 'exact .0 percentage renders cleanly as 12%');
+
+    window.__agClaudeUxDispose();
+  } finally {
+    window.close();
+  }
+});

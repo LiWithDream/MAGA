@@ -1582,6 +1582,10 @@
   let cachedUserAccountKey = initialQuotaSnap ? String(initialQuotaSnap.accountKey || '') : '';
   let cachedQuotaGroups = initialQuotaSnap ? initialQuotaSnap.groups : null;
   let lastQuotaFetchTs = 0;
+  let lastForceQuotaFetchTs = 0;
+  let autoQuotaRefreshTimer = 0;
+  let lastQuotaUsageSig = '';
+  let wasOvPaneGenerating = false;
   let quotaFetchInFlight = null;
   let quotaHoldTimer = 0;
   let quotaWarmupDone = false;
@@ -2440,6 +2444,22 @@
       updateComposerRingVisuals();
       if (quotaPopoverOpen) renderQuotaPopoverBody();
       if (FEAT.overviewPanel) renderOverviewPanel(false);
+      if (payload && payload.hasData && payload.stats) {
+        const nextUsageSig = `${payload.cascadeId || ''}:${payload.stats.calls || 0}:${payload.stats.turns || 0}:${payload.stats.childCalls || 0}`;
+        const prevCid = lastQuotaUsageSig ? lastQuotaUsageSig.split(':')[0] : '';
+        const curCidSig = String(payload.cascadeId || '');
+        if (!lastQuotaUsageSig || prevCid !== curCidSig) {
+          lastQuotaUsageSig = nextUsageSig;
+          if ((isOverviewPanelVisible() || quotaPopoverOpen) && Date.now() - lastForceQuotaFetchTs >= 8000) {
+            scheduleAutoQuotaRefresh(250, 5000);
+          }
+        } else if (nextUsageSig !== lastQuotaUsageSig) {
+          lastQuotaUsageSig = nextUsageSig;
+          if (FEAT.overviewPanel || FEAT.contextRing) {
+            scheduleAutoQuotaRefresh(650, 4500);
+          }
+        }
+      }
       return ret;
     };
     wrappedRender.__agSlimWrapped = true;
@@ -2460,8 +2480,7 @@
       return null;
     }
     const inputBox = getActiveInputBox();
-    if (!inputBox) return cachedQuotaSvc;
-    const fk = Object.keys(inputBox).find((k) => k.startsWith('__reactFiber$'));
+    const fk = inputBox ? Object.keys(inputBox).find((k) => k.startsWith('__reactFiber$')) : null;
     let f = fk ? inputBox[fk] : null;
     const seen = new Set();
     let foundSvc = null;
@@ -2514,6 +2533,26 @@
       if (foundSvc && foundTierName) break;
     }
 
+    if (!foundSvc || !foundTierName) {
+      const root = document.getElementById('root');
+      const rfk = root && Object.keys(root).find((k) => k.startsWith('__reactContainer') || k.startsWith('__reactFiber'));
+      if (rfk && root[rfk]) {
+        const rq = [root[rfk]];
+        const rSeen = new Set();
+        while (rq.length && rSeen.size < 320 && (!foundSvc || !foundTierName)) {
+          const rf = rq.shift();
+          if (!rf || rSeen.has(rf)) continue;
+          rSeen.add(rf);
+          walkObj(rf.memoizedProps, 0);
+          for (let dep = rf.dependencies && rf.dependencies.firstContext; dep; dep = dep.next) {
+            walkObj(dep.memoizedValue, 0);
+          }
+          if (rf.child) rq.push(rf.child);
+          if (rf.sibling) rq.push(rf.sibling);
+        }
+      }
+    }
+
     if (foundSvc) {
       cachedQuotaSvc = foundSvc;
       lastQuotaSvcMissTs = 0;
@@ -2536,12 +2575,44 @@
   function invokeQuotaSummaryRpc(svc, forceRefresh) {
     const fn = svc && svc.retrieveUserQuotaSummary;
     if (typeof fn !== 'function') return Promise.resolve(null);
-    let wantsBool = false;
-    try {
-      wantsBool = fn.length === 1 && /forceRefresh/.test(Function.prototype.toString.call(fn));
-    } catch {}
+    let wantsBool = Boolean(
+      typeof svc.loadCodeAssist === 'function' || typeof svc.getUserAccountSettings === 'function'
+    );
+    if (!wantsBool && typeof svc.getUserStatus !== 'function') {
+      try {
+        const src = Function.prototype.toString.call(fn).trim();
+        wantsBool =
+          fn.length === 1 &&
+          !/\.forceRefresh\b/.test(src) &&
+          /^(?:async\s+)?(?:function\s*\w*\s*\(\s*forceRefresh\s*\)|(?:\(\s*)?forceRefresh(?:\s*\))?\s*=>)/.test(src);
+      } catch {}
+    }
     const arg = wantsBool ? Boolean(forceRefresh) : { forceRefresh: Boolean(forceRefresh) };
     return new Promise((resolve) => resolve(svc.retrieveUserQuotaSummary(arg)));
+  }
+
+  function isOverviewPanelVisible() {
+    if (!FEAT.overviewPanel) return false;
+    const panel = document.querySelector('[data-testid="overview-panel"]');
+    return Boolean(panel && !panel.hidden && panel.getAttribute('aria-hidden') !== 'true');
+  }
+
+  function scheduleAutoQuotaRefresh(delayMs = 650, minGapMs = 5000) {
+    if (disposed) return;
+    if (autoQuotaRefreshTimer) {
+      cancelLater(autoQuotaRefreshTimer);
+      autoQuotaRefreshTimer = 0;
+    }
+    const sinceLast = Date.now() - lastForceQuotaFetchTs;
+    const waitMs = Math.max(delayMs, lastForceQuotaFetchTs > 0 ? minGapMs - sinceLast : delayMs);
+    autoQuotaRefreshTimer = later(() => {
+      autoQuotaRefreshTimer = 0;
+      if (disposed) return;
+      if (typeof document.visibilityState === 'string' && document.visibilityState === 'hidden') return;
+      if (discoverQuotaService(false)) {
+        fetchQuotaSummary(true);
+      }
+    }, Math.max(60, waitMs));
   }
 
   function fetchQuotaSummary(forceRefresh = false) {
@@ -2559,6 +2630,7 @@
         const rawGroups = (res && res.response && res.response.groups) || (res && res.groups) || [];
         cachedQuotaGroups = rawGroups.filter((g) => g && Array.isArray(g.buckets) && g.buckets.length > 0);
         lastQuotaFetchTs = Date.now();
+        if (forceRefresh) lastForceQuotaFetchTs = lastQuotaFetchTs;
         persistQuotaSnapshot();
         if (quotaHoldTimer) {
           cancelLater(quotaHoldTimer);
@@ -2715,6 +2787,13 @@
     pop.style.bottom = `${bottom}px`;
   }
 
+  function formatQuotaUsedPctStr(val) {
+    const clamped = Math.max(0, Math.min(100, val));
+    if (clamped <= 0) return '0';
+    if (clamped >= 99.95) return '100';
+    return clamped.toFixed(1).replace(/\.0$/, '');
+  }
+
   function renderQuotaPopoverBody() {
     const pop = ensureQuotaPopover();
     const curCid = getActiveCascadeId();
@@ -2811,7 +2890,8 @@
               : typeof b.remainingFraction === 'number'
                 ? b.remainingFraction
                 : 1;
-          const usedPct = Math.max(0, Math.min(100, Math.round((1 - rem) * 100)));
+          const usedRaw = Math.max(0, Math.min(100, (1 - rem) * 100));
+          const usedPctStr = formatQuotaUsedPctStr(usedRaw);
           const win = String(b.window || '').trim().toLowerCase();
           const title =
             win === '5h'
@@ -2821,14 +2901,14 @@
                 : win === 'daily'
                   ? L(`每日 · ${grpShort}`, `Daily · ${grpShort}`)
                   : b.displayName || L('使用限额', 'Usage limit');
-          const resetTxt = formatResetLabel(b, usedPct);
-          const fillCol = barColorForPct(usedPct, 75, 90);
+          const resetTxt = formatResetLabel(b, usedRaw);
+          const fillCol = barColorForPct(usedRaw, 75, 90);
           return `<div class="ag-qp-item">
             <div class="ag-qp-row">
               <span class="ag-qp-title">${escapeHtml(title)}</span>
-              <span class="ag-qp-meta"><span class="ag-qp-reset">${escapeHtml(resetTxt)}</span><span class="ag-qp-pct">${usedPct}%</span></span>
+              <span class="ag-qp-meta"><span class="ag-qp-reset">${escapeHtml(resetTxt)}</span><span class="ag-qp-pct">${usedPctStr}%</span></span>
             </div>
-            <div class="ag-qp-track"><div class="ag-qp-fill" style="width:${usedPct}%;background:${fillCol}"></div></div>
+            <div class="ag-qp-track"><div class="ag-qp-fill" style="width:${usedRaw.toFixed(1)}%;background:${fillCol}"></div></div>
           </div>`;
         })
         .join('');
@@ -2866,7 +2946,7 @@
     quotaPopoverOpen = true;
     selectedQuotaGroupIdx = -1;
     discoverQuotaService(true);
-    const needForce = !cachedQuotaGroups || Date.now() - lastQuotaFetchTs > 5000;
+    const needForce = !cachedQuotaGroups || Date.now() - lastForceQuotaFetchTs > 5000;
     fetchQuotaSummary(needForce);
     const ring = document.getElementById('ag-claude-ctx-ring');
     if (ring) ring.setAttribute('data-open', 'true');
@@ -3005,8 +3085,8 @@
         )}" stroke-dashoffset="${RING_CIRC.toFixed(2)}"/>` +
         '</svg>';
       ring.addEventListener('pointerenter', () => {
-        if (!quotaPopoverOpen && (!cachedQuotaGroups || Date.now() - lastQuotaFetchTs > 12000)) {
-          fetchQuotaSummary(false);
+        if (!quotaPopoverOpen && (!cachedQuotaGroups || Date.now() - lastForceQuotaFetchTs > 10000)) {
+          fetchQuotaSummary(true);
         }
       });
       ring.addEventListener('click', (e) => {
@@ -3029,8 +3109,8 @@
     if (!quotaWarmupDone && discoverQuotaService(false)) {
       quotaWarmupDone = true;
       later(() => {
-        if (!disposed && FEAT.contextRing && (!cachedQuotaGroups || Date.now() - lastQuotaFetchTs > 15000)) {
-          fetchQuotaSummary(false);
+        if (!disposed && FEAT.contextRing && (!cachedQuotaGroups || Date.now() - lastForceQuotaFetchTs > 10000)) {
+          fetchQuotaSummary(true);
         }
       }, 120);
     }
@@ -13432,6 +13512,10 @@
     const stats = hasCtx ? rawM.stats : null;
     const compactStatus = getOverviewCompactStatus(curCid, force);
     const paneRunning = isPaneCurrentlyRunning();
+    if (wasOvPaneGenerating && !paneRunning) {
+      scheduleAutoQuotaRefresh(500, 3000);
+    }
+    wasOvPaneGenerating = paneRunning;
     const { preUsed, limitLabel, summaryLabel, summaryPct } = extractCompactLabels(latestCtxState, curCid);
 
     const groups = cachedQuotaGroups || [];
@@ -13656,6 +13740,8 @@
         });
       const primaryBuckets = sortBuckets(primaryGrp.buckets);
 
+      const fmtOvQuotaPct = formatQuotaUsedPctStr;
+
       const primaryHtml = primaryBuckets
         .map((b) => {
           const rem =
@@ -13664,15 +13750,17 @@
               : typeof b.remainingFraction === 'number'
                 ? b.remainingFraction
                 : 1;
-          const usedPct = Math.max(0, Math.min(100, Math.round((1 - rem) * 100)));
-          const remPct = 100 - usedPct;
+          const usedRaw = Math.max(0, Math.min(100, (1 - rem) * 100));
+          const usedPct = Math.round(usedRaw);
+          const usedPctStr = fmtOvQuotaPct(usedRaw);
+          const remPctStr = fmtOvQuotaPct(100 - usedRaw);
           const winTag = localizeQuotaWindowTag(b.window, b.displayName || '');
-          const col = ovQuotaUsedColor(usedPct);
-          const litCount = usedPct <= 0 ? 0 : Math.min(20, Math.max(1, Math.round(usedPct / 5)));
+          const col = ovQuotaUsedColor(usedRaw);
+          const litCount = usedRaw <= 0 ? 0 : Math.min(20, Math.max(1, Math.round(usedRaw / 5)));
           const segsHtml = Array.from({ length: 20 }, (_, i) =>
             `<span class="ag-ov-seg" style="background:${i < litCount ? col : 'var(--ag-ov-track)'}"></span>`
           ).join('');
-          const elapsedPct = computeWindowElapsedPct(b, usedPct);
+          const elapsedPct = computeWindowElapsedPct(b, usedRaw);
           const cursorHtml =
             elapsedPct !== null
               ? `<div class="ag-ov-time-track" title="${escapeHtml(L(`窗口时间已流逝 ${elapsedPct}%`, `Window elapsed ${elapsedPct}%`))}">
@@ -13680,14 +13768,14 @@
                   <span class="ag-ov-time-cursor" style="left:${elapsedPct}%"></span>
                 </div>`
               : '';
-          const resetTxt = formatResetLabel(b, usedPct);
-          return `<div class="ag-ov-quota-box" title="${escapeHtml(L(`已用 ${usedPct}% · 剩余 ${remPct}%`, `${usedPct}% used · ${remPct}% left`))}">
+          const resetTxt = formatResetLabel(b, usedRaw);
+          return `<div class="ag-ov-quota-box" title="${escapeHtml(L(`已用 ${usedPctStr}% · 剩余 ${remPctStr}%`, `${usedPctStr}% used · ${remPctStr}% left`))}">
             <div class="ag-ov-kv-row">
               <span class="ag-ov-row-left">
                 <i class="ag-ov-qdot" style="background:${col}"></i>
                 <span class="ag-ov-qtitle">${escapeHtml(pShort)} · ${escapeHtml(winTag)}</span>
               </span>
-              <span class="ag-ov-qpct">${usedPct}% ${L('已用', 'used')}</span>
+              <span class="ag-ov-qpct">${usedPctStr}% ${L('已用', 'used')}</span>
             </div>
             <div class="ag-ov-seg-bar">${segsHtml}</div>
             ${cursorHtml}
@@ -13707,15 +13795,16 @@
               : typeof b.remainingFraction === 'number'
                 ? b.remainingFraction
                 : 1;
-          const usedPct = Math.max(0, Math.min(100, Math.round((1 - rem) * 100)));
-          const remPct = 100 - usedPct;
+          const usedRaw = Math.max(0, Math.min(100, (1 - rem) * 100));
+          const usedPctStr = fmtOvQuotaPct(usedRaw);
+          const remPctStr = fmtOvQuotaPct(100 - usedRaw);
           const winTag = localizeQuotaWindowTag(b.window, b.displayName || '');
-          const col = ovQuotaUsedColor(usedPct);
-          otherRows.push(`<div class="ag-ov-other-pool-row" title="${escapeHtml(L(`已用 ${usedPct}% · 剩余 ${remPct}%`, `${usedPct}% used · ${remPct}% left`))}">
+          const col = ovQuotaUsedColor(usedRaw);
+          otherRows.push(`<div class="ag-ov-other-pool-row" title="${escapeHtml(L(`已用 ${usedPctStr}% · 剩余 ${remPctStr}%`, `${usedPctStr}% used · ${remPctStr}% left`))}">
             <span class="ag-ov-muted ag-ov-trunc">${escapeHtml(gShort)}${winTag ? ` · ${escapeHtml(winTag)}` : ''}</span>
             <span class="ag-ov-mini-meter-wrap">
-              <span class="ag-ov-mini-track"><span class="ag-ov-mini-fill" style="width:${usedPct}%;background:${col}"></span></span>
-              <span class="ag-ov-mini-pct">${usedPct}%</span>
+              <span class="ag-ov-mini-track"><span class="ag-ov-mini-fill" style="width:${usedRaw.toFixed(1)}%;background:${col}"></span></span>
+              <span class="ag-ov-mini-pct">${usedPctStr}%</span>
             </span>
           </div>`);
         }
@@ -13919,6 +14008,18 @@
     return /^(?:artifacts?|产物)$/i.test(txt);
   }
 
+  const OV_LIVE_POLL_MS = 12000;
+
+  function onQuotaVisibilityOrFocus() {
+    if (disposed) return;
+    if (typeof document.visibilityState === 'string' && document.visibilityState === 'hidden') return;
+    if ((isOverviewPanelVisible() || quotaPopoverOpen) && Date.now() - lastForceQuotaFetchTs >= 5000) {
+      scheduleAutoQuotaRefresh(150, 4000);
+    }
+  }
+  window.addEventListener('focus', onQuotaVisibilityOrFocus);
+  document.addEventListener('visibilitychange', onQuotaVisibilityOrFocus);
+
   function stopOverviewMinuteTicker() {
     if (ovMinuteTickerId) {
       clearInterval(ovMinuteTickerId);
@@ -13929,12 +14030,18 @@
   function ensureOverviewMinuteTicker() {
     if (ovMinuteTickerId || disposed) return;
     ovMinuteTickerId = setInterval(() => {
-      if (disposed || !FEAT.overviewPanel || !document.querySelector('[data-testid="overview-panel"]')) {
+      if (disposed || !FEAT.overviewPanel || !isOverviewPanelVisible()) {
         stopOverviewMinuteTicker();
         return;
       }
+      if (
+        (typeof document.visibilityState !== 'string' || document.visibilityState !== 'hidden') &&
+        Date.now() - lastForceQuotaFetchTs >= OV_LIVE_POLL_MS
+      ) {
+        if (discoverQuotaService(false)) fetchQuotaSummary(true);
+      }
       renderOverviewPanel(false);
-    }, 30000);
+    }, OV_LIVE_POLL_MS);
     if (ovMinuteTickerId && typeof ovMinuteTickerId.unref === 'function') {
       ovMinuteTickerId.unref();
     }
@@ -13993,9 +14100,9 @@
     ensureOverviewMinuteTicker();
 
     const now = Date.now();
-    if ((!cachedQuotaGroups || now - lastQuotaFetchTs > 30000) && now - ovLastQuotaAutoTryTs > 15000) {
+    if ((!cachedQuotaGroups || now - lastForceQuotaFetchTs >= OV_LIVE_POLL_MS) && now - ovLastQuotaAutoTryTs > 4000) {
       ovLastQuotaAutoTryTs = now;
-      if (discoverQuotaService(false)) fetchQuotaSummary(false);
+      if (discoverQuotaService(false)) fetchQuotaSummary(true);
     }
 
     renderOverviewPanel(force);
@@ -14443,6 +14550,12 @@
     window.removeEventListener('focus', onWindowSidebarEvent);
     window.removeEventListener('blur', onWindowSidebarEvent);
     window.removeEventListener('popstate', onWindowSidebarEvent);
+    window.removeEventListener('focus', onQuotaVisibilityOrFocus);
+    document.removeEventListener('visibilitychange', onQuotaVisibilityOrFocus);
+    if (autoQuotaRefreshTimer) {
+      cancelLater(autoQuotaRefreshTimer);
+      autoQuotaRefreshTimer = 0;
+    }
     if (sidebarStoreUnsub) {
       sidebarStoreUnsub();
       sidebarStoreUnsub = null;

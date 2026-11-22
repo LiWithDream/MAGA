@@ -3175,7 +3175,8 @@
     '<svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M6 3.5L10.5 8L6 12.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
   let modelPopoverOpen = false;
-  let activeModelSubmenu = null; // null | 'effort' | 'executor' | 'more'
+  let activeModelSubmenu = null; // null | 'effort' | 'more'
+  let activeModelTrimenu = null; // null | { kind: 'planner', familyName } | { kind: 'executor' }
   let activeModelTriggerBtn = null;
   let lastPreferredEffort = 'Medium';
   let currentCatalogSnapshot = null;
@@ -3183,7 +3184,8 @@
   let prefStoreUnsub = null;
   let fallbackExecutorModelVal = 0;
   let cachedExecutorRoleBaseIds = null;
-  let executorRolesFetchTried = false;
+  let executorRolesFetchInFlight = false;
+  let executorRolesLastTryTs = 0;
 
   function escapeHtml(str) {
     return String(str || '')
@@ -3853,51 +3855,83 @@
     return null;
   }
 
+  function extractLsClientCandidate(cand) {
+    if (!cand || typeof cand !== 'object') return null;
+    if (typeof cand.getMendelFlags === 'function') return cand;
+    if (cand.lsClient && typeof cand.lsClient.getMendelFlags === 'function') return cand.lsClient;
+    if (cand.client && typeof cand.client.getMendelFlags === 'function') return cand.client;
+    return null;
+  }
+
   function ensureOrchestratorRolesLoaded() {
-    if (executorRolesFetchTried) return;
-    const root = document.getElementById('root');
+    if (
+      typeof window === 'object' &&
+      window &&
+      Array.isArray(window.__ag_test_executor_roles)
+    ) {
+      cachedExecutorRoleBaseIds = window.__ag_test_executor_roles.filter((s) => typeof s === 'string');
+      return;
+    }
+    if (Array.isArray(cachedExecutorRoleBaseIds)) return;
+    const now = Date.now();
+    if (executorRolesFetchInFlight || now - executorRolesLastTryTs < 3000) return;
+
+    const root = document.getElementById('root') || (document.body && document.body.firstElementChild);
     const fk = root && Object.keys(root).find((k) => k.startsWith('__reactContainer') || k.startsWith('__reactFiber'));
     if (!fk) return;
     const queue = [root[fk]];
     const seen = new Set();
     let lsClient = null;
-    while (queue.length && seen.size < 500 && !lsClient) {
+    while (queue.length && seen.size < 600 && !lsClient) {
       const f = queue.shift();
       if (!f || seen.has(f)) continue;
       seen.add(f);
-      for (let dep = f.dependencies && f.dependencies.firstContext; dep; dep = dep.next) {
-        const mv = dep.memoizedValue;
-        if (mv && mv.lsClient && typeof mv.lsClient.getMendelFlags === 'function') {
-          lsClient = mv.lsClient;
-          break;
+      const mp = f.memoizedProps;
+      lsClient = extractLsClientCandidate(mp) || extractLsClientCandidate(mp && mp.value);
+      if (!lsClient) {
+        for (let dep = f.dependencies && f.dependencies.firstContext; dep; dep = dep.next) {
+          lsClient = extractLsClientCandidate(dep.memoizedValue);
+          if (lsClient) break;
         }
-        if (mv && mv.client && typeof mv.client.getMendelFlags === 'function') {
-          lsClient = mv.client;
-          break;
+      }
+      if (!lsClient && f.memoizedState) {
+        let s = f.memoizedState;
+        for (let k = 0; k < 15 && s && !lsClient; k++, s = s.next) {
+          lsClient = extractLsClientCandidate(s.memoizedState);
         }
       }
       if (f.child) queue.push(f.child);
       if (f.sibling) queue.push(f.sibling);
     }
     if (!lsClient) return;
-    executorRolesFetchTried = true;
+    executorRolesLastTryTs = now;
+    executorRolesFetchInFlight = true;
     try {
       Promise.resolve(lsClient.getMendelFlags({}))
         .then((resp) => {
+          executorRolesFetchInFlight = false;
           if (disposed) return;
           const exps = (resp && resp.experimentConfig && resp.experimentConfig.experiments) || [];
           const hit = Array.isArray(exps) ? exps.find((x) => x && x.keyString === 'orchestrator-model-roles') : null;
           const rawStr = hit && hit.payload && hit.payload.value;
           if (typeof rawStr === 'string' && rawStr) {
             const parsed = JSON.parse(rawStr);
-            if (parsed && Array.isArray(parsed.executors) && parsed.executors.every((s) => typeof s === 'string') && parsed.executors.length) {
-              cachedExecutorRoleBaseIds = parsed.executors;
+            if (
+              parsed &&
+              Array.isArray(parsed.executors) &&
+              parsed.executors.every((s) => typeof s === 'string')
+            ) {
+              cachedExecutorRoleBaseIds = parsed.executors.slice();
               if (modelPopoverOpen) renderModelPopovers();
             }
           }
         })
-        .catch(() => {});
-    } catch {}
+        .catch(() => {
+          executorRolesFetchInFlight = false;
+        });
+    } catch {
+      executorRolesFetchInFlight = false;
+    }
   }
 
   function readExecutorModelPrefValue() {
@@ -3917,8 +3951,9 @@
     return fallbackExecutorModelVal;
   }
 
-  function applyExecutorModelPrefValue(modelVal) {
-    const nextVal = Number(modelVal) > 0 ? Number(modelVal) : 0;
+  function applyExecutorModelPrefValue(modelVal, defaultVal) {
+    const rawNext = Number(modelVal) > 0 ? Number(modelVal) : 0;
+    const nextVal = defaultVal && rawNext === Number(defaultVal) ? 0 : rawNext;
     fallbackExecutorModelVal = nextVal;
     const ps = discoverPrefStore();
     if (ps) {
@@ -3926,21 +3961,6 @@
         ps.getState().setPrefValue('orchestratorExecutorModel', nextVal);
       } catch {}
     }
-  }
-
-  function executorFamilyRank(baseName, baseModelId) {
-    if (Array.isArray(cachedExecutorRoleBaseIds) && cachedExecutorRoleBaseIds.length > 0 && baseModelId) {
-      const idx = cachedExecutorRoleBaseIds.indexOf(baseModelId);
-      if (idx >= 0) return idx;
-    }
-    if (/hydrogen/i.test(baseName)) return 0;
-    if (/flash/i.test(baseName)) return 1;
-    if (/sonnet/i.test(baseName)) return 2;
-    if (/argon/i.test(baseName)) return 3;
-    if (/neon/i.test(baseName)) return 4;
-    if (/carbon/i.test(baseName)) return 5;
-    if (/opus/i.test(baseName)) return 6;
-    return 10;
   }
 
   function formatShortExecutorLabel(baseName, effort) {
@@ -3955,41 +3975,38 @@
 
   function buildExecutorCatalog(api) {
     ensureOrchestratorRolesLoaded();
+    const empty = {
+      families: [],
+      activeFamily: null,
+      activeVariant: null,
+      defaultFamily: null,
+      defaultVariant: null,
+      isDefault: true,
+      shortSummary: '',
+      defaultShortLabel: ''
+    };
+    /* Strictly mirror official Antigravity oW() / LSb(): never expose non-whitelisted executor models */
+    if (!Array.isArray(cachedExecutorRoleBaseIds) || cachedExecutorRoleBaseIds.length === 0) {
+      return empty;
+    }
     const rawOpts = ((api && api.modelOptions) || []).filter(
       (o) => o && !o.disabled && !o.isCustom && o.value !== undefined && o.value !== 0 && o.label && !isOrchestratorModelOpt(o)
     );
-    if (!rawOpts.length) {
-      return {
-        families: [],
-        activeFamily: null,
-        activeVariant: null,
-        defaultFamily: null,
-        defaultVariant: null,
-        isDefault: true,
-        shortSummary: '',
-        defaultShortLabel: ''
-      };
-    }
-    const roleSet =
-      Array.isArray(cachedExecutorRoleBaseIds) && cachedExecutorRoleBaseIds.length > 0
-        ? new Set(cachedExecutorRoleBaseIds)
-        : null;
+    if (!rawOpts.length) return empty;
+    const roleOrder = cachedExecutorRoleBaseIds;
+    const roleSet = new Set(roleOrder);
     const stripEffortId = (id) => String(id || '').replace(/-(low|medium|high|xhigh|max)$/i, '');
-    let candidateOpts = roleSet
-      ? rawOpts.filter((o) => o.modelId && roleSet.has(stripEffortId(o.modelId)))
-      : rawOpts;
-    if (!candidateOpts.length) candidateOpts = rawOpts;
+    const candidateOpts = rawOpts.filter((o) => o.modelId && roleSet.has(stripEffortId(o.modelId)));
+    if (!candidateOpts.length) return empty;
 
     const famMap = new Map();
     for (const opt of candidateOpts) {
       const parsed = parseModelLabelEffort(opt.label);
-      const baseId = opt.modelId ? stripEffortId(opt.modelId) : '';
-      let fam = famMap.get(parsed.baseName);
+      const baseId = stripEffortId(opt.modelId);
+      let fam = famMap.get(baseId);
       if (!fam) {
         fam = { baseName: parsed.baseName, baseId, variants: [] };
-        famMap.set(parsed.baseName, fam);
-      } else if (!fam.baseId && baseId) {
-        fam.baseId = baseId;
+        famMap.set(baseId, fam);
       }
       fam.variants.push({ effort: parsed.effort, opt });
     }
@@ -3997,7 +4014,7 @@
     for (const fam of families) {
       sortFamilyVariants(fam.variants);
     }
-    families.sort((a, b) => executorFamilyRank(a.baseName, a.baseId) - executorFamilyRank(b.baseName, b.baseId));
+    families.sort((a, b) => roleOrder.indexOf(a.baseId) - roleOrder.indexOf(b.baseId));
 
     const defaultFamily = families[0] || null;
     const defaultVariant =
@@ -4015,7 +4032,7 @@
           if (v.opt && v.opt.value === prefVal) {
             activeFamily = fam;
             activeVariant = v;
-            isDefault = false;
+            isDefault = Boolean(defaultVariant && defaultVariant.opt && defaultVariant.opt.value === prefVal);
             break;
           }
         }
@@ -4058,6 +4075,7 @@
         const nextSub = kind === 'none' ? null : kind;
         if (activeModelSubmenu !== nextSub) {
           activeModelSubmenu = nextSub;
+          activeModelTrimenu = null;
           renderModelPopovers();
         }
       });
@@ -4081,6 +4099,7 @@
           if (subTrigger.getAttribute('data-disabled') === 'true') return;
           const kind = subTrigger.getAttribute('data-ag-cm-subtrigger');
           activeModelSubmenu = activeModelSubmenu === kind ? null : kind;
+          activeModelTrimenu = null;
           renderModelPopovers();
           return;
         }
@@ -4114,6 +4133,28 @@
       subPop.id = 'ag-claude-model-subpop';
       subPop.setAttribute('data-ag-i18n-ignore', '1');
       subPop.setAttribute('data-open', 'false');
+      subPop.addEventListener('mouseover', (e) => {
+        const row = e.target.closest('[data-ag-cm-tri-hover]');
+        if (!row) return;
+        const kind = row.getAttribute('data-ag-cm-tri-hover');
+        let nextTri = null;
+        if (kind === 'executor') {
+          nextTri = { kind: 'executor' };
+        } else if (kind === 'planner') {
+          const familyName = row.getAttribute('data-ag-cm-tri-family') || '';
+          if (familyName) nextTri = { kind: 'planner', familyName };
+        }
+        const same =
+          (activeModelTrimenu === null && nextTri === null) ||
+          (activeModelTrimenu &&
+            nextTri &&
+            activeModelTrimenu.kind === nextTri.kind &&
+            activeModelTrimenu.familyName === nextTri.familyName);
+        if (!same) {
+          activeModelTrimenu = nextTri;
+          renderModelPopovers();
+        }
+      });
       subPop.addEventListener('click', (e) => {
         e.stopPropagation();
         const effBtn = e.target.closest('[data-ag-cm-effort]');
@@ -4133,6 +4174,16 @@
           closeClaudeModelPopover();
           return;
         }
+        const triTrig = e.target.closest('[data-ag-cm-tritrigger]');
+        if (triTrig) {
+          const kind = triTrig.getAttribute('data-ag-cm-tritrigger');
+          if (kind === 'executor') {
+            activeModelTrimenu =
+              activeModelTrimenu && activeModelTrimenu.kind === 'executor' ? null : { kind: 'executor' };
+            renderModelPopovers();
+          }
+          return;
+        }
         const moreBtn = e.target.closest('[data-ag-cm-more-family]');
         if (moreBtn) {
           const baseName = moreBtn.getAttribute('data-ag-cm-more-family');
@@ -4146,11 +4197,43 @@
           closeClaudeModelPopover();
           return;
         }
+      });
+      document.body.appendChild(subPop);
+    }
+
+    let triPop = document.getElementById('ag-claude-model-tripop');
+    if (!triPop) {
+      triPop = document.createElement('div');
+      triPop.id = 'ag-claude-model-tripop';
+      triPop.setAttribute('data-ag-i18n-ignore', '1');
+      triPop.setAttribute('data-open', 'false');
+      triPop.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const orchEffBtn = e.target.closest('[data-ag-cm-orch-effort]');
+        if (orchEffBtn) {
+          const famName = orchEffBtn.getAttribute('data-ag-cm-orch-family');
+          const eff = orchEffBtn.getAttribute('data-ag-cm-orch-effort');
+          const api = discoverModelSelectorApi(activeModelTriggerBtn);
+          if (api && famName && eff) {
+            const cat = buildModelCatalog(api);
+            const entry = cat.moreFamilies.find((x) => x.group === 'orch' && x.fam.baseName === famName);
+            const targetVar = entry ? entry.fam.variants.find((v) => v.effort === eff) : null;
+            if (targetVar && targetVar.opt) {
+              lastPreferredEffort = eff;
+              applyModelSelectionOption(api, targetVar.opt, targetVar.plannerOpt);
+            }
+          }
+          closeClaudeModelPopover();
+          return;
+        }
         const execValBtn = e.target.closest('[data-ag-cm-exec-val]');
         if (execValBtn) {
           const val = Number(execValBtn.getAttribute('data-ag-cm-exec-val')) || 0;
-          applyExecutorModelPrefValue(val);
-          closeClaudeModelPopover();
+          const api = discoverModelSelectorApi(activeModelTriggerBtn);
+          const execCat = api ? buildExecutorCatalog(api) : null;
+          const defVal = execCat && execCat.defaultVariant && execCat.defaultVariant.opt ? execCat.defaultVariant.opt.value : 0;
+          applyExecutorModelPrefValue(val, defVal);
+          renderModelPopovers();
           return;
         }
         const execFamBtn = e.target.closest('[data-ag-cm-exec-family]');
@@ -4164,24 +4247,26 @@
               const curEff = execCat.activeVariant && execCat.activeVariant.effort;
               const chosen =
                 (curEff && fam.variants.find((v) => v.effort === curEff)) || fam.variants[fam.variants.length - 1];
+              const defVal = execCat.defaultVariant && execCat.defaultVariant.opt ? execCat.defaultVariant.opt.value : 0;
               if (chosen && chosen.opt && chosen.opt.value !== undefined) {
-                applyExecutorModelPrefValue(chosen.opt.value);
+                applyExecutorModelPrefValue(chosen.opt.value, defVal);
+                renderModelPopovers();
               }
             }
           }
-          closeClaudeModelPopover();
         }
       });
-      document.body.appendChild(subPop);
+      document.body.appendChild(triPop);
     }
 
-    return { mainPop, subPop };
+    return { mainPop, subPop, triPop };
   }
 
   function positionModelPopovers() {
     const btn = findModelTriggerBtn();
     const mainPop = document.getElementById('ag-claude-model-popover');
     const subPop = document.getElementById('ag-claude-model-subpop');
+    const triPop = document.getElementById('ag-claude-model-tripop');
     if (!btn || !mainPop) return;
 
     const r = btn.getBoundingClientRect();
@@ -4204,7 +4289,7 @@
 
     if (subPop && subPop.getAttribute('data-open') === 'true') {
       const mr = mainPop.getBoundingClientRect();
-      const subW = 272;
+      const subW = 278;
       let subLeft = Math.round(mr.right + 6);
       if (subLeft + subW > window.innerWidth - 10) {
         subLeft = Math.max(10, Math.round(mr.left - subW - 6));
@@ -4217,13 +4302,44 @@
         subPop.style.top = 'auto';
         subPop.style.bottom = mainPop.style.bottom;
       }
+
+      if (triPop && triPop.getAttribute('data-open') === 'true') {
+        const sr = subPop.getBoundingClientRect();
+        const isExec = triPop.getAttribute('data-tri-kind') === 'executor';
+        const triW = isExec ? 264 : 232;
+        const subOnRight = sr.left >= mr.left;
+        let triLeft = subOnRight ? Math.round(sr.right + 6) : Math.round(sr.left - triW - 6);
+        if (triLeft + triW > window.innerWidth - 10) {
+          triLeft = Math.max(10, Math.round(sr.left - triW - 6));
+        }
+        if (triLeft < 10) {
+          triLeft = Math.min(window.innerWidth - triW - 10, Math.round(sr.right + 6));
+        }
+        triPop.style.left = `${Math.max(10, triLeft)}px`;
+
+        const activeSubRow = subPop.querySelector('[data-active-sub="true"]');
+        const triH = Math.max(triPop.offsetHeight || 0, isExec ? 190 : 170);
+        if (activeSubRow) {
+          const ar = activeSubRow.getBoundingClientRect();
+          const idealTop = Math.round(ar.top - 8);
+          const clampedTop = Math.max(12, Math.min(idealTop, window.innerHeight - triH - 12));
+          triPop.style.top = `${clampedTop}px`;
+          triPop.style.bottom = 'auto';
+        } else if (openBelow) {
+          triPop.style.top = subPop.style.top;
+          triPop.style.bottom = 'auto';
+        } else {
+          triPop.style.top = 'auto';
+          triPop.style.bottom = subPop.style.bottom;
+        }
+      }
     }
   }
 
   function renderModelPopoversRaw() {
     const api = discoverModelSelectorApi(activeModelTriggerBtn);
     if (!api) return;
-    const { mainPop, subPop } = ensureModelPopovers();
+    const { mainPop, subPop, triPop } = ensureModelPopovers();
     const cat = buildModelCatalog(api);
     currentCatalogSnapshot = cat;
 
@@ -4273,18 +4389,6 @@
 
     const effSubActive = activeModelSubmenu === 'effort' && hasAdjustableEffort ? ' data-active-sub="true"' : '';
     const effDisabled = hasAdjustableEffort ? '' : ' data-disabled="true"';
-    const execCat = buildExecutorCatalog(api);
-    const hasExecOptions = execCat.families.length > 0;
-    const execSubActive = activeModelSubmenu === 'executor' && hasExecOptions ? ' data-active-sub="true"' : '';
-    const execRowHtml = hasExecOptions
-      ? `<button type="button" class="ag-cm-row" data-ag-cm-hover="executor" data-ag-cm-subtrigger="executor"${execSubActive}>
-        <span style="display:inline-flex;align-items:center;gap:6px;">
-          <span>${L('执行模型', 'Executor model')}</span>
-          ${!execCat.isDefault ? '<span class="ag-cm-dot"></span>' : ''}
-        </span>
-        <span class="ag-cm-right"><span>${escapeHtml(execCat.shortSummary)}</span>${SVG_CM_CHEVRON}</span>
-      </button>`
-      : '';
     const moreSubActive = activeModelSubmenu === 'more' ? ' data-active-sub="true"' : '';
 
     mainPop.innerHTML = `
@@ -4299,7 +4403,6 @@
           hasAdjustableEffort ? SVG_CM_CHEVRON : ''
         }</span>
       </button>
-      ${execRowHtml}
       <button type="button" class="ag-cm-row" data-ag-cm-hover="more" data-ag-cm-subtrigger="more"${moreSubActive}>
         <span style="display:inline-flex;align-items:center;gap:6px;">
           <span>${L('更多模型', 'More models')}</span>
@@ -4331,69 +4434,162 @@
           })
           .join('');
       subPop.setAttribute('data-open', 'true');
-    } else if (activeModelSubmenu === 'executor' && hasExecOptions) {
-      const execRowsHtml = execCat.families
-        .map((fam) => {
-          const isFamActive = Boolean(execCat.activeFamily && execCat.activeFamily.baseName === fam.baseName);
-          const pillsHtml =
-            fam.variants.length > 1
-              ? `<div class="ag-cm-exec-pills">${fam.variants
-                  .map((v) => {
-                    const isVarOn = Boolean(
-                      isFamActive && execCat.activeVariant && execCat.activeVariant.opt.value === v.opt.value
-                    );
-                    const lbl = displayEffortLabel(v.effort) || v.opt.label;
-                    return `<button type="button" class="ag-cm-exec-pill" data-ag-cm-exec-val="${escapeHtml(
-                      String(v.opt.value)
-                    )}" data-active="${isVarOn ? 'true' : 'false'}">${escapeHtml(lbl)}</button>`;
-                  })
-                  .join('')}</div>`
-              : '';
-          return `<div class="ag-cm-exec-item">
-            <button type="button" class="ag-cm-row ag-cm-exec-row" data-ag-cm-exec-family="${escapeHtml(fam.baseName)}">
-              <span class="ag-cm-exec-name">${escapeHtml(fam.baseName)}</span>
-              ${isFamActive ? SVG_CM_CHECK : ''}
-            </button>
-            ${pillsHtml}
-          </div>`;
-        })
-        .join('');
-      const resetHtml = !execCat.isDefault
-        ? `<div class="ag-cm-divider"></div>
-           <button type="button" class="ag-cm-row" style="min-height:32px;font-size:13px;" data-ag-cm-exec-val="0">
-             <span>${L('恢复默认执行模型', 'Reset to default')}</span>
-             <span class="ag-cm-key">${escapeHtml(execCat.defaultShortLabel)}</span>
-           </button>`
-        : '';
-      subPop.innerHTML =
-        `<div class="ag-cm-sec-hdr">${L('执行模型 · 编排子任务', 'Executor model · Subtasks')}</div>` +
-        `<div class="ag-cm-sub-scroll">${execRowsHtml}</div>` +
-        resetHtml;
-      subPop.setAttribute('data-open', 'true');
+      triPop.setAttribute('data-open', 'false');
     } else if (activeModelSubmenu === 'more' && cat.moreFamilies.length > 0) {
-      let lastGrp = '';
-      subPop.innerHTML = cat.moreFamilies
-        .map(({ group, fam }) => {
-          let hdr = '';
-          if (group !== lastGrp) {
-            const groupLabel = group === 'orch' ? L('多智能体编排', 'Orchestrators') : L('其他模型', 'Other models');
-            hdr = `${lastGrp ? '<div class="ag-cm-divider"></div>' : ''}<div class="ag-cm-sec-hdr">${escapeHtml(
-              groupLabel
-            )}</div>`;
-            lastGrp = group;
-          }
-          const on = Boolean(cat.activeFamily && cat.activeFamily.baseName === fam.baseName);
-          return `${hdr}<button type="button" class="ag-cm-row" style="min-height:34px;font-size:13.5px;" data-ag-cm-more-family="${escapeHtml(
-            fam.baseName
-          )}">
-            <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(fam.baseName)}</span>
-            ${on ? SVG_CM_CHECK : ''}
-          </button>`;
-        })
-        .join('');
+      const orchEntries = cat.moreFamilies.filter((x) => x.group === 'orch');
+      const otherEntries = cat.moreFamilies.filter((x) => x.group !== 'orch');
+      const execCat = orchEntries.length > 0 ? buildExecutorCatalog(api) : null;
+      const hasExecRow = Boolean(execCat && execCat.families.length > 0);
+      const isExecTriActive = Boolean(activeModelTrimenu && activeModelTrimenu.kind === 'executor' && hasExecRow);
+
+      let subHtml = '';
+      if (orchEntries.length > 0) {
+        subHtml += `<div class="ag-cm-sec-hdr">${escapeHtml(L('多智能体编排', 'Orchestrators'))}</div>`;
+        subHtml += orchEntries
+          .map(({ fam }) => {
+            const on = Boolean(cat.activeFamily && cat.activeFamily.baseName === fam.baseName);
+            const multiEff = fam.variants.filter((v) => Boolean(v.effort));
+            const hasMulti = multiEff.length > 1;
+            const triOn = Boolean(
+              hasMulti &&
+                activeModelTrimenu &&
+                activeModelTrimenu.kind === 'planner' &&
+                activeModelTrimenu.familyName === fam.baseName
+            );
+            const activeEffText =
+              on && cat.activeVariant && cat.activeVariant.effort
+                ? `<span class="ag-cm-orch-eff">${escapeHtml(displayEffortLabel(cat.activeVariant.effort))}</span>`
+                : '';
+            const rightHtml = hasMulti
+              ? `<span class="ag-cm-right">${activeEffText}${SVG_CM_CHEVRON}</span>`
+              : on
+                ? SVG_CM_CHECK
+                : '';
+            return `<button type="button" class="ag-cm-row" style="min-height:34px;font-size:13.5px;" data-ag-cm-more-family="${escapeHtml(
+              fam.baseName
+            )}" data-ag-cm-tri-hover="${hasMulti ? 'planner' : 'none'}" data-ag-cm-tri-family="${escapeHtml(
+              fam.baseName
+            )}"${triOn ? ' data-active-sub="true"' : ''}>
+              <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(fam.baseName)}</span>
+              ${rightHtml}
+            </button>`;
+          })
+          .join('');
+        if (hasExecRow) {
+          subHtml += `<div class="ag-cm-sub-divider"></div>
+            <button type="button" class="ag-cm-row ag-cm-sub-exec-row" data-ag-cm-tri-hover="executor" data-ag-cm-tritrigger="executor"${
+              isExecTriActive ? ' data-active-sub="true"' : ''
+            }>
+              <span class="ag-cm-exec-label">
+                <span>${L('执行模型', 'Executor model')}</span>
+                ${!execCat.isDefault ? '<span class="ag-cm-dot"></span>' : ''}
+              </span>
+              <span class="ag-cm-right ag-cm-exec-summary">
+                <span>${escapeHtml(execCat.shortSummary)}</span>
+                ${SVG_CM_CHEVRON}
+              </span>
+            </button>`;
+        }
+      }
+
+      if (otherEntries.length > 0) {
+        subHtml += `${orchEntries.length > 0 ? '<div class="ag-cm-divider"></div>' : ''}<div class="ag-cm-sec-hdr">${escapeHtml(
+          L('其他模型', 'Other models')
+        )}</div>`;
+        subHtml += otherEntries
+          .map(({ fam }) => {
+            const on = Boolean(cat.activeFamily && cat.activeFamily.baseName === fam.baseName);
+            return `<button type="button" class="ag-cm-row" style="min-height:34px;font-size:13.5px;" data-ag-cm-more-family="${escapeHtml(
+              fam.baseName
+            )}" data-ag-cm-tri-hover="none">
+              <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(fam.baseName)}</span>
+              ${on ? SVG_CM_CHECK : ''}
+            </button>`;
+          })
+          .join('');
+      }
+
+      subPop.innerHTML = subHtml;
       subPop.setAttribute('data-open', 'true');
+
+      /* Level 3 popover: either Orchestrator planner thinking effort OR official whitelisted Executor picker */
+      let triOpen = false;
+      if (activeModelTrimenu && activeModelTrimenu.kind === 'planner' && activeModelTrimenu.familyName) {
+        const entry = orchEntries.find((x) => x.fam.baseName === activeModelTrimenu.familyName);
+        const effs = entry ? entry.fam.variants.filter((v) => Boolean(v.effort)) : [];
+        if (entry && effs.length > 1) {
+          const shortTitle = entry.fam.baseName.replace(/^Orchestrator\s*·\s*/i, '').trim() || entry.fam.baseName;
+          const isActiveFam = Boolean(cat.activeFamily && cat.activeFamily.baseName === entry.fam.baseName);
+          triPop.setAttribute('data-tri-kind', 'planner');
+          triPop.innerHTML =
+            `<div class="ag-cm-sec-hdr">${L('主模型强度', 'Planner effort')} · ${escapeHtml(shortTitle)}</div>` +
+            effs
+              .map((v) => {
+                const on = Boolean(isActiveFam && cat.activeVariant && cat.activeVariant.effort === v.effort);
+                const desc = displayEffortDesc(v.effort);
+                const label = displayEffortLabel(v.effort);
+                return `<button type="button" class="ag-cm-row" data-ag-cm-orch-family="${escapeHtml(
+                  entry.fam.baseName
+                )}" data-ag-cm-orch-effort="${escapeHtml(v.effort)}">
+                  <span>
+                    <span style="display:block;line-height:1.25;">${escapeHtml(label)}</span>
+                    ${desc ? `<span class="ag-cm-sub-desc" style="display:block;">${escapeHtml(desc)}</span>` : ''}
+                  </span>
+                  ${on ? SVG_CM_CHECK : ''}
+                </button>`;
+              })
+              .join('');
+          triPop.setAttribute('data-open', 'true');
+          triOpen = true;
+        }
+      } else if (isExecTriActive && execCat) {
+        const execRowsHtml = execCat.families
+          .map((fam) => {
+            const isFamActive = Boolean(execCat.activeFamily && execCat.activeFamily.baseName === fam.baseName);
+            const pillsHtml =
+              fam.variants.length > 1
+                ? `<div class="ag-cm-exec-pills">${fam.variants
+                    .map((v) => {
+                      const isVarOn = Boolean(
+                        isFamActive && execCat.activeVariant && execCat.activeVariant.opt.value === v.opt.value
+                      );
+                      const lbl = displayEffortLabel(v.effort) || v.opt.label;
+                      return `<button type="button" class="ag-cm-exec-pill" data-ag-cm-exec-val="${escapeHtml(
+                        String(v.opt.value)
+                      )}" data-active="${isVarOn ? 'true' : 'false'}">${escapeHtml(lbl)}</button>`;
+                    })
+                    .join('')}</div>`
+                : '';
+            return `<div class="ag-cm-exec-item">
+              <button type="button" class="ag-cm-row ag-cm-exec-row" data-ag-cm-exec-family="${escapeHtml(fam.baseName)}">
+                <span class="ag-cm-exec-name">${escapeHtml(fam.baseName)}</span>
+                ${isFamActive ? SVG_CM_CHECK : ''}
+              </button>
+              ${pillsHtml}
+            </div>`;
+          })
+          .join('');
+        const resetHtml = !execCat.isDefault
+          ? `<div class="ag-cm-divider"></div>
+             <button type="button" class="ag-cm-row" style="min-height:32px;font-size:13px;" data-ag-cm-exec-val="0">
+               <span>${L('恢复默认执行模型', 'Reset to default')}</span>
+               <span class="ag-cm-key">${escapeHtml(execCat.defaultShortLabel)}</span>
+             </button>`
+          : '';
+        triPop.setAttribute('data-tri-kind', 'executor');
+        triPop.innerHTML =
+          `<div class="ag-cm-sec-hdr ag-cm-exec-hdr"><span>${L('执行模型与强度 · 全局', 'Executor · Global')}</span><span class="ag-cm-exec-tag">${L('白名单', 'Official')}</span></div>` +
+          execRowsHtml +
+          resetHtml;
+        triPop.setAttribute('data-open', 'true');
+        triOpen = true;
+      }
+      if (!triOpen) {
+        triPop.setAttribute('data-open', 'false');
+      }
     } else {
       subPop.setAttribute('data-open', 'false');
+      triPop.setAttribute('data-open', 'false');
     }
 
     positionModelPopovers();
@@ -4403,7 +4599,9 @@
   const MENU_KEY_ATTRS = [
     'data-ag-cm-family',
     'data-ag-cm-subtrigger',
+    'data-ag-cm-tritrigger',
     'data-ag-cm-effort',
+    'data-ag-cm-orch-effort',
     'data-ag-cm-exec-family',
     'data-ag-cm-exec-val',
     'data-ag-cm-more-family',
@@ -4420,7 +4618,7 @@
 
   function findMenuRowByKey(key) {
     if (!key) return null;
-    for (const id of ['ag-claude-model-popover', 'ag-claude-model-subpop']) {
+    for (const id of ['ag-claude-model-popover', 'ag-claude-model-subpop', 'ag-claude-model-tripop']) {
       const pop = document.getElementById(id);
       if (!pop) continue;
       for (const row of pop.querySelectorAll(`[${key[0]}]`)) if (row.getAttribute(key[0]) === key[1]) return row;
@@ -4429,11 +4627,11 @@
   }
 
   function isInModelMenu(el) {
-    return Boolean(el && el.closest && el.closest('#ag-claude-model-popover, #ag-claude-model-subpop'));
+    return Boolean(el && el.closest && el.closest('#ag-claude-model-popover, #ag-claude-model-subpop, #ag-claude-model-tripop'));
   }
 
   function syncMenuA11y() {
-    for (const id of ['ag-claude-model-popover', 'ag-claude-model-subpop']) {
+    for (const id of ['ag-claude-model-popover', 'ag-claude-model-subpop', 'ag-claude-model-tripop']) {
       const pop = document.getElementById(id);
       if (!pop) continue;
       const open = pop.getAttribute('data-open') === 'true';
@@ -4446,7 +4644,7 @@
         row.setAttribute('tabindex', '-1');
         if (row.getAttribute('data-disabled') === 'true') row.setAttribute('aria-disabled', 'true');
       });
-      pop.querySelectorAll('[data-ag-cm-subtrigger]').forEach((row) => {
+      pop.querySelectorAll('[data-ag-cm-subtrigger], [data-ag-cm-tritrigger], [data-ag-cm-tri-hover="planner"]').forEach((row) => {
         row.setAttribute('aria-haspopup', 'menu');
         row.setAttribute('aria-expanded', row.hasAttribute('data-active-sub') ? 'true' : 'false');
       });
@@ -4489,6 +4687,8 @@
     activeModelTriggerBtn = btn;
     modelPopoverOpen = true;
     activeModelSubmenu = null;
+    activeModelTrimenu = null;
+    ensureOrchestratorRolesLoaded();
     if (btn) {
       btn.setAttribute('data-ag-model-open', 'true');
       btn.setAttribute('aria-expanded', 'true');
@@ -4506,6 +4706,7 @@
     const hadFocus = isInModelMenu(document.activeElement);
     modelPopoverOpen = false;
     activeModelSubmenu = null;
+    activeModelTrimenu = null;
     currentCatalogSnapshot = null;
     if (activeModelTriggerBtn) {
       activeModelTriggerBtn.removeAttribute('data-ag-model-open');
@@ -4514,8 +4715,10 @@
     document.querySelectorAll('button[data-ag-model-open]').forEach((el) => el.removeAttribute('data-ag-model-open'));
     const mainPop = document.getElementById('ag-claude-model-popover');
     const subPop = document.getElementById('ag-claude-model-subpop');
+    const triPop = document.getElementById('ag-claude-model-tripop');
     if (mainPop) mainPop.setAttribute('data-open', 'false');
     if (subPop) subPop.setAttribute('data-open', 'false');
+    if (triPop) triPop.setAttribute('data-open', 'false');
     syncMenuA11y();
     if (opts.returnFocus || hadFocus) {
       const target =
@@ -4616,7 +4819,9 @@
     if (!modelPopoverOpen) return;
     const mainPop = document.getElementById('ag-claude-model-popover');
     const subPop = document.getElementById('ag-claude-model-subpop');
+    const triPop = document.getElementById('ag-claude-model-tripop');
     const active = document.activeElement;
+    const inTri = Boolean(triPop && triPop.contains(active));
     const inSub = Boolean(subPop && subPop.contains(active));
     const inMain = Boolean(mainPop && mainPop.contains(active));
     const stop = () => {
@@ -4625,11 +4830,33 @@
       e.stopImmediatePropagation();
     };
 
+    const closeTriAndFocusSub = () => {
+      const prevTri = activeModelTrimenu;
+      activeModelTrimenu = null;
+      renderModelPopovers();
+      if (!subPop || !prevTri) return;
+      let target = null;
+      if (prevTri.kind === 'executor') {
+        target = subPop.querySelector('[data-ag-cm-tritrigger="executor"]');
+      } else if (prevTri.kind === 'planner' && prevTri.familyName) {
+        for (const r of subPop.querySelectorAll('[data-ag-cm-tri-family]')) {
+          if (r.getAttribute('data-ag-cm-tri-family') === prevTri.familyName) {
+            target = r;
+            break;
+          }
+        }
+      }
+      if (target) target.focus();
+    };
+
     if (e.key === 'Escape') {
       stop();
-      if (inSub && activeModelSubmenu) {
+      if (inTri && activeModelTrimenu) {
+        closeTriAndFocusSub();
+      } else if (inSub && activeModelSubmenu) {
         const kind = activeModelSubmenu;
         activeModelSubmenu = null;
+        activeModelTrimenu = null;
         renderModelPopovers();
         const t = mainPop && mainPop.querySelector(`[data-ag-cm-subtrigger="${kind}"]`);
         if (t) t.focus();
@@ -4638,14 +4865,14 @@
       }
       return;
     }
-    if (e.key === 'Tab' && (inMain || inSub)) {
+    if (e.key === 'Tab' && (inMain || inSub || inTri)) {
       stop();
       closeClaudeModelPopover({ returnFocus: true });
       return;
     }
     if (plain && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
       stop();
-      const rows = menuRows(inSub ? subPop : mainPop);
+      const rows = menuRows(inTri ? triPop : inSub ? subPop : mainPop);
       if (!rows.length) return;
       const down = e.key === 'ArrowDown';
       let idx = rows.indexOf(active);
@@ -4657,14 +4884,41 @@
       stop();
       if (active.getAttribute('data-disabled') === 'true') return;
       activeModelSubmenu = active.getAttribute('data-ag-cm-subtrigger');
+      activeModelTrimenu = null;
       renderModelPopovers();
       focusFirstRow(subPop, true);
+      return;
+    }
+    if (plain && e.key === 'ArrowRight' && inSub) {
+      const triKind = active.getAttribute('data-ag-cm-tri-hover');
+      if (triKind === 'executor') {
+        stop();
+        activeModelTrimenu = { kind: 'executor' };
+        renderModelPopovers();
+        focusFirstRow(triPop, true);
+        return;
+      }
+      if (triKind === 'planner') {
+        const familyName = active.getAttribute('data-ag-cm-tri-family');
+        if (familyName) {
+          stop();
+          activeModelTrimenu = { kind: 'planner', familyName };
+          renderModelPopovers();
+          focusFirstRow(triPop, true);
+          return;
+        }
+      }
+    }
+    if (plain && e.key === 'ArrowLeft' && inTri) {
+      stop();
+      closeTriAndFocusSub();
       return;
     }
     if (plain && e.key === 'ArrowLeft' && inSub) {
       stop();
       const kind = activeModelSubmenu;
       activeModelSubmenu = null;
+      activeModelTrimenu = null;
       renderModelPopovers();
       const t = mainPop && mainPop.querySelector(`[data-ag-cm-subtrigger="${kind}"]`);
       if (t) t.focus();
@@ -4698,6 +4952,9 @@
   document.addEventListener('mousedown', onModelTriggerSwallowMouseClick, true);
   document.addEventListener('click', onModelTriggerSwallowMouseClick, true);
   document.addEventListener('keydown', onModelPopoverKeyDown, true);
+  later(() => {
+    if (!disposed && FEAT.modelMenu) ensureOrchestratorRolesLoaded();
+  }, 600);
 
   /* ==========================================================================
    * 7. Inline Undo & Edit (Claude-Style Message In-Bubble Re-Edit)
@@ -6725,9 +6982,9 @@
    *       text nodes & title/placeholder/aria-label attributes with zero page reload.
    * ========================================================================== */
   const UX_I18N_BASE_EXCLUDE =
-    'code, pre, kbd, samp, textarea, input, style, script, noscript, [contenteditable="true"], [data-markdown-root], [data-testid="user-message-content"], .agy-user-bubble, [data-testid="skill-scope-item-pill"], bdi.context-scope-mention, .monaco-editor, .monaco-diff-editor, .xterm, [class*="onyx-key"], .prose, .markdown, [class*="chat-message"], [class*="group/file-title"], [data-testid="conversation-row-sidebar"] a[href^="/c/"], [data-testid="conversation-row-sidebar"] span.truncate, [data-testid="conversation-navigator-turn"], .msg-body, #raw, #swarm-title, #ag-live-metrics-pill, #ag-live-metrics-tooltip, [data-ag-i18n-ignore="1"], #ag-claude-model-popover, #ag-claude-model-subpop, #ag-claude-quota-popover, #ag-claude-ux-settings-nav, #ag-claude-ux-settings-panel, #ag-claude-recent-section, #ag-recent-row-menu, #ag-project-action-menu, [data-testid="model-selector-trigger"], [data-testid="permissions-selector-trigger"]';
+    'code, pre, kbd, samp, textarea, input, style, script, noscript, [contenteditable="true"], [data-markdown-root], [data-testid="user-message-content"], .agy-user-bubble, [data-testid="skill-scope-item-pill"], bdi.context-scope-mention, .monaco-editor, .monaco-diff-editor, .xterm, [class*="onyx-key"], .prose, .markdown, [class*="chat-message"], [class*="group/file-title"], [data-testid="conversation-row-sidebar"] a[href^="/c/"], [data-testid="conversation-row-sidebar"] span.truncate, [data-testid="conversation-navigator-turn"], .msg-body, #raw, #swarm-title, #ag-live-metrics-pill, #ag-live-metrics-tooltip, [data-ag-i18n-ignore="1"], #ag-claude-model-popover, #ag-claude-model-subpop, #ag-claude-model-tripop, #ag-claude-quota-popover, #ag-claude-ux-settings-nav, #ag-claude-ux-settings-panel, #ag-claude-recent-section, #ag-recent-row-menu, #ag-project-action-menu, [data-testid="model-selector-trigger"], [data-testid="permissions-selector-trigger"]';
   const UX_I18N_ATTR_EXCLUDE =
-    'code, pre, kbd, samp, style, script, noscript, [data-markdown-root], [data-testid="user-message-content"], .agy-user-bubble, [data-testid="skill-scope-item-pill"], bdi.context-scope-mention, .monaco-editor, .monaco-diff-editor, .xterm, #ag-live-metrics-pill, #ag-live-metrics-tooltip, [data-ag-i18n-ignore="1"], #ag-claude-model-popover, #ag-claude-model-subpop, #ag-claude-quota-popover, #ag-claude-ux-settings-nav, #ag-claude-ux-settings-panel, #ag-claude-recent-section, #ag-recent-row-menu, #ag-project-action-menu, [data-testid="model-selector-trigger"], [data-testid="permissions-selector-trigger"]';
+    'code, pre, kbd, samp, style, script, noscript, [data-markdown-root], [data-testid="user-message-content"], .agy-user-bubble, [data-testid="skill-scope-item-pill"], bdi.context-scope-mention, .monaco-editor, .monaco-diff-editor, .xterm, #ag-live-metrics-pill, #ag-live-metrics-tooltip, [data-ag-i18n-ignore="1"], #ag-claude-model-popover, #ag-claude-model-subpop, #ag-claude-model-tripop, #ag-claude-quota-popover, #ag-claude-ux-settings-nav, #ag-claude-ux-settings-panel, #ag-claude-recent-section, #ag-recent-row-menu, #ag-project-action-menu, [data-testid="model-selector-trigger"], [data-testid="permissions-selector-trigger"]';
   let uxI18nObserver = null;
   let uxI18nFlushTimer = 0;
   let uxI18nDirtyRoots = new Set();
@@ -7140,6 +7397,155 @@
       }
     }
   }
+
+  /* ---- Native Electron NSMenu Context Menu Localization (e.g., Pinned Conversations) ---- */
+  function normalizeNativeMenuAccelerator(acc) {
+    if (typeof acc !== 'string' || !acc) return undefined;
+    return acc
+      .replace(/\u2303/g, 'Control+')
+      .replace(/\u2325/g, 'Alt+')
+      .replace(/\u21e7/g, 'Shift+')
+      .replace(/\u2318/g, 'CmdOrCtrl+')
+      .replace(/\u23ce/g, 'Enter');
+  }
+
+  function translateNativeMenuLabel(rawLabel) {
+    if (typeof rawLabel !== 'string' || !rawLabel) return rawLabel;
+    const trimmed = rawLabel.trim();
+    if (!trimmed) return rawLabel;
+    const hit = uxI18nLookup(trimmed, null);
+    if (typeof hit === 'string' && hit) return hit;
+    const mGroup = trimmed.match(/^Move to Group:\s*(.+)$/i);
+    if (mGroup) return `移至分组：${mGroup[1]}`;
+    return rawLabel;
+  }
+
+  function resolveNativeContextMenuFromTarget(targetEl, nativeEv) {
+    const startEl = targetEl && targetEl.nodeType === 1 ? targetEl : targetEl && targetEl.parentElement;
+    if (!startEl) return null;
+    let cur = startEl;
+    let startFiber = null;
+    for (let up = 0; up < 8 && cur && !startFiber; up++, cur = cur.parentElement) {
+      const fk = Object.keys(cur).find((k) => k.startsWith('__reactFiber$'));
+      if (fk && cur[fk]) startFiber = cur[fk];
+    }
+    if (!startFiber) return null;
+    let f = startFiber;
+    for (let depth = 0; depth < 16 && f; depth++, f = f.return) {
+      const p = f.memoizedProps;
+      if (!p || p.disabled) continue;
+      if (typeof p.items !== 'function' && !Array.isArray(p.items)) continue;
+      const childHasCtx = Boolean(
+        f.child && f.child.memoizedProps && typeof f.child.memoizedProps.onContextMenu === 'function'
+      );
+      if (!childHasCtx) continue;
+      let rawItems;
+      try {
+        rawItems = typeof p.items === 'function' ? p.items(nativeEv) : p.items;
+      } catch {
+        return null;
+      }
+      if (!Array.isArray(rawItems) || rawItems.length === 0) return null;
+      const valid = rawItems.some(
+        (it) =>
+          it &&
+          (it.type === 'separator' ||
+            (typeof it.label === 'string' &&
+              (typeof it.onClick === 'function' || typeof it.click === 'function' || Array.isArray(it.items))))
+      );
+      if (!valid) continue;
+      return {
+        items: rawItems,
+        onOpenChange: typeof p.onOpenChange === 'function' ? p.onOpenChange : null
+      };
+    }
+    return null;
+  }
+
+  function buildLocalizedNativeMenuPayload(items, cbMap, prefix = 'cmi') {
+    const out = [];
+    for (let idx = 0; idx < items.length; idx++) {
+      const d = items[idx];
+      if (!d) continue;
+      const id = d.id || `${prefix}-${idx}`;
+      const handler = typeof d.onClick === 'function' ? d.onClick : typeof d.click === 'function' ? d.click : null;
+      if (handler) cbMap.set(id, handler);
+      const disabled =
+        d.type === 'label'
+          ? true
+          : d.disabled !== undefined
+            ? Boolean(d.disabled)
+            : d.enabled !== undefined
+              ? !d.enabled
+              : false;
+      const entry = {
+        id,
+        label: typeof d.label === 'string' ? translateNativeMenuLabel(d.label) : d.label,
+        type: d.type && d.type !== 'item' && d.type !== 'label' ? d.type : 'normal',
+        checked: d.checked,
+        disabled,
+        accelerator: normalizeNativeMenuAccelerator(d.accelerator)
+      };
+      if (Array.isArray(d.items) && d.items.length > 0) {
+        entry.submenu = buildLocalizedNativeMenuPayload(d.items, cbMap, `${id}-sub`);
+      }
+      out.push(entry);
+    }
+    return out;
+  }
+
+  const onNativeContextMenuCapture = (e) => {
+    if (disposed || !FEAT.i18n || e.altKey) return;
+    if (typeof window.electronNative?.showContextMenu !== 'function') return;
+    const t = e.target;
+    const el = t && t.nodeType === 1 ? t : t && t.parentElement;
+    if (!el || !el.closest) return;
+    if (
+      el.closest(
+        'input, textarea, [contenteditable="true"], .monaco-editor, .monaco-diff-editor, .xterm, #ag-recent-row-menu, #ag-project-action-menu, #ag-claude-model-popover, #ag-claude-model-subpop, #ag-claude-model-tripop'
+      )
+    ) {
+      return;
+    }
+    if (el.closest('.prose, .markdown, [data-markdown-root], [data-testid="user-message-content"]')) {
+      try {
+        const sel = window.getSelection && window.getSelection();
+        if (sel && String(sel).trim()) return;
+      } catch {}
+    }
+    const resolved = resolveNativeContextMenuFromTarget(el, e);
+    if (!resolved) return;
+    const cbMap = new Map();
+    const payload = buildLocalizedNativeMenuPayload(resolved.items, cbMap);
+    if (!payload.length) return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.stopImmediatePropagation();
+    try {
+      if (resolved.onOpenChange) resolved.onOpenChange(true);
+    } catch {}
+    try {
+      Promise.resolve(window.electronNative.showContextMenu(payload))
+        .then((chosenId) => {
+          if (chosenId && cbMap.has(chosenId)) {
+            try {
+              cbMap.get(chosenId)();
+            } catch {}
+          }
+        })
+        .catch(() => {})
+        .finally(() => {
+          try {
+            if (resolved.onOpenChange) resolved.onOpenChange(false);
+          } catch {}
+        });
+    } catch {
+      try {
+        if (resolved.onOpenChange) resolved.onOpenChange(false);
+      } catch {}
+    }
+  };
+  document.addEventListener('contextmenu', onNativeContextMenuCapture, true);
 
   /* ==========================================================================
    * 9. Native Settings -> `UI Enhancements` / `界面增强` Live Module Toggle Panel
@@ -9736,7 +10142,7 @@
         !el ||
         !el.isConnected ||
         el.closest(
-          '#ag-claude-project-modal, #ag-claude-projects-view, #ag-claude-model-popover, #ag-claude-model-subpop, #ag-claude-quota-popover, #ag-recent-row-menu, #ag-project-action-menu'
+          '#ag-claude-project-modal, #ag-claude-projects-view, #ag-claude-model-popover, #ag-claude-model-subpop, #ag-claude-model-tripop, #ag-claude-quota-popover, #ag-recent-row-menu, #ag-project-action-menu'
         )
       ) {
         continue;
@@ -9785,7 +10191,7 @@
     }
     if (
       t.closest(
-        '#ag-claude-projects-nav-btn, #ag-claude-projects-view, #ag-claude-project-modal, #ag-claude-model-popover, #ag-claude-model-subpop, #ag-recent-row-menu, #ag-project-action-menu, .agy-dialog, [role="dialog"]'
+        '#ag-claude-projects-nav-btn, #ag-claude-projects-view, #ag-claude-project-modal, #ag-claude-model-popover, #ag-claude-model-subpop, #ag-claude-model-tripop, #ag-recent-row-menu, #ag-project-action-menu, .agy-dialog, [role="dialog"]'
       )
     ) {
       return;
@@ -11170,8 +11576,6 @@
       ? filtered
           .map((p) => {
             const ctx = p.dirPath ? projectsContextMap[p.dirPath] : null;
-            const hasInst = Boolean(ctx && ctx.instructions && ctx.instructions.trim());
-            const fileCount = ctx && Array.isArray(ctx.files) ? ctx.files.length : 0;
             const nativeProjMs = Number(projectsNativeMtimeMap[p.id] || 0);
             const ctxActivityMs = ctx ? Math.max(Number(ctx.lastModifiedMs || 0), Number(ctx.dirMtimeMs || 0)) : 0;
             const effectiveSec = p.lastSec || Math.floor(Math.max(nativeProjMs, ctxActivityMs) / 1000);
@@ -11180,13 +11584,6 @@
               ? `${p.chatCount} 个对话`
               : `${p.chatCount} ${p.chatCount === 1 ? 'chat' : 'chats'}`;
             const metaText = `${timeLabel} · ${chatLabel}`;
-            const badges = [];
-            if (hasInst) badges.push(`<span class="ag-proj-badge ag-proj-badge-accent">${L('已设指令', 'Instructions')}</span>`);
-            if (fileCount > 0) {
-              badges.push(
-                `<span class="ag-proj-badge">${FEAT.i18n ? `${fileCount} 个文件` : `${fileCount} ${fileCount === 1 ? 'file' : 'files'}`}</span>`
-              );
-            }
             const moreBtnHtml = !p.isBuiltin
               ? `<button type="button" class="ag-proj-card-more" data-ag-proj-menu="${escapeHtml(p.id)}" aria-label="${escapeHtml(L('项目操作', 'Project options'))}" title="${escapeHtml(L('更多操作', 'More options'))}">${RECENT_MORE_SVG}</button>`
               : '';
@@ -11198,7 +11595,6 @@
               </div>
               <div class="ag-proj-card-foot">
                 <span class="ag-proj-card-meta"${metaTitleAttr}>${escapeHtml(metaText)}</span>
-                ${badges.length ? `<div class="ag-proj-card-badges">${badges.join('')}</div>` : ''}
               </div>
             </article>`;
           })
@@ -13556,7 +13952,7 @@
     const dirName = (ws.project && ws.project.name) || (snap && snap.workspace && snap.workspace.name) || '';
     const shortDir = ws.dirPath ? formatShortHomePath(ws.dirPath) : '';
     const folderRowHtml = ws.dirPath
-      ? `<button type="button" class="ag-ov-row-btn" data-ag-ov-action="copy-path" title="${escapeHtml(ws.dirPath)}">
+      ? `<button type="button" class="ag-ov-row-btn ag-ov-folder-btn" data-ag-ov-action="copy-path" title="${escapeHtml(ws.dirPath)}">
           <span class="ag-ov-row-left">
             <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M2 4.2a1 1 0 0 1 1-1h3.5l1.3 1.4H13a1 1 0 0 1 1 1v6.2a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4.2z"/></svg>
             <span class="ag-ov-row-title">${escapeHtml(dirName)}</span>
@@ -14393,7 +14789,7 @@
   }
 
   const OWN_SEL =
-    '.ag-claude-todo-card, .ag-claude-todo-live-dock, .ag-collapse-ghost, .ag-orbit-dots, .ag-elapsed-timer, #ag-claude-ctx-ring, #ag-claude-quota-popover, #ag-claude-model-popover, #ag-claude-model-subpop, .ag-claude-inline-editor, .ag-claude-folder-badges, #ag-claude-recent-section, #ag-recent-row-menu, #ag-project-action-menu, #ag-claude-ux-settings-nav, #ag-claude-ux-settings-panel, #ag-settings-stats-wrap, .ag-settings-subhdr-chev, #ag-claude-projects-nav-btn, #ag-claude-projects-view, #ag-claude-project-modal, .ag-code-fold-toggle, .ag-code-fold-bar, #ag-claude-ov-sections, #ag-claude-topbar-theme';
+    '.ag-claude-todo-card, .ag-claude-todo-live-dock, .ag-collapse-ghost, .ag-orbit-dots, .ag-elapsed-timer, #ag-claude-ctx-ring, #ag-claude-quota-popover, #ag-claude-model-popover, #ag-claude-model-subpop, #ag-claude-model-tripop, .ag-claude-inline-editor, .ag-claude-folder-badges, #ag-claude-recent-section, #ag-recent-row-menu, #ag-project-action-menu, #ag-claude-ux-settings-nav, #ag-claude-ux-settings-panel, #ag-settings-stats-wrap, .ag-settings-subhdr-chev, #ag-claude-projects-nav-btn, #ag-claude-projects-view, #ag-claude-project-modal, .ag-code-fold-toggle, .ag-code-fold-bar, #ag-claude-ov-sections, #ag-claude-topbar-theme';
   const CLASS_WATCH_SEL =
     'ul.contains-task-list, [id="antigravity.agentSidePanelInputBox"], [data-testid="tool-group-collapsible"], [data-testid="worked-for-collapsible"], [data-testid="progress-updates-collapsible"], [data-testid="ephemeral-tool-status"]';
 
@@ -14536,6 +14932,7 @@
     document.removeEventListener('mousedown', onModelTriggerSwallowMouseClick, true);
     document.removeEventListener('click', onModelTriggerSwallowMouseClick, true);
     document.removeEventListener('keydown', onModelPopoverKeyDown, true);
+    document.removeEventListener('contextmenu', onNativeContextMenuCapture, true);
     document.removeEventListener('click', onRevertButtonClick, true);
     document.removeEventListener('keydown', onInlineEditDocKeyDown, true);
     document.removeEventListener('mouseenter', onMetricsPillMouseEnter, true);
@@ -14575,6 +14972,9 @@
       prefStoreUnsub = null;
     }
     cachedPrefStore = null;
+    cachedExecutorRoleBaseIds = null;
+    executorRolesFetchInFlight = false;
+    executorRolesLastTryTs = 0;
     teardownProjectsWorkspace({ forceCloseAllModals: true });
     if (sharedModalEscBound) {
       document.removeEventListener('keydown', onSharedModalEscKeyDown, true);
@@ -14606,7 +15006,7 @@
     }
     document
       .querySelectorAll(
-        '.ag-collapse-ghost, .ag-orbit-dots, .ag-elapsed-timer, [data-ag-todo-mount], [data-ag-todo-dock], #ag-claude-ctx-ring, #ag-claude-quota-popover, #ag-claude-model-popover, #ag-claude-model-subpop'
+        '.ag-collapse-ghost, .ag-orbit-dots, .ag-elapsed-timer, [data-ag-todo-mount], [data-ag-todo-dock], #ag-claude-ctx-ring, #ag-claude-quota-popover, #ag-claude-model-popover, #ag-claude-model-subpop, #ag-claude-model-tripop'
       )
       .forEach((el) => el.remove());
     document

@@ -1793,5 +1793,12 @@
   "Downloading Update": "正在下载更新",
   "Install Update": "安装更新",
   "Installing Update": "正在安装更新",
-  "Restart to Update": "重启以完成更新"
+  "Restart to Update": "重启以完成更新",
+  "Pin Entire Project": "置顶整个项目",
+  "Unpin Project": "取消置顶项目",
+  "Pin Entire Workspace": "置顶整个工作区",
+  "Unpin Workspace": "取消置顶工作区",
+  "Share": "分享",
+  "Workspace Name": "工作区名称",
+  "Worktree Name": "Worktree 名称"
 }

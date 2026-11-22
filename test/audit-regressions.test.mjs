@@ -3864,7 +3864,7 @@ test('[claudeUxOverviewPanel] enhances right Overview panel with Google Blue Use
   }
 });
 
-test('[v3.1.0 · Theme Toggle, v2.34 Models i18n & Executor Model Picker] mounts titlebar 3-way theme pill, localizes Models/Quota strings, and drives orchestratorExecutorModel from main menu', { skip: !JSDOM }, async () => {
+test('[v3.1.0 · Theme Toggle & v2.34 Models i18n] mounts titlebar 3-way theme pill, localizes Models/Quota strings, and keeps main model menu free of Executor Model row', { skip: !JSDOM }, async () => {
   const customJsSrc = fs.readFileSync(path.join(REPO, 'user', 'custom.js'), 'utf8');
   const customCssSrc = fs.readFileSync(path.join(REPO, 'user', 'custom.css'), 'utf8');
   const i18nDict = JSON.parse(fs.readFileSync(path.join(REPO, 'core', 'i18n.json'), 'utf8'));
@@ -3873,6 +3873,16 @@ test('[v3.1.0 · Theme Toggle, v2.34 Models i18n & Executor Model Picker] mounts
     customCssSrc,
     /#ag-claude-topbar-theme\s*\{[\s\S]*?order:\s*-1;/,
     'topbar theme pill uses CSS order:-1 so appendChild places it to the left of titlebar-more-actions safely'
+  );
+  assert.match(
+    customCssSrc,
+    /#ag-claude-ov-sections\s+\.ag-ov-row-title\s*\{[\s\S]*?overflow:\s*hidden;[\s\S]*?text-overflow:\s*ellipsis;/,
+    'Overview row title clips long CJK workspace names cleanly instead of overlapping path text'
+  );
+  assert.match(
+    customCssSrc,
+    /#ag-claude-ov-sections\s+\.ag-ov-folder-btn\s*\{[\s\S]*?flex-direction:\s*column;/,
+    'Overview workspace folder row stacks title above path so long names never collide with path'
   );
 
   const dom = new JSDOM(
@@ -3920,24 +3930,7 @@ test('[v3.1.0 · Theme Toggle, v2.34 Models i18n & Executor Model Picker] mounts
     }
   };
 
-  /* 2. Mock native prefStore for orchestratorExecutorModel */
-  const prefs = { orchestratorExecutorModel: 0 };
-  const prefListeners = new Set();
-  window.__ag_test_pref_store = {
-    getState: () => ({
-      getPrefValue: (k) => prefs[k] ?? 0,
-      setPrefValue: (k, v) => {
-        prefs[k] = v;
-        for (const fn of prefListeners) fn();
-      }
-    }),
-    onDidChange: (fn) => {
-      prefListeners.add(fn);
-      return () => prefListeners.delete(fn);
-    }
-  };
-
-  /* 3. Attach native model-selector-trigger React fiber API */
+  /* 2. Attach native model-selector-trigger React fiber API */
   const modelOptions = [
     { label: 'Gemini 4 Carbon (High)', modelId: 'gemini-4-carbon-high', value: 1427, disabled: false },
     { label: 'Gemini 4 Carbon (Low)', modelId: 'gemini-4-carbon-low', value: 1438, disabled: false },
@@ -4015,44 +4008,343 @@ test('[v3.1.0 · Theme Toggle, v2.34 Models i18n & Executor Model Picker] mounts
     assert.equal(doc.getElementById('plan-lbl').textContent, '当前方案：Google AI Ultra');
     assert.equal(doc.getElementById('bd-btn').textContent, '展开 57 项明细');
 
-    /* Verify 3: Main composer model menu includes Executor Model submenu & writes orchestratorExecutorModel */
+    /* Verify 3: Main composer model menu omits Executor Model row (managed in official Settings -> Models) */
     triggerBtn.dispatchEvent(new window.MouseEvent('pointerdown', { bubbles: true, button: 0 }));
     const mainPop = doc.getElementById('ag-claude-model-popover');
-    const subPop = doc.getElementById('ag-claude-model-subpop');
     assert.equal(mainPop.getAttribute('data-open'), 'true');
-
-    const execTrigger = mainPop.querySelector('[data-ag-cm-subtrigger="executor"]');
-    assert.ok(execTrigger, 'Executor model row rendered in main model menu');
-    assert.match(execTrigger.textContent, /执行模型/);
-    assert.match(execTrigger.textContent, /Hydrogen · Extra/, 'defaults to Gemini 4 Hydrogen Extra when pref is 0');
-
-    execTrigger.click();
-    assert.equal(subPop.getAttribute('data-open'), 'true', 'clicking Executor model opens subpopover');
-    assert.match(subPop.textContent, /Gemini 4 Hydrogen/);
-    assert.match(subPop.textContent, /Gemini 3\.8 Flash/);
-
-    /* Pick Gemini 3.8 Flash (Low = 1320) via inline effort pill */
-    const flashLowPill = subPop.querySelector('[data-ag-cm-exec-val="1320"]');
-    assert.ok(flashLowPill, 'inline effort pill for 3.8 Flash Low exists');
-    flashLowPill.click();
-    assert.equal(prefs.orchestratorExecutorModel, 1320, 'updates prefStore orchestratorExecutorModel to 1320');
-    assert.equal(mainPop.getAttribute('data-open'), 'false', 'closes popover after selection');
-
-    /* Re-open menu: verify custom dot + updated summary + Reset to default */
-    triggerBtn.dispatchEvent(new window.MouseEvent('pointerdown', { bubbles: true, button: 0 }));
-    const execTriggerAfter = mainPop.querySelector('[data-ag-cm-subtrigger="executor"]');
-    assert.match(execTriggerAfter.textContent, /Flash · Low/);
-    assert.ok(execTriggerAfter.querySelector('.ag-cm-dot'), 'shows custom override dot when non-default executor is active');
-    execTriggerAfter.click();
-    const resetBtn = subPop.querySelector('[data-ag-cm-exec-val="0"]');
-    assert.ok(resetBtn, 'Reset to default row appears when custom executor is set');
-    resetBtn.click();
-    assert.equal(prefs.orchestratorExecutorModel, 0, 'resets orchestratorExecutorModel back to 0 (default)');
+    assert.equal(
+      mainPop.querySelector('[data-ag-cm-subtrigger="executor"]'),
+      null,
+      'Executor model row is not rendered in main composer model menu'
+    );
+    assert.doesNotMatch(mainPop.textContent, /执行模型|Executor model/);
+    assert.ok(mainPop.querySelector('[data-ag-cm-subtrigger="effort"]'), 'Thinking effort row remains intact');
+    assert.ok(mainPop.querySelector('[data-ag-cm-subtrigger="more"]'), 'More models row remains intact');
 
     window.__agClaudeUxDispose();
     assert.equal(doc.getElementById('ag-claude-topbar-theme'), null, 'teardown removes topbar theme toggle');
     assert.equal(themeListeners.size, 0, 'unsubscribes themeModeProvider listener on dispose');
+  } finally {
+    window.close();
+  }
+});
+
+test('[Scheme C · Orchestrator Level-3 Planner Effort & Official Whitelisted Executor] cascades planner effort and strict Mendel-whitelisted executor row under More Models -> Orchestrators while keeping Level-1 clean', { skip: !JSDOM }, async () => {
+  const customJsSrc = fs.readFileSync(path.join(REPO, 'user', 'custom.js'), 'utf8');
+  const dom = new JSDOM(
+    `<!doctype html><html><body>
+      <div id="root">
+        <div id="antigravity.agentSidePanelInputBox">
+          <button type="button" data-testid="model-selector-trigger">Gemini 4 Neon Extra</button>
+        </div>
+      </div>
+    </body></html>`,
+    { runScripts: 'outside-only', url: 'https://127.0.0.1:61999/' }
+  );
+  const { window } = dom;
+  const doc = window.document;
+
+  /* 1. Mount real v2.34.0 shape: direct getMendelFlags on root fiber memoizedProps.value + prefStore on child fiber */
+  const prefs = { orchestratorExecutorModel: 0 };
+  const prefListeners = new Set();
+  const prefStore = {
+    getState: () => ({
+      getPrefValue: (k) => prefs[k] ?? 0,
+      setPrefValue: (k, v) => {
+        prefs[k] = v;
+        for (const fn of prefListeners) fn();
+      }
+    }),
+    onDidChange: (fn) => {
+      prefListeners.add(fn);
+      return () => prefListeners.delete(fn);
+    }
+  };
+  let mendelCalls = 0;
+  const lsClient = {
+    getMendelFlags: async () => {
+      mendelCalls++;
+      return {
+        experimentConfig: {
+          experiments: [
+            {
+              keyString: 'orchestrator-model-roles',
+              payload: {
+                case: 'string',
+                value: JSON.stringify({
+                  orchestrators: ['gemini-4-neon', 'gemini-4-carbon'],
+                  executors: ['gemini-4-hydrogen', 'claude-sonnet-5-5']
+                })
+              }
+            }
+          ]
+        }
+      };
+    }
+  };
+  const rootEl = doc.getElementById('root');
+  rootEl.__reactContainer$test = {
+    memoizedProps: { value: lsClient },
+    child: {
+      memoizedProps: { value: prefStore },
+      child: null,
+      sibling: null
+    },
+    sibling: null
+  };
+
+  /* 2. Attach model-selector-trigger API with planners, executors, and non-whitelisted models (Flash, Opus) */
+  const modelOptions = [
+    { label: 'Gemini 4 Carbon (High)', modelId: 'gemini-4-carbon-high', value: 1427, disabled: false },
+    { label: 'Gemini 4 Carbon (Low)', modelId: 'gemini-4-carbon-low', value: 1438, disabled: false },
+    { label: 'Gemini 4 Neon (High)', modelId: 'gemini-4-neon-high', value: 1532, disabled: false },
+    { label: 'Gemini 4 Neon (XHigh)', modelId: 'gemini-4-neon-xhigh', value: 1535, disabled: false },
+    { label: 'Gemini 4 Hydrogen (Low)', modelId: 'gemini-4-hydrogen-low', value: 1527, disabled: false },
+    { label: 'Gemini 4 Hydrogen (Medium)', modelId: 'gemini-4-hydrogen-medium', value: 1526, disabled: false },
+    { label: 'Gemini 4 Hydrogen (XHigh)', modelId: 'gemini-4-hydrogen-xhigh', value: 1528, disabled: false },
+    { label: 'Gemini 3.8 Flash (Low)', modelId: 'gemini-3.8-flash-low', value: 1320, disabled: false },
+    { label: 'Gemini 3.8 Flash (High)', modelId: 'gemini-3.8-flash-high', value: 1318, disabled: false },
+    { label: 'Claude Opus 5.5 (High)', modelId: 'claude-opus-5-5-high', value: 1402, disabled: false },
+    { label: 'Claude Sonnet 5.5 (Medium)', modelId: 'claude-sonnet-5-5-medium', value: 1404, disabled: false },
+    { label: 'Claude Sonnet 5.5 (High)', modelId: 'claude-sonnet-5-5-high', value: 1405, disabled: false },
+    { label: 'Orchestrator (Neon)', modelId: 'gemini-pro-orchestrator-neon', value: 1537, disabled: false }
+  ];
+  let selectedOpt = modelOptions[3];
+  let pickedPlannerVal = 0;
+  const triggerBtn = doc.querySelector('button[data-testid="model-selector-trigger"]');
+  const apiObj = {
+    modelOptions,
+    get selectedModel() {
+      return selectedOpt;
+    },
+    setSelectedModel: (opt) => {
+      selectedOpt = opt;
+    },
+    open: false,
+    setIsOpen: () => {},
+    orchestratorPick: {
+      get model() {
+        return pickedPlannerVal;
+      },
+      select: (v) => {
+        pickedPlannerVal = v;
+      }
+    },
+    orchestratorPlanners: [modelOptions[2], modelOptions[3], modelOptions[0], modelOptions[1]]
+  };
+  triggerBtn.__reactFiber$test = { memoizedProps: { value: apiObj }, return: null };
+
+  window.ctx = {
+    dict: {},
+    modules: { i18n: true, claudeUxModelMenu: true },
+    onCleanup: () => {}
+  };
+  window.eval(customJsSrc);
+
+  try {
+    /* Open Level 1 menu and let async getMendelFlags resolve */
+    triggerBtn.dispatchEvent(new window.MouseEvent('pointerdown', { bubbles: true, button: 0 }));
+    await new Promise((r) => setTimeout(r, 40));
+
+    const mainPop = doc.getElementById('ag-claude-model-popover');
+    const subPop = doc.getElementById('ag-claude-model-subpop');
+    const triPop = doc.getElementById('ag-claude-model-tripop');
+    assert.equal(mendelCalls, 1, 'fetches official orchestrator-model-roles directly from root fiber lsClient');
+    assert.equal(mainPop.getAttribute('data-open'), 'true');
+    assert.equal(mainPop.querySelector('[data-ag-cm-subtrigger="executor"]'), null, 'Level 1 menu stays free of Executor Model');
+
+    /* Open Level 2: More models */
+    mainPop.querySelector('[data-ag-cm-subtrigger="more"]').click();
+    assert.equal(subPop.getAttribute('data-open'), 'true');
+    assert.equal(triPop.getAttribute('data-open'), 'false');
+
+    const orchNeonRow = subPop.querySelector('[data-ag-cm-more-family="Orchestrator · Gemini 4 Neon"]');
+    const execRow = subPop.querySelector('[data-ag-cm-tritrigger="executor"]');
+    assert.ok(orchNeonRow, 'Orchestrator · Gemini 4 Neon row present in Level 2');
+    assert.ok(execRow, 'Dedicated Executor model row rendered under Orchestrators in Level 2');
+    assert.match(execRow.textContent, /执行模型/);
+    assert.match(execRow.textContent, /Hydrogen · Extra/, 'defaults to highest-effort first whitelisted executor');
+
+    /* Hover / click Executor row -> Level 3 opens with STRICTLY whitelisted executors (no Flash/Carbon/Neon/Opus) */
+    execRow.click();
+    assert.equal(triPop.getAttribute('data-open'), 'true');
+    assert.equal(triPop.getAttribute('data-tri-kind'), 'executor');
+    assert.match(triPop.textContent, /Gemini 4 Hydrogen/);
+    assert.match(triPop.textContent, /Claude Sonnet 5\.5/);
+    assert.doesNotMatch(triPop.textContent, /Gemini 3\.8 Flash|Gemini 4 Carbon|Gemini 4 Neon|Claude Opus 5\.5/);
+
+    /* Click Hydrogen Medium (1526): writes pref, updates UI live, keeps popover open for further orchestration picking */
+    const hydroMedPill = triPop.querySelector('[data-ag-cm-exec-val="1526"]');
+    assert.ok(hydroMedPill, 'Hydrogen Medium pill present');
+    hydroMedPill.click();
+    assert.equal(prefs.orchestratorExecutorModel, 1526, 'writes orchestratorExecutorModel=1526');
+    assert.equal(mainPop.getAttribute('data-open'), 'true', 'keeps popover open after selecting executor effort');
+    assert.equal(triPop.getAttribute('data-open'), 'true');
+    assert.match(subPop.querySelector('[data-ag-cm-tritrigger="executor"]').textContent, /Hydrogen · Medium/);
+    assert.ok(subPop.querySelector('[data-ag-cm-tritrigger="executor"] .ag-cm-dot'), 'shows blue dot for custom executor');
+
+    /* Clicking default variant (1528) writes 0 (UNSPECIFIED) matching native Settings KSb */
+    triPop.querySelector('[data-ag-cm-exec-val="1528"]').click();
+    assert.equal(prefs.orchestratorExecutorModel, 0, 'picking default executor normalizes pref back to 0');
+
+    /* Pick non-default Sonnet 5.5 High (1405), then test Reset to default */
+    triPop.querySelector('[data-ag-cm-exec-val="1405"]').click();
+    assert.equal(prefs.orchestratorExecutorModel, 1405);
+    assert.match(subPop.querySelector('[data-ag-cm-tritrigger="executor"]').textContent, /Sonnet 5\.5 · High/);
+    triPop.querySelector('[data-ag-cm-exec-val="0"]').click();
+    assert.equal(prefs.orchestratorExecutorModel, 0, 'Reset button restores default executor (0)');
+
+    /* Hovering an "Other models" row closes Level 3 cleanly */
+    const otherRow = subPop.querySelector('[data-ag-cm-more-family="Claude Opus 5.5"]');
+    assert.ok(otherRow);
+    otherRow.dispatchEvent(new window.MouseEvent('mouseover', { bubbles: true }));
+    assert.equal(triPop.getAttribute('data-open'), 'false', 'hovering Other models closes Level 3');
+
+    /* Hovering Orchestrator · Gemini 4 Neon opens Level 3 planner effort submenu; picking High applies Orchestrator + planner */
+    subPop.querySelector('[data-ag-cm-more-family="Orchestrator · Gemini 4 Neon"]').dispatchEvent(
+      new window.MouseEvent('mouseover', { bubbles: true })
+    );
+    assert.equal(triPop.getAttribute('data-open'), 'true');
+    assert.equal(triPop.getAttribute('data-tri-kind'), 'planner');
+    assert.match(triPop.textContent, /主模型强度 · Gemini 4 Neon/);
+    const highPlannerRow = triPop.querySelector('[data-ag-cm-orch-effort="High"]');
+    assert.ok(highPlannerRow, 'planner High effort row exists');
+    highPlannerRow.click();
+    assert.equal(selectedOpt.value, 1537, 'switches active model to Orchestrator');
+    assert.equal(pickedPlannerVal, 1532, 'sets orchestrator planner to Gemini 4 Neon (High)');
+    assert.equal(mainPop.getAttribute('data-open'), 'false', 'closes popover after choosing planner effort');
+    assert.equal(triPop.getAttribute('data-open'), 'false');
+
+    window.__agClaudeUxDispose();
+    assert.equal(doc.getElementById('ag-claude-model-tripop'), null, 'teardown removes Level 3 popover');
     assert.equal(prefListeners.size, 0, 'unsubscribes prefStore listener on dispose');
+  } finally {
+    window.close();
+  }
+});
+
+test('[Native Context Menu i18n & Clean Project Cards] localizes macOS native showContextMenu on pinned conversations (with Option pass-through) and omits instruction/file badges on project cards', { skip: !JSDOM }, async () => {
+  const customJsSrc = fs.readFileSync(path.join(REPO, 'user', 'custom.js'), 'utf8');
+  const i18nDict = JSON.parse(fs.readFileSync(path.join(REPO, 'core', 'i18n.json'), 'utf8'));
+
+  assert.doesNotMatch(customJsSrc, /ag-proj-card-badges|ag-proj-badge/, 'project cards omit bottom-right instruction/file pill badges');
+
+  const dom = new JSDOM(
+    `<!doctype html><html><body>
+      <div id="root">
+        <div data-testid="conversation-row-sidebar" data-pinned="true" data-cascade-id="cid-pinned-1">
+          <a href="/c/cid-pinned-1"><span class="truncate">Pinned Conversation</span></a>
+        </div>
+      </div>
+    </body></html>`,
+    { runScripts: 'outside-only', url: 'https://127.0.0.1:61999/' }
+  );
+  const { window } = dom;
+  const doc = window.document;
+
+  let clickedAction = null;
+  let openStateHistory = [];
+  let capturedPayloads = [];
+  let nextMenuChoice = 'copy-1';
+  window.electronNative = Object.freeze({
+    showContextMenu: async (items) => {
+      capturedPayloads.push(items);
+      return nextMenuChoice;
+    }
+  });
+
+  const pinnedRow = doc.querySelector('[data-testid="conversation-row-sidebar"]');
+  const contextWrapperFiber = {
+    memoizedProps: {
+      disabled: false,
+      onOpenChange: (open) => openStateHistory.push(open),
+      items: () => [
+        { id: 'rename', label: 'Rename', onClick: () => { clickedAction = 'rename'; } },
+        { id: 'pin', label: 'Unpin', accelerator: '⌥⌘P', onClick: () => { clickedAction = 'unpin'; } },
+        { id: 'mark-read', label: 'Mark Unread', onClick: () => { clickedAction = 'unread'; } },
+        { type: 'separator' },
+        {
+          id: 'copy',
+          type: 'submenu',
+          label: 'Copy',
+          items: [
+            { id: 'copy-0', label: 'Conversation Name', onClick: () => { clickedAction = 'copy-name'; } },
+            { id: 'copy-1', label: 'Conversation ID', onClick: () => { clickedAction = 'copy-id'; } },
+            { id: 'copy-2', label: 'Workspace Name', onClick: () => { clickedAction = 'copy-ws'; } },
+            { id: 'copy-3', label: 'Project Name', onClick: () => { clickedAction = 'copy-proj'; } }
+          ]
+        },
+        {
+          id: 'split',
+          type: 'submenu',
+          label: 'Split',
+          items: [
+            { id: 'split-0', label: 'Split Right', onClick: () => { clickedAction = 'split-right'; } },
+            { id: 'split-1', label: 'Split Down', onClick: () => { clickedAction = 'split-down'; } }
+          ]
+        },
+        { type: 'separator' },
+        { id: 'archive', label: 'Archive', accelerator: '⌥⌘A', onClick: () => { clickedAction = 'archive'; } },
+        { id: 'delete', label: 'Delete', onClick: () => { clickedAction = 'delete'; } }
+      ]
+    },
+    child: { memoizedProps: { onContextMenu: () => {} } },
+    return: null
+  };
+  const midFiber = { memoizedProps: { onContextMenu: () => {} }, child: null, return: contextWrapperFiber };
+  contextWrapperFiber.child = midFiber;
+  pinnedRow.__reactFiber$test = { memoizedProps: {}, return: midFiber };
+
+  window.ctx = {
+    dict: i18nDict,
+    modules: { i18n: true },
+    onCleanup: () => {}
+  };
+  window.eval(customJsSrc);
+
+  try {
+    /* 1. Normal right-click intercepts & passes fully localized Chinese items + normalized accelerators */
+    const ev = new window.MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+    pinnedRow.querySelector('span').dispatchEvent(ev);
+    assert.equal(ev.defaultPrevented, true, 'intercepts native English menu when i18n is enabled');
+    await new Promise((r) => setTimeout(r, 20));
+
+    assert.equal(capturedPayloads.length, 1);
+    const sent = capturedPayloads[0];
+    assert.equal(sent.find((x) => x.id === 'rename').label, '重命名');
+    assert.equal(sent.find((x) => x.id === 'pin').label, '取消置顶');
+    assert.equal(sent.find((x) => x.id === 'pin').accelerator, 'Alt+CmdOrCtrl+P');
+    assert.equal(sent.find((x) => x.id === 'mark-read').label, '标为未读');
+    const copySub = sent.find((x) => x.id === 'copy');
+    assert.equal(copySub.label, '复制');
+    assert.deepEqual(
+      Array.from(copySub.submenu, (x) => x.label),
+      ['对话名称', '对话 ID', '工作区名称', '项目名称']
+    );
+    const splitSub = sent.find((x) => x.id === 'split');
+    assert.equal(splitSub.label, '分屏');
+    assert.deepEqual(
+      Array.from(splitSub.submenu, (x) => x.label),
+      ['向右分屏', '向下分屏']
+    );
+    assert.equal(sent.find((x) => x.id === 'archive').label, '归档');
+    assert.equal(sent.find((x) => x.id === 'archive').accelerator, 'Alt+CmdOrCtrl+A');
+    assert.equal(sent.find((x) => x.id === 'delete').label, '删除');
+    assert.equal(clickedAction, 'copy-id', 'dispatches original submenu callback for chosen item');
+    assert.deepEqual(openStateHistory, [true, false], 'syncs React onOpenChange lifecycle');
+
+    /* 2. Option + Right-click passes through untouched to official English native menu */
+    const altEv = new window.MouseEvent('contextmenu', { bubbles: true, cancelable: true, altKey: true });
+    pinnedRow.dispatchEvent(altEv);
+    assert.equal(altEv.defaultPrevented, false, 'Option + Right-click bypasses custom interception');
+    assert.equal(capturedPayloads.length, 1);
+
+    /* 3. After dispose, listener is cleanly removed */
+    window.__agClaudeUxDispose();
+    const afterEv = new window.MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+    pinnedRow.dispatchEvent(afterEv);
+    assert.equal(afterEv.defaultPrevented, false, 'dispose detaches contextmenu capture listener');
+    assert.equal(capturedPayloads.length, 1);
   } finally {
     window.close();
   }

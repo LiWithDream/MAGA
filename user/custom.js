@@ -11376,7 +11376,7 @@
         )}</p>
         <div class="ag-pm-field">
           <textarea id="ag-pm-instructions" class="ag-pm-textarea" rows="12" placeholder="${escapeHtml(
-            L('例如：本项目是核心网关模块/前端组件库/工程仓库，回答时请遵循……', 'Write project rules, architecture notes, or constraints for AGENTS.md…')
+            L('例如：填写本项目的架构约定、目录结构、测试命令或回复风格约束……', 'Write project rules, architecture notes, or constraints for AGENTS.md…')
           )}">${escapeHtml(st.instructions)}</textarea>
         </div>
         ${errHtml}

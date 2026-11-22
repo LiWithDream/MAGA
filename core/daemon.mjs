@@ -2819,11 +2819,11 @@ async function importLocalAgentNative() {
 }
 
 const CONNECTOR_DISPLAY_OVERRIDES = {
-  atlassian: 'Atlassian',
   'chrome-devtools': 'Chrome devtools',
   'chrome-devtools_chrome-devtools': 'Chrome devtools',
-  'remote-ssh': 'Remote SSH',
-  linear: 'Linear',
+  github: 'GitHub',
+  gitlab: 'GitLab',
+  playwright: 'Playwright',
   perplexity: 'Perplexity',
   gdrive: 'Google Drive',
   gcalendar: 'Google Calendar'

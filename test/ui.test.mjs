@@ -1960,12 +1960,12 @@ test('unified sidebar Recents: mixes project & standalone chats without 8-item c
   await settle(h);
   const renameInput = sec.querySelector('[data-ag-recent-rename-input="c-1"]');
   assert.ok(renameInput, 'inline rename input mounted');
-  renameInput.value = 'Renamed Case Chat';
+  renameInput.value = 'Renamed Web Chat';
   renameInput.dispatchEvent(new h.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
   await h.microtasks();
   assert.deepEqual(
     JSON.parse(JSON.stringify(mutations[1])),
-    { id: 'c-1', patch: { title: 'Renamed Case Chat' }, merge: true },
+    { id: 'c-1', patch: { title: 'Renamed Web Chat' }, merge: true },
     'Enter commits rename'
   );
 
@@ -2044,10 +2044,10 @@ test('customizations layout enhancement: mounts category tabs, frames skills lis
   h.window.__agProjectCall = async (action, payload) => {
     rpcCalls.push({ action, payload });
     if (action === 'createLocalSkill') {
-      return { ok: true, folderName: 'contract-audit', dirPath: '/Users/demo/.gemini/config/skills/contract-audit' };
+      return { ok: true, folderName: 'lint-check', dirPath: '/Users/demo/.gemini/config/skills/lint-check' };
     }
     if (action === 'createLocalAgent') {
-      return { ok: true, name: 'contract-reviewer', filePath: '/Users/demo/.gemini/config/agents/contract-reviewer.md' };
+      return { ok: true, name: 'code-reviewer', filePath: '/Users/demo/.gemini/config/agents/code-reviewer.md' };
     }
     if (action === 'openSkillsDir' || action === 'openAgentsDir') return { ok: true };
     return { ok: false };
@@ -2075,7 +2075,7 @@ test('customizations layout enhancement: mounts category tabs, frames skills lis
 
   /* Typing in search reveals all sections via searching mode */
   const search = h.doc.querySelector('[data-testid="customizations-search"]');
-  search.value = 'basic';
+  search.value = 'review';
   search.dispatchEvent(new h.window.Event('input', { bubbles: true }));
   assert.equal(h.doc.querySelector('[data-ag-cust-page="1"]').getAttribute('data-ag-cust-searching'), '1');
   assert.equal(secSkills.hasAttribute('data-ag-cust-hidden'), false, 'search un-hides all sections');
@@ -2089,9 +2089,9 @@ test('customizations layout enhancement: mounts category tabs, frames skills lis
   assert.ok(modal, 'Add skill modal opened');
   assert.equal(modal.querySelector('[data-ag-skill-save]').disabled, true, 'Create skill disabled until required fields filled');
   for (const [sel, val] of [
-    ['#ag-skill-name', 'contract-audit'],
-    ['#ag-skill-desc', 'Audit commercial contracts'],
-    ['#ag-skill-body', '# Steps\n1. Check clauses.']
+    ['#ag-skill-name', 'lint-check'],
+    ['#ag-skill-desc', 'Run repository lint checks'],
+    ['#ag-skill-body', '# Steps\n1. Check syntax.']
   ]) {
     const el = modal.querySelector(sel);
     el.value = val;
@@ -2103,10 +2103,10 @@ test('customizations layout enhancement: mounts category tabs, frames skills lis
   await h.microtasks();
   await h.microtasks();
   assert.ok(
-    rpcCalls.some((c) => c.action === 'createLocalSkill' && c.payload.name === 'contract-audit'),
+    rpcCalls.some((c) => c.action === 'createLocalSkill' && c.payload.name === 'lint-check'),
     'invokes createLocalSkill RPC'
   );
-  assert.match(h.doc.getElementById('ag-claude-project-modal').textContent, /contract-audit/);
+  assert.match(h.doc.getElementById('ag-claude-project-modal').textContent, /lint-check/);
   h.doc.querySelector('#ag-claude-project-modal [data-ag-pm-close]').click();
 
   /* Clicking + New subagent opens Custom Subagent modal, switches tool preset, and calls createLocalAgent */
@@ -2119,9 +2119,9 @@ test('customizations layout enhancement: mounts category tabs, frames skills lis
   agentModal.querySelector('[data-ag-agent-preset="editor"]').click();
   const agentModal2 = h.doc.getElementById('ag-claude-project-modal');
   for (const [sel, val] of [
-    ['#ag-agent-name', 'contract-reviewer'],
-    ['#ag-agent-desc', 'Reviews contracts and flags risks'],
-    ['#ag-agent-prompt', 'Always cite exact clause numbers.']
+    ['#ag-agent-name', 'code-reviewer'],
+    ['#ag-agent-desc', 'Reviews pull requests and flags issues'],
+    ['#ag-agent-prompt', 'Always cite exact line numbers.']
   ]) {
     const el = agentModal2.querySelector(sel);
     el.value = val;
@@ -2132,7 +2132,7 @@ test('customizations layout enhancement: mounts category tabs, frames skills lis
   await h.microtasks();
   const agentCall = rpcCalls.find((c) => c.action === 'createLocalAgent');
   assert.ok(agentCall, 'invokes createLocalAgent RPC');
-  assert.equal(agentCall.payload.name, 'contract-reviewer');
+  assert.equal(agentCall.payload.name, 'code-reviewer');
   assert.deepEqual(Array.from(agentCall.payload.tools), ['read_file', 'edit_file', 'write_file', 'search_web']);
 
   /* Clean disposal */

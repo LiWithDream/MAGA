@@ -1205,8 +1205,8 @@ test('[Projects Context Menu & Topbar] right-click / more menu renames & deletes
     assert.equal(cliCard.querySelector('[data-ag-proj-menu]'), null, 'builtin CLI Project hides destructive menu');
 
     /* Right-click on "前端组件库" card opens #ag-project-action-menu -> Rename updates title immediately */
-    const legalCard = cards.find((c) => c.getAttribute('data-ag-proj-id') === 'proj-uikit');
-    legalCard.dispatchEvent(new window.MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 320, clientY: 220 }));
+    const uikitCard = cards.find((c) => c.getAttribute('data-ag-proj-id') === 'proj-uikit');
+    uikitCard.dispatchEvent(new window.MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 320, clientY: 220 }));
     const menu = doc.getElementById('ag-project-action-menu');
     assert.ok(menu, 'right-click opened #ag-project-action-menu');
     menu.querySelector('[data-ag-pm-act="rename"]').click();
@@ -1461,7 +1461,7 @@ test('[Pinned History & Image Paste] Pinned conversations (excluded from indexes
         },
         {
           id: 'proj-empty',
-          name: '前端组件库',
+          name: '移动端网关',
           folderUris: ['file:///Users/demo/Desktop/移动端网关']
         },
         {
@@ -3625,7 +3625,7 @@ test('[claudeUxOverviewPanel] collectOverviewSnapshot reads local config safely 
       path.join(configDir, 'mcp_config.json'),
       JSON.stringify({
         mcpServers: {
-          'atlassian': { command: '/usr/local/bin/acli', args: ['mcp'], env: { SECRET: 'top-secret-token' } },
+          atlassian: { command: '/usr/local/bin/acli', args: ['mcp'], env: { SECRET: 'top-secret-token' } },
           disabledOne: { disabled: true, args: ['--token=abc'] }
         }
       })
@@ -3768,7 +3768,7 @@ test('[claudeUxOverviewPanel] enhances right Overview panel with Google Blue Use
           { label: 'AGENTS.md', path: `${projDir}/AGENTS.md`, scope: 'project', bytes: 64 },
           { label: 'fast-io/AGENTS.md', path: '/tmp/plugins/fast-io/rules/AGENTS.md', scope: 'plugin', bytes: 32 }
         ],
-        skills: { total: 5, userCount: 2, items: [{ name: 'atlassian', path: '/tmp/code-review/SKILL.md', source: 'user' }] },
+        skills: { total: 5, userCount: 2, items: [{ name: 'code-review', path: '/tmp/code-review/SKILL.md', source: 'user' }] },
         agents: { total: 1, items: [{ name: 'helper', path: '/tmp/agents/helper.md', source: 'user' }] },
         connectors: [
           { id: 'atlassian', name: 'Atlassian', kind: 'mcp', configPath: '/tmp/mcp_config.json' },

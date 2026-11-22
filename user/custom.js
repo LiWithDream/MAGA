@@ -81,7 +81,9 @@
     projects: effectiveModBool('claudeUxProjects', true),
     hideSidebarProjects: effectiveModBool('claudeUxHideSidebarProjects', true),
     customizations: effectiveModBool('claudeUxCustomizations', true),
-    codeFold: effectiveModBool('claudeUxCodeFold', true)
+    codeFold: effectiveModBool('claudeUxCodeFold', true),
+    overviewPanel: effectiveModBool('claudeUxOverviewPanel', true),
+    themeToggle: effectiveModBool('claudeUxThemeToggle', true)
   };
   const L = (zh, en) => (FEAT.i18n ? zh : en);
 
@@ -1505,10 +1507,12 @@
     syncRunningToolIndicators(panes);
     syncInlinePillBoundaries();
     syncCodeBlocks();
-    if (FEAT.contextRing) {
+    if (FEAT.contextRing || FEAT.overviewPanel) {
       ensureMetricsWrapped();
-      ensureComposerContextRing();
       syncCompactVisualState(false);
+    }
+    if (FEAT.contextRing) {
+      ensureComposerContextRing();
     } else {
       const oldRing = document.getElementById('ag-claude-ctx-ring');
       if (oldRing) oldRing.remove();
@@ -1517,6 +1521,8 @@
     syncModelTriggerDisplay();
     syncSidebarEnhancements();
     syncProjectsWorkspace();
+    syncOverviewPanel(false);
+    syncTopbarThemeToggle(false);
     reconcileSettingsPanel();
   }
 
@@ -1926,7 +1932,7 @@
   }
 
   function syncCompactVisualState(forceRender) {
-    if (disposed || !FEAT.contextRing) return;
+    if (disposed || (!FEAT.contextRing && !FEAT.overviewPanel)) return;
     const curCid = getActiveCascadeId();
     const st = detectCompactStatus(curCid);
     const running = isPaneCurrentlyRunning();
@@ -1943,8 +1949,11 @@
         return;
       } catch {}
     }
-    updateComposerRingVisuals();
-    if (quotaPopoverOpen) renderQuotaPopoverBody();
+    if (FEAT.contextRing) {
+      updateComposerRingVisuals();
+      if (quotaPopoverOpen) renderQuotaPopoverBody();
+    }
+    if (FEAT.overviewPanel) renderOverviewPanel(false);
   }
 
   async function triggerConversationCompact() {
@@ -2416,7 +2425,9 @@
                 tooltipHtml: payload.__agOrigTooltipHtml !== undefined ? payload.__agOrigTooltipHtml : payload.tooltipHtml
               })
             : payload;
-        return origRenderMetrics.call(this, rawPayload);
+        const ret = origRenderMetrics.call(this, rawPayload);
+        if (!disposed && FEAT.overviewPanel) renderOverviewPanel(false);
+        return ret;
       }
       const slimPayload = parseAndSlimMetricsPayload(payload);
       const ret = origRenderMetrics.call(this, slimPayload);
@@ -2428,6 +2439,7 @@
       }
       updateComposerRingVisuals();
       if (quotaPopoverOpen) renderQuotaPopoverBody();
+      if (FEAT.overviewPanel) renderOverviewPanel(false);
       return ret;
     };
     wrappedRender.__agSlimWrapped = true;
@@ -2555,6 +2567,7 @@
         const popEl = document.getElementById('ag-claude-quota-popover');
         if (popEl) popEl.removeAttribute('data-loading-hold');
         if (quotaPopoverOpen) renderQuotaPopoverBody();
+        if (FEAT.overviewPanel) renderOverviewPanel(false);
         return cachedQuotaGroups;
       })
       .catch(() => {
@@ -3082,10 +3095,15 @@
     '<svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M6 3.5L10.5 8L6 12.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
   let modelPopoverOpen = false;
-  let activeModelSubmenu = null; // null | 'effort' | 'more'
+  let activeModelSubmenu = null; // null | 'effort' | 'executor' | 'more'
   let activeModelTriggerBtn = null;
   let lastPreferredEffort = 'Medium';
   let currentCatalogSnapshot = null;
+  let cachedPrefStore = null;
+  let prefStoreUnsub = null;
+  let fallbackExecutorModelVal = 0;
+  let cachedExecutorRoleBaseIds = null;
+  let executorRolesFetchTried = false;
 
   function escapeHtml(str) {
     return String(str || '')
@@ -3675,6 +3693,277 @@
     return med || fam.variants[0];
   }
 
+  function bindPrefStoreSubscription(ps) {
+    if (prefStoreUnsub) {
+      try {
+        prefStoreUnsub();
+      } catch {}
+      prefStoreUnsub = null;
+    }
+    if (ps && typeof ps.onDidChange === 'function') {
+      try {
+        const sub = ps.onDidChange(() => {
+          if (!disposed && modelPopoverOpen) renderModelPopovers();
+        });
+        if (typeof sub === 'function') prefStoreUnsub = sub;
+        else if (sub && typeof sub.dispose === 'function') prefStoreUnsub = () => sub.dispose();
+      } catch {}
+    }
+  }
+
+  function discoverPrefStore() {
+    if (
+      typeof window === 'object' &&
+      window &&
+      window.__ag_test_pref_store &&
+      typeof window.__ag_test_pref_store.getState === 'function'
+    ) {
+      if (cachedPrefStore !== window.__ag_test_pref_store) {
+        cachedPrefStore = window.__ag_test_pref_store;
+        bindPrefStoreSubscription(cachedPrefStore);
+      }
+      return cachedPrefStore;
+    }
+    if (cachedPrefStore && typeof cachedPrefStore.getState === 'function') {
+      try {
+        const st = cachedPrefStore.getState();
+        if (st && typeof st.getPrefValue === 'function' && typeof st.setPrefValue === 'function') {
+          return cachedPrefStore;
+        }
+      } catch {}
+    }
+    const root = document.getElementById('root') || (document.body && document.body.firstElementChild);
+    if (!root) return null;
+    const fk = Object.keys(root).find((k) => k.startsWith('__reactContainer') || k.startsWith('__reactFiber'));
+    const start = fk ? root[fk] : null;
+    if (!start) return null;
+    const queue = [start];
+    const seen = new Set();
+    let steps = 0;
+    const isPrefStore = (cand) => {
+      if (!cand || typeof cand.getState !== 'function') return false;
+      try {
+        const st = cand.getState();
+        return Boolean(st && typeof st.getPrefValue === 'function' && typeof st.setPrefValue === 'function');
+      } catch {
+        return false;
+      }
+    };
+    while (queue.length && steps < 600) {
+      const f = queue.shift();
+      if (!f || seen.has(f)) continue;
+      seen.add(f);
+      steps++;
+      const mp = f.memoizedProps;
+      if (mp && isPrefStore(mp.value)) {
+        cachedPrefStore = mp.value;
+        bindPrefStoreSubscription(mp.value);
+        return mp.value;
+      }
+      for (let dep = f.dependencies && f.dependencies.firstContext; dep; dep = dep.next) {
+        if (isPrefStore(dep.memoizedValue)) {
+          cachedPrefStore = dep.memoizedValue;
+          bindPrefStoreSubscription(dep.memoizedValue);
+          return dep.memoizedValue;
+        }
+      }
+      if (f.child) queue.push(f.child);
+      if (f.sibling) queue.push(f.sibling);
+    }
+    return null;
+  }
+
+  function ensureOrchestratorRolesLoaded() {
+    if (executorRolesFetchTried) return;
+    const root = document.getElementById('root');
+    const fk = root && Object.keys(root).find((k) => k.startsWith('__reactContainer') || k.startsWith('__reactFiber'));
+    if (!fk) return;
+    const queue = [root[fk]];
+    const seen = new Set();
+    let lsClient = null;
+    while (queue.length && seen.size < 500 && !lsClient) {
+      const f = queue.shift();
+      if (!f || seen.has(f)) continue;
+      seen.add(f);
+      for (let dep = f.dependencies && f.dependencies.firstContext; dep; dep = dep.next) {
+        const mv = dep.memoizedValue;
+        if (mv && mv.lsClient && typeof mv.lsClient.getMendelFlags === 'function') {
+          lsClient = mv.lsClient;
+          break;
+        }
+        if (mv && mv.client && typeof mv.client.getMendelFlags === 'function') {
+          lsClient = mv.client;
+          break;
+        }
+      }
+      if (f.child) queue.push(f.child);
+      if (f.sibling) queue.push(f.sibling);
+    }
+    if (!lsClient) return;
+    executorRolesFetchTried = true;
+    try {
+      Promise.resolve(lsClient.getMendelFlags({}))
+        .then((resp) => {
+          if (disposed) return;
+          const exps = (resp && resp.experimentConfig && resp.experimentConfig.experiments) || [];
+          const hit = Array.isArray(exps) ? exps.find((x) => x && x.keyString === 'orchestrator-model-roles') : null;
+          const rawStr = hit && hit.payload && hit.payload.value;
+          if (typeof rawStr === 'string' && rawStr) {
+            const parsed = JSON.parse(rawStr);
+            if (parsed && Array.isArray(parsed.executors) && parsed.executors.every((s) => typeof s === 'string') && parsed.executors.length) {
+              cachedExecutorRoleBaseIds = parsed.executors;
+              if (modelPopoverOpen) renderModelPopovers();
+            }
+          }
+        })
+        .catch(() => {});
+    } catch {}
+  }
+
+  function readExecutorModelPrefValue() {
+    const ps = discoverPrefStore();
+    if (ps) {
+      try {
+        const v = Number(ps.getState().getPrefValue('orchestratorExecutorModel'));
+        if (Number.isFinite(v) && v >= 0) return v;
+      } catch {}
+    }
+    try {
+      const { store } = resolveProjectsStoreAndBindings();
+      const st = store && typeof store.getState === 'function' ? store.getState() : null;
+      const rv = Number(st && st.userConfig && st.userConfig.userSettings && st.userConfig.userSettings.orchestratorExecutorModel);
+      if (Number.isFinite(rv) && rv >= 0) return rv;
+    } catch {}
+    return fallbackExecutorModelVal;
+  }
+
+  function applyExecutorModelPrefValue(modelVal) {
+    const nextVal = Number(modelVal) > 0 ? Number(modelVal) : 0;
+    fallbackExecutorModelVal = nextVal;
+    const ps = discoverPrefStore();
+    if (ps) {
+      try {
+        ps.getState().setPrefValue('orchestratorExecutorModel', nextVal);
+      } catch {}
+    }
+  }
+
+  function executorFamilyRank(baseName, baseModelId) {
+    if (Array.isArray(cachedExecutorRoleBaseIds) && cachedExecutorRoleBaseIds.length > 0 && baseModelId) {
+      const idx = cachedExecutorRoleBaseIds.indexOf(baseModelId);
+      if (idx >= 0) return idx;
+    }
+    if (/hydrogen/i.test(baseName)) return 0;
+    if (/flash/i.test(baseName)) return 1;
+    if (/sonnet/i.test(baseName)) return 2;
+    if (/argon/i.test(baseName)) return 3;
+    if (/neon/i.test(baseName)) return 4;
+    if (/carbon/i.test(baseName)) return 5;
+    if (/opus/i.test(baseName)) return 6;
+    return 10;
+  }
+
+  function formatShortExecutorLabel(baseName, effort) {
+    const shortBase =
+      String(baseName || '')
+        .replace(/^Gemini\s+\d+(?:\.\d+)?\s+/i, '')
+        .replace(/^Claude\s+/i, '')
+        .trim() || String(baseName || '').trim();
+    const eff = effort ? displayEffortLabel(effort) : '';
+    return eff ? `${shortBase} · ${eff}` : shortBase;
+  }
+
+  function buildExecutorCatalog(api) {
+    ensureOrchestratorRolesLoaded();
+    const rawOpts = ((api && api.modelOptions) || []).filter(
+      (o) => o && !o.disabled && !o.isCustom && o.value !== undefined && o.value !== 0 && o.label && !isOrchestratorModelOpt(o)
+    );
+    if (!rawOpts.length) {
+      return {
+        families: [],
+        activeFamily: null,
+        activeVariant: null,
+        defaultFamily: null,
+        defaultVariant: null,
+        isDefault: true,
+        shortSummary: '',
+        defaultShortLabel: ''
+      };
+    }
+    const roleSet =
+      Array.isArray(cachedExecutorRoleBaseIds) && cachedExecutorRoleBaseIds.length > 0
+        ? new Set(cachedExecutorRoleBaseIds)
+        : null;
+    const stripEffortId = (id) => String(id || '').replace(/-(low|medium|high|xhigh|max)$/i, '');
+    let candidateOpts = roleSet
+      ? rawOpts.filter((o) => o.modelId && roleSet.has(stripEffortId(o.modelId)))
+      : rawOpts;
+    if (!candidateOpts.length) candidateOpts = rawOpts;
+
+    const famMap = new Map();
+    for (const opt of candidateOpts) {
+      const parsed = parseModelLabelEffort(opt.label);
+      const baseId = opt.modelId ? stripEffortId(opt.modelId) : '';
+      let fam = famMap.get(parsed.baseName);
+      if (!fam) {
+        fam = { baseName: parsed.baseName, baseId, variants: [] };
+        famMap.set(parsed.baseName, fam);
+      } else if (!fam.baseId && baseId) {
+        fam.baseId = baseId;
+      }
+      fam.variants.push({ effort: parsed.effort, opt });
+    }
+    const families = Array.from(famMap.values());
+    for (const fam of families) {
+      sortFamilyVariants(fam.variants);
+    }
+    families.sort((a, b) => executorFamilyRank(a.baseName, a.baseId) - executorFamilyRank(b.baseName, b.baseId));
+
+    const defaultFamily = families[0] || null;
+    const defaultVariant =
+      defaultFamily && defaultFamily.variants.length
+        ? defaultFamily.variants[defaultFamily.variants.length - 1]
+        : null;
+
+    const prefVal = readExecutorModelPrefValue();
+    let activeFamily = null;
+    let activeVariant = null;
+    let isDefault = true;
+    if (prefVal > 0) {
+      for (const fam of families) {
+        for (const v of fam.variants) {
+          if (v.opt && v.opt.value === prefVal) {
+            activeFamily = fam;
+            activeVariant = v;
+            isDefault = false;
+            break;
+          }
+        }
+        if (activeFamily) break;
+      }
+    }
+    if (!activeFamily) {
+      activeFamily = defaultFamily;
+      activeVariant = defaultVariant;
+      isDefault = true;
+    }
+
+    return {
+      families,
+      activeFamily,
+      activeVariant,
+      defaultFamily,
+      defaultVariant,
+      isDefault,
+      shortSummary: activeFamily
+        ? formatShortExecutorLabel(activeFamily.baseName, activeVariant && activeVariant.effort)
+        : '',
+      defaultShortLabel: defaultFamily
+        ? formatShortExecutorLabel(defaultFamily.baseName, defaultVariant && defaultVariant.effort)
+        : ''
+    };
+  }
+
   function ensureModelPopovers() {
     let mainPop = document.getElementById('ag-claude-model-popover');
     if (!mainPop) {
@@ -3773,6 +4062,32 @@
             const entry = cat.moreFamilies.find((x) => x.fam.baseName === baseName);
             const targetVar = entry ? pickVariantForFamily(entry.fam, lastPreferredEffort) : null;
             if (targetVar && targetVar.opt) applyModelSelectionOption(api, targetVar.opt, targetVar.plannerOpt);
+          }
+          closeClaudeModelPopover();
+          return;
+        }
+        const execValBtn = e.target.closest('[data-ag-cm-exec-val]');
+        if (execValBtn) {
+          const val = Number(execValBtn.getAttribute('data-ag-cm-exec-val')) || 0;
+          applyExecutorModelPrefValue(val);
+          closeClaudeModelPopover();
+          return;
+        }
+        const execFamBtn = e.target.closest('[data-ag-cm-exec-family]');
+        if (execFamBtn) {
+          const baseName = execFamBtn.getAttribute('data-ag-cm-exec-family');
+          const api = discoverModelSelectorApi(activeModelTriggerBtn);
+          if (api) {
+            const execCat = buildExecutorCatalog(api);
+            const fam = execCat.families.find((f) => f.baseName === baseName);
+            if (fam && fam.variants.length) {
+              const curEff = execCat.activeVariant && execCat.activeVariant.effort;
+              const chosen =
+                (curEff && fam.variants.find((v) => v.effort === curEff)) || fam.variants[fam.variants.length - 1];
+              if (chosen && chosen.opt && chosen.opt.value !== undefined) {
+                applyExecutorModelPrefValue(chosen.opt.value);
+              }
+            }
           }
           closeClaudeModelPopover();
         }
@@ -3878,6 +4193,18 @@
 
     const effSubActive = activeModelSubmenu === 'effort' && hasAdjustableEffort ? ' data-active-sub="true"' : '';
     const effDisabled = hasAdjustableEffort ? '' : ' data-disabled="true"';
+    const execCat = buildExecutorCatalog(api);
+    const hasExecOptions = execCat.families.length > 0;
+    const execSubActive = activeModelSubmenu === 'executor' && hasExecOptions ? ' data-active-sub="true"' : '';
+    const execRowHtml = hasExecOptions
+      ? `<button type="button" class="ag-cm-row" data-ag-cm-hover="executor" data-ag-cm-subtrigger="executor"${execSubActive}>
+        <span style="display:inline-flex;align-items:center;gap:6px;">
+          <span>${L('执行模型', 'Executor model')}</span>
+          ${!execCat.isDefault ? '<span class="ag-cm-dot"></span>' : ''}
+        </span>
+        <span class="ag-cm-right"><span>${escapeHtml(execCat.shortSummary)}</span>${SVG_CM_CHEVRON}</span>
+      </button>`
+      : '';
     const moreSubActive = activeModelSubmenu === 'more' ? ' data-active-sub="true"' : '';
 
     mainPop.innerHTML = `
@@ -3892,6 +4219,7 @@
           hasAdjustableEffort ? SVG_CM_CHEVRON : ''
         }</span>
       </button>
+      ${execRowHtml}
       <button type="button" class="ag-cm-row" data-ag-cm-hover="more" data-ag-cm-subtrigger="more"${moreSubActive}>
         <span style="display:inline-flex;align-items:center;gap:6px;">
           <span>${L('更多模型', 'More models')}</span>
@@ -3923,6 +4251,45 @@
           })
           .join('');
       subPop.setAttribute('data-open', 'true');
+    } else if (activeModelSubmenu === 'executor' && hasExecOptions) {
+      const execRowsHtml = execCat.families
+        .map((fam) => {
+          const isFamActive = Boolean(execCat.activeFamily && execCat.activeFamily.baseName === fam.baseName);
+          const pillsHtml =
+            fam.variants.length > 1
+              ? `<div class="ag-cm-exec-pills">${fam.variants
+                  .map((v) => {
+                    const isVarOn = Boolean(
+                      isFamActive && execCat.activeVariant && execCat.activeVariant.opt.value === v.opt.value
+                    );
+                    const lbl = displayEffortLabel(v.effort) || v.opt.label;
+                    return `<button type="button" class="ag-cm-exec-pill" data-ag-cm-exec-val="${escapeHtml(
+                      String(v.opt.value)
+                    )}" data-active="${isVarOn ? 'true' : 'false'}">${escapeHtml(lbl)}</button>`;
+                  })
+                  .join('')}</div>`
+              : '';
+          return `<div class="ag-cm-exec-item">
+            <button type="button" class="ag-cm-row ag-cm-exec-row" data-ag-cm-exec-family="${escapeHtml(fam.baseName)}">
+              <span class="ag-cm-exec-name">${escapeHtml(fam.baseName)}</span>
+              ${isFamActive ? SVG_CM_CHECK : ''}
+            </button>
+            ${pillsHtml}
+          </div>`;
+        })
+        .join('');
+      const resetHtml = !execCat.isDefault
+        ? `<div class="ag-cm-divider"></div>
+           <button type="button" class="ag-cm-row" style="min-height:32px;font-size:13px;" data-ag-cm-exec-val="0">
+             <span>${L('恢复默认执行模型', 'Reset to default')}</span>
+             <span class="ag-cm-key">${escapeHtml(execCat.defaultShortLabel)}</span>
+           </button>`
+        : '';
+      subPop.innerHTML =
+        `<div class="ag-cm-sec-hdr">${L('执行模型 · 编排子任务', 'Executor model · Subtasks')}</div>` +
+        `<div class="ag-cm-sub-scroll">${execRowsHtml}</div>` +
+        resetHtml;
+      subPop.setAttribute('data-open', 'true');
     } else if (activeModelSubmenu === 'more' && cat.moreFamilies.length > 0) {
       let lastGrp = '';
       subPop.innerHTML = cat.moreFamilies
@@ -3953,7 +4320,15 @@
   }
 
   /* ---- menu accessibility: roles, inert when closed, focus preserved across re-renders ---- */
-  const MENU_KEY_ATTRS = ['data-ag-cm-family', 'data-ag-cm-subtrigger', 'data-ag-cm-effort', 'data-ag-cm-more-family', 'data-ag-cm-native'];
+  const MENU_KEY_ATTRS = [
+    'data-ag-cm-family',
+    'data-ag-cm-subtrigger',
+    'data-ag-cm-effort',
+    'data-ag-cm-exec-family',
+    'data-ag-cm-exec-val',
+    'data-ag-cm-more-family',
+    'data-ag-cm-native'
+  ];
   let focusBeforeModelMenu = null;
   let lastKeyToggleTs = 0;
 
@@ -6362,6 +6737,41 @@
     return clause.trim();
   }
 
+  function translateUxQuotaWindow(rawWin) {
+    const w = String(rawWin || '').trim();
+    const low = w.toLowerCase();
+    if (low === 'weekly' || low === '7-day' || low === '7d') return '每周';
+    if (low === 'daily' || low === '24-hour' || low === '24h') return '每日';
+    if (low === 'hourly' || low === '1-hour' || low === '1h') return '每小时';
+    if (low === 'monthly' || low === '30-day' || low === '30d') return '每月';
+    const mHr = low.match(/^(\d+)\s*-?\s*hours?$/i) || low.match(/^(\d+)h$/i);
+    if (mHr) return `${mHr[1]} 小时`;
+    const mDay = low.match(/^(\d+)\s*-?\s*days?$/i) || low.match(/^(\d+)d$/i);
+    if (mDay) return `${mDay[1]} 天`;
+    return w;
+  }
+
+  function translateUxDurationPhrase(rawDur) {
+    let s = String(rawDur || '').trim().replace(/\.$/, '');
+    if (!s) return '';
+    if (/^(?:<1m|less than a minute|under a minute)$/i.test(s)) return '不到 1 分钟';
+    s = s
+      .replace(/(\d+)\s*days?\b/gi, '$1 天')
+      .replace(/(\d+)\s*hours?\b/gi, '$1 小时')
+      .replace(/(\d+)\s*minutes?\b/gi, '$1 分钟')
+      .replace(/(\d+)\s*mins?\b/gi, '$1 分钟')
+      .replace(/(\d+)\s*seconds?\b/gi, '$1 秒')
+      .replace(/\b(\d+)d\b/gi, '$1 天')
+      .replace(/\b(\d+)h\b/gi, '$1 小时')
+      .replace(/\b(\d+)m\b/gi, '$1 分钟')
+      .replace(/\b(\d+)s\b/gi, '$1 秒')
+      .replace(/\s*,\s*(?:and\s+)?/gi, ' ')
+      .replace(/\s+and\s+/gi, ' ')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+    return s;
+  }
+
   function uxI18nLookup(trimmed, contextEl) {
     const dict = getUxI18nDict();
     if (!dict || !trimmed) return null;
@@ -6377,7 +6787,7 @@
       if (hit) return hit.endsWith('。') ? hit : `${hit}。`;
     }
     /* High-frequency dynamic Antigravity UI strings when runtime.js i18n is disabled */
-    if (!/[A-Za-z]/.test(trimmed) || trimmed.length > 140) return null;
+    if (!/[A-Za-z]/.test(trimmed) || trimmed.length > 340) return null;
     let m;
     if (UX_RE_EPHEMERAL_SUMMARY.test(trimmed)) {
       return trimmed.split(/,\s*/).map((part) => translateUxEphemeralClause(part)).join('、');
@@ -6402,6 +6812,64 @@
       return `${m[1]} ${unitMap[m[2].toLowerCase()] || m[2]}前`;
     }
     if ((m = trimmed.match(/^(\d+(?:\.\d+)?)%\s+left$/i))) return `${m[1]}% 剩余`;
+    if ((m = trimmed.match(/^Your Plan:\s*(.+)$/i))) return `当前方案：${m[1]}`;
+    if ((m = trimmed.match(/^You can upgrade to a higher\s+(.+?)\s+plan to receive the highest rate limits\.?$/i))) {
+      return `您可以升级到更高的 ${m[1]} 方案以获取最高速率配额。`;
+    }
+    const padWinZh = (raw) => {
+      const w = translateUxQuotaWindow(raw);
+      return /^[0-9A-Za-z]/.test(w) ? ` ${w}` : w;
+    };
+    if (
+      (m = trimmed.match(
+        /^You have used (some|all|most|\d+(?:\.\d+)?%?) of your (.+?) limit,\s*it will (?:(fully)\s+)?refresh in (.+?)\.?$/i
+      ))
+    ) {
+      const amt = m[1].toLowerCase();
+      const winZh = padWinZh(m[2]);
+      const fullZh = m[3] ? '完全' : '';
+      const durZh = translateUxDurationPhrase(m[4]);
+      if (amt === 'all') return `您的${winZh}额度已用尽，将在 ${durZh}后${fullZh}恢复。`;
+      if (amt === 'some') return `您已使用部分${winZh}额度，将在 ${durZh}后${fullZh}恢复。`;
+      if (amt === 'most') return `您已使用大部分${winZh}额度，将在 ${durZh}后${fullZh}恢复。`;
+      return `您已使用 ${m[1]} 的${winZh}额度，将在 ${durZh}后${fullZh}恢复。`;
+    }
+    if ((m = trimmed.match(/^You (?:haven't|have not) used any of your (.+?) limit(?:\s+yet)?\.?$/i))) {
+      return `您尚未消耗${padWinZh(m[1])}额度。`;
+    }
+    if ((m = trimmed.match(/^You have reached your (.+?) limit(?:,\s*it will (?:(fully)\s+)?refresh in (.+?))?\.?$/i))) {
+      const winZh = padWinZh(m[1]);
+      if (m[3]) {
+        return `您已达到${winZh}额度上限，将在 ${translateUxDurationPhrase(m[3])}后${m[2] ? '完全' : ''}恢复。`;
+      }
+      return `您已达到${winZh}额度上限。`;
+    }
+    if ((m = trimmed.match(/^Your (.+?) limit (?:will )?(?:(fully)\s+)?refresh(?:es)? in (.+?)\.?$/i))) {
+      return `您的${padWinZh(m[1])}额度将在 ${translateUxDurationPhrase(m[3])}后${m[2] ? '完全' : ''}恢复。`;
+    }
+    if ((m = trimmed.match(/^Your (.+?) limit starts when you send your first message\.?$/i))) {
+      return `您的${padWinZh(m[1])}额度将从发送第一条消息时起算。`;
+    }
+    if ((m = trimmed.match(/^Resets in\s+(.+)$/i))) {
+      return `${translateUxDurationPhrase(m[1])}后重置`;
+    }
+    if ((m = trimmed.match(/^(?:Quota is )?shared across\s+(.+?)\.?$/i))) {
+      return `由 ${m[1].replace(/,\s*and\s+/gi, '、').replace(/\s+and\s+/gi, ' 与 ')} 共享额度。`;
+    }
+    if ((m = trimmed.match(/^Show\s+(\d+)\s+breakdowns?$/i))) return `展开 ${m[1]} 项明细`;
+    if ((m = trimmed.match(/^Hide\s+(?:\d+\s+)?breakdowns?$/i))) return '收起明细';
+    if ((m = trimmed.match(/^Send feedback as\s+(.+)$/i))) return `以 ${m[1]} 身份发送反馈`;
+    if (
+      (m = trimmed.match(
+        /^You have (a|\d+) conversations? in progress\.\s*Updating will (interrupt|cancel) (?:it|them),\s*and (.+?)\.?$/i
+      ))
+    ) {
+      const cnt = m[1].toLowerCase() === 'a' ? '1' : m[1];
+      if (m[2].toLowerCase() === 'interrupt') {
+        return `当前有 ${cnt} 个对话正在运行。更新将暂时中断对话，并在更新完成后自动恢复。`;
+      }
+      return `当前有 ${cnt} 个对话正在运行。更新将取消这些对话，更新后需手动重新发起。`;
+    }
     return null;
   }
 
@@ -6618,6 +7086,14 @@
           'Chinese UI Localization',
           '将 Antigravity 原生界面与增强面板切换为简体中文（默认关闭，保持英文原版界面）',
           'Translate Antigravity UI and enhancement panels into Simplified Chinese (English by default)'
+        ],
+        [
+          'claudeUxThemeToggle',
+          'themeToggle',
+          '顶栏主题快速切换',
+          'Titlebar Theme Switcher',
+          '在主界面右上角顶栏常驻「跟随系统 / 浅色 / 深色」三段式胶囊开关，一键切换日夜模式',
+          'Adds a compact System / Light / Dark segmented pill to the top-right titlebar for one-click theme switching'
         ]
       ]
     },
@@ -6726,6 +7202,14 @@
           'Customizations Layout & Skill Importer',
           '为「技能与自定义」页增加分类标签切换、防卡片硬切底线、技能卡片化排版以及「+ 添加技能 / 打开技能目录」快捷入口',
           'Adds category tabs, sticky header divider, framed skill cards, and local + Add Skill / Open Folder actions to Customizations'
+        ],
+        [
+          'claudeUxOverviewPanel',
+          'overviewPanel',
+          '右侧「概览」增强仪表盘',
+          'Enhanced Right Overview Panel',
+          '在右侧「概览」面板整合紧凑导航、工作环境、实时上下文与缓存拆解、谷歌蓝双窗口配额、子智能体状态及 MCP / 技能清单',
+          'Enhances the right Overview panel with compact shortcuts, workspace environment, live Context & cache breakdown, Google Blue dual-window quotas, subagents, and MCP/skills inventory'
         ]
       ]
     }
@@ -6841,6 +7325,11 @@
       if (activeInlineEdit) renderInlineEditMeta(activeInlineEdit);
       refreshProjectsLanguageUi();
       syncCustomizationsEnhancement();
+      renderOverviewPanel(true);
+      syncTopbarThemeToggle(true);
+    } else if (featKey === 'themeToggle') {
+      if (!on) teardownTopbarThemeToggle();
+      else syncTopbarThemeToggle(true);
     } else if (featKey === 'projects') {
       if (!on) teardownProjectsWorkspace();
       else syncProjectsWorkspace();
@@ -6878,6 +7367,9 @@
       closeInlineEdit(false);
     } else if (featKey === 'codeFold' && !on) {
       teardownCodeBlocks();
+    } else if (featKey === 'overviewPanel') {
+      if (!on) teardownOverviewPanel();
+      else syncOverviewPanel(true);
     }
     syncSidebarEnhancements();
     scheduleSync();
@@ -9687,6 +10179,7 @@
         if (!disposed && saved && saved.ok) {
           projectsContextMap[dirKey] = saved;
           if (projectsViewOpen) renderProjectsView();
+          invalidateOverviewSnapshotCache();
         }
         return saved || { ok: false, error: 'save_failed' };
       } finally {
@@ -9915,11 +10408,12 @@
           'No conversations in this project yet. Start one above.'
         )}</div>`;
 
+    const agentsFilePath = hasLocalDir ? `${String(project.dirPath).replace(/[\\/]+$/, '')}/AGENTS.md` : '';
     const instBodyHtml = instructions
       ? `<div class="ag-pd-inst-preview">${escapeHtml(instructions)}</div>`
       : `<div class="ag-pd-card-muted">${L(
-          '添加项目指令，定制 AI 在本项目中的工作方式与背景约束',
-          'Add instructions to tailor responses in this project'
+          '编写项目指令，保存后直接生成或更新项目根目录下的 AGENTS.md',
+          'Write project instructions — saved directly to root AGENTS.md'
         )}</div>`;
 
     const filesBodyHtml = files.length
@@ -10112,10 +10606,10 @@
             <div class="ag-pd-sidecard">
               <div class="ag-pd-section"${hasLocalDir ? ' data-ag-pd-inst-sec="true"' : ''}>
                 <div class="ag-pd-sec-hdr">
-                  <span class="ag-pd-sec-title">${L('项目指令', 'Instructions')}</span>
+                  <span class="ag-pd-sec-title">${L('项目指令', 'Instructions')} <span class="ag-pd-sec-file-tag"${agentsFilePath ? ` title="${escapeHtml(agentsFilePath)}"` : ''}>AGENTS.md</span></span>
                   ${
                     hasLocalDir
-                      ? `<button type="button" class="ag-pd-sec-btn" data-ag-pd-edit-inst="true" aria-label="${escapeHtml(L('编辑项目指令', 'Edit instructions'))}">${
+                      ? `<button type="button" class="ag-pd-sec-btn" data-ag-pd-edit-inst="true" aria-label="${escapeHtml(L('编辑 AGENTS.md', 'Edit AGENTS.md'))}">${
                           instructions ? SVG_PROJ_EDIT : SVG_PROJ_PLUS
                         }</button>`
                       : ''
@@ -10746,7 +11240,7 @@
       project,
       dirPath: project.dirPath,
       instructions: cached ? cached.instructions || '' : '',
-      hasOtherAgentsMd: Boolean(cached && cached.hasOtherAgentsMd),
+      hasAgentsMd: Boolean(cached && (cached.hasAgentsMd || (cached.instructions && cached.instructions.trim()))),
       userEdited: false,
       saving: false,
       error: ''
@@ -10759,12 +11253,12 @@
       if (disposed || projectsModalState !== modalRef) return;
       if (fresh && fresh.ok) {
         projectsContextMap[project.dirPath] = fresh;
-        const nextOther = Boolean(fresh.hasOtherAgentsMd);
-        const needRender = !modalRef.userEdited || modalRef.hasOtherAgentsMd !== nextOther;
+        const nextHasAgents = Boolean(fresh.hasAgentsMd || (fresh.instructions && fresh.instructions.trim()));
+        const needRender = !modalRef.userEdited || modalRef.hasAgentsMd !== nextHasAgents;
         if (!modalRef.userEdited) {
           modalRef.instructions = fresh.instructions || '';
         }
-        modalRef.hasOtherAgentsMd = nextOther;
+        modalRef.hasAgentsMd = nextHasAgents;
         if (needRender && !modalRef.userEdited) {
           renderProjectContextModal();
         }
@@ -10785,36 +11279,39 @@
     }
 
     const st = projectsModalState;
-    const noteHtml = st.hasOtherAgentsMd
-      ? `<div class="ag-pm-note">${L('检测到该目录已有 AGENTS.md，保存时仅更新 Anti-Claude 区块，保留你原有的全部规则。', 'Existing AGENTS.md detected — your custom rules outside the Anti-Claude block are preserved.')}</div>`
-      : '';
     const errHtml = st.error ? `<div class="ag-pm-error">${escapeHtml(st.error)}</div>` : '';
 
     projectsModalEl.innerHTML = `
-      <div class="ag-pm-dialog" role="dialog" aria-modal="true" aria-label="${escapeHtml(L('设置项目指令', 'Set project instructions'))}">
+      <div class="ag-pm-dialog" role="dialog" aria-modal="true" aria-label="${escapeHtml(L('编辑项目 AGENTS.md', 'Edit project AGENTS.md'))}">
         <div class="ag-pm-hdr">
           <div class="ag-pm-title-wrap">
             <span class="ag-pm-icon">${SVG_CLAUDE_PROJECTS_ICON}</span>
-            <h2 class="ag-pm-title">${escapeHtml(L('项目指令', 'Instructions'))} · ${escapeHtml(st.project.name)}</h2>
+            <h2 class="ag-pm-title">${escapeHtml(st.project.name)} · AGENTS.md</h2>
           </div>
           <button type="button" class="ag-pm-close" data-ag-pm-close="true" aria-label="${escapeHtml(L('关闭', 'Close'))}">×</button>
         </div>
         <p class="ag-pm-desc">${L(
-          '填写在这个项目文件夹下每场对话自动遵循的背景、角色与规范。保存后写入项目 AGENTS.md，100% 本地生效。',
-          'Define background context, style, and constraints applied automatically to every chat in this project (saved locally to AGENTS.md).'
+          '直接读写项目根目录下的 AGENTS.md 正文（右侧添加的「参考文件」与「关联文件夹」会自动维护在文件末尾，互不覆盖）。',
+          'Directly reads and writes root AGENTS.md for this project (attached context files and linked folders are maintained automatically at the end of the file).'
         )}</p>
         <div class="ag-pm-field">
-          <textarea id="ag-pm-instructions" class="ag-pm-textarea" rows="8" placeholder="${escapeHtml(
-            L('例如：本项目是某案件卷宗/法考科目/工程报价，回答时请遵循……', 'Tell the agent how to work in this project…')
+          <textarea id="ag-pm-instructions" class="ag-pm-textarea" rows="12" placeholder="${escapeHtml(
+            L('例如：本项目是核心网关模块/前端组件库/工程仓库，回答时请遵循……', 'Write project rules, architecture notes, or constraints for AGENTS.md…')
           )}">${escapeHtml(st.instructions)}</textarea>
-          ${noteHtml}
         </div>
         ${errHtml}
-        <div class="ag-pm-footer">
-          <button type="button" class="ag-pm-secondary-btn" data-ag-pm-close="true">${L('取消', 'Cancel')}</button>
-          <button type="button" class="ag-pm-primary-btn" data-ag-pm-save="true" ${st.saving ? 'disabled' : ''}>${
-            st.saving ? L('保存中…', 'Saving…') : L('保存指令', 'Save instructions')
-          }</button>
+        <div class="ag-pm-footer${st.hasAgentsMd ? ' ag-pm-footer-split' : ''}">
+          ${
+            st.hasAgentsMd
+              ? `<button type="button" class="ag-pm-reveal-link" data-ag-pm-reveal-agents="true">${L('在 Finder 中定位 AGENTS.md', 'Reveal AGENTS.md in Finder')}</button>`
+              : ''
+          }
+          <div class="ag-pm-footer-actions">
+            <button type="button" class="ag-pm-secondary-btn" data-ag-pm-close="true">${L('取消', 'Cancel')}</button>
+            <button type="button" class="ag-pm-primary-btn" data-ag-pm-save="true" ${st.saving ? 'disabled' : ''}>${
+              st.saving ? L('保存中…', 'Saving…') : L('保存 AGENTS.md', 'Save AGENTS.md')
+            }</button>
+          </div>
         </div>
       </div>
     `;
@@ -10826,6 +11323,16 @@
         if (projectsModalState) {
           projectsModalState.instructions = textarea.value;
           projectsModalState.userEdited = true;
+        }
+      });
+    }
+
+    const revealBtn = projectsModalEl.querySelector('[data-ag-pm-reveal-agents]');
+    if (revealBtn) {
+      revealBtn.addEventListener('click', () => {
+        if (st.dirPath && typeof window.__agProjectCall === 'function') {
+          const targetPath = `${String(st.dirPath).replace(/[\\/]+$/, '')}/AGENTS.md`;
+          window.__agProjectCall('revealFile', { dirPath: st.dirPath, targetPath }, 5000);
         }
       });
     }
@@ -10861,6 +11368,7 @@
           projectsContextMap[modalRef.dirPath] = res;
           closeProjectsModal();
           if (projectsViewOpen) renderProjectsView();
+          invalidateOverviewSnapshotCache();
         } else {
           modalRef.saving = false;
           modalRef.error = L('保存失败：', 'Save failed: ') + String((res && res.error) || 'unknown');
@@ -11381,6 +11889,7 @@
           projectsContextMap[modalRef.dirPath] = res;
           closeProjectsModal();
           if (projectsViewOpen) renderProjectsView();
+          invalidateOverviewSnapshotCache();
         } else {
           modalRef.saving = false;
           modalRef.error = L('保存失败：', 'Save failed: ') + String((res && res.error) || 'unknown');
@@ -11971,6 +12480,7 @@
           modalRef.instructions = '';
           modalRef.createdDir = res.dirPath || '';
           modalRef.successMsg = L(`已创建技能「${res.folderName}」，重新进入页面或稍候即可在列表中看到。`, `Skill "${res.folderName}" created successfully.`);
+          invalidateOverviewSnapshotCache();
           renderAddSkillModal();
         } else {
           const code = (res && res.error) || 'unknown';
@@ -12009,6 +12519,7 @@
           modalRef.successMsg = res.alreadyInstalled
             ? L(`「${res.folderName}」已在全局技能目录中。`, `"${res.folderName}" is already in the skills folder.`)
             : L(`已成功导入技能「${res.folderName}」。`, `Imported skill "${res.folderName}" successfully.`);
+          invalidateOverviewSnapshotCache();
           renderAddSkillModal();
         } else {
           const code = (res && res.error) || 'unknown';
@@ -12305,6 +12816,7 @@
             `已创建子 Agent「${res.name}」（~/.gemini/config/agents/${res.name}.md），稍候或重进页面即可看到。`,
             `Subagent "${res.name}" created in ~/.gemini/config/agents/${res.name}.md.`
           );
+          invalidateOverviewSnapshotCache();
           renderAddAgentModal();
         } else {
           const code = (res && res.error) || 'unknown';
@@ -12344,6 +12856,7 @@
           const names = (res.imported || []).map((x) => x.name).join('、');
           modalRef.createdPath = (res.imported && res.imported[0] && res.imported[0].filePath) || res.dirPath || '';
           modalRef.successMsg = L(`已成功导入子 Agent：${names}`, `Imported subagent(s): ${names}`);
+          invalidateOverviewSnapshotCache();
           renderAddAgentModal();
         } else {
           const code = (res && res.error) || 'unknown';
@@ -12598,6 +13111,1163 @@
     syncSidebarHideNativeProjects();
   }
 
+  /* ==========================================================================
+   * 11. Enhanced Right Overview Panel (`claudeUxOverviewPanel`)
+   *     - Re-styles native quick shortcuts into a 4-tile toolbar via CSS `order: 0`
+   *     - Keeps native Artifact section right below shortcuts (`order: 1`)
+   *     - Appends `#ag-claude-ov-sections` as last DOM child (`order: 2`, React-safe)
+   *     - Combines Environment, T3 Context/Cache breakdown + Compact, Google Blue
+   *       dual-window Used-% Quotas + time cursor, Side chats, and Connectors list
+   * ========================================================================== */
+  const OV_COLLAPSE_STORAGE_KEY = 'ag_claude_ov_collapse_v2';
+  const OV_DEFAULT_OPEN = {
+    environment: true,
+    context: true,
+    quota: true,
+    otherPools: true,
+    sidechats: true,
+    connectors: false,
+    invMemory: false,
+    invSkills: false,
+    invAgents: false,
+    connectorsExtra: false
+  };
+  let ovCollapseState = (() => {
+    try {
+      const raw = typeof localStorage === 'object' && localStorage ? localStorage.getItem(OV_COLLAPSE_STORAGE_KEY) : null;
+      const parsed = raw ? JSON.parse(raw) : null;
+      if (parsed && typeof parsed === 'object') return Object.assign({}, OV_DEFAULT_OPEN, parsed);
+    } catch {}
+    return Object.assign({}, OV_DEFAULT_OPEN);
+  })();
+  function persistOvCollapseState() {
+    try {
+      if (typeof localStorage === 'object' && localStorage) {
+        localStorage.setItem(OV_COLLAPSE_STORAGE_KEY, JSON.stringify(ovCollapseState));
+      }
+    } catch {}
+  }
+
+  const ovSnapshotCache = new Map(); // dirKey -> { ts, data }
+  const ovSnapshotInFlight = new Map(); // dirKey -> Promise
+  let ovLastQuotaAutoTryTs = 0;
+  let ovQuotaSpinTimer = 0;
+  let ovRefreshSpinUntil = 0;
+  let ovMinuteTickerId = null;
+  let ovWorkspaceMemo = { ts: 0, key: '', value: null };
+  let ovCompactMemo = { ts: 0, key: '', status: 'idle' };
+
+  function invalidateOverviewSnapshotCache() {
+    ovSnapshotCache.clear();
+    ovWorkspaceMemo = { ts: 0, key: '', value: null };
+    if (!disposed && FEAT.overviewPanel) {
+      const sec = document.getElementById('ag-claude-ov-sections');
+      if (sec) sec.removeAttribute('data-render-sig');
+      renderOverviewPanel(true);
+    }
+  }
+
+  function fmtOvTokens(n) {
+    const v = Number(n) || 0;
+    if (!Number.isFinite(v) || v <= 0) return '0';
+    if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(2).replace(/\.?0+$/, '')}M`;
+    if (v >= 1000) return fmtCompactTokens(v);
+    return String(Math.round(v));
+  }
+
+  function ovQuotaUsedColor(usedPct) {
+    if (usedPct >= 90) return '#DC2626';
+    if (usedPct >= 75) return '#D97706';
+    return 'var(--ag-ov-blue, #2F75C3)';
+  }
+
+  function localizeQuotaWindowTag(rawWin, fallbackName = '') {
+    const win = String(rawWin || '').trim().toLowerCase();
+    if (win === '5h') return L('5 小时', '5h');
+    if (win === 'weekly') return L('每周', 'Weekly');
+    if (win === 'daily') return L('每日', 'Daily');
+    return fallbackName || L('配额', 'Quota');
+  }
+
+  function readOverviewModelLabel() {
+    const inputBox = document.getElementById('antigravity.agentSidePanelInputBox');
+    const trigger = inputBox && inputBox.querySelector('button[data-testid="model-selector-trigger"]');
+    return ((trigger ? trigger.textContent : '') || '').trim();
+  }
+
+  function computeWindowElapsedPct(bucket, usedPct) {
+    const win = String(bucket?.window || '').trim().toLowerCase();
+    if (win === '5h' && usedPct === 0 && !bucket?.description) return null;
+    const secStr = bucket?.resetTime && bucket.resetTime.seconds !== undefined ? String(bucket.resetTime.seconds) : '';
+    const resetSec = secStr ? Number(secStr) : 0;
+    if (!resetSec || Number.isNaN(resetSec)) return null;
+    const totalSec = win === '5h' ? 5 * 3600 : win === 'daily' ? 86400 : win === 'weekly' ? 7 * 86400 : 0;
+    if (!totalSec) return null;
+    const nowSec = Math.floor(Date.now() / 1000);
+    const remSec = Math.max(0, Math.min(totalSec, resetSec - nowSec));
+    const elapsedFrac = Math.max(0, Math.min(1, 1 - remSec / totalSec));
+    return Math.round(elapsedFrac * 100);
+  }
+
+  function resolveActiveOverviewWorkspace(force = false) {
+    const curCid = getActiveCascadeId();
+    const locSearch = String(window.location.search || '');
+    const memoKey = `${curCid}|${locSearch}`;
+    const now = Date.now();
+    if (!force && ovWorkspaceMemo.value && ovWorkspaceMemo.key === memoKey && now - ovWorkspaceMemo.ts < 400) {
+      return ovWorkspaceMemo.value;
+    }
+
+    let urlPid = '';
+    try {
+      urlPid = new URLSearchParams(locSearch).get('project') || '';
+    } catch {}
+    const { store } = resolveProjectsStoreAndBindings();
+    const state = store && typeof store.getState === 'function' ? store.getState() : null;
+    const summaries = (state && state.trajectorySummaries && state.trajectorySummaries.summaries) || {};
+    const sum = curCid ? summaries[curCid] : null;
+    const projects = typeof collectNativeProjects === 'function' ? collectNativeProjects() : [];
+    const norm = (p) => String(p || '').replace(/\/+$/, '').toLowerCase();
+
+    const pid = (sum && (sum.projectId || (sum.trajectoryMetadata && sum.trajectoryMetadata.projectId))) || urlPid || '';
+    let wsDir = '';
+    if (sum) {
+      const wsList = (sum.workspaces || []).concat((sum.trajectoryMetadata && sum.trajectoryMetadata.workspaces) || []);
+      for (const ws of wsList) {
+        const rawUri = ws && (ws.workspaceFolderAbsoluteUri || ws.uri || ws);
+        if (typeof rawUri === 'string' && rawUri.trim()) {
+          const decoded = decodeFileUriToPath(rawUri).replace(/\/+$/, '');
+          if (decoded) {
+            wsDir = decoded;
+            break;
+          }
+        }
+      }
+    }
+
+    let matchedProj = pid ? projects.find((p) => p.id === pid) : null;
+    if (!matchedProj && wsDir) {
+      matchedProj = projects.find((p) => norm(p.dirPath) === norm(wsDir)) || null;
+    }
+    const dirPath = (matchedProj && matchedProj.dirPath) || wsDir || '';
+    const project = matchedProj || (dirPath ? { id: '', name: dirPath.split(/[\\/]/).filter(Boolean).pop() || dirPath, dirPath } : null);
+    const result = { cid: curCid, dirPath, project, state, summaries };
+    ovWorkspaceMemo = { ts: now, key: memoKey, value: result };
+    return result;
+  }
+
+  function getOverviewCompactStatus(curCid, force = false) {
+    const key = `${curCid}|${manualCompactPending.cascadeId}:${manualCompactPending.startedAt}`;
+    const now = Date.now();
+    if (!force && ovCompactMemo.key === key && now - ovCompactMemo.ts < 350) {
+      return ovCompactMemo.status;
+    }
+    const status = detectCompactStatus(curCid);
+    ovCompactMemo = { ts: now, key, status };
+    return status;
+  }
+
+  function ensureOverviewSnapshot(dirPath, force = false) {
+    if (typeof window.__agProjectCall !== 'function') return null;
+    const key = String(dirPath || '').trim() || '__global__';
+    const now = Date.now();
+    const cached = ovSnapshotCache.get(key);
+    if (!force && cached && now - cached.ts < 15000) return cached.data;
+    if (!ovSnapshotInFlight.has(key)) {
+      const p = Promise.resolve(window.__agProjectCall('getOverviewSnapshot', { dirPath: dirPath || '' }, 6000))
+        .then((res) => {
+          if (disposed || !res || !res.ok) return;
+          ovSnapshotCache.set(key, { ts: Date.now(), data: res });
+          if (FEAT.overviewPanel) renderOverviewPanel(false);
+        })
+        .catch(() => {})
+        .finally(() => {
+          ovSnapshotInFlight.delete(key);
+        });
+      ovSnapshotInFlight.set(key, p);
+    }
+    return cached ? cached.data : null;
+  }
+
+  function collectMergedSidechats(curCid, stats, summaries) {
+    const byId = new Map();
+    if (stats && Array.isArray(stats.children)) {
+      for (const ch of stats.children) {
+        if (!ch || !ch.id) continue;
+        byId.set(ch.id, Object.assign({}, ch));
+      }
+    }
+    if (curCid && summaries && typeof summaries === 'object') {
+      for (const [id, sum] of Object.entries(summaries)) {
+        if (!sum || id === curCid) continue;
+        const parentId = sum.parentConversationId || (sum.trajectoryMetadata && sum.trajectoryMetadata.parentConversationId) || '';
+        if (parentId !== curCid) continue;
+        const title = String((sum.annotations && sum.annotations.title) || sum.summary || '').trim();
+        const agentName = String(sum.agentName || (sum.trajectoryMetadata && sum.trajectoryMetadata.agentName) || '').trim();
+        const status = sum.status ?? '';
+        const running = Boolean(
+          !sum.killed &&
+            (Boolean(sum.notFullyIdle) ||
+              status === 2 ||
+              status === 3 ||
+              status === 4 ||
+              /RUNNING|IN_PROGRESS|ACTIVE/i.test(String(status)))
+        );
+        const prev = byId.get(id) || { id, calls: 0, outTok: 0 };
+        byId.set(id, Object.assign({}, prev, {
+          title: title || prev.title || '',
+          agentName: agentName || prev.agentName || '',
+          running: running || Boolean(prev.running),
+          killed: Boolean(sum.killed || prev.killed)
+        }));
+      }
+    }
+    return Array.from(byId.values()).slice(0, 12);
+  }
+
+  function buildOvChevronSvg(isOpen) {
+    return `<svg class="ag-ov-chev" data-open="${isOpen ? 'true' : 'false'}" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M6 4l4 4-4 4" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+  }
+
+  function onOverviewSectionsClick(e) {
+    if (disposed || !FEAT.overviewPanel) return;
+    const collapseBtn = e.target.closest('[data-ag-ov-collapse]');
+    if (collapseBtn) {
+      e.preventDefault();
+      e.stopPropagation();
+      const key = collapseBtn.getAttribute('data-ag-ov-collapse');
+      if (key) {
+        ovCollapseState[key] = !ovCollapseState[key];
+        persistOvCollapseState();
+        renderOverviewPanel(true);
+      }
+      return;
+    }
+
+    const actionEl = e.target.closest('[data-ag-ov-action]');
+    if (!actionEl) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const action = actionEl.getAttribute('data-ag-ov-action');
+    const ws = resolveActiveOverviewWorkspace(true);
+
+    if (action === 'finder') {
+      if (ws.dirPath && typeof window.__agProjectCall === 'function') {
+        window.__agProjectCall('revealFile', { targetPath: ws.dirPath, dirPath: ws.dirPath, openFolder: true }, 5000);
+      }
+    } else if (action === 'copy-path') {
+      if (ws.dirPath && navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        navigator.clipboard.writeText(ws.dirPath).then(
+          () => showProjectsFloatingNotice(L('已复制工作区路径', 'Workspace path copied')),
+          () => {}
+        );
+      }
+    } else if (action === 'edit-rules') {
+      if (ws.project && ws.project.dirPath) {
+        openProjectInstructionsModal(ws.project);
+      } else {
+        const globalPath = actionEl.getAttribute('data-path') || '';
+        if (globalPath && typeof window.__agProjectCall === 'function') {
+          window.__agProjectCall('revealFile', { targetPath: globalPath, dirPath: '' }, 5000);
+        }
+      }
+    } else if (action === 'compact') {
+      if (!actionEl.disabled) {
+        ovCompactMemo = { ts: 0, key: '', status: 'idle' };
+        triggerConversationCompact();
+      }
+    } else if (action === 'refresh-quota') {
+      ovRefreshSpinUntil = Date.now() + 600;
+      const icon = actionEl.querySelector('svg');
+      if (icon) {
+        icon.classList.remove('ag-ov-spinning');
+        void icon.offsetWidth;
+        icon.classList.add('ag-ov-spinning');
+      }
+      cancelLater(ovQuotaSpinTimer);
+      ovQuotaSpinTimer = later(() => {
+        ovQuotaSpinTimer = 0;
+        ovRefreshSpinUntil = 0;
+        const curIcon = document.querySelector('#ag-claude-ov-sections [data-ag-ov-action="refresh-quota"] svg');
+        if (curIcon) curIcon.classList.remove('ag-ov-spinning');
+      }, 620);
+      discoverQuotaService(true);
+      fetchQuotaSummary(true);
+    } else if (action === 'sidechat') {
+      const cid = actionEl.getAttribute('data-cid') || '';
+      if (cid) openConversationFromProject(cid);
+    } else if (action === 'reveal-path') {
+      const targetPath = actionEl.getAttribute('data-path') || '';
+      if (targetPath && typeof window.__agProjectCall === 'function') {
+        window.__agProjectCall('revealFile', { targetPath, dirPath: ws.dirPath || '' }, 5000);
+      }
+    } else if (action === 'open-plugins') {
+      const pluginsBtn = document.querySelector('button[data-testid="overview-panel-row-plugins"]');
+      if (pluginsBtn) pluginsBtn.click();
+    } else if (action === 'open-skills-dir') {
+      if (typeof window.__agProjectCall === 'function') {
+        window.__agProjectCall('openSkillsDir', {}, 5000);
+      }
+    } else if (action === 'open-agents-dir') {
+      if (typeof window.__agProjectCall === 'function') {
+        window.__agProjectCall('openAgentsDir', {}, 5000);
+      }
+    } else if (action === 'toggle-connectors-more') {
+      ovCollapseState.connectorsExtra = !ovCollapseState.connectorsExtra;
+      persistOvCollapseState();
+      renderOverviewPanel(true);
+    }
+  }
+
+  function renderOverviewPanel(force = false) {
+    if (disposed || !FEAT.overviewPanel) return;
+    const sectionsEl = document.getElementById('ag-claude-ov-sections');
+    if (!sectionsEl) return;
+
+    const ws = resolveActiveOverviewWorkspace(force);
+    const snap = ensureOverviewSnapshot(ws.dirPath, false);
+    const curCid = ws.cid;
+    const rawM = window.__ag_last_metrics;
+    const hasCtx = Boolean(rawM && rawM.hasData && (!curCid || rawM.cascadeId === curCid) && rawM.stats);
+    const stats = hasCtx ? rawM.stats : null;
+    const compactStatus = getOverviewCompactStatus(curCid, force);
+    const paneRunning = isPaneCurrentlyRunning();
+    const { preUsed, limitLabel, summaryLabel, summaryPct } = extractCompactLabels(latestCtxState, curCid);
+
+    const groups = cachedQuotaGroups || [];
+    const curModelLabel = readOverviewModelLabel();
+    const ovPrimaryIdx = groups.length > 0 ? detectDefaultGroupIndex(groups) : 0;
+    const minuteBucket = Math.floor(Date.now() / 60000);
+
+    const mergedChildren = collectMergedSidechats(curCid, stats, ws.summaries);
+    const snapSig = snap
+      ? `${snap.workspace?.dirPath}|${snap.workspace?.git?.branch}:${snap.workspace?.git?.added}:${snap.workspace?.git?.deleted}:${snap.workspace?.git?.changedFiles}|r${snap.rules?.length}|s${snap.skills?.total}|a${snap.agents?.total}|c${snap.connectors?.length}`
+      : 'nosnap';
+    const ctxSig = stats
+      ? `${stats.ctx}/${stats.limit}|${stats.cached}|${stats.uncached}|${stats.lastCacheRate}|${stats.sessionCacheRate}|${stats.turns}/${stats.calls}|${stats.totalThink}|${stats.totalResp}|${compactStatus}|${paneRunning ? 1 : 0}|${summaryLabel}`
+      : `noctx|${compactStatus}|${paneRunning ? 1 : 0}`;
+    const quotaSig = `${cachedUserTierName}|${ovPrimaryIdx}|${curModelLabel}|m${minuteBucket}|${groups
+      .map((g) => `${g.displayName}:${(g.buckets || []).map((b) => `${b.window}=${b.remaining?.value ?? b.remainingFraction}:${b.resetTime?.seconds ?? ''}`).join(',')}`)
+      .join(';')}`;
+    const subSig = mergedChildren.map((c) => `${c.id}:${c.running ? 1 : 0}:${c.title}:${c.calls}`).join('|');
+    const colSig = Object.keys(OV_DEFAULT_OPEN)
+      .map((k) => (ovCollapseState[k] ? '1' : '0'))
+      .join('');
+    const renderSig = `${FEAT.i18n ? 'zh' : 'en'}||${curCid}||${ws.dirPath}||${snapSig}||${ctxSig}||${quotaSig}||${subSig}||${colSig}`;
+
+    if (!force && sectionsEl.getAttribute('data-render-sig') === renderSig) return;
+    sectionsEl.setAttribute('data-render-sig', renderSig);
+
+    /* ---- 1. Environment Card ---- */
+    const git = snap && snap.workspace && snap.workspace.git ? snap.workspace.git : null;
+    const gitPillHtml = git
+      ? `<span class="ag-ov-git-pill">${escapeHtml(git.branch)}${
+          git.added > 0 || git.deleted > 0
+            ? ` · <span class="ag-ov-git-add">+${git.added}</span> <span class="ag-ov-git-del">-${git.deleted}</span>`
+            : git.changedFiles > 0
+              ? ` · <span class="ag-ov-muted">${git.changedFiles} ${L('变更', 'chg')}</span>`
+              : ''
+        }</span>`
+      : '';
+    const dirName = (ws.project && ws.project.name) || (snap && snap.workspace && snap.workspace.name) || '';
+    const shortDir = ws.dirPath ? formatShortHomePath(ws.dirPath) : '';
+    const folderRowHtml = ws.dirPath
+      ? `<button type="button" class="ag-ov-row-btn" data-ag-ov-action="copy-path" title="${escapeHtml(ws.dirPath)}">
+          <span class="ag-ov-row-left">
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M2 4.2a1 1 0 0 1 1-1h3.5l1.3 1.4H13a1 1 0 0 1 1 1v6.2a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4.2z"/></svg>
+            <span class="ag-ov-row-title">${escapeHtml(dirName)}</span>
+          </span>
+          <span class="ag-ov-mono-muted">${escapeHtml(shortDir)}</span>
+        </button>`
+      : `<div class="ag-ov-empty-inline ag-ov-env-pad">${L('未绑定项目目录', 'No workspace folder bound')}</div>`;
+
+    const rulesList = (snap && Array.isArray(snap.rules) && snap.rules) || [];
+    const hasGlobalRule = rulesList.some((r) => r.scope === 'global');
+    const hasProjRule = rulesList.some((r) => r.scope === 'project');
+    const hasPluginRule = rulesList.some((r) => r.scope === 'plugin');
+    const globalRulePath = (rulesList.find((r) => r.scope === 'global') || {}).path || '';
+    const scopeParts = [];
+    if (hasGlobalRule) scopeParts.push(L('全局', 'Global'));
+    if (hasProjRule) scopeParts.push(L('项目', 'Project'));
+    if (hasPluginRule) scopeParts.push(L('插件', 'Plugin'));
+    const ruleSummary = scopeParts.length
+      ? `${scopeParts.join(' + ')} · ${L(`${rulesList.length} 份`, String(rulesList.length))}`
+      : L('未配置', 'None');
+    const canEditRules = Boolean((ws.project && ws.project.dirPath) || globalRulePath);
+
+    const envCardHtml = `
+      <section class="ag-ov-card" data-ov-card="environment">
+        <div class="ag-ov-card-hdr">
+          <button type="button" class="ag-ov-hdr-toggle" data-ag-ov-collapse="environment">
+            ${buildOvChevronSvg(ovCollapseState.environment)}
+            <span>${L('工作环境', 'Environment')}</span>
+          </button>
+          ${
+            ws.dirPath
+              ? `<button type="button" class="ag-ov-hdr-action" data-ag-ov-action="finder">Finder ↗</button>`
+              : ''
+          }
+        </div>
+        ${
+          ovCollapseState.environment
+            ? `<div class="ag-ov-card-body ag-ov-env-body">
+                <div class="ag-ov-kv-row ag-ov-env-pad">
+                  <span class="ag-ov-row-left">
+                    <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="1.8" y="2.5" width="12.4" height="8.5" rx="1.4"/><path d="M5.5 13.5h5M8 11v2.5" stroke-linecap="round"/></svg>
+                    <span>${L('本机工作区', 'This computer')}</span>
+                  </span>
+                  ${gitPillHtml}
+                </div>
+                ${folderRowHtml}
+                <div class="ag-ov-rule-pill">
+                  <span class="ag-ov-row-left">
+                    <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M4 2h5.2l3.3 3.3V14H4V2z"/><path d="M9 2v3.5h3.5M6 8.5h4M6 11h3" stroke-linecap="round"/></svg>
+                    <span class="ag-ov-mono">AGENTS.md</span>
+                    <span class="ag-ov-muted ag-ov-trunc">${escapeHtml(ruleSummary)}</span>
+                  </span>
+                  ${
+                    canEditRules
+                      ? `<button type="button" class="ag-ov-mini-btn" data-ag-ov-action="edit-rules" data-path="${escapeHtml(globalRulePath)}">${ws.project && ws.project.dirPath ? L('编辑', 'Edit') : L('查看', 'Open')}</button>`
+                      : ''
+                  }
+                </div>
+              </div>`
+            : ''
+        }
+      </section>`;
+
+    /* ---- 2. Context Card (T3 Style) ---- */
+    let topPctText = hasCtx ? `${stats.pct}% ${L('已用', 'used')}` : L('暂无消耗', 'No data');
+    let topRatioText = hasCtx ? `${fmtOvTokens(stats.ctx)} / ${stats.limitStr}` : '';
+    let topPctLevel = '';
+    if (stats) {
+      if (stats.pct >= 90) topPctLevel = 'crit';
+      else if (stats.pct >= 75) topPctLevel = 'warn';
+    }
+
+    const limitTok = stats ? Math.max(1, Number(stats.limit) || 1) : 1;
+    const shareDenom = stats
+      ? Math.max(limitTok, Number(stats.ctx || 0), Number(stats.cached || 0) + Number(stats.uncached || 0))
+      : 1;
+    let cachedBarW = stats ? Math.min(100, (Number(stats.cached || 0) / shareDenom) * 100) : 0;
+    let uncachedBarW = stats ? Math.min(100 - cachedBarW, (Number(stats.uncached || 0) / shareDenom) * 100) : 0;
+    let compactBtnHtml = '';
+
+    if (compactStatus === 'compacting') {
+      topPctText = preUsed ? L(`正在压缩 ${preUsed}…`, `Compacting ${preUsed}…`) : L('正在压缩…', 'Compacting…');
+      topRatioText = '';
+      topPctLevel = '';
+      cachedBarW = 14;
+      uncachedBarW = 0;
+      compactBtnHtml = `<button type="button" class="ag-ov-compact-btn" data-ag-ov-action="compact" data-state="compacting" disabled>${SVG_COMPACT_ICON}<span>${L('压缩中…', 'Compacting…')}</span></button>`;
+    } else if (compactStatus === 'compacted') {
+      topPctText = summaryLabel && limitLabel ? `${summaryPct}% ${L('已用', 'used')}` : L('已完成压缩', 'Compacted');
+      topRatioText = summaryLabel && limitLabel ? `${summaryLabel} / ${limitLabel}` : L('下轮刷新', 'Next turn');
+      topPctLevel = '';
+      cachedBarW = summaryPct > 0 ? Math.max(2, summaryPct) : 2;
+      uncachedBarW = 0;
+      compactBtnHtml = `<button type="button" class="ag-ov-compact-btn" data-ag-ov-action="compact" data-state="compacted" disabled>${SVG_COMPACT_DONE}<span>${L('已压缩', 'Compacted')}</span></button>`;
+    } else if (!hasCtx) {
+      compactBtnHtml = `<button type="button" class="ag-ov-compact-btn" data-ag-ov-action="compact" data-state="empty" disabled>${SVG_COMPACT_ICON}<span>${L('压缩', 'Compact')}</span></button>`;
+    } else if (paneRunning) {
+      compactBtnHtml = `<button type="button" class="ag-ov-compact-btn" data-ag-ov-action="compact" data-state="busy" disabled title="${escapeHtml(L('请等待当前回复结束后压缩', 'Wait for response to finish'))}">${SVG_COMPACT_ICON}<span>${L('压缩', 'Compact')}</span></button>`;
+    } else {
+      const urgAttr = stats.pct >= 85 ? ' data-urgent="crit"' : stats.pct >= 70 ? ' data-urgent="warn"' : '';
+      compactBtnHtml = `<button type="button" class="ag-ov-compact-btn" data-ag-ov-action="compact" data-state="ready"${urgAttr} title="${escapeHtml(L('立即执行 /compact 压缩上下文', 'Run /compact'))}">${SVG_COMPACT_ICON}<span>${L('压缩', 'Compact')}</span></button>`;
+    }
+
+    const cachedPctStr = stats ? ((Number(stats.cached || 0) / shareDenom) * 100).toFixed(1) : '0.0';
+    const uncachedPctStr = stats ? ((Number(stats.uncached || 0) / shareDenom) * 100).toFixed(1) : '0.0';
+    const freePctVal = stats ? Math.max(0, 100 - Number(cachedPctStr) - Number(uncachedPctStr)) : 100;
+    const freePctStr = freePctVal.toFixed(1);
+
+    const ctxCardHtml = `
+      <section class="ag-ov-card" data-ov-card="context">
+        <div class="ag-ov-card-hdr">
+          <button type="button" class="ag-ov-hdr-toggle" data-ag-ov-collapse="context">
+            ${buildOvChevronSvg(ovCollapseState.context)}
+            <span>${L('上下文', 'Context')}</span>
+          </button>
+          <div class="ag-ov-ctx-hdr-meta">
+            <span class="ag-ov-ctx-pct" data-level="${topPctLevel}">${escapeHtml(topPctText)}</span>
+            ${topRatioText ? `<span class="ag-ov-muted">${escapeHtml(topRatioText)}</span>` : ''}
+          </div>
+        </div>
+        ${
+          ovCollapseState.context
+            ? `<div class="ag-ov-card-body">
+                <div class="ag-ov-stacked-bar">
+                  <div class="ag-ov-bar-cached" style="width:${cachedBarW.toFixed(2)}%"></div>
+                  <div class="ag-ov-bar-uncached" style="width:${uncachedBarW.toFixed(2)}%"></div>
+                </div>
+                ${
+                  stats
+                    ? `<div class="ag-ov-breakdown">
+                        <div class="ag-ov-bd-row">
+                          <span class="ag-ov-bd-lbl"><i class="ag-ov-dot ag-ov-dot-blue"></i><span>${L('缓存上下文', 'Cached context')}</span></span>
+                          <span class="ag-ov-bd-vals"><span>${escapeHtml(fmtOvTokens(stats.cached))}</span><span class="ag-ov-muted ag-ov-pct-w">${cachedPctStr}%</span></span>
+                        </div>
+                        <div class="ag-ov-bd-row">
+                          <span class="ag-ov-bd-lbl"><i class="ag-ov-dot ag-ov-dot-amber"></i><span>${L('新增上下文', 'Uncached context')}</span></span>
+                          <span class="ag-ov-bd-vals"><span>${escapeHtml(fmtOvTokens(stats.uncached))}</span><span class="ag-ov-muted ag-ov-pct-w">${uncachedPctStr}%</span></span>
+                        </div>
+                        <div class="ag-ov-bd-row">
+                          <span class="ag-ov-bd-lbl"><i class="ag-ov-dot ag-ov-dot-free"></i><span class="ag-ov-muted">${L('剩余空间', 'Free space')}</span></span>
+                          <span class="ag-ov-bd-vals ag-ov-muted"><span>${escapeHtml(fmtOvTokens(stats.remain))}</span><span class="ag-ov-pct-w">${freePctStr}%</span></span>
+                        </div>
+                      </div>
+                      <div class="ag-ov-submetrics">
+                        <div class="ag-ov-kv-row">
+                          <span class="ag-ov-muted">${L('缓存命中率', 'Prompt cache')}</span>
+                          <span><strong class="ag-ov-blue-txt">${stats.lastCacheRate}%</strong> <span class="ag-ov-muted">${L('· 累计', '· avg')} ${stats.sessionCacheRate}%</span></span>
+                        </div>
+                        <div class="ag-ov-kv-row">
+                          <span class="ag-ov-muted">${L('累计输出', 'Output split')}</span>
+                          <span>${L('思考', 'Think')} ${escapeHtml(fmtOvTokens(stats.totalThink))} · ${L('正文', 'Resp')} ${escapeHtml(fmtOvTokens(stats.totalResp))}</span>
+                        </div>
+                      </div>`
+                    : `<div class="ag-ov-empty-inline">${L('发送消息后将显示实时上下文与缓存拆解', 'Context and cache telemetry appear after the first turn')}</div>`
+                }
+                <div class="ag-ov-ctx-footer">
+                  <span class="ag-ov-muted">${stats ? `${stats.turns} ${L('轮', 'turns')} · ${stats.calls} ${L('次调用', 'calls')}` : ''}</span>
+                  ${compactBtnHtml}
+                </div>
+              </div>`
+            : ''
+        }
+      </section>`;
+
+    /* ---- 3. Quota Card (Google Blue + Used % aligned with elapsed time cursor) ---- */
+    const tierDisplay = cachedUserTierName ? cachedUserTierName.trim() : '';
+    const isQuotaSpinning = Date.now() < ovRefreshSpinUntil;
+    let quotaInnerHtml = '';
+    if (groups.length === 0) {
+      quotaInnerHtml = `<div class="ag-ov-empty-inline">${
+        quotaFetchInFlight ? L('正在读取实时套餐限额…', 'Loading plan quotas…') : L('点击右上角刷新读取实时配额', 'Click refresh to load plan quotas')
+      }</div>`;
+    } else {
+      const pIdx = ovPrimaryIdx >= 0 && ovPrimaryIdx < groups.length ? ovPrimaryIdx : 0;
+      const primaryGrp = groups[pIdx];
+      const pShort = localizeGroupShortName(primaryGrp.displayName);
+      const sortBuckets = (list) =>
+        (list || []).slice().sort((a, b) => {
+          const r = (w) => (w === '5h' ? 0 : w === 'daily' ? 1 : 2);
+          return r(String(a.window || '').toLowerCase()) - r(String(b.window || '').toLowerCase());
+        });
+      const primaryBuckets = sortBuckets(primaryGrp.buckets);
+
+      const primaryHtml = primaryBuckets
+        .map((b) => {
+          const rem =
+            b.remaining && b.remaining.case === 'remainingFraction' && typeof b.remaining.value === 'number'
+              ? b.remaining.value
+              : typeof b.remainingFraction === 'number'
+                ? b.remainingFraction
+                : 1;
+          const usedPct = Math.max(0, Math.min(100, Math.round((1 - rem) * 100)));
+          const remPct = 100 - usedPct;
+          const winTag = localizeQuotaWindowTag(b.window, b.displayName || '');
+          const col = ovQuotaUsedColor(usedPct);
+          const litCount = usedPct <= 0 ? 0 : Math.min(20, Math.max(1, Math.round(usedPct / 5)));
+          const segsHtml = Array.from({ length: 20 }, (_, i) =>
+            `<span class="ag-ov-seg" style="background:${i < litCount ? col : 'var(--ag-ov-track)'}"></span>`
+          ).join('');
+          const elapsedPct = computeWindowElapsedPct(b, usedPct);
+          const cursorHtml =
+            elapsedPct !== null
+              ? `<div class="ag-ov-time-track" title="${escapeHtml(L(`窗口时间已流逝 ${elapsedPct}%`, `Window elapsed ${elapsedPct}%`))}">
+                  <div class="ag-ov-time-fill" style="width:${elapsedPct}%"></div>
+                  <span class="ag-ov-time-cursor" style="left:${elapsedPct}%"></span>
+                </div>`
+              : '';
+          const resetTxt = formatResetLabel(b, usedPct);
+          return `<div class="ag-ov-quota-box" title="${escapeHtml(L(`已用 ${usedPct}% · 剩余 ${remPct}%`, `${usedPct}% used · ${remPct}% left`))}">
+            <div class="ag-ov-kv-row">
+              <span class="ag-ov-row-left">
+                <i class="ag-ov-qdot" style="background:${col}"></i>
+                <span class="ag-ov-qtitle">${escapeHtml(pShort)} · ${escapeHtml(winTag)}</span>
+              </span>
+              <span class="ag-ov-qpct">${usedPct}% ${L('已用', 'used')}</span>
+            </div>
+            <div class="ag-ov-seg-bar">${segsHtml}</div>
+            ${cursorHtml}
+            ${resetTxt ? `<div class="ag-ov-reset-txt">${escapeHtml(resetTxt)}</div>` : ''}
+          </div>`;
+        })
+        .join('');
+
+      const otherRows = [];
+      groups.forEach((g, idx) => {
+        if (idx === pIdx) return;
+        const gShort = localizeGroupShortName(g.displayName);
+        for (const b of sortBuckets(g.buckets)) {
+          const rem =
+            b.remaining && b.remaining.case === 'remainingFraction' && typeof b.remaining.value === 'number'
+              ? b.remaining.value
+              : typeof b.remainingFraction === 'number'
+                ? b.remainingFraction
+                : 1;
+          const usedPct = Math.max(0, Math.min(100, Math.round((1 - rem) * 100)));
+          const remPct = 100 - usedPct;
+          const winTag = localizeQuotaWindowTag(b.window, b.displayName || '');
+          const col = ovQuotaUsedColor(usedPct);
+          otherRows.push(`<div class="ag-ov-other-pool-row" title="${escapeHtml(L(`已用 ${usedPct}% · 剩余 ${remPct}%`, `${usedPct}% used · ${remPct}% left`))}">
+            <span class="ag-ov-muted ag-ov-trunc">${escapeHtml(gShort)}${winTag ? ` · ${escapeHtml(winTag)}` : ''}</span>
+            <span class="ag-ov-mini-meter-wrap">
+              <span class="ag-ov-mini-track"><span class="ag-ov-mini-fill" style="width:${usedPct}%;background:${col}"></span></span>
+              <span class="ag-ov-mini-pct">${usedPct}%</span>
+            </span>
+          </div>`);
+        }
+      });
+
+      const otherHtml =
+        otherRows.length > 0
+          ? `<div class="ag-ov-other-pools">
+              <button type="button" class="ag-ov-sub-toggle" data-ag-ov-collapse="otherPools">
+                <span class="ag-ov-row-left">
+                  ${buildOvChevronSvg(ovCollapseState.otherPools)}
+                  <span class="ag-ov-muted">${L('其他模型池', 'Other model pools')}</span>
+                </span>
+                <span class="ag-ov-muted">${otherRows.length}</span>
+              </button>
+              ${ovCollapseState.otherPools ? `<div class="ag-ov-other-pools-list">${otherRows.join('')}</div>` : ''}
+            </div>`
+          : '';
+
+      quotaInnerHtml = `${primaryHtml}${otherHtml}`;
+    }
+
+    const quotaCardHtml = `
+      <section class="ag-ov-card" data-ov-card="quota">
+        <div class="ag-ov-card-hdr">
+          <button type="button" class="ag-ov-hdr-toggle" data-ag-ov-collapse="quota">
+            ${buildOvChevronSvg(ovCollapseState.quota)}
+            <span>Antigravity</span>
+            ${tierDisplay ? `<span class="ag-ov-tier-pill">${escapeHtml(tierDisplay)}</span>` : ''}
+          </button>
+          <div class="ag-ov-hdr-actions">
+            <button type="button" class="ag-ov-icon-btn" data-ag-ov-action="refresh-quota" title="${escapeHtml(L('刷新实时配额', 'Refresh quota'))}" aria-label="${escapeHtml(L('刷新配额', 'Refresh quota'))}">
+              <svg class="${isQuotaSpinning ? 'ag-ov-spinning' : ''}" width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M13.2 8a5.2 5.2 0 1 1-1.4-3.55" stroke-linecap="round"/><path d="M13.4 2.5v2.6h-2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+          </div>
+        </div>
+        ${ovCollapseState.quota ? `<div class="ag-ov-card-body ag-ov-quota-body">${quotaInnerHtml}</div>` : ''}
+      </section>`;
+
+    /* ---- 4. Side chats / Subagents (Rendered only when children exist) ---- */
+    const sidechatsCardHtml =
+      mergedChildren.length > 0
+        ? `<section class="ag-ov-card" data-ov-card="sidechats">
+            <div class="ag-ov-card-hdr">
+              <button type="button" class="ag-ov-hdr-toggle" data-ag-ov-collapse="sidechats">
+                ${buildOvChevronSvg(ovCollapseState.sidechats)}
+                <span>${L('子智能体', 'Side chats')}</span>
+              </button>
+              <span class="ag-ov-count-pill">${mergedChildren.length}</span>
+            </div>
+            ${
+              ovCollapseState.sidechats
+                ? `<div class="ag-ov-list-body">
+                    ${mergedChildren
+                      .map((ch) => {
+                        const label = ch.title || ch.agentName || ch.id.slice(0, 8);
+                        const statusHtml = ch.running
+                          ? `<span class="ag-ov-status-run">${L('运行中', 'Running')}</span>`
+                          : `<span class="ag-ov-muted">${L('已完成', 'Done')}</span>`;
+                        const iconHtml = ch.running
+                          ? `<i class="ag-ov-dot-live"></i>`
+                          : `<svg width="13" height="13" class="ag-ov-muted ag-ov-shrink0" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M3.5 8.2 6.5 11.2 12.5 4.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+                        return `<button type="button" class="ag-ov-row-btn" data-ag-ov-action="sidechat" data-cid="${escapeHtml(ch.id)}">
+                          <span class="ag-ov-row-left">${iconHtml}<span class="ag-ov-trunc">${escapeHtml(label)}</span></span>
+                          ${statusHtml}
+                        </button>`;
+                      })
+                      .join('')}
+                  </div>`
+                : ''
+            }
+          </section>`
+        : '';
+
+    /* ---- 5. Connectors & Inventory (Claude Code Style, Default Collapsed) ---- */
+    const skillsData = (snap && snap.skills) || { total: 0, userCount: 0, items: [] };
+    const agentsData = (snap && snap.agents) || { total: 0, items: [] };
+    const connList = (snap && Array.isArray(snap.connectors) && snap.connectors) || [];
+    const shownConns = ovCollapseState.connectorsExtra ? connList : connList.slice(0, 5);
+    const hiddenConnCount = Math.max(0, connList.length - 5);
+
+    const connectorsCardHtml = `
+      <section class="ag-ov-card" data-ov-card="connectors">
+        <div class="ag-ov-card-hdr">
+          <button type="button" class="ag-ov-hdr-toggle" data-ag-ov-collapse="connectors">
+            ${buildOvChevronSvg(ovCollapseState.connectors)}
+            <span>${L('连接器与能力', 'Connectors & Skills')}</span>
+          </button>
+          <span class="ag-ov-muted ag-ov-tabular">${L(`${connList.length} MCP · ${skillsData.total} 技能`, `${connList.length} MCP · ${skillsData.total} Skills`)}</span>
+        </div>
+        ${
+          ovCollapseState.connectors
+            ? `<div class="ag-ov-card-body ag-ov-conn-wrap">
+                <div class="ag-ov-inv-group">
+                  <button type="button" class="ag-ov-inv-toggle" data-ag-ov-collapse="invMemory">
+                    <span class="ag-ov-row-left">${buildOvChevronSvg(ovCollapseState.invMemory)}<span>${L('记忆与规则', 'Memory / Rules')}</span></span>
+                    <span class="ag-ov-muted ag-ov-tabular">${rulesList.length}</span>
+                  </button>
+                  ${
+                    ovCollapseState.invMemory
+                      ? `<div class="ag-ov-inv-items">
+                          ${
+                            rulesList.length > 0
+                              ? rulesList
+                                  .map(
+                                    (r) =>
+                                      `<button type="button" class="ag-ov-inv-link" data-ag-ov-action="${r.scope === 'project' ? 'edit-rules' : 'reveal-path'}" data-path="${escapeHtml(r.path)}">${escapeHtml(r.label)}</button>`
+                                  )
+                                  .join('')
+                              : `<div class="ag-ov-empty-inline">${L('暂无规则文件', 'No rule files')}</div>`
+                          }
+                        </div>`
+                      : ''
+                  }
+
+                  <button type="button" class="ag-ov-inv-toggle" data-ag-ov-collapse="invSkills">
+                    <span class="ag-ov-row-left">${buildOvChevronSvg(ovCollapseState.invSkills)}<span>${L('技能清单', 'Skills')}</span></span>
+                    <span class="ag-ov-muted ag-ov-tabular">${skillsData.total}</span>
+                  </button>
+                  ${
+                    ovCollapseState.invSkills
+                      ? `<div class="ag-ov-inv-items">
+                          ${skillsData.items
+                            .slice(0, 12)
+                            .map(
+                              (s) =>
+                                `<button type="button" class="ag-ov-inv-link" data-ag-ov-action="reveal-path" data-path="${escapeHtml(s.path)}" title="${escapeHtml(s.source)}">${escapeHtml(s.name)}</button>`
+                            )
+                            .join('')}
+                          ${
+                            skillsData.total > 12
+                              ? `<button type="button" class="ag-ov-inv-more" data-ag-ov-action="open-skills-dir">${L(`… 其余 ${skillsData.total - 12} 项（打开技能目录）`, `… ${skillsData.total - 12} more (open folder)`)}</button>`
+                              : ''
+                          }
+                        </div>`
+                      : ''
+                  }
+
+                  <button type="button" class="ag-ov-inv-toggle" data-ag-ov-collapse="invAgents">
+                    <span class="ag-ov-row-left">${buildOvChevronSvg(ovCollapseState.invAgents)}<span>${L('自定义子 Agent', 'Custom agents')}</span></span>
+                    <span class="ag-ov-muted ag-ov-tabular">${agentsData.total}</span>
+                  </button>
+                  ${
+                    ovCollapseState.invAgents
+                      ? `<div class="ag-ov-inv-items">
+                          ${
+                            agentsData.items.length > 0
+                              ? agentsData.items
+                                  .map(
+                                    (a) =>
+                                      `<button type="button" class="ag-ov-inv-link" data-ag-ov-action="reveal-path" data-path="${escapeHtml(a.path)}">${escapeHtml(a.name)}</button>`
+                                  )
+                                  .join('')
+                              : `<button type="button" class="ag-ov-inv-more" data-ag-ov-action="open-agents-dir">${L('暂无自定义 Agent · 打开目录', 'None yet · open folder')}</button>`
+                          }
+                        </div>`
+                      : ''
+                  }
+                </div>
+
+                <div class="ag-ov-conn-sub">
+                  <div class="ag-ov-conn-title">${L('已连接服务', 'Connectors')}</div>
+                  ${
+                    shownConns.length > 0
+                      ? shownConns
+                          .map((c) => {
+                            const letterMatch = String(c.name || c.id || 'M').match(/[A-Za-z0-9]/);
+                            const mono = letterMatch ? letterMatch[0].toUpperCase() : 'M';
+                            return `<button type="button" class="ag-ov-conn-row" data-ag-ov-action="open-plugins" title="${escapeHtml(L('打开扩展插件管理', 'Open Extensions & Plugins'))}">
+                              <span class="ag-ov-row-left">
+                                <span class="ag-ov-monogram">${escapeHtml(mono)}</span>
+                                <span class="ag-ov-trunc">${escapeHtml(c.name)}</span>
+                              </span>
+                              <i class="ag-ov-dot ag-ov-dot-green"></i>
+                            </button>`;
+                          })
+                          .join('')
+                      : `<div class="ag-ov-empty-inline">${L('暂无已配置的 MCP 连接器', 'No MCP connectors configured')}</div>`
+                  }
+                  ${
+                    hiddenConnCount > 0
+                      ? `<button type="button" class="ag-ov-show-more" data-ag-ov-action="toggle-connectors-more">${
+                          ovCollapseState.connectorsExtra ? L('收起', 'Show less') : L(`展开更多 (${hiddenConnCount})`, `Show more (${hiddenConnCount})`)
+                        }</button>`
+                      : ''
+                  }
+                </div>
+              </div>`
+            : ''
+        }
+      </section>`;
+
+    sectionsEl.innerHTML = `${envCardHtml}${ctxCardHtml}${quotaCardHtml}${sidechatsCardHtml}${connectorsCardHtml}`;
+  }
+
+  function isNativeArtifactOverviewBlock(el) {
+    if (!el || !el.querySelector) return false;
+    if (el.querySelector('[data-testid="artifact-row"], [data-testid*="artifact"]')) return true;
+    const hdrLbl = el.querySelector('span.agy-hover-label');
+    const txt = hdrLbl ? String(hdrLbl.textContent || '').trim() : '';
+    return /^(?:artifacts?|产物)$/i.test(txt);
+  }
+
+  function stopOverviewMinuteTicker() {
+    if (ovMinuteTickerId) {
+      clearInterval(ovMinuteTickerId);
+      ovMinuteTickerId = null;
+    }
+  }
+
+  function ensureOverviewMinuteTicker() {
+    if (ovMinuteTickerId || disposed) return;
+    ovMinuteTickerId = setInterval(() => {
+      if (disposed || !FEAT.overviewPanel || !document.querySelector('[data-testid="overview-panel"]')) {
+        stopOverviewMinuteTicker();
+        return;
+      }
+      renderOverviewPanel(false);
+    }, 30000);
+    if (ovMinuteTickerId && typeof ovMinuteTickerId.unref === 'function') {
+      ovMinuteTickerId.unref();
+    }
+  }
+
+  function syncOverviewPanel(force = false) {
+    if (disposed || !FEAT.overviewPanel) {
+      teardownOverviewPanel();
+      return;
+    }
+    const panel = document.querySelector('[data-testid="overview-panel"]');
+    if (!panel || panel.hidden || panel.getAttribute('aria-hidden') === 'true') {
+      stopOverviewMinuteTicker();
+      return;
+    }
+
+    if (panel.getAttribute('data-ag-ov-enhanced') !== '1') {
+      panel.setAttribute('data-ag-ov-enhanced', '1');
+    }
+
+    const scrollBody =
+      Array.from(panel.children).find((ch) => ch.classList && ch.classList.contains('overflow-y-auto')) || panel.children[1];
+    if (!scrollBody) return;
+
+    let sectionsEl = document.getElementById('ag-claude-ov-sections');
+    if (sectionsEl && sectionsEl.parentElement !== scrollBody) {
+      sectionsEl.remove();
+      sectionsEl = null;
+    }
+
+    for (const child of Array.from(scrollBody.children)) {
+      if (child.id === 'ag-claude-ov-sections') continue;
+      if (child.querySelector && child.querySelector('button[data-testid^="overview-panel-row-"]')) {
+        if (child.getAttribute('data-ag-ov-shortcuts') !== '1') child.setAttribute('data-ag-ov-shortcuts', '1');
+        child.removeAttribute('data-ag-ov-native-artifact');
+        child.removeAttribute('data-ag-ov-native-tail');
+      } else if (isNativeArtifactOverviewBlock(child)) {
+        if (child.getAttribute('data-ag-ov-native-artifact') !== '1') child.setAttribute('data-ag-ov-native-artifact', '1');
+        child.removeAttribute('data-ag-ov-shortcuts');
+        child.removeAttribute('data-ag-ov-native-tail');
+      } else {
+        if (child.getAttribute('data-ag-ov-native-tail') !== '1') child.setAttribute('data-ag-ov-native-tail', '1');
+        child.removeAttribute('data-ag-ov-shortcuts');
+        child.removeAttribute('data-ag-ov-native-artifact');
+      }
+    }
+
+    if (!sectionsEl) {
+      sectionsEl = document.createElement('div');
+      sectionsEl.id = 'ag-claude-ov-sections';
+      sectionsEl.setAttribute('data-ag-i18n-ignore', '1');
+      sectionsEl.addEventListener('click', onOverviewSectionsClick);
+      scrollBody.appendChild(sectionsEl);
+    }
+
+    ensureOverviewMinuteTicker();
+
+    const now = Date.now();
+    if ((!cachedQuotaGroups || now - lastQuotaFetchTs > 30000) && now - ovLastQuotaAutoTryTs > 15000) {
+      ovLastQuotaAutoTryTs = now;
+      if (discoverQuotaService(false)) fetchQuotaSummary(false);
+    }
+
+    renderOverviewPanel(force);
+  }
+
+  function teardownOverviewPanel() {
+    stopOverviewMinuteTicker();
+    if (ovQuotaSpinTimer) {
+      cancelLater(ovQuotaSpinTimer);
+      ovQuotaSpinTimer = 0;
+    }
+    ovRefreshSpinUntil = 0;
+    ovSnapshotCache.clear();
+    ovWorkspaceMemo = { ts: 0, key: '', value: null };
+    ovCompactMemo = { ts: 0, key: '', status: 'idle' };
+    const sectionsEl = document.getElementById('ag-claude-ov-sections');
+    if (sectionsEl) sectionsEl.remove();
+    document.querySelectorAll('[data-ag-ov-enhanced]').forEach((el) => el.removeAttribute('data-ag-ov-enhanced'));
+    document.querySelectorAll('[data-ag-ov-shortcuts]').forEach((el) => el.removeAttribute('data-ag-ov-shortcuts'));
+    document.querySelectorAll('[data-ag-ov-native-artifact]').forEach((el) => el.removeAttribute('data-ag-ov-native-artifact'));
+    document.querySelectorAll('[data-ag-ov-native-tail]').forEach((el) => el.removeAttribute('data-ag-ov-native-tail'));
+  }
+
+  /* ==========================================================================
+   * 12. Top-Right Titlebar 3-Mode Theme Switcher (claudeUxThemeToggle)
+   *     - Mounts a compact [System | Light | Dark] segmented pill directly to
+   *       the left of `titlebar-more-actions` (`⋮`) via appendChild + `order: -1`
+   *     - Drives Antigravity's native `SettingsSyncedStateProvider.themeModeProvider`
+   *       (`1` = System, `2` = Light, `3` = Dark) with live two-way sync
+   * ========================================================================== */
+  const SVG_THEME_SYSTEM =
+    '<svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">' +
+    '<rect x="2" y="2.75" width="12" height="8.5" rx="1.6" stroke="currentColor" stroke-width="1.35"/>' +
+    '<path d="M5.5 13.5H10.5M8 11.25V13.5" stroke="currentColor" stroke-width="1.35" stroke-linecap="round"/>' +
+    '</svg>';
+  const SVG_THEME_LIGHT =
+    '<svg width="13.5" height="13.5" viewBox="0 0 16 16" fill="none" aria-hidden="true">' +
+    '<circle cx="8" cy="8" r="2.75" stroke="currentColor" stroke-width="1.35"/>' +
+    '<path d="M8 1.9V3.2M8 12.8V14.1M1.9 8H3.2M12.8 8H14.1M3.68 3.68L4.6 4.6M11.4 11.4L12.32 12.32M12.32 3.68L11.4 4.6M4.6 11.4L3.68 12.32" stroke="currentColor" stroke-width="1.35" stroke-linecap="round"/>' +
+    '</svg>';
+  const SVG_THEME_DARK =
+    '<svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">' +
+    '<path d="M12.85 9.85A5.35 5.35 0 0 1 6.15 3.15a5.35 5.35 0 1 0 6.7 6.7Z" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/>' +
+    '</svg>';
+
+  let cachedThemeModeProvider = null;
+  let themeModeUnsub = null;
+  let fallbackThemeModeVal = 0;
+
+  function bindThemeModeSubscription(tp) {
+    if (themeModeUnsub) {
+      try {
+        themeModeUnsub();
+      } catch {}
+      themeModeUnsub = null;
+    }
+    if (tp && typeof tp.onDidChange === 'function') {
+      try {
+        const sub = tp.onDidChange(() => {
+          if (!disposed) updateTopbarThemeActiveUi();
+        });
+        if (typeof sub === 'function') themeModeUnsub = sub;
+        else if (sub && typeof sub.dispose === 'function') themeModeUnsub = () => sub.dispose();
+      } catch {}
+    }
+  }
+
+  function discoverThemeModeProvider() {
+    if (
+      typeof window === 'object' &&
+      window &&
+      window.__ag_test_theme_provider &&
+      typeof window.__ag_test_theme_provider.getState === 'function' &&
+      typeof window.__ag_test_theme_provider.pushUpdate === 'function'
+    ) {
+      if (cachedThemeModeProvider !== window.__ag_test_theme_provider) {
+        cachedThemeModeProvider = window.__ag_test_theme_provider;
+        bindThemeModeSubscription(cachedThemeModeProvider);
+      }
+      return cachedThemeModeProvider;
+    }
+    if (
+      cachedThemeModeProvider &&
+      typeof cachedThemeModeProvider.getState === 'function' &&
+      typeof cachedThemeModeProvider.pushUpdate === 'function'
+    ) {
+      return cachedThemeModeProvider;
+    }
+    const root = document.getElementById('root') || (document.body && document.body.firstElementChild);
+    if (!root) return null;
+    const fk = Object.keys(root).find((k) => k.startsWith('__reactContainer') || k.startsWith('__reactFiber'));
+    const start = fk ? root[fk] : null;
+    if (!start) return null;
+    const queue = [start];
+    const seen = new Set();
+    let steps = 0;
+    while (queue.length && steps < 400) {
+      const f = queue.shift();
+      if (!f || seen.has(f)) continue;
+      seen.add(f);
+      steps++;
+      const mp = f.memoizedProps;
+      const cand = mp && mp.value && mp.value.themeModeProvider;
+      if (cand && typeof cand.getState === 'function' && typeof cand.pushUpdate === 'function') {
+        cachedThemeModeProvider = cand;
+        bindThemeModeSubscription(cand);
+        return cand;
+      }
+      for (let dep = f.dependencies && f.dependencies.firstContext; dep; dep = dep.next) {
+        const mv = dep.memoizedValue;
+        const dc = mv && mv.themeModeProvider;
+        if (dc && typeof dc.getState === 'function' && typeof dc.pushUpdate === 'function') {
+          cachedThemeModeProvider = dc;
+          bindThemeModeSubscription(dc);
+          return dc;
+        }
+      }
+      if (f.child) queue.push(f.child);
+      if (f.sibling) queue.push(f.sibling);
+    }
+    return null;
+  }
+
+  function readCurrentThemeModeVal() {
+    const tp = discoverThemeModeProvider();
+    if (tp) {
+      try {
+        const v = Number(tp.getState());
+        if (v === 2 || v === 3) return v;
+        return 1;
+      } catch {}
+    }
+    if (fallbackThemeModeVal === 1 || fallbackThemeModeVal === 2 || fallbackThemeModeVal === 3) {
+      return fallbackThemeModeVal;
+    }
+    const domMode = docRoot ? docRoot.getAttribute('data-ag-theme-mode') : '';
+    if (domMode === 'light') return 2;
+    if (domMode === 'dark') return 3;
+    return 1;
+  }
+
+  function applyThemeModeVal(nextVal) {
+    const mode = nextVal === 2 ? 2 : nextVal === 3 ? 3 : 1;
+    fallbackThemeModeVal = mode;
+    const tp = discoverThemeModeProvider();
+    if (tp) {
+      try {
+        tp.pushUpdate(mode);
+      } catch {}
+    } else {
+      const hostStr = mode === 2 ? 'light' : mode === 3 ? 'dark' : '';
+      if (typeof window.__ag_set_host_theme_mode === 'function') {
+        try {
+          window.__ag_set_host_theme_mode(hostStr);
+        } catch {}
+      }
+      const resolvedDark =
+        mode === 3 ||
+        (mode === 1 &&
+          typeof window.matchMedia === 'function' &&
+          Boolean(window.matchMedia('(prefers-color-scheme: dark)').matches));
+      if (docRoot) {
+        docRoot.setAttribute('data-ag-theme-mode', resolvedDark ? 'dark' : 'light');
+        docRoot.classList.toggle('dark', resolvedDark);
+      }
+      if (document.body) document.body.classList.toggle('dark', resolvedDark);
+    }
+    updateTopbarThemeActiveUi(mode);
+  }
+
+  function findTopbarThemeHost() {
+    const btns = Array.from(
+      document.querySelectorAll(
+        'button[data-testid="titlebar-more-actions"], button[data-testid="toggle-overview-panel"]'
+      )
+    );
+    if (!btns.length) return null;
+    let bestBtn = null;
+    let bestRight = -Infinity;
+    for (const b of btns) {
+      if (!b.parentElement || b.closest('[hidden], [aria-hidden="true"]')) continue;
+      const r = typeof b.getBoundingClientRect === 'function' ? b.getBoundingClientRect() : null;
+      if (r && r.width > 0 && r.height > 0) {
+        if (r.top <= 96 && r.right >= bestRight) {
+          bestRight = r.right;
+          bestBtn = b;
+        }
+      } else if (!bestBtn) {
+        bestBtn = b;
+      }
+    }
+    return bestBtn ? bestBtn.parentElement : null;
+  }
+
+  function updateTopbarThemeActiveUi(explicitVal = 0) {
+    const wrap = document.getElementById('ag-claude-topbar-theme');
+    if (!wrap) return;
+    const cur = explicitVal === 1 || explicitVal === 2 || explicitVal === 3 ? explicitVal : readCurrentThemeModeVal();
+    wrap.setAttribute('data-theme-val', String(cur));
+    wrap.setAttribute('aria-label', L('主题模式', 'Theme mode'));
+    const metaByVal = {
+      1: L('跟随系统', 'System theme'),
+      2: L('浅色模式', 'Light theme'),
+      3: L('深色模式', 'Dark theme')
+    };
+    wrap.querySelectorAll('.ag-tb-theme-btn[data-ag-theme-val]').forEach((btn) => {
+      const v = Number(btn.getAttribute('data-ag-theme-val'));
+      const active = v === cur;
+      const label = metaByVal[v] || '';
+      btn.setAttribute('aria-checked', active ? 'true' : 'false');
+      btn.setAttribute('data-active', active ? 'true' : 'false');
+      if (btn.getAttribute('title') !== label) btn.setAttribute('title', label);
+      if (btn.getAttribute('aria-label') !== label) btn.setAttribute('aria-label', label);
+    });
+  }
+
+  function syncTopbarThemeToggle(forceLabels = false) {
+    if (disposed || !FEAT.themeToggle) {
+      teardownTopbarThemeToggle();
+      return;
+    }
+    const host = findTopbarThemeHost();
+    let wrap = document.getElementById('ag-claude-topbar-theme');
+    if (!host) {
+      if (wrap) wrap.remove();
+      return;
+    }
+    let freshlyCreated = false;
+    if (!wrap) {
+      wrap = document.createElement('div');
+      wrap.id = 'ag-claude-topbar-theme';
+      wrap.setAttribute('data-ag-i18n-ignore', '1');
+      wrap.setAttribute('role', 'radiogroup');
+      wrap.innerHTML =
+        `<button type="button" role="radio" class="ag-tb-theme-btn" data-ag-theme-val="1">${SVG_THEME_SYSTEM}</button>` +
+        `<button type="button" role="radio" class="ag-tb-theme-btn" data-ag-theme-val="2">${SVG_THEME_LIGHT}</button>` +
+        `<button type="button" role="radio" class="ag-tb-theme-btn" data-ag-theme-val="3">${SVG_THEME_DARK}</button>`;
+      wrap.addEventListener('click', (e) => {
+        const btn = e.target && e.target.closest && e.target.closest('.ag-tb-theme-btn[data-ag-theme-val]');
+        if (!btn) return;
+        e.preventDefault();
+        e.stopPropagation();
+        applyThemeModeVal(Number(btn.getAttribute('data-ag-theme-val')));
+      });
+      freshlyCreated = true;
+    }
+    if (wrap.parentElement !== host) {
+      host.appendChild(wrap);
+      freshlyCreated = true;
+    }
+    if (freshlyCreated || forceLabels || !wrap.hasAttribute('data-theme-val')) {
+      updateTopbarThemeActiveUi();
+    } else {
+      const cur = readCurrentThemeModeVal();
+      if (wrap.getAttribute('data-theme-val') !== String(cur)) {
+        updateTopbarThemeActiveUi(cur);
+      }
+    }
+  }
+
+  function teardownTopbarThemeToggle() {
+    if (themeModeUnsub) {
+      try {
+        themeModeUnsub();
+      } catch {}
+      themeModeUnsub = null;
+    }
+    cachedThemeModeProvider = null;
+    const wrap = document.getElementById('ag-claude-topbar-theme');
+    if (wrap) wrap.remove();
+  }
+
   /* ---- scheduling: rAF-coalesced, throttled, and blind to our own DOM writes ---- */
   const MIN_SYNC_GAP_MS = 80;
   let throttleTimer = 0;
@@ -12616,7 +14286,7 @@
   }
 
   const OWN_SEL =
-    '.ag-claude-todo-card, .ag-claude-todo-live-dock, .ag-collapse-ghost, .ag-orbit-dots, .ag-elapsed-timer, #ag-claude-ctx-ring, #ag-claude-quota-popover, #ag-claude-model-popover, #ag-claude-model-subpop, .ag-claude-inline-editor, .ag-claude-folder-badges, #ag-claude-recent-section, #ag-recent-row-menu, #ag-project-action-menu, #ag-claude-ux-settings-nav, #ag-claude-ux-settings-panel, #ag-settings-stats-wrap, .ag-settings-subhdr-chev, #ag-claude-projects-nav-btn, #ag-claude-projects-view, #ag-claude-project-modal, .ag-code-fold-toggle, .ag-code-fold-bar';
+    '.ag-claude-todo-card, .ag-claude-todo-live-dock, .ag-collapse-ghost, .ag-orbit-dots, .ag-elapsed-timer, #ag-claude-ctx-ring, #ag-claude-quota-popover, #ag-claude-model-popover, #ag-claude-model-subpop, .ag-claude-inline-editor, .ag-claude-folder-badges, #ag-claude-recent-section, #ag-recent-row-menu, #ag-project-action-menu, #ag-claude-ux-settings-nav, #ag-claude-ux-settings-panel, #ag-settings-stats-wrap, .ag-settings-subhdr-chev, #ag-claude-projects-nav-btn, #ag-claude-projects-view, #ag-claude-project-modal, .ag-code-fold-toggle, .ag-code-fold-bar, #ag-claude-ov-sections, #ag-claude-topbar-theme';
   const CLASS_WATCH_SEL =
     'ul.contains-task-list, [id="antigravity.agentSidePanelInputBox"], [data-testid="tool-group-collapsible"], [data-testid="worked-for-collapsible"], [data-testid="progress-updates-collapsible"], [data-testid="ephemeral-tool-status"]';
 
@@ -12783,6 +14453,15 @@
     removeRecentSection();
     clearSidebarHideNativeProjects();
     teardownCustomizationsEnhancement();
+    teardownOverviewPanel();
+    teardownTopbarThemeToggle();
+    if (prefStoreUnsub) {
+      try {
+        prefStoreUnsub();
+      } catch {}
+      prefStoreUnsub = null;
+    }
+    cachedPrefStore = null;
     teardownProjectsWorkspace({ forceCloseAllModals: true });
     if (sharedModalEscBound) {
       document.removeEventListener('keydown', onSharedModalEscKeyDown, true);

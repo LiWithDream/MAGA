@@ -77,63 +77,83 @@ function runInstallCli(home, args, extraEnv = {}) {
 /* Daemon, PID, Bootstrap, Project Context, Sidecars, YAML & Security         */
 /* -------------------------------------------------------------------------- */
 
-test('[Audit #1 & #9-R2] partial saveProjectContext updates instructions without deleting attachments, and clearing strips --- divider', async () => {
+test('[Audit #1 & #9-R2] unified WYSIWYG AGENTS.md read/write preserves attachments, strips --- divider on clear, and migrates legacy schema 1', async () => {
   const daemon = await import(pathToFileURL(path.join(REPO, 'core', 'daemon.mjs')).href);
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ac-proj-partial-'));
   const projDir = path.join(tmpRoot, 'my-proj');
+  const legacyDir = path.join(tmpRoot, 'legacy-proj');
   const linkedDir = path.join(tmpRoot, 'linked-lib');
   const extSrc = path.join(tmpRoot, 'spec.md');
   fs.mkdirSync(projDir, { recursive: true });
+  fs.mkdirSync(legacyDir, { recursive: true });
   fs.mkdirSync(linkedDir, { recursive: true });
   fs.writeFileSync(extSrc, '# Spec Document\nImportant details.\n');
   fs.writeFileSync(path.join(projDir, 'AGENTS.md'), '# Existing Project Rules\nKeep me intact.\n');
 
   try {
-    const initial = daemon.saveProjectContext(
+    /* 1. Direct WYSIWYG read: pre-existing AGENTS.md is immediately surfaced as `instructions` */
+    const preRead = daemon.saveProjectContext(
       {
         dirPath: projDir,
-        instructions: 'Initial instructions',
         files: [{ action: 'add', sourcePath: extSrc, name: 'spec.md' }],
         extraFolders: [{ name: 'linked-lib', absPath: linkedDir }]
       },
       { registryFile: null }
     );
-    assert.equal(initial.ok, true);
-    assert.equal(initial.files.length, 1);
-    assert.equal(initial.extraFolders.length, 1);
-    const managedPath = initial.files[0].absPath;
+    assert.equal(preRead.ok, true);
+    assert.equal(preRead.instructions, '# Existing Project Rules\nKeep me intact.');
+    assert.equal(preRead.hasAgentsMd, true);
+    assert.equal(preRead.files.length, 1);
+    assert.equal(preRead.extraFolders.length, 1);
+    const managedPath = preRead.files[0].absPath;
     assert.equal(fs.existsSync(managedPath), true, 'managed attachment copy created');
 
-    /* Partial update with ONLY `instructions` (omitting `files` and `extraFolders`) must preserve both */
+    /* 2. Partial update with ONLY `instructions` updates AGENTS.md body while preserving files & folders at bottom */
     const afterInstOnly = daemon.saveProjectContext(
       {
         dirPath: projDir,
-        instructions: 'Updated instructions only'
+        instructions: '# Updated Project Rules\nEdited directly in UI.'
       },
       { registryFile: null }
     );
     assert.equal(afterInstOnly.ok, true);
-    assert.equal(afterInstOnly.instructions, 'Updated instructions only');
+    assert.equal(afterInstOnly.instructions, '# Updated Project Rules\nEdited directly in UI.');
     assert.equal(afterInstOnly.files.length, 1, 'attachment preserved on instructions-only save');
     assert.equal(afterInstOnly.extraFolders.length, 1, 'linked folder preserved on instructions-only save');
     assert.equal(fs.existsSync(managedPath), true, 'managed copy on disk still exists');
+    const diskWithFooter = fs.readFileSync(path.join(projDir, 'AGENTS.md'), 'utf8');
+    assert.equal(diskWithFooter.startsWith('# Updated Project Rules\nEdited directly in UI.\n\n---\n\n<!-- BEGIN anti-claude-project -->'), true);
 
-    /* Clearing all project context removes managed block AND the `---` divider without leaving frontmatter residue */
-    const cleared = daemon.saveProjectContext(
+    /* 3. Removing attachments/folders while keeping instructions strips managed footer AND `---` cleanly */
+    const filesCleared = daemon.saveProjectContext(
       {
         dirPath: projDir,
-        instructions: '',
         files: [],
         extraFolders: []
       },
       { registryFile: null }
     );
-    assert.equal(cleared.ok, true);
-    assert.equal(cleared.files.length, 0);
+    assert.equal(filesCleared.ok, true);
+    assert.equal(filesCleared.files.length, 0);
     assert.equal(fs.existsSync(managedPath), false, 'explicit empty files array removes managed copy');
-    const finalAgents = fs.readFileSync(path.join(projDir, 'AGENTS.md'), 'utf8');
-    assert.equal(finalAgents, '# Existing Project Rules\nKeep me intact.\n');
-    assert.equal(finalAgents.startsWith('---'), false, 'no orphan --- left at top of AGENTS.md');
+    const cleanAgents = fs.readFileSync(path.join(projDir, 'AGENTS.md'), 'utf8');
+    assert.equal(cleanAgents, '# Updated Project Rules\nEdited directly in UI.\n');
+    assert.equal(cleanAgents.includes('---'), false, 'no orphan --- divider left behind');
+    assert.equal(fs.existsSync(path.join(projDir, '.anti-claude')), false, '.anti-claude dir removed when only AGENTS.md prose remains');
+
+    /* 4. Legacy schema 1 project merges both outside AGENTS.md rules and legacy managed instructions without loss */
+    fs.mkdirSync(path.join(legacyDir, '.anti-claude'), { recursive: true });
+    fs.writeFileSync(
+      path.join(legacyDir, '.anti-claude', 'project-context.json'),
+      JSON.stringify({ schema: 1, instructions: 'Legacy modal note', files: [], extraFolders: [], scheduledTasks: [] })
+    );
+    fs.writeFileSync(
+      path.join(legacyDir, 'AGENTS.md'),
+      '<!-- BEGIN anti-claude-project -->\n## Project Context & Instructions\n\nLegacy modal note\n<!-- END anti-claude-project -->\n\n---\n\n# Repo Base Rules\n'
+    );
+    const migrated = daemon.saveProjectContext({ dirPath: legacyDir }, { registryFile: null });
+    assert.equal(migrated.instructions, '# Repo Base Rules\n\nLegacy modal note');
+    assert.equal(fs.readFileSync(path.join(legacyDir, 'AGENTS.md'), 'utf8'), '# Repo Base Rules\n\nLegacy modal note\n');
   } finally {
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   }
@@ -3565,6 +3585,474 @@ test('[Audit-2026-11-21 · Sidebar & Settings Safety] refuses to hide sidebar or
       false,
       'drifted settings sidebar does not activate CSS hide shield'
     );
+  } finally {
+    window.close();
+  }
+});
+
+test('[claudeUxOverviewPanel] collectOverviewSnapshot reads local config safely without leaking secrets', async () => {
+  const daemon = await import(pathToFileURL(path.join(REPO, 'core', 'daemon.mjs')).href);
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ac-ov-snap-'));
+  const homeDir = path.join(tmpRoot, 'home');
+  const geminiDir = path.join(homeDir, '.gemini');
+  const configDir = path.join(geminiDir, 'config');
+  const skillsDir = path.join(configDir, 'skills');
+  const agentsDir = path.join(configDir, 'agents');
+  const builtinSkillsDir = path.join(geminiDir, 'antigravity', 'builtin', 'skills');
+  const projDir = path.join(tmpRoot, 'demo-proj');
+
+  try {
+    fs.mkdirSync(path.join(skillsDir, 'demo-skill'), { recursive: true });
+    fs.writeFileSync(path.join(skillsDir, 'demo-skill', 'SKILL.md'), '# Demo Skill\n');
+    fs.mkdirSync(path.join(builtinSkillsDir, 'builtin-one'), { recursive: true });
+    fs.writeFileSync(path.join(builtinSkillsDir, 'builtin-one', 'SKILL.md'), '# Builtin\n');
+    fs.mkdirSync(agentsDir, { recursive: true });
+    fs.writeFileSync(path.join(agentsDir, 'helper.md'), '# Helper Agent\n');
+    fs.mkdirSync(path.join(configDir, 'plugins', 'gcalendar'), { recursive: true });
+    fs.writeFileSync(
+      path.join(configDir, 'plugins', 'gcalendar', 'plugin.json'),
+      JSON.stringify({ name: 'gcalendar', displayName: 'Google Calendar' })
+    );
+    fs.writeFileSync(
+      path.join(configDir, 'config.json'),
+      JSON.stringify({
+        plugins: {
+          gcalendar: { installedFrom: { id: 'official/gcalendar', version: '0.0.8' } }
+        }
+      })
+    );
+    fs.writeFileSync(
+      path.join(configDir, 'mcp_config.json'),
+      JSON.stringify({
+        mcpServers: {
+          'atlassian': { command: '/usr/local/bin/acli', args: ['mcp'], env: { SECRET: 'top-secret-token' } },
+          disabledOne: { disabled: true, args: ['--token=abc'] }
+        }
+      })
+    );
+    fs.writeFileSync(path.join(geminiDir, 'AGENTS.md'), '# Global\n');
+    fs.mkdirSync(projDir, { recursive: true });
+    fs.writeFileSync(path.join(projDir, 'AGENTS.md'), '# Project rules\n');
+
+    const snap = daemon.collectOverviewSnapshot(
+      { dirPath: projDir },
+      { homeDir, geminiDir, configDir, skillsDir, agentsDir, builtinSkillsDir, skipGit: true }
+    );
+    assert.equal(snap.ok, true);
+    assert.equal(snap.workspace.dirPath, path.resolve(projDir));
+    assert.equal(snap.rules.length, 2);
+    assert.equal(snap.skills.total, 2);
+    assert.equal(snap.skills.userCount, 1);
+    assert.equal(snap.agents.total, 1);
+    assert.equal(snap.agents.items[0].name, 'helper');
+    const connIds = snap.connectors.map((c) => c.id);
+    assert.deepEqual(connIds, ['atlassian', 'gcalendar']);
+    const serialized = JSON.stringify(snap);
+    assert.equal(serialized.includes('top-secret-token'), false, 'MCP env secrets never leak');
+    assert.equal(serialized.includes('--token=abc'), false, 'disabled MCP args never leak');
+
+    /* Verify async git status counts both staged and unstaged changes without blocking */
+    const gitInit = spawnSync('git', ['-C', projDir, 'init'], { encoding: 'utf8' });
+    if (gitInit.status === 0) {
+      spawnSync('git', ['-C', projDir, 'config', 'user.email', 'test@example.com']);
+      spawnSync('git', ['-C', projDir, 'config', 'user.name', 'Tester']);
+      spawnSync('git', ['-C', projDir, 'add', 'AGENTS.md']);
+      spawnSync('git', ['-C', projDir, 'commit', '-m', 'init']);
+      fs.writeFileSync(path.join(projDir, 'staged.txt'), 'line1\nline2\n');
+      spawnSync('git', ['-C', projDir, 'add', 'staged.txt']);
+      fs.writeFileSync(path.join(projDir, 'AGENTS.md'), '# Project rules\nextra unstaged\n');
+      const snapAsync = await daemon.collectOverviewSnapshotAsync(
+        { dirPath: projDir },
+        { homeDir, geminiDir, configDir, skillsDir, agentsDir, builtinSkillsDir }
+      );
+      assert.ok(snapAsync.workspace.git && snapAsync.workspace.git.branch, 'async git branch detected');
+      assert.equal(snapAsync.workspace.git.added >= 3, true, 'async git diff HEAD counts staged + unstaged additions');
+      assert.equal(snapAsync.workspace.git.changedFiles >= 2, true, 'porcelain v2 counts staged + unstaged files');
+    }
+  } finally {
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+test('[claudeUxOverviewPanel] enhances right Overview panel with Google Blue Used-% quotas, model-switch pool reactivity, promoted Artifact & clean teardown', { skip: skipDom }, async () => {
+  const customJsSrc = fs.readFileSync(path.join(REPO, 'user', 'custom.js'), 'utf8');
+  const customCssSrc = fs.readFileSync(path.join(REPO, 'user', 'custom.css'), 'utf8');
+
+  assert.match(customCssSrc, /--ag-ov-blue:\s*var\(--primary,\s*#2F75C3\)/);
+  assert.match(customCssSrc, /--ag-ov-blue:\s*var\(--primary,\s*#2F71E3\)/);
+  assert.match(customCssSrc, /#ag-claude-ov-sections\s+\.ag-ov-seg-bar\s*\{[^}]*repeat\(20,\s*minmax\(0,\s*1fr\)\)/s);
+  assert.match(customCssSrc, /\[data-ag-ov-native-artifact="1"\]\s*\{[^}]*order:\s*1\s*!important/s);
+
+  const cid = 'aaaaaaaa-1111-4222-8333-444444444444';
+  const childCid = 'bbbbbbbb-1111-4222-8333-444444444444';
+  const projDir = '/tmp/ov-demo-proj';
+  const dom = new JSDOM(
+    `<!doctype html><html><body><div id="root">
+      <div class="bg-sidebar"></div>
+      <div id="antigravity.agentSidePanelInputBox">
+        <div class="flex min-w-0 flex-1 items-center">
+          <div><button type="button" data-testid="model-selector-trigger">Gemini 4 Neon High</button></div>
+        </div>
+      </div>
+      <div data-testid="overview-panel" class="flex flex-auto w-full min-h-0 flex-col">
+        <div class="flex shrink-0 flex-col px-1 pt-1 pb-px"><span>Overview</span></div>
+        <div class="flex flex-col overflow-y-auto outline-none scrollbar-none w-full flex-grow min-h-0 divide-y divide-border empty:hidden">
+          <div class="flex flex-col gap-px px-1 pb-1 empty:hidden">
+            <button type="button" data-testid="overview-panel-row-review"><span>Review</span><span data-testid="overview-panel-row-review-detail"></span></button>
+            <button type="button" data-testid="overview-panel-row-files"><span>Files</span></button>
+            <button type="button" data-testid="overview-panel-row-terminal"><span>Terminal</span></button>
+            <button type="button" data-testid="overview-panel-row-plugins"><span>Plugins</span><div class="ml-auto"></div></button>
+          </div>
+          <div class="p-1"><button type="button">Background tasks</button></div>
+          <div class="p-1"><span class="agy-hover-label">Artifact</span><button type="button" data-testid="artifact-row">Prototype</button></div>
+        </div>
+      </div>
+    </div></body></html>`,
+    { url: `https://127.0.0.1:62683/c/${cid}`, pretendToBeVisual: true, runScripts: 'outside-only' }
+  );
+
+  const { window } = dom;
+  const doc = window.document;
+  const future5h = String(Math.floor(Date.now() / 1000) + 3 * 3600);
+  const futureWk = String(Math.floor(Date.now() / 1000) + 5 * 86400);
+
+  doc.getElementById('antigravity.agentSidePanelInputBox').__reactFiber$q = {
+    memoizedProps: {
+      quotaSvc: {
+        userTier: { id: 'pro', name: 'Google AI Pro' },
+        retrieveUserQuotaSummary: () =>
+          Promise.resolve({
+            groups: [
+              {
+                displayName: 'Gemini Models',
+                buckets: [
+                  { window: '5h', remainingFraction: 0.65, resetTime: { seconds: future5h } },
+                  { window: 'weekly', remainingFraction: 0.59, resetTime: { seconds: futureWk } }
+                ]
+              },
+              {
+                displayName: 'Claude & GPT',
+                buckets: [{ window: '5h', remainingFraction: 0.8, resetTime: { seconds: future5h } }]
+              }
+            ]
+          })
+      }
+    },
+    return: null
+  };
+
+  const mockStore = {
+    getState: () => ({
+      sidebarProjects: {
+        projects: [{ id: 'proj-ov', name: 'DemoProj', folderUris: [pathToFileURL(projDir).href], archived: false }]
+      },
+      trajectorySummaries: {
+        summaries: {
+          [cid]: { projectId: 'proj-ov', workspaces: [{ workspaceFolderAbsoluteUri: pathToFileURL(projDir).href }] },
+          [childCid]: { parentConversationId: cid, title: 'Subagent task', notFullyIdle: true, status: 2 }
+        }
+      }
+    }),
+    subscribe: () => () => {},
+    dispatch: () => {}
+  };
+  doc.querySelector('.bg-sidebar').__reactFiber$s = { memoizedProps: { sidebarStore: mockStore }, return: null };
+
+  window.__agProjectCall = async (action) => {
+    if (action === 'getOverviewSnapshot') {
+      return {
+        ok: true,
+        workspace: { dirPath: projDir, name: 'DemoProj', git: { branch: 'main', added: 12, deleted: 3, changedFiles: 2 } },
+        rules: [
+          { label: '~/.gemini/AGENTS.md', path: '/tmp/.gemini/AGENTS.md', scope: 'global', bytes: 128 },
+          { label: 'AGENTS.md', path: `${projDir}/AGENTS.md`, scope: 'project', bytes: 64 },
+          { label: 'fast-io/AGENTS.md', path: '/tmp/plugins/fast-io/rules/AGENTS.md', scope: 'plugin', bytes: 32 }
+        ],
+        skills: { total: 5, userCount: 2, items: [{ name: 'atlassian', path: '/tmp/code-review/SKILL.md', source: 'user' }] },
+        agents: { total: 1, items: [{ name: 'helper', path: '/tmp/agents/helper.md', source: 'user' }] },
+        connectors: [
+          { id: 'atlassian', name: 'Atlassian', kind: 'mcp', configPath: '/tmp/mcp_config.json' },
+          { id: 'gcalendar', name: 'Google Calendar', kind: 'plugin', configPath: '/tmp/plugin.json' }
+        ]
+      };
+    }
+    return { ok: true };
+  };
+
+  window.__ag_render_metrics = (payload) => {
+    window.__ag_last_metrics = payload;
+  };
+  window.ctx = {
+    modules: { i18n: false, claudeUxContextRing: true, claudeUxOverviewPanel: true },
+    onCleanup: () => {}
+  };
+  window.eval(customJsSrc);
+
+  try {
+    window.__ag_render_metrics({
+      cascadeId: cid,
+      hasData: true,
+      inlineHtml: '<span>120 tok/s</span>',
+      tooltipHtml: '<div></div>',
+      stats: {
+        ctx: 443200,
+        cached: 440000,
+        uncached: 3200,
+        limit: 1000000,
+        limitStr: '1M',
+        remain: 556800,
+        pct: 44,
+        lastCacheRate: 99,
+        sessionCacheRate: 91.5,
+        turns: 30,
+        calls: 161,
+        totalThink: 215000,
+        totalResp: 284000,
+        totalOut: 499000,
+        childCount: 1,
+        childCalls: 4,
+        children: [{ id: childCid, title: 'Subagent task', agentName: 'research', running: true, killed: false, calls: 4, outTok: 1200 }]
+      }
+    });
+    await new Promise((r) => setTimeout(r, 40));
+
+    const panel = doc.querySelector('[data-testid="overview-panel"]');
+    const sec = doc.getElementById('ag-claude-ov-sections');
+    assert.equal(panel.getAttribute('data-ag-ov-enhanced'), '1');
+    assert.ok(doc.querySelector('[data-ag-ov-shortcuts="1"]'), 'native shortcuts marked as compact grid');
+    assert.ok(doc.querySelector('[data-ag-ov-native-artifact="1"]'), 'native Artifact block promoted to order:1');
+    assert.ok(doc.querySelector('[data-ag-ov-native-tail="1"]'), 'native background tasks marked as tail');
+    assert.ok(sec && sec.parentElement.lastElementChild === sec, 'custom sections appended safely as last DOM child');
+
+    const txt = sec.textContent || '';
+    assert.match(txt, /DemoProj/);
+    assert.match(txt, /Global \+ Project \+ Plugin · 3/);
+    assert.match(txt, /440k/);
+    assert.match(txt, /3\.2k/);
+    assert.match(txt, /99%/);
+    assert.match(txt, /30 turns · 161 calls/);
+    assert.match(txt, /Google AI Pro/);
+    assert.match(txt, /35% used/);
+    assert.match(txt, /41% used/);
+    assert.match(txt, /Subagent task/);
+    assert.equal(txt.includes('Atlassian'), false, 'Connectors card starts collapsed by default');
+
+    const firstQuotaSegs = sec.querySelectorAll('.ag-ov-quota-box')[0].querySelectorAll('.ag-ov-seg');
+    assert.equal(firstQuotaSegs.length, 20, '20-segment quota bar rendered');
+    assert.match(firstQuotaSegs[0].style.background, /var\(--ag-ov-blue/, 'lit quota segments use Google Blue token');
+    assert.match(firstQuotaSegs[7].style.background, /var\(--ag-ov-track\)/, 'unused segments beyond 35% (7/20) use track');
+    assert.ok(sec.querySelector('.ag-ov-time-cursor'), 'elapsed time cursor rendered');
+
+    /* Expand Connectors card on click */
+    sec.querySelector('[data-ag-ov-collapse="connectors"]').click();
+    assert.match(sec.textContent || '', /Atlassian/, 'clicking Connectors header expands list');
+
+    /* Switching active model to Claude dynamically switches primary quota pool to Claude / GPT */
+    const modelBtn = doc.querySelector('button[data-testid="model-selector-trigger"]');
+    modelBtn.textContent = 'Claude Sonnet 4.5';
+    await new Promise((r) => setTimeout(r, 120));
+    const primaryTitleAfterSwitch = sec.querySelector('.ag-ov-quota-box .ag-ov-qtitle')?.textContent || '';
+    assert.match(primaryTitleAfterSwitch, /Claude \/ GPT/, 'primary quota card follows model switch to Claude/GPT');
+    assert.match(sec.querySelector('.ag-ov-quota-box .ag-ov-qpct')?.textContent || '', /20% used/);
+
+    window.__agClaudeUxDispose();
+    assert.equal(doc.getElementById('ag-claude-ov-sections'), null, 'teardown removes overview sections cleanly');
+    assert.equal(panel.hasAttribute('data-ag-ov-enhanced'), false, 'teardown removes enhanced marker');
+    assert.equal(doc.querySelector('[data-ag-ov-native-artifact]'), null, 'teardown removes artifact marker');
+  } finally {
+    window.close();
+  }
+});
+
+test('[v3.1.0 · Theme Toggle, v2.34 Models i18n & Executor Model Picker] mounts titlebar 3-way theme pill, localizes Models/Quota strings, and drives orchestratorExecutorModel from main menu', { skip: !JSDOM }, async () => {
+  const customJsSrc = fs.readFileSync(path.join(REPO, 'user', 'custom.js'), 'utf8');
+  const customCssSrc = fs.readFileSync(path.join(REPO, 'user', 'custom.css'), 'utf8');
+  const i18nDict = JSON.parse(fs.readFileSync(path.join(REPO, 'core', 'i18n.json'), 'utf8'));
+
+  assert.match(
+    customCssSrc,
+    /#ag-claude-topbar-theme\s*\{[\s\S]*?order:\s*-1;/,
+    'topbar theme pill uses CSS order:-1 so appendChild places it to the left of titlebar-more-actions safely'
+  );
+
+  const dom = new JSDOM(
+    `<!doctype html><html><body>
+      <div id="root">
+        <header>
+          <div class="flex items-center gap-1" id="topbar-actions">
+            <button type="button" data-testid="titlebar-more-actions">⋮</button>
+            <button type="button" data-testid="toggle-overview-panel">Overview</button>
+          </div>
+        </header>
+        <div id="settings-models-mock">
+          <h2>Orchestrator Settings</h2>
+          <p id="orch-sub">Choose the models Orchestrator uses. A larger, smarter orchestrator model with a faster, cheaper executor gives high quality for fewer tokens.</p>
+          <div id="orch-lbl">Orchestrator Model</div>
+          <div id="exec-lbl">Executor Model</div>
+          <div id="exec-desc">Carries out the plan: searches, edits, builds, and tests. Pick a faster, cheaper model.</div>
+          <div id="quota-desc">You have used some of your weekly limit, it will fully refresh in 6 days, 6 hours.</div>
+          <div id="quota-zero">You haven't used any of your 5-hour limit.</div>
+          <div id="plan-lbl">Your Plan: Google AI Ultra</div>
+          <button type="button" id="bd-btn">Show 57 breakdowns</button>
+        </div>
+        <div id="antigravity.agentSidePanelInputBox">
+          <button type="button" data-testid="model-selector-trigger">Gemini 4 Carbon High</button>
+        </div>
+      </div>
+    </body></html>`,
+    { runScripts: 'outside-only', url: 'https://127.0.0.1:61999/' }
+  );
+  const { window } = dom;
+  const doc = window.document;
+
+  /* 1. Mock native themeModeProvider (1=System, 2=Light, 3=Dark) */
+  let currentThemeVal = 3;
+  const themeListeners = new Set();
+  window.__ag_test_theme_provider = {
+    getState: () => currentThemeVal,
+    pushUpdate: (next) => {
+      currentThemeVal = next;
+      for (const fn of themeListeners) fn();
+    },
+    onDidChange: (fn) => {
+      themeListeners.add(fn);
+      return () => themeListeners.delete(fn);
+    }
+  };
+
+  /* 2. Mock native prefStore for orchestratorExecutorModel */
+  const prefs = { orchestratorExecutorModel: 0 };
+  const prefListeners = new Set();
+  window.__ag_test_pref_store = {
+    getState: () => ({
+      getPrefValue: (k) => prefs[k] ?? 0,
+      setPrefValue: (k, v) => {
+        prefs[k] = v;
+        for (const fn of prefListeners) fn();
+      }
+    }),
+    onDidChange: (fn) => {
+      prefListeners.add(fn);
+      return () => prefListeners.delete(fn);
+    }
+  };
+
+  /* 3. Attach native model-selector-trigger React fiber API */
+  const modelOptions = [
+    { label: 'Gemini 4 Carbon (High)', modelId: 'gemini-4-carbon-high', value: 1427, disabled: false },
+    { label: 'Gemini 4 Carbon (Low)', modelId: 'gemini-4-carbon-low', value: 1438, disabled: false },
+    { label: 'Gemini 4 Neon (High)', modelId: 'gemini-4-neon-high', value: 1532, disabled: false },
+    { label: 'Gemini 4 Neon (XHigh)', modelId: 'gemini-4-neon-xhigh', value: 1535, disabled: false },
+    { label: 'Gemini 4 Hydrogen (Low)', modelId: 'gemini-4-hydrogen-low', value: 1527, disabled: false },
+    { label: 'Gemini 4 Hydrogen (High)', modelId: 'gemini-4-hydrogen-high', value: 1525, disabled: false },
+    { label: 'Gemini 4 Hydrogen (XHigh)', modelId: 'gemini-4-hydrogen-xhigh', value: 1528, disabled: false },
+    { label: 'Gemini 3.8 Flash (Low)', modelId: 'gemini-3.8-flash-low', value: 1320, disabled: false },
+    { label: 'Gemini 3.8 Flash (High)', modelId: 'gemini-3.8-flash-high', value: 1318, disabled: false },
+    { label: 'Orchestrator (Neon)', modelId: 'gemini-pro-orchestrator-neon', value: 1537, disabled: false }
+  ];
+  let selectedOpt = modelOptions[0];
+  const triggerBtn = doc.querySelector('button[data-testid="model-selector-trigger"]');
+  triggerBtn.__reactFiber$test = {
+    memoizedProps: {
+      value: {
+        modelOptions,
+        selectedModel: selectedOpt,
+        setSelectedModel: (opt) => {
+          selectedOpt = opt;
+        },
+        open: false,
+        setIsOpen: () => {},
+        orchestratorPick: { model: 0, select: () => {} },
+        orchestratorPlanners: [modelOptions[2], modelOptions[3]]
+      }
+    },
+    return: null
+  };
+
+  window.ctx = {
+    dict: i18nDict,
+    modules: {
+      i18n: true,
+      claudeUxThemeToggle: true,
+      claudeUxModelMenu: true
+    },
+    onCleanup: () => {}
+  };
+  window.eval(customJsSrc);
+
+  try {
+    await new Promise((r) => setTimeout(r, 30));
+
+    /* Verify 1: Topbar 3-way theme toggle mounted safely via appendChild and syncs bidirectionally */
+    const host = doc.getElementById('topbar-actions');
+    const themeWrap = doc.getElementById('ag-claude-topbar-theme');
+    assert.ok(themeWrap, 'topbar theme toggle is mounted');
+    assert.equal(host.lastElementChild, themeWrap, 'appended as last DOM child to avoid shifting React children');
+    assert.equal(themeWrap.getAttribute('data-theme-val'), '3', 'reflects initial Dark mode (3)');
+    assert.equal(
+      themeWrap.querySelector('[data-ag-theme-val="3"]').getAttribute('data-active'),
+      'true',
+      'Dark button highlighted initially'
+    );
+
+    themeWrap.querySelector('[data-ag-theme-val="2"]').click();
+    assert.equal(currentThemeVal, 2, 'clicking Light updates native themeModeProvider to 2');
+    assert.equal(themeWrap.getAttribute('data-theme-val'), '2');
+
+    window.__ag_test_theme_provider.pushUpdate(1);
+    assert.equal(themeWrap.getAttribute('data-theme-val'), '1', 'external Settings change to System (1) updates topbar UI');
+
+    /* Verify 2: Complete Chinese localization for v2.34.0 Models & Quota strings */
+    assert.equal(doc.querySelector('#settings-models-mock h2').textContent, '编排器设置');
+    assert.equal(doc.getElementById('orch-lbl').textContent, '编排主模型');
+    assert.equal(doc.getElementById('exec-lbl').textContent, '执行模型');
+    assert.match(doc.getElementById('exec-desc').textContent, /负责按计划落地执行/);
+    assert.equal(
+      doc.getElementById('quota-desc').textContent,
+      '您已使用部分每周额度，将在 6 天 6 小时后完全恢复。'
+    );
+    assert.equal(doc.getElementById('quota-zero').textContent, '您尚未消耗 5 小时额度。');
+    assert.equal(doc.getElementById('plan-lbl').textContent, '当前方案：Google AI Ultra');
+    assert.equal(doc.getElementById('bd-btn').textContent, '展开 57 项明细');
+
+    /* Verify 3: Main composer model menu includes Executor Model submenu & writes orchestratorExecutorModel */
+    triggerBtn.dispatchEvent(new window.MouseEvent('pointerdown', { bubbles: true, button: 0 }));
+    const mainPop = doc.getElementById('ag-claude-model-popover');
+    const subPop = doc.getElementById('ag-claude-model-subpop');
+    assert.equal(mainPop.getAttribute('data-open'), 'true');
+
+    const execTrigger = mainPop.querySelector('[data-ag-cm-subtrigger="executor"]');
+    assert.ok(execTrigger, 'Executor model row rendered in main model menu');
+    assert.match(execTrigger.textContent, /执行模型/);
+    assert.match(execTrigger.textContent, /Hydrogen · Extra/, 'defaults to Gemini 4 Hydrogen Extra when pref is 0');
+
+    execTrigger.click();
+    assert.equal(subPop.getAttribute('data-open'), 'true', 'clicking Executor model opens subpopover');
+    assert.match(subPop.textContent, /Gemini 4 Hydrogen/);
+    assert.match(subPop.textContent, /Gemini 3\.8 Flash/);
+
+    /* Pick Gemini 3.8 Flash (Low = 1320) via inline effort pill */
+    const flashLowPill = subPop.querySelector('[data-ag-cm-exec-val="1320"]');
+    assert.ok(flashLowPill, 'inline effort pill for 3.8 Flash Low exists');
+    flashLowPill.click();
+    assert.equal(prefs.orchestratorExecutorModel, 1320, 'updates prefStore orchestratorExecutorModel to 1320');
+    assert.equal(mainPop.getAttribute('data-open'), 'false', 'closes popover after selection');
+
+    /* Re-open menu: verify custom dot + updated summary + Reset to default */
+    triggerBtn.dispatchEvent(new window.MouseEvent('pointerdown', { bubbles: true, button: 0 }));
+    const execTriggerAfter = mainPop.querySelector('[data-ag-cm-subtrigger="executor"]');
+    assert.match(execTriggerAfter.textContent, /Flash · Low/);
+    assert.ok(execTriggerAfter.querySelector('.ag-cm-dot'), 'shows custom override dot when non-default executor is active');
+    execTriggerAfter.click();
+    const resetBtn = subPop.querySelector('[data-ag-cm-exec-val="0"]');
+    assert.ok(resetBtn, 'Reset to default row appears when custom executor is set');
+    resetBtn.click();
+    assert.equal(prefs.orchestratorExecutorModel, 0, 'resets orchestratorExecutorModel back to 0 (default)');
+
+    window.__agClaudeUxDispose();
+    assert.equal(doc.getElementById('ag-claude-topbar-theme'), null, 'teardown removes topbar theme toggle');
+    assert.equal(themeListeners.size, 0, 'unsubscribes themeModeProvider listener on dispose');
+    assert.equal(prefListeners.size, 0, 'unsubscribes prefStore listener on dispose');
   } finally {
     window.close();
   }

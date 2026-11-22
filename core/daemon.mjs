@@ -96,7 +96,9 @@ const ALLOWED_UI_MODULE_KEYS = new Set([
   'claudeUxProjects',
   'claudeUxHideSidebarProjects',
   'claudeUxCustomizations',
-  'claudeUxCodeFold'
+  'claudeUxCodeFold',
+  'claudeUxOverviewPanel',
+  'claudeUxThemeToggle'
 ]);
 const VALID_CJK_SCALES = new Set(['94.5', '95', '100']);
 const INLINE_TEXT_EXTS = new Set([
@@ -1314,6 +1316,40 @@ function readChildMetrics(childId, conversationsDir) {
   }
 }
 
+function readSubagentSummaries(descendantIds, conversationsDir) {
+  if (!DatabaseSync || !Array.isArray(descendantIds) || !descendantIds.length || !conversationsDir) return [];
+  const sumDbPath = path.join(path.dirname(conversationsDir), 'conversation_summaries.db');
+  const info = getDbStatByPath(sumDbPath);
+  if (!info) return [];
+  const ids = descendantIds.slice(0, 40).filter((id) => UUID_RE.test(String(id || '')));
+  if (!ids.length) return [];
+  try {
+    return withReadOnlyDb(sumDbPath, 30, (db) => {
+      const placeholders = ids.map(() => '?').join(',');
+      const rows = db
+        .prepare(
+          `SELECT conversation_id, title, agent_name, status, not_fully_idle, killed, last_modified_time FROM conversation_summaries WHERE conversation_id IN (${placeholders})`
+        )
+        .all(...ids);
+      return rows.map((row) => ({
+        id: String(row.conversation_id || ''),
+        title: String(row.title || '').trim(),
+        agentName: String(row.agent_name || '').trim(),
+        status: String(row.status || '').trim(),
+        running: Boolean(
+          row &&
+            !Number(row.killed) &&
+            (Number(row.not_fully_idle) === 1 || /RUNNING|IN_PROGRESS|ACTIVE/i.test(String(row.status || '')))
+        ),
+        killed: Boolean(Number(row.killed)),
+        lastModifiedTime: String(row.last_modified_time || '')
+      }));
+    });
+  } catch {
+    return [];
+  }
+}
+
 function parseConversationMetrics(cascadeId, conversationsDir) {
   if (!DatabaseSync || !cascadeId || !UUID_RE.test(cascadeId) || !conversationsDir) return null;
   const dbPath = path.join(conversationsDir, `${cascadeId}.db`);
@@ -1326,7 +1362,11 @@ function parseConversationMetrics(cascadeId, conversationsDir) {
     const cs = getDbStatByPath(path.join(conversationsDir, `${cid}.db`));
     childSigParts.push(`${cid}=${cs ? cs.sig : '0'}`);
   }
-  const compositeSig = `${statInfo.sig}|c:${childSigParts.join(',')}|lim:${activeConfig.contextLimitOverride || activeConfig.contextLimit}`;
+  const sumDbStat =
+    descendantIds.length > 0
+      ? getDbStatByPath(path.join(path.dirname(conversationsDir), 'conversation_summaries.db'))
+      : null;
+  const compositeSig = `${statInfo.sig}|c:${childSigParts.join(',')}|s:${sumDbStat ? sumDbStat.sig : '0'}|lim:${activeConfig.contextLimitOverride || activeConfig.contextLimit}`;
 
   const cached = metricsPayloadCache.get(dbPath);
   if (cached && cached.sig === compositeSig) return cached.payload;
@@ -1465,7 +1505,42 @@ function parseConversationMetrics(cascadeId, conversationsDir) {
       outputRowHtml
     ].join('');
 
-    const payload = { cascadeId, hasData: true, sig: compositeSig, inlineHtml, tooltipHtml };
+    const subSummaryMap = new Map(readSubagentSummaries(descendantIds, conversationsDir).map((s) => [s.id, s]));
+    const children = descendantIds.slice(0, 24).map((cid) => {
+      const cm = readChildMetrics(cid, conversationsDir);
+      const sm = subSummaryMap.get(cid);
+      return {
+        id: cid,
+        title: sm?.title || '',
+        agentName: sm?.agentName || '',
+        status: sm?.status || '',
+        running: Boolean(sm?.running),
+        killed: Boolean(sm?.killed),
+        calls: cm?.calls || 0,
+        outTok: cm?.totalOut || 0
+      };
+    });
+    const stats = {
+      ctx: last.ctx,
+      cached: last.cacheRead,
+      uncached: last.inTok,
+      limit: contextLimitTokens,
+      limitStr,
+      remain: remainCtx,
+      pct: ctxPct,
+      lastCacheRate: Number(lastCacheRate),
+      sessionCacheRate: Number(sessionCacheRate),
+      turns: dbRes.userStepsCount,
+      calls: valid.length,
+      totalThink,
+      totalResp,
+      totalOut,
+      childCount,
+      childCalls,
+      children
+    };
+
+    const payload = { cascadeId, hasData: true, sig: compositeSig, inlineHtml, tooltipHtml, stats };
     setBounded(metricsPayloadCache, dbPath, { sig: compositeSig, payload }, 64);
     return payload;
   } catch {
@@ -1692,6 +1767,54 @@ function isInlineCandidate(fileName, sizeBytes) {
   return INLINE_TEXT_EXTS.has(ext) && Number(sizeBytes) > 0 && Number(sizeBytes) <= MAX_INLINE_FILE_BYTES;
 }
 
+function splitAgentsMdDocument(agentsText, rawMeta) {
+  const raw = String(agentsText || '');
+  const beginIdx = raw.indexOf(PROJECT_RULE_BEGIN);
+  const endIdx = beginIdx !== -1 ? raw.indexOf(PROJECT_RULE_END, beginIdx) : -1;
+  const hasManagedBlock = beginIdx !== -1 && endIdx > beginIdx;
+
+  let outsideText = '';
+  let legacyFromBlock = '';
+  if (hasManagedBlock) {
+    const before = raw
+      .slice(0, beginIdx)
+      .replace(/\s+$/, '')
+      .replace(/(?:\r?\n)*---$/, '')
+      .trim();
+    const after = raw
+      .slice(endIdx + PROJECT_RULE_END.length)
+      .replace(/^\s+/, '')
+      .replace(/^---(?:\r?\n)*/, '')
+      .trim();
+    outsideText = [before, after].filter(Boolean).join('\n\n').trim();
+
+    const inner = raw.slice(beginIdx + PROJECT_RULE_BEGIN.length, endIdx).trim();
+    if (/^##\s+Project Context & Instructions\b/i.test(inner)) {
+      const afterHdr = inner.replace(/^##\s+Project Context & Instructions[^\n]*\n*/i, '');
+      const nextSecMatch = afterHdr.match(/\n##\s+(?:Project Reference Files|Linked Project Folders)\b/i);
+      legacyFromBlock = (nextSecMatch ? afterHdr.slice(0, nextSecMatch.index) : afterHdr).trim();
+    } else if (inner && !/^##\s+(?:Project Reference Files|Linked Project Folders)\b/i.test(inner)) {
+      legacyFromBlock = inner;
+    }
+  } else {
+    outsideText = raw.trim();
+  }
+
+  const metaSchema = Number(rawMeta?.schema) || 1;
+  const legacyFromMeta =
+    metaSchema < 2 && typeof rawMeta?.instructions === 'string' ? rawMeta.instructions.replace(/\r\n/g, '\n').trim() : '';
+  const legacyInst = legacyFromBlock || legacyFromMeta;
+
+  let bodyText = '';
+  if (outsideText && legacyInst && !outsideText.includes(legacyInst)) {
+    bodyText = `${outsideText}\n\n${legacyInst}`;
+  } else {
+    bodyText = outsideText || legacyInst || '';
+  }
+
+  return { bodyText, outsideText, hasManagedBlock };
+}
+
 function readProjectContext(rawDir) {
   const dirPath = resolveLocalProjectDir(rawDir);
   if (!dirPath) return { ok: false, error: 'invalid_directory' };
@@ -1701,24 +1824,8 @@ function readProjectContext(rawDir) {
   const rawMeta = readJsonOrFallback(metaPath, null);
   const agentsText = readTextOrEmpty(agentsPath);
   const hasAgentsMd = fs.existsSync(agentsPath);
-  const beginIdx = agentsText.indexOf(PROJECT_RULE_BEGIN);
-  const endIdx = beginIdx !== -1 ? agentsText.indexOf(PROJECT_RULE_END, beginIdx) : -1;
-  const hasManagedBlock = beginIdx !== -1 && endIdx > beginIdx;
-  const outsideText = hasManagedBlock
-    ? (
-        agentsText.slice(0, beginIdx).replace(/\s+$/, '').replace(/(?:\r?\n)*---$/, '') +
-        agentsText.slice(endIdx + PROJECT_RULE_END.length).replace(/^\s+/, '').replace(/^---(?:\r?\n)*/, '')
-      ).trim()
-    : agentsText.trim();
-
-  let instructions = typeof rawMeta?.instructions === 'string' ? rawMeta.instructions : '';
+  const { bodyText: instructions } = splitAgentsMdDocument(agentsText, rawMeta);
   const rawFiles = Array.isArray(rawMeta?.files) ? rawMeta.files : [];
-
-  /* Fallback: if AGENTS.md has a managed block without metadata JSON, recover instructions text */
-  if (!rawMeta && hasManagedBlock) {
-    const inner = agentsText.slice(beginIdx + PROJECT_RULE_BEGIN.length, endIdx).trim();
-    instructions = inner.replace(/^##\s+Project Context & Instructions\s*/i, '').trim();
-  }
 
   let inlineBytesUsed = 0;
   const files = [];
@@ -1777,7 +1884,7 @@ function readProjectContext(rawDir) {
     extraFolders,
     scheduledTasks,
     hasAgentsMd,
-    hasOtherAgentsMd: Boolean(outsideText),
+    hasOtherAgentsMd: false,
     lastModifiedMs,
     dirMtimeMs
   };
@@ -1798,18 +1905,13 @@ function summarizeFolderEntries(absDir) {
   }
 }
 
-function buildManagedAgentsBlock(instructions, files, extraFolders = []) {
-  const cleanInst = String(instructions || '').trim();
+function buildManagedAgentsBlock(files, extraFolders = []) {
   const hasFiles = Array.isArray(files) && files.length > 0;
   const hasFolders = Array.isArray(extraFolders) && extraFolders.length > 0;
-  if (!cleanInst && !hasFiles && !hasFolders) return '';
+  if (!hasFiles && !hasFolders) return '';
 
   const parts = [PROJECT_RULE_BEGIN];
-  if (cleanInst) {
-    parts.push('## Project Context & Instructions', '', cleanInst);
-  }
   if (hasFiles) {
-    if (parts.length > 1) parts.push('');
     parts.push('## Project Reference Files', '');
     let inlineBytesUsed = 0;
     const inlineLines = [];
@@ -1858,17 +1960,17 @@ export function saveProjectContext(payload, { registryFile = PROJECTS_REGISTRY_F
   const dirPath = resolveLocalProjectDir(payload?.dirPath);
   if (!dirPath) return { ok: false, error: 'invalid_directory' };
 
+  const agentsPath = path.join(dirPath, 'AGENTS.md');
+  const existingAgents = readTextOrEmpty(agentsPath);
   const prevMeta = readJsonOrFallback(path.join(dirPath, PROJECT_META_REL), null);
   const prevFiles = Array.isArray(prevMeta?.files) ? prevMeta.files : [];
   const filesDir = path.join(dirPath, PROJECT_FILES_REL);
 
-  let fallbackInstructions = typeof prevMeta?.instructions === 'string' ? prevMeta.instructions : '';
-  if (!prevMeta && payload?.instructions === undefined) {
-    const curCtx = readProjectContext(dirPath);
-    if (curCtx?.ok && typeof curCtx.instructions === 'string') fallbackInstructions = curCtx.instructions;
-  }
+  const curDoc = splitAgentsMdDocument(existingAgents, prevMeta);
   const instructions =
-    typeof payload?.instructions === 'string' ? payload.instructions.replace(/\r\n/g, '\n') : fallbackInstructions;
+    typeof payload?.instructions === 'string'
+      ? payload.instructions.replace(/\r\n/g, '\n').trim()
+      : curDoc.bodyText;
 
   /* Preserve existing attachments unless `payload.files` was explicitly provided */
   const hasExplicitFiles = Array.isArray(payload?.files);
@@ -1966,33 +2068,19 @@ export function saveProjectContext(payload, { registryFile = PROJECTS_REGISTRY_F
     });
   }
 
-  /* Update or remove AGENTS.md managed block while preserving any user-written rules outside it */
-  const agentsPath = path.join(dirPath, 'AGENTS.md');
-  const existingAgents = readTextOrEmpty(agentsPath);
-  const managedBlock = buildManagedAgentsBlock(instructions, nextFiles, nextExtraFolders);
-  const beginIdx = existingAgents.indexOf(PROJECT_RULE_BEGIN);
-  const endIdx = beginIdx !== -1 ? existingAgents.indexOf(PROJECT_RULE_END, beginIdx) : -1;
-
-  let nextAgents = existingAgents;
-  if (beginIdx !== -1 && endIdx > beginIdx) {
-    let before = existingAgents.slice(0, beginIdx).replace(/\s+$/, '');
-    let after = existingAgents.slice(endIdx + PROJECT_RULE_END.length).replace(/^\s+/, '');
-    if (managedBlock) {
-      nextAgents = [before, managedBlock, after].filter(Boolean).join('\n\n') + '\n';
-    } else {
-      /* Strip the `---` divider inserted when prepending/appending the managed block */
-      if (!before) after = after.replace(/^---(?:\r?\n)+/, '').replace(/^---\s*$/, '').replace(/^\s+/, '');
-      else if (!after) before = before.replace(/(?:\r?\n)+---$/, '').replace(/\s+$/, '');
-      const rest = [before, after].filter(Boolean).join('\n\n').trim();
-      nextAgents = rest ? `${rest}\n` : '';
-    }
+  /* Write unified AGENTS.md: user instructions as primary body + optional managed footer for files/folders */
+  const managedBlock = buildManagedAgentsBlock(nextFiles, nextExtraFolders);
+  let nextAgents = '';
+  if (instructions && managedBlock) {
+    nextAgents = `${instructions}\n\n---\n\n${managedBlock}\n`;
+  } else if (instructions) {
+    nextAgents = `${instructions}\n`;
   } else if (managedBlock) {
-    const trimmed = existingAgents.trim();
-    nextAgents = trimmed ? `${managedBlock}\n\n---\n\n${trimmed}\n` : `${managedBlock}\n`;
+    nextAgents = `${managedBlock}\n`;
   }
 
   if (nextAgents !== existingAgents) {
-    if (nextAgents.trim()) {
+    if (nextAgents) {
       writeAtomicUtf8(agentsPath, nextAgents);
     } else if (fs.existsSync(agentsPath)) {
       fs.rmSync(agentsPath, { force: true });
@@ -2002,16 +2090,15 @@ export function saveProjectContext(payload, { registryFile = PROJECTS_REGISTRY_F
   const preservedTasks = Array.isArray(prevMeta?.scheduledTasks) ? prevMeta.scheduledTasks : [];
   const metaPath = path.join(dirPath, PROJECT_META_REL);
   const hasManagedData = Boolean(
-    instructions.trim() || nextFiles.length > 0 || nextExtraFolders.length > 0 || preservedTasks.length > 0
+    nextFiles.length > 0 || nextExtraFolders.length > 0 || preservedTasks.length > 0
   );
   if (hasManagedData) {
     writeAtomicUtf8(
       metaPath,
       `${JSON.stringify(
         {
-          schema: 1,
+          schema: 2,
           updatedAt: Date.now(),
-          instructions,
           files: nextFiles.map((f) => ({ name: f.name, relPath: f.relPath, managedCopy: f.managedCopy })),
           extraFolders: nextExtraFolders,
           scheduledTasks: preservedTasks
@@ -2381,21 +2468,16 @@ export function saveProjectScheduledTask(
   if (existingIdx !== -1) prevTasks[existingIdx] = taskRecord;
   else prevTasks.unshift(taskRecord);
 
-  writeAtomicUtf8(
-    metaPath,
-    `${JSON.stringify(
-      {
-        schema: 1,
-        updatedAt: Date.now(),
-        instructions: typeof prevMeta.instructions === 'string' ? prevMeta.instructions : '',
-        files: Array.isArray(prevMeta.files) ? prevMeta.files : [],
-        extraFolders: Array.isArray(prevMeta.extraFolders) ? prevMeta.extraFolders : [],
-        scheduledTasks: prevTasks
-      },
-      null,
-      2
-    )}\n`
-  );
+  const nextSchema = Number(prevMeta.schema) >= 2 ? 2 : prevMeta.instructions ? 1 : 2;
+  const metaPayload = {
+    schema: nextSchema,
+    updatedAt: Date.now(),
+    ...(nextSchema < 2 && typeof prevMeta.instructions === 'string' ? { instructions: prevMeta.instructions } : {}),
+    files: Array.isArray(prevMeta.files) ? prevMeta.files : [],
+    extraFolders: Array.isArray(prevMeta.extraFolders) ? prevMeta.extraFolders : [],
+    scheduledTasks: prevTasks
+  };
+  writeAtomicUtf8(metaPath, `${JSON.stringify(metaPayload, null, 2)}\n`);
   recordManagedProjectDir(dirPath, true, registryFile);
 
   const ctx = readProjectContext(dirPath);
@@ -2439,8 +2521,10 @@ export function deleteProjectScheduledTask(
 
   if (prevMeta) {
     const nextTasks = prevTasks.filter((t) => t && t.id !== taskId && (!sidecarId || t.sidecarId !== sidecarId));
+    const prevSchema = Number(prevMeta.schema) >= 2 ? 2 : 1;
+    const hasLegacyInst = prevSchema < 2 && typeof prevMeta.instructions === 'string' && prevMeta.instructions.trim();
     const hasAnything =
-      (typeof prevMeta.instructions === 'string' && prevMeta.instructions.trim()) ||
+      hasLegacyInst ||
       (Array.isArray(prevMeta.files) && prevMeta.files.length > 0) ||
       (Array.isArray(prevMeta.extraFolders) && prevMeta.extraFolders.length > 0) ||
       nextTasks.length > 0;
@@ -2450,7 +2534,7 @@ export function deleteProjectScheduledTask(
         `${JSON.stringify(
           {
             ...prevMeta,
-            schema: 1,
+            schema: prevSchema,
             updatedAt: Date.now(),
             scheduledTasks: nextTasks
           },
@@ -2734,6 +2818,330 @@ async function importLocalAgentNative() {
   return { ok: true, canceled: false, imported, dirPath: GLOBAL_AGENTS_DIR };
 }
 
+const CONNECTOR_DISPLAY_OVERRIDES = {
+  atlassian: 'Atlassian',
+  'chrome-devtools': 'Chrome devtools',
+  'chrome-devtools_chrome-devtools': 'Chrome devtools',
+  'remote-ssh': 'Remote SSH',
+  linear: 'Linear',
+  perplexity: 'Perplexity',
+  gdrive: 'Google Drive',
+  gcalendar: 'Google Calendar'
+};
+
+function prettifyConnectorName(rawId) {
+  const s = String(rawId || '').trim();
+  if (!s) return '';
+  const lower = s.toLowerCase();
+  if (CONNECTOR_DISPLAY_OVERRIDES[lower]) return CONNECTOR_DISPLAY_OVERRIDES[lower];
+  const spaced = s.replace(/[-_]+/g, ' ').replace(/\s+/g, ' ').trim();
+  return spaced ? spaced.charAt(0).toUpperCase() + spaced.slice(1) : s;
+}
+
+const overviewGitCache = new Map();
+const overviewGitInFlight = new Map();
+
+function execGitAsync(absDir, args, timeoutMs = 1200) {
+  return new Promise((resolve) => {
+    execFile(
+      'git',
+      ['-C', absDir, ...args],
+      { timeout: timeoutMs, maxBuffer: 256 * 1024, encoding: 'utf8' },
+      (err, stdout) => {
+        if (err) resolve(null);
+        else resolve(String(stdout || ''));
+      }
+    );
+  });
+}
+
+function parseNumstatOutput(numstat) {
+  let added = 0;
+  let deleted = 0;
+  if (!numstat) return { added, deleted };
+  for (const line of numstat.split(/\r?\n/)) {
+    if (!line) continue;
+    const parts = line.split('\t');
+    if (parts.length >= 2) {
+      const a = parseInt(parts[0], 10);
+      const d = parseInt(parts[1], 10);
+      if (Number.isFinite(a)) added += a;
+      if (Number.isFinite(d)) deleted += d;
+    }
+  }
+  return { added, deleted };
+}
+
+export async function readOverviewGitStatusAsync(absDir) {
+  const now = Date.now();
+  const cached = overviewGitCache.get(absDir);
+  if (cached && now - cached.ts < 5000) return cached.git;
+  if (overviewGitInFlight.has(absDir)) return overviewGitInFlight.get(absDir);
+
+  const task = (async () => {
+    let git = null;
+    try {
+      const [statusOut, headNumstat] = await Promise.all([
+        execGitAsync(absDir, ['status', '--porcelain=v2', '--branch'], 1200),
+        execGitAsync(absDir, ['diff', 'HEAD', '--numstat'], 1200)
+      ]);
+      if (statusOut !== null) {
+        let branch = '';
+        let changedFiles = 0;
+        for (const line of statusOut.split(/\r?\n/)) {
+          if (!line) continue;
+          if (line.startsWith('# branch.head ')) {
+            const rawHead = line.slice('# branch.head '.length).trim();
+            branch = rawHead === '(detached)' ? 'HEAD' : rawHead;
+          } else if (!line.startsWith('#')) {
+            changedFiles += 1;
+          }
+        }
+        if (branch) {
+          let numstatText = headNumstat;
+          if (numstatText === null && changedFiles > 0) {
+            /* Unborn branch without HEAD commit: fall back to unstaged + cached numstat */
+            const [unstaged, staged] = await Promise.all([
+              execGitAsync(absDir, ['diff', '--numstat'], 1000),
+              execGitAsync(absDir, ['diff', '--cached', '--numstat'], 1000)
+            ]);
+            numstatText = `${unstaged || ''}\n${staged || ''}`;
+          }
+          const { added, deleted } = parseNumstatOutput(numstatText);
+          git = { branch, added, deleted, changedFiles };
+        }
+      }
+    } catch {
+      git = null;
+    }
+    setBounded(overviewGitCache, absDir, { ts: Date.now(), git }, 32);
+    return git;
+  })().finally(() => {
+    overviewGitInFlight.delete(absDir);
+  });
+
+  overviewGitInFlight.set(absDir, task);
+  return task;
+}
+
+function scanSkillsDirectory(dirPath, source, skillMap) {
+  if (!dirPath) return;
+  let entries;
+  try {
+    entries = fs.readdirSync(dirPath, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const ent of entries) {
+    if (!ent.isDirectory() && !ent.isSymbolicLink()) continue;
+    if (ent.name.startsWith('.')) continue;
+    const skillDir = path.join(dirPath, ent.name);
+    const skillMd = path.join(skillDir, 'SKILL.md');
+    const st = fs.statSync(skillMd, { throwIfNoEntry: false });
+    if (!st || !st.isFile()) continue;
+    if (!skillMap.has(ent.name)) {
+      skillMap.set(ent.name, { name: ent.name, path: skillMd, source });
+    }
+  }
+}
+
+export function collectOverviewSnapshot(payload = {}, opts = {}) {
+  const homeDir = opts.homeDir ? path.resolve(opts.homeDir) : HOME;
+  const geminiDir = opts.geminiDir ? path.resolve(opts.geminiDir) : path.join(homeDir, '.gemini');
+  const configDir = opts.configDir ? path.resolve(opts.configDir) : path.join(geminiDir, 'config');
+  const skillsDir = opts.skillsDir ? path.resolve(opts.skillsDir) : GLOBAL_SKILLS_DIR;
+  const agentsDir = opts.agentsDir ? path.resolve(opts.agentsDir) : GLOBAL_AGENTS_DIR;
+  const builtinSkillsDir = opts.builtinSkillsDir
+    ? path.resolve(opts.builtinSkillsDir)
+    : path.join(geminiDir, 'antigravity', 'builtin', 'skills');
+  const skipGit = Boolean(opts.skipGit);
+
+  let absDir = '';
+  const rawDir = typeof payload?.dirPath === 'string' ? payload.dirPath.trim() : '';
+  if (rawDir) {
+    const resolved = resolveLocalProjectDir(rawDir);
+    if (resolved) absDir = resolved;
+  }
+
+  const workspace = {
+    dirPath: absDir,
+    name: absDir ? path.basename(absDir) || absDir : '',
+    git: opts.gitResolved !== undefined ? opts.gitResolved : null
+  };
+
+  const rootCfg = readJsonOrFallback(path.join(configDir, 'config.json'), {});
+  const pluginsCfg = rootCfg && typeof rootCfg.plugins === 'object' && rootCfg.plugins ? rootCfg.plugins : {};
+  const enabledPlugins = Object.entries(pluginsCfg)
+    .filter(([, cfg]) => !cfg || cfg.enabled !== false)
+    .map(([name, cfg]) => ({
+      name,
+      cfg: cfg && typeof cfg === 'object' ? cfg : {},
+      dir: path.join(configDir, 'plugins', name)
+    }))
+    .filter((p) => {
+      const st = fs.statSync(p.dir, { throwIfNoEntry: false });
+      return Boolean(st && st.isDirectory());
+    });
+
+  /* 1. Rules / Memory files */
+  const rules = [];
+  const globalAgentsPath = path.join(geminiDir, 'AGENTS.md');
+  const globalAst = fs.statSync(globalAgentsPath, { throwIfNoEntry: false });
+  if (globalAst && globalAst.isFile()) {
+    rules.push({
+      label: '~/.gemini/AGENTS.md',
+      path: globalAgentsPath,
+      scope: 'global',
+      bytes: globalAst.size
+    });
+  }
+  if (absDir) {
+    const projAgentsPath = path.join(absDir, 'AGENTS.md');
+    const projAst = fs.statSync(projAgentsPath, { throwIfNoEntry: false });
+    if (projAst && projAst.isFile()) {
+      rules.push({
+        label: 'AGENTS.md',
+        path: projAgentsPath,
+        scope: 'project',
+        bytes: projAst.size
+      });
+    }
+  }
+  for (const pl of enabledPlugins) {
+    const rulesDir = path.join(pl.dir, 'rules');
+    let ruleFiles = [];
+    try {
+      ruleFiles = fs.readdirSync(rulesDir).filter((f) => /\.md$/i.test(f));
+    } catch {}
+    for (const file of ruleFiles) {
+      const fp = path.join(rulesDir, file);
+      const st = fs.statSync(fp, { throwIfNoEntry: false });
+      if (st && st.isFile()) {
+        rules.push({
+          label: `${pl.name}/${file}`,
+          path: fp,
+          scope: 'plugin',
+          bytes: st.size
+        });
+      }
+    }
+  }
+
+  /* 2. Skills (priority: user > plugin > builtin) */
+  const skillMap = new Map();
+  scanSkillsDirectory(skillsDir, 'user', skillMap);
+  for (const pl of enabledPlugins) {
+    scanSkillsDirectory(path.join(pl.dir, 'skills'), 'plugin', skillMap);
+  }
+  scanSkillsDirectory(builtinSkillsDir, 'builtin', skillMap);
+  const rankSource = { user: 0, plugin: 1, builtin: 2 };
+  const allSkills = Array.from(skillMap.values()).sort((a, b) => {
+    const r = (rankSource[a.source] ?? 9) - (rankSource[b.source] ?? 9);
+    return r !== 0 ? r : a.name.localeCompare(b.name);
+  });
+  const userCount = allSkills.filter((s) => s.source === 'user').length;
+  const skills = {
+    total: allSkills.length,
+    userCount,
+    items: allSkills.slice(0, 80)
+  };
+
+  /* 3. Custom Agents */
+  const agentItems = [];
+  const seenAgentNames = new Set();
+  const collectAgentMd = (dirPath, source) => {
+    let entries;
+    try {
+      entries = fs.readdirSync(dirPath, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const ent of entries) {
+      if ((!ent.isFile() && !ent.isSymbolicLink()) || !/\.md$/i.test(ent.name)) continue;
+      const name = ent.name.replace(/\.md$/i, '');
+      if (seenAgentNames.has(name)) continue;
+      seenAgentNames.add(name);
+      agentItems.push({ name, path: path.join(dirPath, ent.name), source });
+    }
+  };
+  collectAgentMd(agentsDir, 'user');
+  for (const pl of enabledPlugins) {
+    collectAgentMd(path.join(pl.dir, 'agents'), 'plugin');
+  }
+  const agents = { total: agentItems.length, items: agentItems };
+
+  /* 4. Connectors (never expose env/args/headers/command/tokens) */
+  const connectors = [];
+  const seenConnIds = new Set();
+  const rootMcpPath = path.join(configDir, 'mcp_config.json');
+  const rootMcp = readJsonOrFallback(rootMcpPath, null);
+  if (rootMcp && typeof rootMcp.mcpServers === 'object' && rootMcp.mcpServers) {
+    for (const [id, def] of Object.entries(rootMcp.mcpServers)) {
+      if (!def || def.disabled === true || seenConnIds.has(id)) continue;
+      seenConnIds.add(id);
+      connectors.push({ id, name: prettifyConnectorName(id), kind: 'mcp', configPath: rootMcpPath });
+    }
+  }
+  for (const pl of enabledPlugins) {
+    const plMcpPath = path.join(pl.dir, 'mcp_config.json');
+    const plMcp = readJsonOrFallback(plMcpPath, null);
+    if (plMcp && typeof plMcp.mcpServers === 'object' && plMcp.mcpServers) {
+      for (const [id, def] of Object.entries(plMcp.mcpServers)) {
+        if (!def || def.disabled === true || seenConnIds.has(id)) continue;
+        seenConnIds.add(id);
+        connectors.push({ id, name: prettifyConnectorName(id), kind: 'mcp', configPath: plMcpPath });
+      }
+    }
+    const plJsonPath = path.join(pl.dir, 'plugin.json');
+    const plJson = readJsonOrFallback(plJsonPath, null);
+    const hasAuth = fs.existsSync(path.join(pl.dir, 'auth.json'));
+    const isExternalConnector = Boolean(
+      plJson && (pl.cfg.installedFrom || plJson.auth || plJson.cli || plJson.mcp || hasAuth)
+    );
+    if (isExternalConnector && !seenConnIds.has(pl.name)) {
+      seenConnIds.add(pl.name);
+      connectors.push({
+        id: pl.name,
+        name: String(plJson.displayName || plJson.name || prettifyConnectorName(pl.name)),
+        kind: 'plugin',
+        configPath: plJsonPath
+      });
+    }
+  }
+
+  return { ok: true, workspace, rules, skills, agents, connectors };
+}
+
+export async function collectOverviewSnapshotAsync(payload = {}, opts = {}) {
+  const skipGit = Boolean(opts.skipGit);
+  let absDir = '';
+  const rawDir = typeof payload?.dirPath === 'string' ? payload.dirPath.trim() : '';
+  if (rawDir) {
+    const resolved = resolveLocalProjectDir(rawDir);
+    if (resolved) absDir = resolved;
+  }
+  const gitResolved = absDir && !skipGit ? await readOverviewGitStatusAsync(absDir) : null;
+  return collectOverviewSnapshot(payload, Object.assign({}, opts, { gitResolved }));
+}
+
+function getSafePluginDocRoots(configDir = path.join(HOME, '.gemini', 'config')) {
+  const pluginsRoot = path.join(configDir, 'plugins');
+  const roots = [];
+  let entries = [];
+  try {
+    entries = fs.readdirSync(pluginsRoot, { withFileTypes: true });
+  } catch {
+    return roots;
+  }
+  for (const ent of entries) {
+    if ((!ent.isDirectory() && !ent.isSymbolicLink()) || ent.name.startsWith('.')) continue;
+    for (const sub of ['skills', 'rules', 'agents']) {
+      roots.push(path.join(pluginsRoot, ent.name, sub));
+    }
+  }
+  return roots;
+}
+
 async function handleProjectRpcRequest(rawPayload, callerEntry = null) {
   let req;
   try {
@@ -2825,22 +3233,32 @@ async function handleProjectRpcRequest(rawPayload, callerEntry = null) {
       const res = await importLocalAgentNative();
       return { reqId, result: res };
     }
+    if (action === 'getOverviewSnapshot') {
+      const result = await collectOverviewSnapshotAsync(payload);
+      return { reqId, result };
+    }
     if (action === 'revealFile') {
       const rawTarget = typeof payload?.targetPath === 'string' ? payload.targetPath.trim() : '';
       if (!rawTarget) return { reqId, result: { ok: false, error: 'missing_path' } };
       const absTarget = path.resolve(rawTarget);
       const explicitProj = resolveLocalProjectDir(payload?.dirPath);
+      const globalAgentsMd = path.join(HOME, '.gemini', 'AGENTS.md');
+      const builtinRootDir = path.join(HOME, '.gemini', 'antigravity', 'builtin');
       const allowedRoots = [
         ...(explicitProj ? [explicitProj] : []),
         ...getRegisteredProjectDirs(),
         GLOBAL_SKILLS_DIR,
-        GLOBAL_AGENTS_DIR
+        GLOBAL_AGENTS_DIR,
+        builtinRootDir,
+        ...getSafePluginDocRoots()
       ];
-      const authorized = allowedRoots.some((root) => absTarget === root || isPathInsideDir(root, absTarget));
+      const authorized =
+        absTarget === globalAgentsMd ||
+        allowedRoots.some((root) => absTarget === root || isPathInsideDir(root, absTarget));
       if (!authorized) {
         return { reqId, result: { ok: false, error: 'path_outside_project' } };
       }
-      return { reqId, result: revealLocalPath(absTarget, { openFolderContents: false }) };
+      return { reqId, result: revealLocalPath(absTarget, { openFolderContents: Boolean(payload?.openFolder) }) };
     }
     return { reqId, result: { ok: false, error: `unknown_action:${action}` } };
   } catch (err) {

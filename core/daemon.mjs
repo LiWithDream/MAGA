@@ -97,8 +97,7 @@ const ALLOWED_UI_MODULE_KEYS = new Set([
   'claudeUxHideSidebarProjects',
   'claudeUxCustomizations',
   'claudeUxCodeFold',
-  'claudeUxOverviewPanel',
-  'claudeUxThemeToggle'
+  'claudeUxOverviewPanel'
 ]);
 const VALID_CJK_SCALES = new Set(['94.5', '95', '100']);
 const INLINE_TEXT_EXTS = new Set([

@@ -6675,6 +6675,7 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) [data-testid="overview-pan
 }
 
 [data-testid="overview-panel"][data-ag-ov-enhanced="1"] [data-ag-ov-shortcuts="1"] > button[data-testid^="overview-panel-row-"] > span.agy-hover-label {
+  flex: 0 0 auto !important;
   font-size: 11.5px !important;
   line-height: 1.15 !important;
   font-weight: 500 !important;
@@ -6686,14 +6687,49 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) [data-testid="overview-pan
   display: none !important;
 }
 
+/* When Review tile has live git diff stats (+N -M), render them cleanly in the
+   top 15px slot instead of overlapping the icon via absolute positioning. */
+[data-testid="overview-panel"][data-ag-ov-enhanced="1"] [data-ag-ov-shortcuts="1"] > button[data-testid="overview-panel-row-review"]:has(> [data-testid="overview-panel-row-review-detail"]:not(:empty)) > svg {
+  display: none !important;
+}
+
 [data-testid="overview-panel"][data-ag-ov-enhanced="1"] [data-ag-ov-shortcuts="1"] [data-testid="overview-panel-row-review-detail"]:not(:empty) {
-  position: absolute !important;
-  top: 2px !important;
-  right: 4px !important;
-  font-size: 10px !important;
+  position: static !important;
+  order: -1 !important;
+  flex: 0 0 auto !important;
+  flex-basis: auto !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  max-width: 100% !important;
+  height: 15px !important;
+  font-size: 10.5px !important;
   line-height: 1 !important;
   font-weight: 600 !important;
   color: var(--ag-ov-blue) !important;
+  overflow: hidden !important;
+}
+
+[data-testid="overview-panel"][data-ag-ov-enhanced="1"] [data-ag-ov-shortcuts="1"] [data-testid="overview-panel-row-review-diff-stats"] {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 2.5px !important;
+  max-width: 100% !important;
+  font-size: 10.5px !important;
+  line-height: 1 !important;
+  font-weight: 600 !important;
+  letter-spacing: -0.02em !important;
+  font-variant-numeric: tabular-nums !important;
+  white-space: nowrap !important;
+}
+
+html:not([data-ag-theme-mode="dark"]) body:not(.dark) [data-testid="overview-panel"][data-ag-ov-enhanced="1"] [data-ag-ov-shortcuts="1"] [data-testid="overview-panel-row-review-diff-stats"] .text-green-500 {
+  color: #16A34A !important;
+}
+
+html:not([data-ag-theme-mode="dark"]) body:not(.dark) [data-testid="overview-panel"][data-ag-ov-enhanced="1"] [data-ag-ov-shortcuts="1"] [data-testid="overview-panel-row-review-diff-stats"] .text-red-500 {
+  color: #DC2626 !important;
 }
 
 [data-testid="overview-panel"][data-ag-ov-enhanced="1"] [data-ag-ov-native-artifact="1"] {
@@ -7357,66 +7393,3 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) [data-testid="overview-pan
   flex-shrink: 0;
 }
 
-/* ==========================================================================
- * 12. Top-Right Titlebar 3-Mode Theme Switcher (claudeUxThemeToggle)
- * ========================================================================== */
-#ag-claude-topbar-theme {
-  order: -1;
-  display: inline-flex;
-  align-items: center;
-  gap: 1px;
-  height: 26px;
-  padding: 2px;
-  margin-right: 4px;
-  border-radius: 999px;
-  box-sizing: border-box;
-  flex-shrink: 0;
-  user-select: none;
-  -webkit-app-region: no-drag;
-  background-color: rgba(0, 0, 0, 0.055);
-  border: 1px solid rgba(0, 0, 0, 0.075);
-}
-
-:is(html[data-ag-theme-mode="dark"] body, body.dark) #ag-claude-topbar-theme {
-  background-color: rgba(255, 255, 255, 0.055);
-  border-color: rgba(255, 255, 255, 0.085);
-}
-
-#ag-claude-topbar-theme .ag-tb-theme-btn {
-  width: 24px;
-  height: 20px;
-  padding: 0;
-  border: none;
-  border-radius: 999px;
-  background: transparent;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  color: rgba(25, 25, 24, 0.54);
-  transition: background-color 140ms ease, color 140ms ease, box-shadow 140ms ease;
-}
-
-:is(html[data-ag-theme-mode="dark"] body, body.dark) #ag-claude-topbar-theme .ag-tb-theme-btn {
-  color: rgba(236, 236, 234, 0.54);
-}
-
-#ag-claude-topbar-theme .ag-tb-theme-btn:hover {
-  color: #191918;
-}
-
-:is(html[data-ag-theme-mode="dark"] body, body.dark) #ag-claude-topbar-theme .ag-tb-theme-btn:hover {
-  color: #F3F4F6;
-}
-
-#ag-claude-topbar-theme .ag-tb-theme-btn[data-active="true"] {
-  background-color: #FFFFFF;
-  color: #191918;
-  box-shadow: 0 1px 2.5px rgba(0, 0, 0, 0.12), 0 0 0 0.5px rgba(0, 0, 0, 0.08);
-}
-
-:is(html[data-ag-theme-mode="dark"] body, body.dark) #ag-claude-topbar-theme .ag-tb-theme-btn[data-active="true"] {
-  background-color: rgba(255, 255, 255, 0.15);
-  color: #FFFFFF;
-  box-shadow: inset 0 0 0 0.5px rgba(255, 255, 255, 0.14), 0 1px 2px rgba(0, 0, 0, 0.36);
-}

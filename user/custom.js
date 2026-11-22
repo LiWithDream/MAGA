@@ -82,8 +82,7 @@
     hideSidebarProjects: effectiveModBool('claudeUxHideSidebarProjects', true),
     customizations: effectiveModBool('claudeUxCustomizations', true),
     codeFold: effectiveModBool('claudeUxCodeFold', true),
-    overviewPanel: effectiveModBool('claudeUxOverviewPanel', true),
-    themeToggle: effectiveModBool('claudeUxThemeToggle', true)
+    overviewPanel: effectiveModBool('claudeUxOverviewPanel', true)
   };
   const L = (zh, en) => (FEAT.i18n ? zh : en);
 
@@ -1522,7 +1521,6 @@
     syncSidebarEnhancements();
     syncProjectsWorkspace();
     syncOverviewPanel(false);
-    syncTopbarThemeToggle(false);
     reconcileSettingsPanel();
   }
 
@@ -7572,14 +7570,6 @@
           'Chinese UI Localization',
           '将 Antigravity 原生界面与增强面板切换为简体中文（默认关闭，保持英文原版界面）',
           'Translate Antigravity UI and enhancement panels into Simplified Chinese (English by default)'
-        ],
-        [
-          'claudeUxThemeToggle',
-          'themeToggle',
-          '顶栏主题快速切换',
-          'Titlebar Theme Switcher',
-          '在主界面右上角顶栏常驻「跟随系统 / 浅色 / 深色」三段式胶囊开关，一键切换日夜模式',
-          'Adds a compact System / Light / Dark segmented pill to the top-right titlebar for one-click theme switching'
         ]
       ]
     },
@@ -7812,10 +7802,6 @@
       refreshProjectsLanguageUi();
       syncCustomizationsEnhancement();
       renderOverviewPanel(true);
-      syncTopbarThemeToggle(true);
-    } else if (featKey === 'themeToggle') {
-      if (!on) teardownTopbarThemeToggle();
-      else syncTopbarThemeToggle(true);
     } else if (featKey === 'projects') {
       if (!on) teardownProjectsWorkspace();
       else syncProjectsWorkspace();
@@ -14522,255 +14508,6 @@
     document.querySelectorAll('[data-ag-ov-native-tail]').forEach((el) => el.removeAttribute('data-ag-ov-native-tail'));
   }
 
-  /* ==========================================================================
-   * 12. Top-Right Titlebar 3-Mode Theme Switcher (claudeUxThemeToggle)
-   *     - Mounts a compact [System | Light | Dark] segmented pill directly to
-   *       the left of `titlebar-more-actions` (`⋮`) via appendChild + `order: -1`
-   *     - Drives Antigravity's native `SettingsSyncedStateProvider.themeModeProvider`
-   *       (`1` = System, `2` = Light, `3` = Dark) with live two-way sync
-   * ========================================================================== */
-  const SVG_THEME_SYSTEM =
-    '<svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">' +
-    '<rect x="2" y="2.75" width="12" height="8.5" rx="1.6" stroke="currentColor" stroke-width="1.35"/>' +
-    '<path d="M5.5 13.5H10.5M8 11.25V13.5" stroke="currentColor" stroke-width="1.35" stroke-linecap="round"/>' +
-    '</svg>';
-  const SVG_THEME_LIGHT =
-    '<svg width="13.5" height="13.5" viewBox="0 0 16 16" fill="none" aria-hidden="true">' +
-    '<circle cx="8" cy="8" r="2.75" stroke="currentColor" stroke-width="1.35"/>' +
-    '<path d="M8 1.9V3.2M8 12.8V14.1M1.9 8H3.2M12.8 8H14.1M3.68 3.68L4.6 4.6M11.4 11.4L12.32 12.32M12.32 3.68L11.4 4.6M4.6 11.4L3.68 12.32" stroke="currentColor" stroke-width="1.35" stroke-linecap="round"/>' +
-    '</svg>';
-  const SVG_THEME_DARK =
-    '<svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">' +
-    '<path d="M12.85 9.85A5.35 5.35 0 0 1 6.15 3.15a5.35 5.35 0 1 0 6.7 6.7Z" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/>' +
-    '</svg>';
-
-  let cachedThemeModeProvider = null;
-  let themeModeUnsub = null;
-  let fallbackThemeModeVal = 0;
-
-  function bindThemeModeSubscription(tp) {
-    if (themeModeUnsub) {
-      try {
-        themeModeUnsub();
-      } catch {}
-      themeModeUnsub = null;
-    }
-    if (tp && typeof tp.onDidChange === 'function') {
-      try {
-        const sub = tp.onDidChange(() => {
-          if (!disposed) updateTopbarThemeActiveUi();
-        });
-        if (typeof sub === 'function') themeModeUnsub = sub;
-        else if (sub && typeof sub.dispose === 'function') themeModeUnsub = () => sub.dispose();
-      } catch {}
-    }
-  }
-
-  function discoverThemeModeProvider() {
-    if (
-      typeof window === 'object' &&
-      window &&
-      window.__ag_test_theme_provider &&
-      typeof window.__ag_test_theme_provider.getState === 'function' &&
-      typeof window.__ag_test_theme_provider.pushUpdate === 'function'
-    ) {
-      if (cachedThemeModeProvider !== window.__ag_test_theme_provider) {
-        cachedThemeModeProvider = window.__ag_test_theme_provider;
-        bindThemeModeSubscription(cachedThemeModeProvider);
-      }
-      return cachedThemeModeProvider;
-    }
-    if (
-      cachedThemeModeProvider &&
-      typeof cachedThemeModeProvider.getState === 'function' &&
-      typeof cachedThemeModeProvider.pushUpdate === 'function'
-    ) {
-      return cachedThemeModeProvider;
-    }
-    const root = document.getElementById('root') || (document.body && document.body.firstElementChild);
-    if (!root) return null;
-    const fk = Object.keys(root).find((k) => k.startsWith('__reactContainer') || k.startsWith('__reactFiber'));
-    const start = fk ? root[fk] : null;
-    if (!start) return null;
-    const queue = [start];
-    const seen = new Set();
-    let steps = 0;
-    while (queue.length && steps < 400) {
-      const f = queue.shift();
-      if (!f || seen.has(f)) continue;
-      seen.add(f);
-      steps++;
-      const mp = f.memoizedProps;
-      const cand = mp && mp.value && mp.value.themeModeProvider;
-      if (cand && typeof cand.getState === 'function' && typeof cand.pushUpdate === 'function') {
-        cachedThemeModeProvider = cand;
-        bindThemeModeSubscription(cand);
-        return cand;
-      }
-      for (let dep = f.dependencies && f.dependencies.firstContext; dep; dep = dep.next) {
-        const mv = dep.memoizedValue;
-        const dc = mv && mv.themeModeProvider;
-        if (dc && typeof dc.getState === 'function' && typeof dc.pushUpdate === 'function') {
-          cachedThemeModeProvider = dc;
-          bindThemeModeSubscription(dc);
-          return dc;
-        }
-      }
-      if (f.child) queue.push(f.child);
-      if (f.sibling) queue.push(f.sibling);
-    }
-    return null;
-  }
-
-  function readCurrentThemeModeVal() {
-    const tp = discoverThemeModeProvider();
-    if (tp) {
-      try {
-        const v = Number(tp.getState());
-        if (v === 2 || v === 3) return v;
-        return 1;
-      } catch {}
-    }
-    if (fallbackThemeModeVal === 1 || fallbackThemeModeVal === 2 || fallbackThemeModeVal === 3) {
-      return fallbackThemeModeVal;
-    }
-    const domMode = docRoot ? docRoot.getAttribute('data-ag-theme-mode') : '';
-    if (domMode === 'light') return 2;
-    if (domMode === 'dark') return 3;
-    return 1;
-  }
-
-  function applyThemeModeVal(nextVal) {
-    const mode = nextVal === 2 ? 2 : nextVal === 3 ? 3 : 1;
-    fallbackThemeModeVal = mode;
-    const tp = discoverThemeModeProvider();
-    if (tp) {
-      try {
-        tp.pushUpdate(mode);
-      } catch {}
-    } else {
-      const hostStr = mode === 2 ? 'light' : mode === 3 ? 'dark' : '';
-      if (typeof window.__ag_set_host_theme_mode === 'function') {
-        try {
-          window.__ag_set_host_theme_mode(hostStr);
-        } catch {}
-      }
-      const resolvedDark =
-        mode === 3 ||
-        (mode === 1 &&
-          typeof window.matchMedia === 'function' &&
-          Boolean(window.matchMedia('(prefers-color-scheme: dark)').matches));
-      if (docRoot) {
-        docRoot.setAttribute('data-ag-theme-mode', resolvedDark ? 'dark' : 'light');
-        docRoot.classList.toggle('dark', resolvedDark);
-      }
-      if (document.body) document.body.classList.toggle('dark', resolvedDark);
-    }
-    updateTopbarThemeActiveUi(mode);
-  }
-
-  function findTopbarThemeHost() {
-    const btns = Array.from(
-      document.querySelectorAll(
-        'button[data-testid="titlebar-more-actions"], button[data-testid="toggle-overview-panel"]'
-      )
-    );
-    if (!btns.length) return null;
-    let bestBtn = null;
-    let bestRight = -Infinity;
-    for (const b of btns) {
-      if (!b.parentElement || b.closest('[hidden], [aria-hidden="true"]')) continue;
-      const r = typeof b.getBoundingClientRect === 'function' ? b.getBoundingClientRect() : null;
-      if (r && r.width > 0 && r.height > 0) {
-        if (r.top <= 96 && r.right >= bestRight) {
-          bestRight = r.right;
-          bestBtn = b;
-        }
-      } else if (!bestBtn) {
-        bestBtn = b;
-      }
-    }
-    return bestBtn ? bestBtn.parentElement : null;
-  }
-
-  function updateTopbarThemeActiveUi(explicitVal = 0) {
-    const wrap = document.getElementById('ag-claude-topbar-theme');
-    if (!wrap) return;
-    const cur = explicitVal === 1 || explicitVal === 2 || explicitVal === 3 ? explicitVal : readCurrentThemeModeVal();
-    wrap.setAttribute('data-theme-val', String(cur));
-    wrap.setAttribute('aria-label', L('主题模式', 'Theme mode'));
-    const metaByVal = {
-      1: L('跟随系统', 'System theme'),
-      2: L('浅色模式', 'Light theme'),
-      3: L('深色模式', 'Dark theme')
-    };
-    wrap.querySelectorAll('.ag-tb-theme-btn[data-ag-theme-val]').forEach((btn) => {
-      const v = Number(btn.getAttribute('data-ag-theme-val'));
-      const active = v === cur;
-      const label = metaByVal[v] || '';
-      btn.setAttribute('aria-checked', active ? 'true' : 'false');
-      btn.setAttribute('data-active', active ? 'true' : 'false');
-      if (btn.getAttribute('title') !== label) btn.setAttribute('title', label);
-      if (btn.getAttribute('aria-label') !== label) btn.setAttribute('aria-label', label);
-    });
-  }
-
-  function syncTopbarThemeToggle(forceLabels = false) {
-    if (disposed || !FEAT.themeToggle) {
-      teardownTopbarThemeToggle();
-      return;
-    }
-    const host = findTopbarThemeHost();
-    let wrap = document.getElementById('ag-claude-topbar-theme');
-    if (!host) {
-      if (wrap) wrap.remove();
-      return;
-    }
-    let freshlyCreated = false;
-    if (!wrap) {
-      wrap = document.createElement('div');
-      wrap.id = 'ag-claude-topbar-theme';
-      wrap.setAttribute('data-ag-i18n-ignore', '1');
-      wrap.setAttribute('role', 'radiogroup');
-      wrap.innerHTML =
-        `<button type="button" role="radio" class="ag-tb-theme-btn" data-ag-theme-val="1">${SVG_THEME_SYSTEM}</button>` +
-        `<button type="button" role="radio" class="ag-tb-theme-btn" data-ag-theme-val="2">${SVG_THEME_LIGHT}</button>` +
-        `<button type="button" role="radio" class="ag-tb-theme-btn" data-ag-theme-val="3">${SVG_THEME_DARK}</button>`;
-      wrap.addEventListener('click', (e) => {
-        const btn = e.target && e.target.closest && e.target.closest('.ag-tb-theme-btn[data-ag-theme-val]');
-        if (!btn) return;
-        e.preventDefault();
-        e.stopPropagation();
-        applyThemeModeVal(Number(btn.getAttribute('data-ag-theme-val')));
-      });
-      freshlyCreated = true;
-    }
-    if (wrap.parentElement !== host) {
-      host.appendChild(wrap);
-      freshlyCreated = true;
-    }
-    if (freshlyCreated || forceLabels || !wrap.hasAttribute('data-theme-val')) {
-      updateTopbarThemeActiveUi();
-    } else {
-      const cur = readCurrentThemeModeVal();
-      if (wrap.getAttribute('data-theme-val') !== String(cur)) {
-        updateTopbarThemeActiveUi(cur);
-      }
-    }
-  }
-
-  function teardownTopbarThemeToggle() {
-    if (themeModeUnsub) {
-      try {
-        themeModeUnsub();
-      } catch {}
-      themeModeUnsub = null;
-    }
-    cachedThemeModeProvider = null;
-    const wrap = document.getElementById('ag-claude-topbar-theme');
-    if (wrap) wrap.remove();
-  }
-
   /* ---- scheduling: rAF-coalesced, throttled, and blind to our own DOM writes ---- */
   const MIN_SYNC_GAP_MS = 80;
   let throttleTimer = 0;
@@ -14789,7 +14526,7 @@
   }
 
   const OWN_SEL =
-    '.ag-claude-todo-card, .ag-claude-todo-live-dock, .ag-collapse-ghost, .ag-orbit-dots, .ag-elapsed-timer, #ag-claude-ctx-ring, #ag-claude-quota-popover, #ag-claude-model-popover, #ag-claude-model-subpop, #ag-claude-model-tripop, .ag-claude-inline-editor, .ag-claude-folder-badges, #ag-claude-recent-section, #ag-recent-row-menu, #ag-project-action-menu, #ag-claude-ux-settings-nav, #ag-claude-ux-settings-panel, #ag-settings-stats-wrap, .ag-settings-subhdr-chev, #ag-claude-projects-nav-btn, #ag-claude-projects-view, #ag-claude-project-modal, .ag-code-fold-toggle, .ag-code-fold-bar, #ag-claude-ov-sections, #ag-claude-topbar-theme';
+    '.ag-claude-todo-card, .ag-claude-todo-live-dock, .ag-collapse-ghost, .ag-orbit-dots, .ag-elapsed-timer, #ag-claude-ctx-ring, #ag-claude-quota-popover, #ag-claude-model-popover, #ag-claude-model-subpop, #ag-claude-model-tripop, .ag-claude-inline-editor, .ag-claude-folder-badges, #ag-claude-recent-section, #ag-recent-row-menu, #ag-project-action-menu, #ag-claude-ux-settings-nav, #ag-claude-ux-settings-panel, #ag-settings-stats-wrap, .ag-settings-subhdr-chev, #ag-claude-projects-nav-btn, #ag-claude-projects-view, #ag-claude-project-modal, .ag-code-fold-toggle, .ag-code-fold-bar, #ag-claude-ov-sections';
   const CLASS_WATCH_SEL =
     'ul.contains-task-list, [id="antigravity.agentSidePanelInputBox"], [data-testid="tool-group-collapsible"], [data-testid="worked-for-collapsible"], [data-testid="progress-updates-collapsible"], [data-testid="ephemeral-tool-status"]';
 
@@ -14860,6 +14597,8 @@
       pendingBodyReadyCleanup();
       pendingBodyReadyCleanup = null;
     }
+    const staleThemeToggle = document.getElementById('ag-claude-topbar-theme');
+    if (staleThemeToggle) staleThemeToggle.remove();
     applyUiI18nState(FEAT.i18n);
     if (needsInitialPrefsSync) {
       persistUiPrefsToDaemon(localOverrideTs || Date.now());
@@ -14964,7 +14703,6 @@
     clearSidebarHideNativeProjects();
     teardownCustomizationsEnhancement();
     teardownOverviewPanel();
-    teardownTopbarThemeToggle();
     if (prefStoreUnsub) {
       try {
         prefStoreUnsub();

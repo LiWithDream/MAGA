@@ -3864,15 +3864,15 @@ test('[claudeUxOverviewPanel] enhances right Overview panel with Google Blue Use
   }
 });
 
-test('[v3.1.0 · Theme Toggle & v2.34 Models i18n] mounts titlebar 3-way theme pill, localizes Models/Quota strings, and keeps main model menu free of Executor Model row', { skip: !JSDOM }, async () => {
+test('[v3.1.4 · v2.34 Models i18n & Clean Titlebar] omits titlebar theme pill, localizes Models/Quota strings, and keeps main model menu free of Executor Model row', { skip: !JSDOM }, async () => {
   const customJsSrc = fs.readFileSync(path.join(REPO, 'user', 'custom.js'), 'utf8');
   const customCssSrc = fs.readFileSync(path.join(REPO, 'user', 'custom.css'), 'utf8');
   const i18nDict = JSON.parse(fs.readFileSync(path.join(REPO, 'core', 'i18n.json'), 'utf8'));
 
-  assert.match(
+  assert.doesNotMatch(
     customCssSrc,
-    /#ag-claude-topbar-theme\s*\{[\s\S]*?order:\s*-1;/,
-    'topbar theme pill uses CSS order:-1 so appendChild places it to the left of titlebar-more-actions safely'
+    /#ag-claude-topbar-theme\b/,
+    'removed topbar theme pill CSS should not linger in custom.css'
   );
   assert.match(
     customCssSrc,
@@ -3915,22 +3915,7 @@ test('[v3.1.0 · Theme Toggle & v2.34 Models i18n] mounts titlebar 3-way theme p
   const { window } = dom;
   const doc = window.document;
 
-  /* 1. Mock native themeModeProvider (1=System, 2=Light, 3=Dark) */
-  let currentThemeVal = 3;
-  const themeListeners = new Set();
-  window.__ag_test_theme_provider = {
-    getState: () => currentThemeVal,
-    pushUpdate: (next) => {
-      currentThemeVal = next;
-      for (const fn of themeListeners) fn();
-    },
-    onDidChange: (fn) => {
-      themeListeners.add(fn);
-      return () => themeListeners.delete(fn);
-    }
-  };
-
-  /* 2. Attach native model-selector-trigger React fiber API */
+  /* 1. Attach native model-selector-trigger React fiber API */
   const modelOptions = [
     { label: 'Gemini 4 Carbon (High)', modelId: 'gemini-4-carbon-high', value: 1427, disabled: false },
     { label: 'Gemini 4 Carbon (Low)', modelId: 'gemini-4-carbon-low', value: 1438, disabled: false },
@@ -3966,7 +3951,6 @@ test('[v3.1.0 · Theme Toggle & v2.34 Models i18n] mounts titlebar 3-way theme p
     dict: i18nDict,
     modules: {
       i18n: true,
-      claudeUxThemeToggle: true,
       claudeUxModelMenu: true
     },
     onCleanup: () => {}
@@ -3976,24 +3960,8 @@ test('[v3.1.0 · Theme Toggle & v2.34 Models i18n] mounts titlebar 3-way theme p
   try {
     await new Promise((r) => setTimeout(r, 30));
 
-    /* Verify 1: Topbar 3-way theme toggle mounted safely via appendChild and syncs bidirectionally */
-    const host = doc.getElementById('topbar-actions');
-    const themeWrap = doc.getElementById('ag-claude-topbar-theme');
-    assert.ok(themeWrap, 'topbar theme toggle is mounted');
-    assert.equal(host.lastElementChild, themeWrap, 'appended as last DOM child to avoid shifting React children');
-    assert.equal(themeWrap.getAttribute('data-theme-val'), '3', 'reflects initial Dark mode (3)');
-    assert.equal(
-      themeWrap.querySelector('[data-ag-theme-val="3"]').getAttribute('data-active'),
-      'true',
-      'Dark button highlighted initially'
-    );
-
-    themeWrap.querySelector('[data-ag-theme-val="2"]').click();
-    assert.equal(currentThemeVal, 2, 'clicking Light updates native themeModeProvider to 2');
-    assert.equal(themeWrap.getAttribute('data-theme-val'), '2');
-
-    window.__ag_test_theme_provider.pushUpdate(1);
-    assert.equal(themeWrap.getAttribute('data-theme-val'), '1', 'external Settings change to System (1) updates topbar UI');
+    /* Verify 1: Topbar stays clean with no injected theme toggle pill */
+    assert.equal(doc.getElementById('ag-claude-topbar-theme'), null, 'topbar theme toggle is not mounted');
 
     /* Verify 2: Complete Chinese localization for v2.34.0 Models & Quota strings */
     assert.equal(doc.querySelector('#settings-models-mock h2').textContent, '编排器设置');
@@ -4022,8 +3990,6 @@ test('[v3.1.0 · Theme Toggle & v2.34 Models i18n] mounts titlebar 3-way theme p
     assert.ok(mainPop.querySelector('[data-ag-cm-subtrigger="more"]'), 'More models row remains intact');
 
     window.__agClaudeUxDispose();
-    assert.equal(doc.getElementById('ag-claude-topbar-theme'), null, 'teardown removes topbar theme toggle');
-    assert.equal(themeListeners.size, 0, 'unsubscribes themeModeProvider listener on dispose');
   } finally {
     window.close();
   }
@@ -4450,3 +4416,23 @@ test('[Live Auto Quota Refresh] bypasses stale forceRefresh:false server cache a
     window.close();
   }
 });
+
+test('Overview Review shortcut tile replaces icon slot with in-flow diff stats instead of overlapping', () => {
+  const css = fs.readFileSync(path.join(REPO, 'user', 'custom.css'), 'utf8');
+  assert.match(
+    css,
+    /button\[data-testid="overview-panel-row-review"\]:has\(>\s*\[data-testid="overview-panel-row-review-detail"\]:not\(:empty\)\)\s*>\s*svg\s*\{[\s\S]*?display:\s*none\s*!important;/,
+    'Review tile must hide its icon when live diff stats occupy the top slot'
+  );
+  assert.match(
+    css,
+    /\[data-testid="overview-panel-row-review-detail"\]:not\(:empty\)\s*\{[\s\S]*?position:\s*static\s*!important;[\s\S]*?order:\s*-1\s*!important;/,
+    'Review detail badge must sit in-flow above the label instead of position:absolute overlapping the icon'
+  );
+  assert.match(
+    css,
+    /\[data-testid="overview-panel-row-review-diff-stats"\]\s*\{[\s\S]*?font-size:\s*10\.5px\s*!important;/,
+    'Review diff stats must override native Tailwind text-sm (14px) to fit inside 68px shortcut tile'
+  );
+});
+

@@ -34,17 +34,19 @@
 }
 
 /* ==========================================================================
- * Chat Pane Minimum Width Floor (420px) + Aux Side Panel Max-Width Guard
- * Prevents crushing the main composer below a comfortable headroom floor.
+ * Symmetrical 420px Minimum Width Floor for BOTH Main Pane & Aux Side Panel
+ * Keeps both composers governed by the exact same width floor & compression
+ * ladder while guaranteeing aux inner wrapper stays 100% aligned & centered.
  * ========================================================================== */
 
 [data-testid="aux-pane-split"] > div:first-child {
-  min-width: min(420px, 100%) !important;
+  min-width: min(420px, 50%) !important;
 }
 
 [data-testid="aux-pane-split"] > div:last-child:not([style*="width: 0px"]),
 [data-testid="aux-pane-split"] > div:last-child:not([style*="width: 0px"]) > div:first-child {
-  max-width: max(308px, calc(var(--split-root-size, 100%) - 420px - 1px)) !important;
+  min-width: min(420px, calc(var(--split-root-size, 100%) * 0.5)) !important;
+  max-width: max(min(420px, calc(var(--split-root-size, 100%) * 0.5)), calc(var(--split-root-size, 100%) - 420px - 1px)) !important;
 }
 
 /* Scope composer proportions to primary/subagent composers (never compact voice-dock or side-question) */
@@ -740,9 +742,39 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) :is(#ag-claude-quota-popov
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--agy-sub-color) 22%, var(--agy-pill-border)) !important;
   transition: background-color 140ms ease, box-shadow 140ms ease, color 140ms ease !important;
 }
+.agy-composer-footer > div:first-child > [data-agy-native-sub-chip="1"] {
+  justify-content: center !important;
+}
+.agy-composer-footer > div:first-child > [data-agy-native-sub-chip="1"] > div:first-child {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 5px !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  min-width: 0 !important;
+  height: 100% !important;
+  background: transparent !important;
+  color: inherit !important;
+}
+.agy-composer-footer > div:first-child > [data-agy-native-sub-chip="1"] > div:empty {
+  display: none !important;
+}
+.agy-composer-footer > div:first-child > [data-agy-native-sub-chip="1"] > div:first-child > span {
+  font-size: 11.5px !important;
+  line-height: 16px !important;
+  font-weight: 450 !important;
+  color: inherit !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+}
 .agy-composer-footer > div:first-child > [data-agy-native-sub-chip="1"] svg {
+  width: 13px !important;
+  height: 13px !important;
   color: var(--agy-sub-color) !important;
   flex-shrink: 0 !important;
+  display: block !important;
 }
 .agy-composer-footer > div:first-child > #agy-main-subagent-pill:hover,
 .agy-composer-footer > div:first-child > [data-agy-native-sub-chip="1"]:hover {
@@ -813,12 +845,18 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) :is(#ag-claude-quota-popov
   display: none !important;
 }
 
-/* Native subagent chip inside side-panel subagent composer: condense to robot icon in tight/icon tiers */
+/* Native subagent chip inside side-panel subagent composer: condense to centered robot icon in tight/icon tiers */
 .agy-composer-footer[data-agy-dock-tier="tight"] > div:first-child > [data-agy-native-sub-chip="1"],
 .agy-composer-footer[data-agy-dock-tier="icon"] > div:first-child > [data-agy-native-sub-chip="1"] {
   width: 26px !important;
+  min-width: 26px !important;
+  max-width: 26px !important;
   padding: 0 !important;
   justify-content: center !important;
+  gap: 0 !important;
+}
+.agy-composer-footer[data-agy-dock-tier="tight"] > div:first-child > [data-agy-native-sub-chip="1"] > div:first-child,
+.agy-composer-footer[data-agy-dock-tier="icon"] > div:first-child > [data-agy-native-sub-chip="1"] > div:first-child {
   gap: 0 !important;
 }
 .agy-composer-footer[data-agy-dock-tier="tight"] > div:first-child > [data-agy-native-sub-chip="1"] span,

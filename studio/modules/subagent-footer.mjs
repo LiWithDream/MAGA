@@ -22,6 +22,8 @@ export function createSubagentFooterRuntime({ motionThemes }) {
   const MAIN_PILL_ID = 'agy-main-subagent-pill';
   const MENU_ID = 'agy-subagent-menu';
   const SUB_GROUP_ATTR = 'data-agy-sub-pill';
+  const SEEN_STORAGE_KEY = 'agy_studio_subagent_seen_v1';
+  const MAX_SEEN_ENTRIES = 200;
   const RING_CIRC = 2 * Math.PI * 7;
 
   let disposed = false;
@@ -31,7 +33,77 @@ export function createSubagentFooterRuntime({ motionThemes }) {
 
   let prevAuxOpen = null;
   let prevOvOpen = null;
+  let prevMainRunning = null;
   let mutualGuardUntil = 0;
+
+  /* ---- Persistent Watermark Store (id -> "calls:outTok") ---- */
+  const seenMap = new Map();
+  try {
+    const raw = typeof localStorage === 'object' && localStorage ? localStorage.getItem(SEEN_STORAGE_KEY) : null;
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        for (const pair of parsed) {
+          if (Array.isArray(pair) && typeof pair[0] === 'string' && typeof pair[1] === 'string') {
+            seenMap.set(pair[0], pair[1]);
+          }
+        }
+      }
+    }
+  } catch {}
+
+  function persistSeenMap() {
+    try {
+      if (typeof localStorage !== 'object' || !localStorage) return;
+      const entries = Array.from(seenMap.entries());
+      const trimmed = entries.length > MAX_SEEN_ENTRIES ? entries.slice(-MAX_SEEN_ENTRIES) : entries;
+      localStorage.setItem(SEEN_STORAGE_KEY, JSON.stringify(trimmed));
+    } catch {}
+  }
+
+  function getChildSig(ch) {
+    return `${Number(ch?.calls || 0)}:${Number(ch?.outTok || 0)}`;
+  }
+
+  function isChildSeen(ch) {
+    if (!ch || !ch.id) return true;
+    return seenMap.get(ch.id) === getChildSig(ch);
+  }
+
+  function markChildSeen(ch) {
+    if (!ch || !ch.id || ch.running) return false;
+    const sig = getChildSig(ch);
+    if (seenMap.get(ch.id) === sig) return false;
+    seenMap.delete(ch.id); // refresh recency order
+    seenMap.set(ch.id, sig);
+    persistSeenMap();
+    return true;
+  }
+
+  function isMainComposerRunning() {
+    const cancelBtns = document.querySelectorAll('.agy-composer-footer button[data-testid="input-cancel-button"]');
+    for (const btn of cancelBtns) {
+      if (btn.closest('[data-side-panel-composer], [data-testid="subagent-tab-composer"]')) continue;
+      if (typeof btn.checkVisibility === 'function') {
+        if (btn.checkVisibility({ opacityProperty: true, visibilityProperty: true })) return true;
+      } else if (btn.offsetParent !== null) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function markIdleSubagentsSeenOnTurnAdvance() {
+    const auxOpen = isAuxPanelOpen();
+    const activeTabId = auxOpen ? getActiveSubagentTabId() : '';
+    let changed = false;
+    for (const ch of getSortedChildren()) {
+      if (ch.running) continue;
+      if (auxOpen && activeTabId && ch.id === activeTabId) continue;
+      if (markChildSeen(ch)) changed = true;
+    }
+    return changed;
+  }
 
   function isZh() {
     return (
@@ -279,6 +351,40 @@ export function createSubagentFooterRuntime({ motionThemes }) {
     });
   }
 
+  function getVisibleMainChildren() {
+    const all = getSortedChildren();
+    const auxOpen = isAuxPanelOpen();
+    const activeTabId = auxOpen ? getActiveSubagentTabId() : '';
+
+    // Record watermark for whichever completed subagent the user is actively viewing in the side panel,
+    // while keeping it visible & highlighted until the side panel closes or switches away.
+    if (auxOpen && activeTabId) {
+      const viewed = all.find((ch) => ch.id === activeTabId);
+      if (viewed && !viewed.running) markChildSeen(viewed);
+    }
+
+    return all.filter((ch) => {
+      const isOpenInSide = Boolean(auxOpen && activeTabId && ch.id === activeTabId);
+      if (isOpenInSide) return true; // Rule 3: currently open in side panel -> always show
+      if (ch.killed) return false;   // Rule 1: destroyed -> hidden unless explicitly opened from history
+      if (ch.running) return true;   // Rule 2: actively working -> always show
+      return !isChildSeen(ch);       // Rule 4: completed/standby -> show while unread
+    });
+  }
+
+  function syncTurnAdvanceRetirement() {
+    const running = isMainComposerRunning();
+    if (prevMainRunning === null) {
+      prevMainRunning = running;
+      return;
+    }
+    const justStartedTurn = !prevMainRunning && running;
+    prevMainRunning = running;
+    if (justStartedTurn) {
+      markIdleSubagentsSeenOnTurnAdvance();
+    }
+  }
+
   /* ---- Part A: Main Composer Subagent Entry Pill + Selector Menu ---- */
 
   function closeMenu() {
@@ -398,7 +504,7 @@ export function createSubagentFooterRuntime({ motionThemes }) {
       return ch.getBoundingClientRect().width > 1;
     });
 
-    const children = getSortedChildren();
+    const children = getVisibleMainChildren();
     let pill = document.getElementById(MAIN_PILL_ID);
 
     if (hasNativeSubChip || children.length === 0) {
@@ -416,7 +522,7 @@ export function createSubagentFooterRuntime({ motionThemes }) {
       pill.addEventListener('click', (e) => {
         e.preventDefault();
         e.stopPropagation();
-        const latest = getSortedChildren();
+        const latest = getVisibleMainChildren();
         if (!latest.length) return;
         if (latest.length === 1) {
           closeMenu();
@@ -436,21 +542,23 @@ export function createSubagentFooterRuntime({ motionThemes }) {
       leftGroup.appendChild(pill);
     }
 
+    const isMultiple = children.length > 1;
     const primary = children[0];
     const anyRunning = children.some((c) => c.running);
     const auxOpen = isAuxPanelOpen();
     const activeTabId = auxOpen ? getActiveSubagentTabId() : '';
     const isLinkedOpen = Boolean(auxOpen && activeTabId && children.some((c) => c.id === activeTabId));
     const subState = anyRunning ? 'running' : 'done';
-    const label = getSubagentLabel(primary);
-    const countBadge = children.length > 1 ? `<span class="agy-sub-count">${children.length}</span>` : '';
+    const label = isMultiple ? L('子代理', 'Subagents') : getSubagentLabel(primary);
+    const countBadge = isMultiple ? `<span class="agy-sub-count">${children.length}</span>` : '';
     const dotHtml = anyRunning ? '<span class="agy-sub-live-dot" aria-hidden="true"></span>' : '';
     const botSvg = '<svg class="agy-sub-ico" width="12.5" height="12.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="10" height="8" rx="2"/><path d="M8 2.5V5M6.2 8.8h.01M9.8 8.8h.01M6.2 11h3.6"/></svg>';
 
     const statusDesc = anyRunning
       ? L('工作中', 'Working')
       : L('已完成 / 待命', 'Done / Standby');
-    const tooltip = `${L('子代理', 'Subagent')}: ${label}${children.length > 1 ? ` (+${children.length - 1})` : ''} · ${statusDesc} · ${
+    const namesSummary = children.map(getSubagentLabel).join(', ');
+    const tooltip = `${L('子代理', 'Subagent')}: ${namesSummary} · ${statusDesc} · ${
       isLinkedOpen ? L('点击收起侧栏', 'Click to close side panel') : L('点击联动打开侧栏', 'Click to open side panel')
     }`;
 
@@ -624,6 +732,7 @@ export function createSubagentFooterRuntime({ motionThemes }) {
   function sync() {
     if (disposed) return;
     enforcePanelMutualExclusion();
+    syncTurnAdvanceRetirement();
     syncMainSubagentEntry();
     syncSidePanelSubagentFooter();
   }

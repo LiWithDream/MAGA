@@ -496,7 +496,7 @@ export function createSubagentFooterRuntime({ motionThemes }) {
     if (!footer || !leftGroup) return;
 
     const hasNativeSubChip = Array.from(leftGroup.children).some((ch) => {
-      if (ch.id === MAIN_PILL_ID) return false;
+      if (ch.id === MAIN_PILL_ID || ch.id === 'agy-resume-pill') return false;
       if (ch.id === 'agy-capsule-picker-host' || ch.hasAttribute('data-agy-picker-host')) return false;
       if (ch.id === 'ag-claude-ctx-ring' || ch.id === 'ag-live-metrics-pill') return false;
       if (ch.tagName === 'INPUT' || ch.querySelector?.('button[data-deck-model-bubble="hidden"]')) return false;

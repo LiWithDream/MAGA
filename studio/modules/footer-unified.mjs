@@ -133,7 +133,7 @@ export function createFooterUnifiedRuntime({ onTierChange } = {}) {
     if (!leftGroup) return false;
     for (const ch of leftGroup.children) {
       if (ch.id === 'agy-capsule-picker-host' || ch.hasAttribute('data-agy-picker-host')) continue;
-      if (ch.id === 'ag-claude-ctx-ring' || ch.id === 'ag-live-metrics-pill') continue;
+      if (ch.id === 'ag-claude-ctx-ring' || ch.id === 'ag-live-metrics-pill' || ch.id === 'agy-resume-pill') continue;
       if (ch.hasAttribute('data-agy-sub-pill')) continue;
       if (ch.tagName === 'INPUT') continue;
       if (ch.tagName === 'BUTTON' && ch === leftGroup.querySelector(':scope > button:first-of-type')) continue;
@@ -170,6 +170,21 @@ export function createFooterUnifiedRuntime({ onTierChange } = {}) {
       if (footerW <= 0) continue;
 
       const leftGroup = footer.children[0];
+      // Disable redundant hover tooltip on [+ Add context] button (button itself displays the label)
+      const addCtxBtn = leftGroup?.querySelector(':scope > button:first-of-type');
+      if (addCtxBtn) {
+        const tipId = addCtxBtn.getAttribute('data-tooltip-id');
+        if (tipId) {
+          addCtxBtn.setAttribute('data-agy-suppressed-tip', tipId);
+          addCtxBtn.removeAttribute('data-tooltip-id');
+        }
+        if (addCtxBtn.hasAttribute('title')) addCtxBtn.removeAttribute('title');
+        const suppressed = addCtxBtn.getAttribute('data-agy-suppressed-tip');
+        if (suppressed) {
+          const tipNode = document.getElementById(suppressed);
+          if (tipNode && tipNode.style.display !== 'none') tipNode.style.display = 'none';
+        }
+      }
       const speedPill = footer.querySelector('#ag-live-metrics-pill')
         || (footer.nextElementSibling?.id === 'ag-live-metrics-pill' ? footer.nextElementSibling : null);
 

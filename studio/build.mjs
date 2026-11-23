@@ -12,6 +12,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { buildPickerShadowCss, createCapsulePickerRuntime } from './modules/capsule-picker.mjs';
 import { createFooterUnifiedRuntime } from './modules/footer-unified.mjs';
 import { createOverviewUsageRuntime } from './modules/overview-usage.mjs';
+import { createResumeBannerRuntime } from './modules/resume-banner.mjs';
 import { createSubagentFooterRuntime } from './modules/subagent-footer.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -167,6 +168,7 @@ export async function buildStudioBundle() {
     createCapsulePickerRuntime.toString(),
     createFooterUnifiedRuntime.toString(),
     createOverviewUsageRuntime.toString(),
+    createResumeBannerRuntime.toString(),
     createSubagentFooterRuntime.toString(),
   ].join('\n\n');
 
@@ -203,11 +205,13 @@ ${moduleFns}
   });
   const footer = createFooterUnifiedRuntime({ onTierChange: () => scheduleSync() });
   const usage = createOverviewUsageRuntime({ motionThemes });
+  const resumeBanner = createResumeBannerRuntime();
   const subagentFooter = createSubagentFooterRuntime({ motionThemes });
 
   function syncAll() {
     if (disposed) return;
     subagentFooter.sync();
+    resumeBanner.sync();
     footer.sync();
     picker.sync(scheduleSync);
     usage.sync();
@@ -242,6 +246,7 @@ ${moduleFns}
     docObs.disconnect();
     picker.dispose();
     footer.dispose();
+    resumeBanner.dispose();
     subagentFooter.dispose();
     usage.dispose();
     if (window.__agyStudioDispose === dispose) {

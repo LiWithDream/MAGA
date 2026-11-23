@@ -3245,6 +3245,11 @@ async function handleProjectRpcRequest(rawPayload, callerEntry = null) {
       const result = collectSubagentMetrics(payload);
       return { reqId, result };
     }
+    if (action === 'getResumeState') {
+      const { collectResumeState } = await import('../studio/daemon/resume-detector.mjs');
+      const result = collectResumeState(payload);
+      return { reqId, result };
+    }
     if (action === 'revealFile') {
       const rawTarget = typeof payload?.targetPath === 'string' ? payload.targetPath.trim() : '';
       if (!rawTarget) return { reqId, result: { ok: false, error: 'missing_path' } };

@@ -154,18 +154,35 @@
   content: none !important;
 }
 
-/* Row 1: Right actions (Turbo, Mic, Send/Stop) sit flush beside [+ Add context] */
+/* Row 1: Right actions (Turbo, Mic, Voice, Send/Stop) — uniform 6px rhythm matching [+ Add context] */
 .agy-composer-footer > div:last-child {
   flex-shrink: 0 !important;
-  gap: 5px !important;
+  gap: 6px !important;
   align-items: center !important;
+}
+
+.agy-composer-footer[data-agy-has-row2="true"] > div:first-child > button:first-of-type,
+#antigravity\.agentSidePanelInputBox .agy-composer-footer[data-agy-has-row2="true"] > div:first-child > button:first-of-type {
+  margin-right: 1px !important;
 }
 
 .agy-composer-footer[data-agy-has-row2="true"] > div:last-child,
 #antigravity\.agentSidePanelInputBox .agy-composer-footer[data-agy-has-row2="true"] > div:last-child {
   order: 2 !important;
   margin-left: 0 !important;
-  gap: 5px !important;
+  gap: 6px !important;
+}
+
+.agy-composer-footer[data-agy-has-row2="true"] > div:last-child > div,
+#antigravity\.agentSidePanelInputBox .agy-composer-footer[data-agy-has-row2="true"] > div:last-child > div {
+  gap: 6px !important;
+  margin: 0 !important;
+}
+
+.agy-composer-footer[data-agy-has-row2="true"] > div:last-child button,
+#antigravity\.agentSidePanelInputBox .agy-composer-footer[data-agy-has-row2="true"] > div:last-child button {
+  margin-left: 0 !important;
+  margin-right: 0 !important;
 }
 
 /* Hairline divider between Row 1 (input controls) and Row 2 (4-capsule status dock) */
@@ -206,8 +223,8 @@
   font-size: 11.5px !important;
 }
 
-/* Order 7: Any unknown extra native chip (excludes our styled subagent capsules) */
-.agy-composer-footer > div:first-child > *:not(button:first-of-type):not(input):not([data-agy-picker-host]):not([data-agy-sub-pill]):not(#ag-claude-ctx-ring):not(#ag-live-metrics-pill):not(#agy-main-subagent-pill):not([data-agy-native-sub-chip="1"]):not(:has(button[data-deck-model-bubble="hidden"])) {
+/* Order 7: Any unknown extra native chip (excludes our styled subagent & resume capsules) */
+.agy-composer-footer > div:first-child > *:not(button:first-of-type):not(input):not([data-agy-picker-host]):not([data-agy-sub-pill]):not(#ag-claude-ctx-ring):not(#ag-live-metrics-pill):not(#agy-main-subagent-pill):not(#agy-resume-pill):not([data-agy-native-sub-chip="1"]):not(:has(button[data-deck-model-bubble="hidden"])) {
   order: 7 !important;
   display: inline-flex !important;
   align-items: center !important;
@@ -227,7 +244,7 @@
   white-space: nowrap !important;
   transition: background-color 140ms ease, box-shadow 140ms ease, color 140ms ease !important;
 }
-.agy-composer-footer > div:first-child > *:not(button:first-of-type):not(input):not([data-agy-picker-host]):not([data-agy-sub-pill]):not(#ag-claude-ctx-ring):not(#ag-live-metrics-pill):not(#agy-main-subagent-pill):not([data-agy-native-sub-chip="1"]):not(:has(button[data-deck-model-bubble="hidden"])):hover {
+.agy-composer-footer > div:first-child > *:not(button:first-of-type):not(input):not([data-agy-picker-host]):not([data-agy-sub-pill]):not(#ag-claude-ctx-ring):not(#ag-live-metrics-pill):not(#agy-main-subagent-pill):not(#agy-resume-pill):not([data-agy-native-sub-chip="1"]):not(:has(button[data-deck-model-bubble="hidden"])):hover {
   background-color: var(--agy-pill-bg-hover) !important;
   box-shadow: inset 0 0 0 1px var(--agy-pill-border-hover) !important;
 }
@@ -1004,4 +1021,79 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) :is(#ag-claude-quota-popov
   color: var(--muted-foreground, #8E8D88) !important;
   white-space: nowrap !important;
   flex-shrink: 0 !important;
+}
+
+/* ==========================================================================
+ * Interrupted-Task Resume Capsule (#agy-resume-pill) — Row 1 Left (order: 0)
+ * Appears only when the active conversation ended abnormally & composer is empty.
+ * ========================================================================== */
+
+#agy-resume-pill#agy-resume-pill {
+  --agy-res-color: #D97706;
+  order: 0 !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  height: 28px !important;
+  padding: 0 3px 0 0 !important;
+  border-radius: 8px !important;
+  flex-shrink: 0 !important;
+  font-family: var(--font-sans) !important;
+  background-color: color-mix(in srgb, var(--agy-res-color) 11%, var(--agy-pill-bg)) !important;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--agy-res-color) 32%, var(--agy-pill-border)) !important;
+  transition: background-color 140ms ease, box-shadow 140ms ease !important;
+}
+:is(html[data-ag-theme-mode="dark"], html.dark, body.dark) #agy-resume-pill#agy-resume-pill {
+  --agy-res-color: #FBBF24;
+  background-color: color-mix(in srgb, var(--agy-res-color) 13%, var(--agy-pill-bg)) !important;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--agy-res-color) 36%, var(--agy-pill-border)) !important;
+}
+#agy-resume-pill#agy-resume-pill:hover {
+  background-color: color-mix(in srgb, var(--agy-res-color) 18%, var(--agy-pill-bg-hover)) !important;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--agy-res-color) 48%, var(--agy-pill-border-hover)) !important;
+}
+#agy-resume-pill .agy-resume-go {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 5px !important;
+  height: 100% !important;
+  padding: 0 5px 0 8.5px !important;
+  border: none !important;
+  background: transparent !important;
+  color: color-mix(in srgb, var(--agy-res-color) 82%, var(--foreground)) !important;
+  font-family: inherit !important;
+  font-size: 12px !important;
+  font-weight: 500 !important;
+  line-height: 16px !important;
+  white-space: nowrap !important;
+  cursor: pointer !important;
+}
+#agy-resume-pill .agy-resume-ico {
+  color: var(--agy-res-color) !important;
+  flex-shrink: 0 !important;
+}
+#agy-resume-pill .agy-resume-dismiss {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 20px !important;
+  height: 20px !important;
+  padding: 0 !important;
+  border: none !important;
+  border-radius: 5px !important;
+  background: transparent !important;
+  color: color-mix(in srgb, var(--agy-res-color) 65%, var(--muted-foreground)) !important;
+  cursor: pointer !important;
+  opacity: 0.72 !important;
+  transition: opacity 120ms ease, background-color 120ms ease !important;
+}
+#agy-resume-pill .agy-resume-dismiss:hover {
+  opacity: 1 !important;
+  background-color: color-mix(in srgb, var(--agy-res-color) 16%, transparent) !important;
+}
+.agy-composer-footer[data-agy-dock-tier="icon"] #agy-resume-pill .agy-resume-label {
+  display: none !important;
+}
+.agy-composer-footer[data-agy-dock-tier="icon"] #agy-resume-pill .agy-resume-go {
+  padding: 0 3px 0 7px !important;
+  gap: 0 !important;
 }

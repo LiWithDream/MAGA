@@ -47,7 +47,13 @@ body {
   color: #8E8D88 !important;
 }
 
-/* Hide English thinking prose while keeping Thought for Xs / Thinking... header row & all tool rows */
-[data-testid="thinking-collapsible-trigger"] + div {
+/* Hide English thinking prose & remove expand/collapse chevron on Thinking/Thought rows */
+[data-testid="thinking-collapsible-trigger"] + div,
+[data-testid="thinking-collapsible-trigger"] > svg {
   display: none !important;
+}
+
+[data-testid="thinking-collapsible-trigger"] {
+  cursor: default !important;
+  pointer-events: none !important;
 }

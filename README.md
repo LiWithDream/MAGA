@@ -1,4 +1,4 @@
-# agy-studio
+# MAGA — Make Antigravity Great Again
 
 Personal unified enhancement layer for **Google Antigravity Desktop 2.0**, combining [`hongqi7/Anti-Claude`](https://github.com/hongqi7/Anti-Claude) (CDP daemon, Claude-style UI, right Overview panel) with internalized zero-sidecar modules from [`Lumidarin/agy-capsule`](https://github.com/Lumidarin/agy-capsule) (model/effort picker, live speed activity indicator, daily & per-model Token usage stats) and custom visual polish.
 

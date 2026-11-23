@@ -8,11 +8,23 @@
 
 export function createFooterUnifiedRuntime() {
   let disposed = false;
+  let observedFooterEl = null;
+  let footerResizeObs = null;
   const speedActivity = {
     running: false,
     coolUntil: 0,
     lastMetricsText: '',
   };
+
+  function watchFooterResize(footer) {
+    if (!footer || observedFooterEl === footer || typeof ResizeObserver !== 'function') return;
+    if (footerResizeObs) footerResizeObs.disconnect();
+    observedFooterEl = footer;
+    footerResizeObs = new ResizeObserver(() => {
+      if (!disposed) syncContextCapsule();
+    });
+    footerResizeObs.observe(footer);
+  }
 
   function isZhUi() {
     return (
@@ -26,12 +38,66 @@ export function createFooterUnifiedRuntime() {
     const pop = document.getElementById('ag-claude-quota-popover');
     if (!ring) return;
 
+    const footer = ring.closest('.agy-composer-footer');
+    watchFooterResize(footer);
+    const footerW = footer ? Math.round(footer.getBoundingClientRect().width) : 0;
+    const footerSize = footerW > 0 && footerW < 410
+      ? 'xs'
+      : footerW > 0 && footerW < 540
+        ? 'narrow'
+        : footerW > 0 && footerW < 640
+          ? 'compact'
+          : 'wide';
+    if (footer && footer.getAttribute('data-agy-footer-size') !== footerSize) {
+      footer.setAttribute('data-agy-footer-size', footerSize);
+    }
+
+    // When narrow/xs, always drop #ag-live-metrics-pill cleanly to row 2 so row 1
+    // gives full unclipped room to Model + Effort + Context % without squeezing either.
+    const speedPill = document.getElementById('ag-live-metrics-pill');
+    if (footer && speedPill && footer.parentElement) {
+      const leftGroup = footer.children[0];
+      const wantBottom = footerSize === 'narrow' || footerSize === 'xs';
+      if (wantBottom) {
+        if (speedPill.parentElement !== footer.parentElement || speedPill.previousElementSibling !== footer) {
+          footer.insertAdjacentElement('afterend', speedPill);
+        }
+        if (speedPill.getAttribute('data-ag-row-mode') !== 'bottom') {
+          speedPill.setAttribute('data-ag-row-mode', 'bottom');
+        }
+        if (footer.getAttribute('data-ag-row-mode') !== 'bottom') {
+          footer.setAttribute('data-ag-row-mode', 'bottom');
+        }
+      } else if (leftGroup && speedPill.getAttribute('data-ag-row-mode') === 'bottom' && footerW >= 570) {
+        leftGroup.appendChild(speedPill);
+        speedPill.setAttribute('data-ag-row-mode', 'middle');
+        footer.setAttribute('data-ag-row-mode', 'middle');
+      }
+    }
+
     const cState = ring.getAttribute('data-compact-state');
     const title = ring.getAttribute('title') || '';
 
     let ratioText = '';
     const rm = title.match(/(\d+(?:\.\d+)?[kKmM]?\s*\/\s*\d+(?:\.\d+)?[kKmM]?)/);
     if (rm) ratioText = rm[1].replace(/\s*\/\s*/, ' / ');
+
+    let pct = NaN;
+    const m = title.match(/\((\d+(?:\.\d+)?)%/);
+    if (m) pct = parseFloat(m[1]);
+    if (!Number.isFinite(pct) && pop) {
+      const pctEl = pop.querySelector('.ag-qp-item .ag-qp-pct');
+      const pm = (pctEl?.textContent || '').match(/(\d+(?:\.\d+)?)%/);
+      if (pm) pct = parseFloat(pm[1]);
+    }
+    if (!Number.isFinite(pct)) {
+      const arc = ring.querySelector('.ag-ctx-ring-arc');
+      const offset = parseFloat(arc?.style?.strokeDashoffset || '');
+      if (Number.isFinite(offset)) {
+        const circ = 2 * Math.PI * 7;
+        pct = Math.max(0, Math.min(100, Math.round((1 - offset / circ) * 100)));
+      }
+    }
 
     let ratioSpan = ring.querySelector('.agy-ctx-ratio');
     if (!ratioSpan) {
@@ -41,17 +107,31 @@ export function createFooterUnifiedRuntime() {
     }
 
     if (cState === 'compacting') {
-      const label = isZhUi() ? '压缩中…' : 'Compacting…';
+      const label = footerSize === 'xs' ? '' : isZhUi() ? '压缩中…' : 'Compacting…';
       if (ratioSpan.textContent !== label) ratioSpan.textContent = label;
-      ratioSpan.hidden = false;
-      ring.setAttribute('data-agy-has-ratio', 'true');
+      ratioSpan.hidden = !label;
+      if (label) ring.setAttribute('data-agy-has-ratio', 'true');
+      else ring.removeAttribute('data-agy-has-ratio');
       ring.removeAttribute('data-agy-ctx-tier');
       if (pop) pop.removeAttribute('data-agy-ctx-tier');
       return;
     }
 
-    if (ratioText) {
-      if (ratioSpan.textContent !== ratioText) ratioSpan.textContent = ratioText;
+    // Progressive responsive label:
+    // wide/compact (>=490px): "230.8k / 512k"
+    // narrow (340-489px, e.g. side pane open): "45%" (fits cleanly with zero clipping)
+    // xs (<340px): ring icon only
+    let displayText = '';
+    if (footerSize === 'xs') {
+      displayText = '';
+    } else if (footerSize === 'narrow') {
+      displayText = Number.isFinite(pct) ? `${Math.round(pct)}%` : (ratioText ? ratioText.split('/')[0].trim() : '');
+    } else {
+      displayText = ratioText;
+    }
+
+    if (displayText) {
+      if (ratioSpan.textContent !== displayText) ratioSpan.textContent = displayText;
       ratioSpan.hidden = false;
       ring.setAttribute('data-agy-has-ratio', 'true');
     } else {
@@ -71,23 +151,6 @@ export function createFooterUnifiedRuntime() {
       ring.removeAttribute('data-agy-ctx-tier');
       if (pop) pop.removeAttribute('data-agy-ctx-tier');
       return;
-    }
-
-    let pct = NaN;
-    const m = title.match(/\((\d+(?:\.\d+)?)%/);
-    if (m) pct = parseFloat(m[1]);
-    if (!Number.isFinite(pct) && pop) {
-      const pctEl = pop.querySelector('.ag-qp-item .ag-qp-pct');
-      const pm = (pctEl?.textContent || '').match(/(\d+(?:\.\d+)?)%/);
-      if (pm) pct = parseFloat(pm[1]);
-    }
-    if (!Number.isFinite(pct)) {
-      const arc = ring.querySelector('.ag-ctx-ring-arc');
-      const offset = parseFloat(arc?.style?.strokeDashoffset || '');
-      if (Number.isFinite(offset)) {
-        const circ = 2 * Math.PI * 7;
-        pct = Math.max(0, Math.min(100, Math.round((1 - offset / circ) * 100)));
-      }
     }
 
     const tier = !Number.isFinite(pct) || pct < 60 ? 'cool' : pct >= 75 ? 'crit' : 'warn';
@@ -200,6 +263,14 @@ export function createFooterUnifiedRuntime() {
   function dispose() {
     if (disposed) return;
     disposed = true;
+    if (footerResizeObs) {
+      footerResizeObs.disconnect();
+      footerResizeObs = null;
+    }
+    observedFooterEl = null;
+    document.querySelectorAll('.agy-composer-footer[data-agy-footer-size]').forEach((el) => {
+      el.removeAttribute('data-agy-footer-size');
+    });
     const ring = document.getElementById('ag-claude-ctx-ring');
     if (ring) {
       ring.removeAttribute('data-agy-ctx-tier');

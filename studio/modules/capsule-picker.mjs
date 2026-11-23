@@ -10,7 +10,9 @@ export function buildPickerShadowCss({ effortBarCss, agentEntryCss }) {
 #deck-metrics-strip {
   display: inline-flex;
   align-items: center;
-  flex-shrink: 0;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
   gap: 0;
   margin: 0;
   font-size: 12.5px;
@@ -54,10 +56,11 @@ export function buildPickerShadowCss({ effortBarCss, agentEntryCss }) {
   --agy-model-accent: #7c5ce6;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   height: 28px;
-  max-width: 22em;
-  padding: 0 7px 0 8px;
+  min-width: 0;
+  max-width: min(22em, 100%);
+  padding: 0 6.5px 0 7.5px;
   margin-right: 0;
   border-radius: 8px;
   cursor: pointer;

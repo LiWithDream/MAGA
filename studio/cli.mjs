@@ -51,9 +51,20 @@ function runAntiClaudeInstall() {
   const installScript = path.join(REPO_ROOT, 'install.mjs');
   execFileSync(
     process.execPath,
-    [installScript, 'install', '--no-auto-update', '--no-agents-rule'],
+    [installScript, 'install', '--no-auto-update', '--no-agents-rule', '--no-step-unlock'],
     { stdio: 'inherit', cwd: REPO_ROOT }
   );
+  // Keep tool groups collapsed by default (clickable to expand on demand)
+  if (existsSync(AGY_CONFIG_JSON)) {
+    try {
+      const cfg = JSON.parse(readFileSync(AGY_CONFIG_JSON, 'utf8'));
+      cfg.userSettings = cfg.userSettings || {};
+      if (cfg.userSettings.verboseConversationSteps !== false) {
+        cfg.userSettings.verboseConversationSteps = false;
+        writeFileSync(AGY_CONFIG_JSON, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
+      }
+    } catch {}
+  }
 }
 
 function syncCapsuleVendor(sourceDir) {

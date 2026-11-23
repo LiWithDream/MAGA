@@ -387,8 +387,10 @@ export function createCapsulePickerRuntime({
       if (el.closest(nonMain)) continue;
       const view = el.closest('[data-testid="conversation-view"]');
       if (!view && !el.closest('[data-testid="agent-input-box"]')?.closest('[data-media-drop-scope]')) continue;
-      if (!el.checkVisibility({ opacityProperty: true, visibilityProperty: true })) continue;
-      const r = el.getBoundingClientRect();
+      // When narrow-mode uses `display: contents` on div:first-child, measure its visible footer box instead
+      const boxEl = getComputedStyle(el).display === 'contents' ? el.parentElement : el;
+      if (!boxEl || !boxEl.checkVisibility({ opacityProperty: true, visibilityProperty: true })) continue;
+      const r = boxEl.getBoundingClientRect();
       if (
         Math.min(r.bottom, innerHeight) <= Math.max(r.top, 0) ||
         Math.min(r.right, innerWidth) <= Math.max(r.left, 0)

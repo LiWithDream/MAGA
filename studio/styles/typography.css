@@ -57,3 +57,8 @@ body {
   cursor: default !important;
   pointer-events: none !important;
 }
+
+/* Avoid duplicate elapsed timers when Antigravity already renders its native tool-group-elapsed */
+[data-testid="tool-group-collapsible"]:has([data-testid="tool-group-elapsed"]) .ag-elapsed-timer {
+  display: none !important;
+}

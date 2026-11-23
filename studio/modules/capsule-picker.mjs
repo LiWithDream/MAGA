@@ -319,6 +319,7 @@ ${agentEntryCss}
   width: 2.5px !important;
   height: 2.5px !important;
   margin: -1.25px 0 0 -1.25px !important;
+  background: color-mix(in srgb, var(--foreground, #1C1C1A) 32%, transparent) !important;
 }
 .ces-root[data-theme='claude'] .ces-track,
 .ces-inline[data-theme='claude'] .ces-track {
@@ -356,20 +357,33 @@ export function createCapsulePickerRuntime({
   motionThemes,
 }) {
   const HOST_ID = 'agy-capsule-picker-host';
+  const HOST_ATTR = 'data-agy-picker-host';
   const NATIVE_STYLE_ID = 'agy-capsule-picker-native-layout';
   const EFFORT_STORAGE_KEY = 'agy-capsule.effort-bar.v1';
+  const MODS_STORAGE_KEY = 'ag_claude_ux_modules_v1';
 
   let disposed = false;
-  let hostEl = null;
-  let rootEl = null;
-  let footerObs = null;
-  let observedFooter = null;
   let seededPrefs = false;
+  const instances = new Map(); // footerLeft -> { hostEl, rootEl, footerObs }
+
+  // Synchronize stale pre-studio localStorage override once on boot if config disables claudeUxModelMenu
+  if (cfgMods.claudeUxModelMenu === false) {
+    try {
+      const raw = typeof localStorage === 'object' && localStorage ? localStorage.getItem(MODS_STORAGE_KEY) : null;
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && parsed.claudeUxModelMenu === true) {
+          parsed.claudeUxModelMenu = false;
+          localStorage.setItem(MODS_STORAGE_KEY, JSON.stringify(parsed));
+        }
+      }
+    } catch {}
+  }
 
   function isClaudeModelMenuEnabled() {
     try {
       const raw = typeof localStorage === 'object' && localStorage
-        ? localStorage.getItem('ag_claude_ux_modules_v1')
+        ? localStorage.getItem(MODS_STORAGE_KEY)
         : null;
       if (raw) {
         const parsed = JSON.parse(raw);
@@ -379,31 +393,31 @@ export function createCapsulePickerRuntime({
     return cfgMods.claudeUxModelMenu === true;
   }
 
-  function findFooterLeft() {
-    let main = null;
-    let newComposer = null;
-    const nonMain = '[data-side-panel-composer], [data-testid="side-question-tab-content"], [data-testid="subagent-tab-composer"], [data-testid="voice-dock-composer"]';
+  function isFooterLeftVisible(el) {
+    if (!el || !el.isConnected) return false;
+    // Narrow 2-row mode sets `display: contents` on div:first-child; measure its visible footer parent instead.
+    const boxEl = getComputedStyle(el).display === 'contents' ? el.parentElement : el;
+    if (!boxEl || !boxEl.checkVisibility({ opacityProperty: true, visibilityProperty: true })) return false;
+    const r = boxEl.getBoundingClientRect();
+    return !(
+      Math.min(r.bottom, innerHeight) <= Math.max(r.top, 0) ||
+      Math.min(r.right, innerWidth) <= Math.max(r.left, 0)
+    );
+  }
+
+  function findEligibleFooterLefts() {
+    const excluded = '[data-testid="side-question-tab-content"], [data-testid="voice-dock-composer"]';
+    const results = [];
     for (const el of document.querySelectorAll('.agy-composer-footer > div:first-child')) {
-      if (el.closest(nonMain)) continue;
+      if (el.closest(excluded)) continue;
+      if (!el.querySelector('button[data-testid="model-selector-trigger"]')) continue;
+      if (!isFooterLeftVisible(el)) continue;
+      const isSide = Boolean(el.closest('[data-side-panel-composer], [data-testid="subagent-tab-composer"]'));
       const view = el.closest('[data-testid="conversation-view"]');
-      if (!view && !el.closest('[data-testid="agent-input-box"]')?.closest('[data-media-drop-scope]')) continue;
-      // When narrow-mode uses `display: contents` on div:first-child, measure its visible footer box instead
-      const boxEl = getComputedStyle(el).display === 'contents' ? el.parentElement : el;
-      if (!boxEl || !boxEl.checkVisibility({ opacityProperty: true, visibilityProperty: true })) continue;
-      const r = boxEl.getBoundingClientRect();
-      if (
-        Math.min(r.bottom, innerHeight) <= Math.max(r.top, 0) ||
-        Math.min(r.right, innerWidth) <= Math.max(r.left, 0)
-      ) continue;
-      if (view) {
-        const pane = view.closest('[data-pane-id]');
-        if (pane && !pane.hasAttribute('data-pane-unfocused')) return el;
-        main ??= el;
-      } else {
-        newComposer ??= el;
-      }
+      if (!isSide && !view && !el.closest('[data-testid="agent-input-box"]')?.closest('[data-media-drop-scope]')) continue;
+      results.push({ el, isSide });
     }
-    return main ?? newComposer;
+    return results;
   }
 
   function ensureNativeStyle() {
@@ -424,26 +438,39 @@ export function createCapsulePickerRuntime({
     ].join('\n');
   }
 
-  function teardownHost() {
-    if (footerObs) {
-      footerObs.disconnect();
-      footerObs = null;
+  function teardownInstance(footerLeft) {
+    const inst = instances.get(footerLeft);
+    if (!inst) return;
+    instances.delete(footerLeft);
+    if (inst.footerObs) {
+      try { inst.footerObs.disconnect(); } catch {}
     }
-    observedFooter = null;
-    if (rootEl && rootEl._modelPicker) {
-      try { rootEl._modelPicker.dispose(); } catch {}
+    if (inst.rootEl && inst.rootEl._modelPicker) {
+      try { inst.rootEl._modelPicker.dispose(); } catch {}
     }
-    if (hostEl) {
-      try { hostEl.remove(); } catch {}
-      hostEl = null;
+    if (inst.hostEl) {
+      try { inst.hostEl.remove(); } catch {}
     }
-    rootEl = null;
+    if (footerLeft && footerLeft.isConnected) {
+      footerLeft.querySelectorAll('button[data-deck-model-bubble]').forEach((b) => {
+        b.removeAttribute('data-deck-model-bubble');
+      });
+    }
+  }
+
+  function teardownAll() {
+    for (const footerLeft of Array.from(instances.keys())) {
+      teardownInstance(footerLeft);
+    }
+    document.querySelectorAll(`[${HOST_ATTR}="1"], #${HOST_ID}`).forEach((n) => {
+      try { n.remove(); } catch {}
+    });
     document.querySelectorAll('button[data-deck-model-bubble]').forEach((b) => {
       b.removeAttribute('data-deck-model-bubble');
     });
   }
 
-  function ensureHost(footerLeft) {
+  function ensureHostFor(footerLeft, isSide) {
     const trigger = footerLeft.querySelector('button[data-testid="model-selector-trigger"]');
     if (!trigger) return null;
 
@@ -453,33 +480,37 @@ export function createCapsulePickerRuntime({
     }
     if (!modelWrap || modelWrap.parentElement !== footerLeft) modelWrap = null;
 
-    if (!hostEl || !hostEl.isConnected) {
-      hostEl = document.getElementById(HOST_ID);
-    }
-    if (!hostEl) {
-      hostEl = document.createElement('span');
-      hostEl.id = HOST_ID;
-      hostEl.setAttribute('data-ag-i18n-ignore', '1');
-      hostEl.setAttribute('data-no-drag', '');
-      hostEl.style.display = 'contents';
-      const shadow = hostEl.attachShadow({ mode: 'open' });
-      const style = document.createElement('style');
-      style.textContent = shadowCss;
-      rootEl = document.createElement('div');
-      rootEl.id = 'deck-metrics-strip';
-      shadow.append(style, rootEl);
-    } else if (!rootEl && hostEl.shadowRoot) {
-      rootEl = hostEl.shadowRoot.getElementById('deck-metrics-strip');
+    let inst = instances.get(footerLeft);
+    if (!inst || !inst.hostEl || !inst.hostEl.isConnected) {
+      const existing = footerLeft.querySelector(`:scope > [${HOST_ATTR}="1"]`);
+      let hostEl = existing;
+      let rootEl = existing?.shadowRoot?.getElementById('deck-metrics-strip') || null;
+      if (!hostEl) {
+        hostEl = document.createElement('span');
+        if (!isSide && !document.getElementById(HOST_ID)) hostEl.id = HOST_ID;
+        hostEl.setAttribute(HOST_ATTR, '1');
+        hostEl.setAttribute('data-ag-i18n-ignore', '1');
+        hostEl.setAttribute('data-no-drag', '');
+        hostEl.style.display = 'contents';
+        const shadow = hostEl.attachShadow({ mode: 'open' });
+        const style = document.createElement('style');
+        style.textContent = shadowCss;
+        rootEl = document.createElement('div');
+        rootEl.id = 'deck-metrics-strip';
+        shadow.append(style, rootEl);
+      }
+      inst = { hostEl, rootEl, footerObs: inst?.footerObs || null };
+      instances.set(footerLeft, inst);
     }
 
     if (modelWrap) {
-      if (hostEl.parentElement !== footerLeft || hostEl.nextElementSibling !== modelWrap) {
-        modelWrap.insertAdjacentElement('beforebegin', hostEl);
+      if (inst.hostEl.parentElement !== footerLeft || inst.hostEl.nextElementSibling !== modelWrap) {
+        modelWrap.insertAdjacentElement('beforebegin', inst.hostEl);
       }
-    } else if (hostEl.parentElement !== footerLeft) {
-      footerLeft.appendChild(hostEl);
+    } else if (inst.hostEl.parentElement !== footerLeft) {
+      footerLeft.appendChild(inst.hostEl);
     }
-    return rootEl;
+    return inst;
   }
 
   function decorateModelCapsule(root) {
@@ -534,43 +565,49 @@ export function createCapsulePickerRuntime({
   function sync(scheduleParent) {
     if (disposed) return;
     if (isClaudeModelMenuEnabled()) {
-      if (hostEl || document.querySelector('button[data-deck-model-bubble]')) teardownHost();
+      if (instances.size > 0 || document.querySelector('button[data-deck-model-bubble]')) {
+        teardownAll();
+      }
       return;
     }
 
     ensureNativeStyle();
     seedEffortPrefsOnce();
 
-    const footerLeft = findFooterLeft();
-    if (!footerLeft) return;
-
-    const root = ensureHost(footerLeft);
-    if (!root) return;
-
-    const { labels, settingsLabels } = getActiveLabels();
-    try {
-      syncModelPicker(root, footerLeft, prefs, labels, findFooterLeft, settingsLabels);
-      if (root._modelPicker) root._modelPicker.setBubble(true);
-      decorateModelCapsule(root);
-    } catch (err) {
-      console.warn('[agy-studio/picker] sync failed:', err);
+    const eligible = findEligibleFooterLefts();
+    const activeSet = new Set(eligible.map((item) => item.el));
+    for (const prevFooter of Array.from(instances.keys())) {
+      if (!activeSet.has(prevFooter)) teardownInstance(prevFooter);
     }
 
-    if (observedFooter !== footerLeft) {
-      if (footerObs) footerObs.disconnect();
-      observedFooter = footerLeft;
-      footerObs = new MutationObserver((mutations) => {
-        if (mutations.every((m) => hostEl && hostEl.contains(m.target))) return;
-        scheduleParent();
-      });
-      footerObs.observe(footerLeft, { subtree: true, characterData: true, childList: true });
+    const { labels, settingsLabels } = getActiveLabels();
+    for (const { el: footerLeft, isSide } of eligible) {
+      const inst = ensureHostFor(footerLeft, isSide);
+      if (!inst || !inst.rootEl) continue;
+
+      const scopedFind = () => (isFooterLeftVisible(footerLeft) ? footerLeft : null);
+      try {
+        syncModelPicker(inst.rootEl, footerLeft, prefs, labels, scopedFind, settingsLabels);
+        if (inst.rootEl._modelPicker) inst.rootEl._modelPicker.setBubble(true);
+        decorateModelCapsule(inst.rootEl);
+      } catch (err) {
+        console.warn('[agy-studio/picker] sync failed:', err);
+      }
+
+      if (!inst.footerObs) {
+        inst.footerObs = new MutationObserver((mutations) => {
+          if (mutations.every((m) => inst.hostEl && inst.hostEl.contains(m.target))) return;
+          scheduleParent();
+        });
+        inst.footerObs.observe(footerLeft, { subtree: true, characterData: true, childList: true });
+      }
     }
   }
 
   function dispose() {
     if (disposed) return;
     disposed = true;
-    teardownHost();
+    teardownAll();
     document.getElementById(NATIVE_STYLE_ID)?.remove();
   }
 

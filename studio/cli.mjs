@@ -1,17 +1,17 @@
 #!/usr/bin/env node
 /**
- * agy-studio CLI — unified manager for Anti-Claude + internalized agy-capsule modules.
+ * MAGA (agy-studio) CLI — unified manager for daemon installation, hot-deploy, rules & diagnostics.
  *
  * Commands:
- *   node studio/cli.mjs install         Install Anti-Claude daemon from this repo + deploy studio + sync fast-io rules
+ *   node studio/cli.mjs install         Install daemon from this repo + deploy studio + sync fast-io rules
  *   node studio/cli.mjs deploy          Rebuild & hot-deploy studio JS/CSS bundle into live user/ directory
  *   node studio/cli.mjs sync-rules      Sync critically pruned fast-io rules into ~/.gemini/AGENTS.md
  *   node studio/cli.mjs sync-capsule [dir]  Refresh vendored agy-capsule files from a local checkout
  *   node studio/cli.mjs doctor          Verify daemon, plist, CDP, usage stats, bundle markers & config
- *   node studio/cli.mjs rollback        Strip studio blocks and restore stock Anti-Claude defaults
+ *   node studio/cli.mjs rollback        Strip studio blocks and restore stock defaults
  */
 import { execFileSync } from 'node:child_process';
-import { copyFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import {
@@ -24,6 +24,7 @@ import {
   deployStudio,
   rollbackStudio,
   stripBlock,
+  stripStudioBlocksOnly,
 } from './build.mjs';
 import { collectUsageStatsAsync } from './daemon/usage-service.mjs';
 
@@ -38,33 +39,56 @@ const VENDOR_VERSION = path.join(VENDOR_DIR, 'VERSION.json');
 const RULE_BEGIN = '<!-- BEGIN agy-fast-io-pruned -->';
 const RULE_END = '<!-- END agy-fast-io-pruned -->';
 
+function readJsonSafe(filePath) {
+  if (!existsSync(filePath)) return null;
+  try {
+    return JSON.parse(readFileSync(filePath, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
 function syncFastIoRules() {
   const block = readFileSync(RULES_SRC, 'utf8').trim();
   const existing = existsSync(AGENTS_MD) ? readFileSync(AGENTS_MD, 'utf8') : '';
   const cleaned = stripBlock(existing, RULE_BEGIN, RULE_END).trim();
   const next = cleaned ? `${cleaned}\n\n${block}\n` : `${block}\n`;
+  mkdirSync(path.dirname(AGENTS_MD), { recursive: true });
   writeFileSync(AGENTS_MD, next, 'utf8');
   return { ok: true, path: AGENTS_MD };
 }
 
-function runAntiClaudeInstall() {
+async function applyCollapsedStepsPreference() {
+  // Persist verboseConversationSteps: false on disk AND push into live React pref store via CDP
+  // so running Antigravity does not overwrite the disk edit on exit.
+  if (existsSync(AGY_CONFIG_JSON)) {
+    const cfg = readJsonSafe(AGY_CONFIG_JSON);
+    if (cfg && typeof cfg === 'object') {
+      cfg.userSettings = cfg.userSettings || {};
+      if (cfg.userSettings.verboseConversationSteps !== false) {
+        cfg.userSettings.verboseConversationSteps = false;
+        writeFileSync(AGY_CONFIG_JSON, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
+      }
+    }
+  }
+  try {
+    const { cdpPrefs } = await import(path.join(REPO_ROOT, 'install.mjs'));
+    if (typeof cdpPrefs === 'function') {
+      await cdpPrefs({ project4kMode: 1, verboseConversationSteps: false });
+    }
+  } catch {}
+}
+
+async function runAntiClaudeInstall() {
+  // Strip studio blocks before base install so 3-way merge updates base custom.{js,css} cleanly
+  stripStudioBlocksOnly();
   const installScript = path.join(REPO_ROOT, 'install.mjs');
   execFileSync(
     process.execPath,
     [installScript, 'install', '--no-auto-update', '--no-agents-rule', '--no-step-unlock'],
     { stdio: 'inherit', cwd: REPO_ROOT }
   );
-  // Keep tool groups collapsed by default (clickable to expand on demand)
-  if (existsSync(AGY_CONFIG_JSON)) {
-    try {
-      const cfg = JSON.parse(readFileSync(AGY_CONFIG_JSON, 'utf8'));
-      cfg.userSettings = cfg.userSettings || {};
-      if (cfg.userSettings.verboseConversationSteps !== false) {
-        cfg.userSettings.verboseConversationSteps = false;
-        writeFileSync(AGY_CONFIG_JSON, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
-      }
-    } catch {}
-  }
+  await applyCollapsedStepsPreference();
 }
 
 function syncCapsuleVendor(sourceDir) {
@@ -108,18 +132,27 @@ async function runDoctor() {
   const pointsToStudio = plistText.includes(path.join(REPO_ROOT, 'core', 'daemon.mjs'));
   const hasJsMarker = existsSync(TARGET_CUSTOM_JS) && readFileSync(TARGET_CUSTOM_JS, 'utf8').includes(JS_BEGIN);
   const hasCssMarker = existsSync(TARGET_CUSTOM_CSS) && readFileSync(TARGET_CUSTOM_CSS, 'utf8').includes(CSS_BEGIN);
-  const cfg = existsSync(TARGET_CONFIG_JSON) ? JSON.parse(readFileSync(TARGET_CONFIG_JSON, 'utf8')) : null;
-  const agyCfg = existsSync(AGY_CONFIG_JSON) ? JSON.parse(readFileSync(AGY_CONFIG_JSON, 'utf8')) : null;
+  const cfg = readJsonSafe(TARGET_CONFIG_JSON);
+  const agyCfg = readJsonSafe(AGY_CONFIG_JSON);
   const hasFastIo = existsSync(AGENTS_MD) && readFileSync(AGENTS_MD, 'utf8').includes(RULE_BEGIN);
   const usage = await collectUsageStatsAsync({ force: true });
+  const claudeUxModelMenu = cfg?.modules?.claudeUxModelMenu ?? null;
 
   return {
-    ok: Boolean(baseDoctor?.ok && pointsToStudio && hasJsMarker && hasCssMarker && usage?.ok),
+    ok: Boolean(
+      baseDoctor?.ok &&
+      pointsToStudio &&
+      hasJsMarker &&
+      hasCssMarker &&
+      claudeUxModelMenu === false &&
+      usage?.ok
+    ),
     repoRoot: REPO_ROOT,
     daemonPointsToStudio: pointsToStudio,
     studioBundle: { jsInjected: hasJsMarker, cssInjected: hasCssMarker },
-    claudeUxModelMenu: cfg?.modules?.claudeUxModelMenu ?? null,
+    claudeUxModelMenu,
     remoteControlEnabled: agyCfg?.userSettings?.remoteControlEnabled ?? agyCfg?.remoteControlEnabled ?? null,
+    verboseConversationSteps: agyCfg?.userSettings?.verboseConversationSteps ?? null,
     fastIoRuleInstalled: hasFastIo,
     usageSummary: {
       daysCount: usage.days.length,
@@ -134,7 +167,7 @@ const [cmd = 'deploy', arg1] = process.argv.slice(2);
 
 try {
   if (cmd === 'install') {
-    runAntiClaudeInstall();
+    await runAntiClaudeInstall();
     const deployRes = await deployStudio();
     const rulesRes = syncFastIoRules();
     console.log(JSON.stringify({ ok: true, command: 'install', deploy: deployRes, rules: rulesRes }, null, 2));
@@ -158,6 +191,6 @@ try {
     process.exit(1);
   }
 } catch (err) {
-  console.error('[agy-studio]', err?.message || err);
+  console.error('[MAGA]', err?.message || err);
   process.exit(1);
 }

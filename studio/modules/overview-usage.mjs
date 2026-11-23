@@ -29,8 +29,14 @@ export function createOverviewUsageRuntime({ motionThemes }) {
   let usageData = null;
   let fetchInFlight = false;
   let lastFetchTs = 0;
-  let lastTurnSig = '';
   let lastRenderCtx = null;
+  let sectionsObs = null;
+  let observedSections = null;
+  const lastTurnSigByCid = new Map();
+
+  const onViewportScrollOrResize = () => hideTooltip();
+  window.addEventListener('scroll', onViewportScrollOrResize, { capture: true, passive: true });
+  window.addEventListener('resize', onViewportScrollOrResize);
 
   const uiState = loadUiState();
 
@@ -382,9 +388,9 @@ export function createOverviewUsageRuntime({ motionThemes }) {
     tt.innerHTML = html;
 
     const r = targetEl.getBoundingClientRect();
-    const ttW = 244;
+    const ttW = tt.offsetWidth || 248;
     const ttH = tt.offsetHeight || 136;
-    const margin = 10;
+    const margin = 12;
 
     // Prefer placing above the hovered bar/row; clamp horizontally inside viewport
     let left = Math.round(r.left + r.width / 2 - ttW / 2);
@@ -614,6 +620,32 @@ export function createOverviewUsageRuntime({ motionThemes }) {
       });
   }
 
+  function anchorCardInSections(sections) {
+    if (!sections) return;
+    const el = ensureCardElement();
+    const quotaCard = sections.querySelector(':scope > [data-ov-card="quota"]');
+    if (quotaCard) {
+      if (el.parentElement !== sections || quotaCard.nextElementSibling !== el) {
+        quotaCard.insertAdjacentElement('afterend', el);
+      }
+    } else if (el.parentElement !== sections) {
+      sections.appendChild(el);
+    }
+  }
+
+  function watchSectionsSync(sections) {
+    if (!sections || observedSections === sections) return;
+    if (sectionsObs) sectionsObs.disconnect();
+    observedSections = sections;
+    // MutationObserver runs as a microtask before paint — zero 1-frame detach flicker
+    sectionsObs = new MutationObserver(() => {
+      if (!disposed && sections.isConnected) {
+        anchorCardInSections(sections);
+      }
+    });
+    sectionsObs.observe(sections, { childList: true });
+  }
+
   function sync() {
     if (disposed) return;
     const panel = document.querySelector('[data-testid="overview-panel"]');
@@ -624,20 +656,23 @@ export function createOverviewUsageRuntime({ motionThemes }) {
     const sections = document.getElementById('ag-claude-ov-sections');
     if (!sections) return;
 
-    const el = ensureCardElement();
-    const quotaCard = sections.querySelector(':scope > [data-ov-card="quota"]');
-    if (quotaCard) {
-      if (el.parentElement !== sections || quotaCard.nextElementSibling !== el) {
-        quotaCard.insertAdjacentElement('afterend', el);
-      }
-    } else if (el.parentElement !== sections) {
-      sections.appendChild(el);
-    }
+    watchSectionsSync(sections);
+    anchorCardInSections(sections);
 
     const m = window.__ag_last_metrics;
-    const turnSig = m?.hasData && m?.stats ? `${m.cascadeId || ''}:${m.stats.calls || 0}:${m.stats.turns || 0}` : '';
-    const turnChanged = Boolean(turnSig && lastTurnSig && turnSig !== lastTurnSig);
-    if (turnSig) lastTurnSig = turnSig;
+    let turnChanged = false;
+    if (m?.hasData && m?.stats) {
+      const cid = String(m.cascadeId || '_default');
+      const turnSig = `${m.stats.calls || 0}:${m.stats.turns || 0}:${m.stats.childCalls || 0}`;
+      const prevSig = lastTurnSigByCid.get(cid);
+      if (prevSig === undefined) {
+        lastTurnSigByCid.set(cid, turnSig);
+        if (m.stats.calls > 0 || m.stats.turns > 0) turnChanged = !usageData;
+      } else if (prevSig !== turnSig) {
+        lastTurnSigByCid.set(cid, turnSig);
+        turnChanged = true;
+      }
+    }
 
     if (!usageData || turnChanged || Date.now() - lastFetchTs >= CACHE_TTL_MS) {
       fetchUsage(turnChanged);
@@ -647,6 +682,13 @@ export function createOverviewUsageRuntime({ motionThemes }) {
   function dispose() {
     if (disposed) return;
     disposed = true;
+    window.removeEventListener('scroll', onViewportScrollOrResize, { capture: true });
+    window.removeEventListener('resize', onViewportScrollOrResize);
+    if (sectionsObs) {
+      sectionsObs.disconnect();
+      sectionsObs = null;
+    }
+    observedSections = null;
     hideTooltip();
     if (tooltipEl) {
       try { tooltipEl.remove(); } catch {}

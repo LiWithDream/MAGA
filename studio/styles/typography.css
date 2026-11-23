@@ -1,8 +1,6 @@
-/* Balanced typography: Regular 400 weight + 100% CJK scale + refined antialiased smoothing + mid-high contrast */
+/* Balanced typography: Regular 400 weight + refined antialiased smoothing + mid-high contrast */
 :root,
 html,
-html[data-ag-cjk-scale="95"],
-html[data-ag-cjk-scale="94.5"],
 html[data-ag-cjk-scale="100"],
 body,
 body[data-agy-theme],
@@ -49,7 +47,7 @@ body {
 
 /* Hide English thinking prose & remove expand/collapse chevron on Thinking/Thought rows */
 [data-testid="thinking-collapsible-trigger"] + div,
-[data-testid="thinking-collapsible-trigger"] > svg {
+[data-testid="thinking-collapsible-trigger"] > svg:last-of-type {
   display: none !important;
 }
 

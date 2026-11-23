@@ -20,10 +20,12 @@ const VENDOR_CAPSULE = path.join(REPO_ROOT, 'vendor', 'agy-capsule');
 const STYLES_DIR = path.join(__dirname, 'styles');
 const HOME = homedir();
 
-export const TARGET_USER_DIR = path.join(HOME, '.gemini', 'antigravity', 'anti-claude', 'user');
+export const STATE_DIR = path.join(HOME, '.gemini', 'antigravity', 'anti-claude');
+export const TARGET_USER_DIR = path.join(STATE_DIR, 'user');
 export const TARGET_CUSTOM_JS = path.join(TARGET_USER_DIR, 'custom.js');
 export const TARGET_CUSTOM_CSS = path.join(TARGET_USER_DIR, 'custom.css');
 export const TARGET_CONFIG_JSON = path.join(TARGET_USER_DIR, 'config.json');
+export const TARGET_UI_PREFS_JSON = path.join(STATE_DIR, 'ui-prefs.json');
 const CAPSULE_SETTINGS_PATH = path.join(HOME, '.gemini', 'config', 'agy-capsule', 'settings.json');
 
 export const JS_BEGIN = '/* === BEGIN AGY-STUDIO === */';
@@ -129,15 +131,22 @@ export async function buildStudioBundle() {
     agentEntryCss: AGENT_ENTRY_CSS,
   });
 
-  // Scale effort slider canvas constants cleanly to 18px track & knob
-  const scaledCreateUpstreamEffort = createUpstreamEffort
-    .toString()
-    .replace('var TRACK_HEIGHT = 28;', 'var TRACK_HEIGHT = 18;')
-    .replace('var KNOB_SIZE = 28;', 'var KNOB_SIZE = 18;')
-    .replace('var CLAUDE_CELL = 28 / 6;', 'var CLAUDE_CELL = 18 / 6;')
-    .replace('var CLAUDE_KNOB_W = 24;', 'var CLAUDE_KNOB_W = 16;')
-    .replace('var CLAUDE_KNOB_H = 30;', 'var CLAUDE_KNOB_H = 20;')
-    .replace('var CLAUDE_KNOB_R = 7;', 'var CLAUDE_KNOB_R = 5;');
+  // Scale effort slider canvas constants cleanly to 18px track & knob (fail fast if vendor code changes)
+  const EFFORT_REPLACEMENTS = [
+    ['var TRACK_HEIGHT = 28;', 'var TRACK_HEIGHT = 18;'],
+    ['var KNOB_SIZE = 28;', 'var KNOB_SIZE = 18;'],
+    ['var CLAUDE_CELL = 28 / 6;', 'var CLAUDE_CELL = 18 / 6;'],
+    ['var CLAUDE_KNOB_W = 24;', 'var CLAUDE_KNOB_W = 16;'],
+    ['var CLAUDE_KNOB_H = 30;', 'var CLAUDE_KNOB_H = 20;'],
+    ['var CLAUDE_KNOB_R = 7;', 'var CLAUDE_KNOB_R = 5;'],
+  ];
+  let scaledCreateUpstreamEffort = createUpstreamEffort.toString();
+  for (const [from, to] of EFFORT_REPLACEMENTS) {
+    if (!scaledCreateUpstreamEffort.includes(from)) {
+      throw new Error(`Expected effort slider constant not found in vendor/agy-capsule/effort_upstream.mjs: ${from}`);
+    }
+    scaledCreateUpstreamEffort = scaledCreateUpstreamEffort.replace(from, to);
+  }
 
   const vendorFns = [
     createMotionThemes.toString(),
@@ -257,15 +266,49 @@ ${JS_END}
 }
 
 function updateConfigJson({ claudeUxModelMenu }) {
-  if (!existsSync(TARGET_CONFIG_JSON)) return;
-  const cfg = JSON.parse(readFileSync(TARGET_CONFIG_JSON, 'utf8'));
-  cfg.modules = cfg.modules && typeof cfg.modules === 'object' ? cfg.modules : {};
-  cfg.modules.claudeUxModelMenu = claudeUxModelMenu;
-  if (!claudeUxModelMenu) {
-    cfg.modules.claudeUxStepUnfold = false;
-    cfg.cjkFontScale = '100';
+  if (existsSync(TARGET_CONFIG_JSON)) {
+    const cfg = JSON.parse(readFileSync(TARGET_CONFIG_JSON, 'utf8'));
+    cfg.modules = cfg.modules && typeof cfg.modules === 'object' ? cfg.modules : {};
+    cfg.modules.claudeUxModelMenu = claudeUxModelMenu;
+    if (!claudeUxModelMenu) {
+      cfg.modules.claudeUxStepUnfold = false;
+      cfg.cjkFontScale = '100';
+    } else {
+      cfg.modules.claudeUxStepUnfold = true;
+      delete cfg.cjkFontScale;
+    }
+    writeFileSync(TARGET_CONFIG_JSON, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
   }
-  writeFileSync(TARGET_CONFIG_JSON, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
+  // Keep daemon's ui-prefs.json synchronized so Anti-Claude Settings toggles cannot
+  // overwrite claudeUxModelMenu back to stale state and tear down the studio picker.
+  if (existsSync(TARGET_UI_PREFS_JSON)) {
+    try {
+      const prefs = JSON.parse(readFileSync(TARGET_UI_PREFS_JSON, 'utf8'));
+      if (prefs && typeof prefs === 'object') {
+        prefs.modules = prefs.modules && typeof prefs.modules === 'object' ? prefs.modules : {};
+        prefs.modules.claudeUxModelMenu = claudeUxModelMenu;
+        if (!claudeUxModelMenu) {
+          prefs.modules.claudeUxStepUnfold = false;
+        }
+        writeFileSync(TARGET_UI_PREFS_JSON, JSON.stringify(prefs, null, 2) + '\n', 'utf8');
+      }
+    } catch {}
+  }
+}
+
+export function stripStudioBlocksOnly() {
+  if (existsSync(TARGET_CUSTOM_JS)) {
+    let raw = readFileSync(TARGET_CUSTOM_JS, 'utf8');
+    raw = stripBlock(raw, LEGACY_JS_MARKERS[0], LEGACY_JS_MARKERS[1]);
+    raw = stripBlock(raw, JS_BEGIN, JS_END);
+    writeFileSync(TARGET_CUSTOM_JS, raw, 'utf8');
+  }
+  if (existsSync(TARGET_CUSTOM_CSS)) {
+    let raw = readFileSync(TARGET_CUSTOM_CSS, 'utf8');
+    raw = stripBlock(raw, LEGACY_CSS_MARKERS[0], LEGACY_CSS_MARKERS[1]);
+    raw = stripBlock(raw, CSS_BEGIN, CSS_END);
+    writeFileSync(TARGET_CUSTOM_CSS, raw, 'utf8');
+  }
 }
 
 export async function deployStudio() {
@@ -302,18 +345,7 @@ export async function deployStudio() {
 }
 
 export function rollbackStudio() {
-  if (existsSync(TARGET_CUSTOM_JS)) {
-    let raw = readFileSync(TARGET_CUSTOM_JS, 'utf8');
-    raw = stripBlock(raw, LEGACY_JS_MARKERS[0], LEGACY_JS_MARKERS[1]);
-    raw = stripBlock(raw, JS_BEGIN, JS_END);
-    writeFileSync(TARGET_CUSTOM_JS, raw, 'utf8');
-  }
-  if (existsSync(TARGET_CUSTOM_CSS)) {
-    let raw = readFileSync(TARGET_CUSTOM_CSS, 'utf8');
-    raw = stripBlock(raw, LEGACY_CSS_MARKERS[0], LEGACY_CSS_MARKERS[1]);
-    raw = stripBlock(raw, CSS_BEGIN, CSS_END);
-    writeFileSync(TARGET_CUSTOM_CSS, raw, 'utf8');
-  }
+  stripStudioBlocksOnly();
   updateConfigJson({ claudeUxModelMenu: true });
   return { ok: true, action: 'rolled_back', claudeUxModelMenu: true };
 }

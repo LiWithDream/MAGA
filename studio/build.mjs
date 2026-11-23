@@ -12,6 +12,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { buildPickerShadowCss, createCapsulePickerRuntime } from './modules/capsule-picker.mjs';
 import { createFooterUnifiedRuntime } from './modules/footer-unified.mjs';
 import { createOverviewUsageRuntime } from './modules/overview-usage.mjs';
+import { createSubagentFooterRuntime } from './modules/subagent-footer.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -166,6 +167,7 @@ export async function buildStudioBundle() {
     createCapsulePickerRuntime.toString(),
     createFooterUnifiedRuntime.toString(),
     createOverviewUsageRuntime.toString(),
+    createSubagentFooterRuntime.toString(),
   ].join('\n\n');
 
   const jsBlock = `${JS_BEGIN}
@@ -201,9 +203,11 @@ ${moduleFns}
   });
   const footer = createFooterUnifiedRuntime();
   const usage = createOverviewUsageRuntime({ motionThemes });
+  const subagentFooter = createSubagentFooterRuntime({ motionThemes });
 
   function syncAll() {
     if (disposed) return;
+    subagentFooter.sync();
     footer.sync();
     picker.sync(scheduleSync);
     usage.sync();
@@ -238,6 +242,7 @@ ${moduleFns}
     docObs.disconnect();
     picker.dispose();
     footer.dispose();
+    subagentFooter.dispose();
     usage.dispose();
     if (window.__agyStudioDispose === dispose) {
       window.__agyStudioDispose = null;

@@ -3240,6 +3240,11 @@ async function handleProjectRpcRequest(rawPayload, callerEntry = null) {
       const result = await collectUsageStatsAsync(payload);
       return { reqId, result };
     }
+    if (action === 'getSubagentMetrics') {
+      const { collectSubagentMetrics } = await import('../studio/daemon/subagent-metrics.mjs');
+      const result = collectSubagentMetrics(payload);
+      return { reqId, result };
+    }
     if (action === 'revealFile') {
       const rawTarget = typeof payload?.targetPath === 'string' ? payload.targetPath.trim() : '';
       if (!rawTarget) return { reqId, result: { ok: false, error: 'missing_path' } };

@@ -131,8 +131,9 @@ export function createFooterUnifiedRuntime() {
     for (const ch of leftGroup.children) {
       if (ch.id === 'agy-capsule-picker-host' || ch.hasAttribute('data-agy-picker-host')) continue;
       if (ch.id === 'ag-claude-ctx-ring' || ch.id === 'ag-live-metrics-pill') continue;
+      if (ch.hasAttribute('data-agy-sub-pill')) continue;
       if (ch.tagName === 'INPUT') continue;
-      if (ch.tagName === 'BUTTON' && ch === leftGroup.querySelector(':scope > button')) continue;
+      if (ch.tagName === 'BUTTON' && ch === leftGroup.querySelector(':scope > button:first-of-type')) continue;
       if (ch.querySelector?.('button[data-deck-model-bubble="hidden"]')) continue;
       if (ch.getAttribute?.('data-deck-model-bubble') === 'hidden') continue;
       const r = ch.getBoundingClientRect();
@@ -169,11 +170,12 @@ export function createFooterUnifiedRuntime() {
           (speedPill.style.display !== 'none' && getComputedStyle(speedPill).display !== 'none'))
       );
       const ringHasRatio = Boolean(ring && ring.getAttribute('data-agy-has-ratio') === 'true');
+      const hasSubPills = Boolean(leftGroup?.querySelector('[data-agy-sub-pill="ctx"], [data-agy-sub-pill="speed"]:not([hidden])'));
       const hasExtraChip = hasExtraVisibleChip(leftGroup);
 
-      // Avoid wasted 2nd row + hairline divider on Home `/` when neither ratio nor speed nor chip is visible
-      const hasRow2Content = ringHasRatio || speedVisible || hasExtraChip;
-      const narrowThreshold = hasExtraChip ? 780 : 600;
+      // Only enter 2-row layout when telemetry pills (Context / Speed / Subagent metrics) actually exist
+      const hasRow2Content = ringHasRatio || speedVisible || hasSubPills;
+      const narrowThreshold = hasExtraChip ? 760 : 600;
       const compactCtxThreshold = hasExtraChip ? 440 : 315;
 
       const footerSize = !hasRow2Content

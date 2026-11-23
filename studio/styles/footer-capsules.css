@@ -87,26 +87,84 @@
   display: contents !important;
 }
 
-/* Row 1: Left '+' button */
+/* Row 1: Right-aligned action cluster — [+ Add context] sits directly left of [Turbo] [Mic] [Send] */
 .agy-composer-footer > div:first-child > button:first-of-type,
 #antigravity\.agentSidePanelInputBox .agy-composer-footer > div:first-child > button:first-of-type {
   order: 1 !important;
-  width: 28px !important;
+  margin-left: auto !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 4px !important;
+  width: auto !important;
+  min-width: 28px !important;
   height: 28px !important;
+  padding: 0 8.5px 0 6.5px !important;
   border-radius: 8px !important;
   flex-shrink: 0 !important;
+  font-family: var(--font-sans) !important;
+  font-size: 12px !important;
+  font-weight: 450 !important;
+  line-height: 16px !important;
+  white-space: nowrap !important;
+  color: var(--secondary-foreground, #4B4B47) !important;
+  background-color: var(--agy-pill-bg) !important;
+  box-shadow: inset 0 0 0 1px var(--agy-pill-border) !important;
+  transition: background-color 140ms ease, box-shadow 140ms ease, color 140ms ease !important;
 }
 
-/* Row 1: Right actions (Turbo, Mic, Send/Stop) */
+.agy-composer-footer > div:first-child > button:first-of-type:hover,
+#antigravity\.agentSidePanelInputBox .agy-composer-footer > div:first-child > button:first-of-type:hover {
+  color: var(--foreground, #1C1C1A) !important;
+  background-color: var(--agy-pill-bg-hover) !important;
+  box-shadow: inset 0 0 0 1px var(--agy-pill-border-hover) !important;
+}
+
+.agy-composer-footer > div:first-child > button:first-of-type svg,
+#antigravity\.agentSidePanelInputBox .agy-composer-footer > div:first-child > button:first-of-type svg {
+  width: 14px !important;
+  height: 14px !important;
+  flex-shrink: 0 !important;
+  display: block !important;
+}
+
+/* Reuse native aria-label ("Add context") cleanly via CSS ::after (zero React DOM mutation) */
+.agy-composer-footer > div:first-child > button:first-of-type[aria-label]::after,
+#antigravity\.agentSidePanelInputBox .agy-composer-footer > div:first-child > button:first-of-type[aria-label]::after {
+  content: attr(aria-label);
+  display: inline-block;
+  font-size: 12px;
+  font-weight: 450;
+  line-height: 16px;
+}
+
+/* Compress [+ Add context] to square [+] in tight/icon tiers in lockstep with Turbo -> shield icon */
+.agy-composer-footer[data-agy-dock-tier="tight"] > div:first-child > button:first-of-type,
+.agy-composer-footer[data-agy-dock-tier="icon"] > div:first-child > button:first-of-type,
+#antigravity\.agentSidePanelInputBox .agy-composer-footer[data-agy-dock-tier="tight"] > div:first-child > button:first-of-type,
+#antigravity\.agentSidePanelInputBox .agy-composer-footer[data-agy-dock-tier="icon"] > div:first-child > button:first-of-type {
+  width: 28px !important;
+  padding: 0 !important;
+  gap: 0 !important;
+}
+.agy-composer-footer[data-agy-dock-tier="tight"] > div:first-child > button:first-of-type[aria-label]::after,
+.agy-composer-footer[data-agy-dock-tier="icon"] > div:first-child > button:first-of-type[aria-label]::after,
+#antigravity\.agentSidePanelInputBox .agy-composer-footer[data-agy-dock-tier="tight"] > div:first-child > button:first-of-type[aria-label]::after,
+#antigravity\.agentSidePanelInputBox .agy-composer-footer[data-agy-dock-tier="icon"] > div:first-child > button:first-of-type[aria-label]::after {
+  content: none !important;
+}
+
+/* Row 1: Right actions (Turbo, Mic, Send/Stop) sit flush beside [+ Add context] */
 .agy-composer-footer > div:last-child {
   flex-shrink: 0 !important;
   gap: 5px !important;
   align-items: center !important;
 }
 
-.agy-composer-footer[data-agy-has-row2="true"] > div:last-child {
+.agy-composer-footer[data-agy-has-row2="true"] > div:last-child,
+#antigravity\.agentSidePanelInputBox .agy-composer-footer[data-agy-has-row2="true"] > div:last-child {
   order: 2 !important;
-  margin-left: auto !important;
+  margin-left: 0 !important;
   gap: 5px !important;
 }
 

@@ -48,7 +48,7 @@ const STYLE_FILES = [
 
 const DEFAULT_PREFS = {
   language: 'en',
-  settingsLanguage: 'zh-CN',
+  settingsLanguage: 'en',
   modelEffortPicker: true,
   showEffortBar: true,
   hideModelTags: true,

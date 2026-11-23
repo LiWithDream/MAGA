@@ -27,10 +27,7 @@ export function createFooterUnifiedRuntime({ onTierChange } = {}) {
   };
 
   function isZhUi() {
-    return (
-      (document.documentElement.lang || '').toLowerCase().startsWith('zh') ||
-      document.documentElement.getAttribute('data-ag-ux-lang') === 'zh-CN'
-    );
+    return document.documentElement.getAttribute('data-ag-ux-lang') === 'zh-CN';
   }
 
   function getActiveRouteCid() {

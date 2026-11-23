@@ -635,11 +635,9 @@ export function createCapsulePickerRuntime({
   }
 
   function getActiveLabels() {
-    const isZh =
-      (document.documentElement.lang || '').toLowerCase().startsWith('zh') ||
-      document.documentElement.getAttribute('data-ag-ux-lang') === 'zh-CN';
-    const labels = isZh ? labelsByLang['zh-CN'] : (labelsByLang[prefs.language] || labelsByLang.en);
-    const settingsLabels = labelsByLang[prefs.settingsLanguage] || labelsByLang['zh-CN'] || labels;
+    const isZh = document.documentElement.getAttribute('data-ag-ux-lang') === 'zh-CN';
+    const labels = isZh ? labelsByLang['zh-CN'] : labelsByLang.en;
+    const settingsLabels = isZh ? labelsByLang['zh-CN'] : labelsByLang.en;
     return { labels, settingsLabels };
   }
 

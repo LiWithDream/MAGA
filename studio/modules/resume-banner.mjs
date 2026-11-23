@@ -1,15 +1,20 @@
 /**
- * Interrupted-Task Resume Capsule (#agy-resume-pill):
- * Detects when the active main conversation terminated abnormally mid-task (app quit/restart,
- * crash, mid-tool stop, manual cancel, or error) via daemon RPC `getResumeState` and surfaces
- * a calm, one-click `[ ▶ 继续任务 × ]` / `[ ▶ Resume × ]` capsule in the open left space of Row 1.
- * Automatically hides while running, whenever the user starts typing, or after dismissal.
+ * Interrupted-Task Resume Capsule (#agy-resume-pill) & Subtle Timeline Divider:
+ * 1. Detects when the active main conversation terminated abnormally mid-task via daemon
+ *    RPC `getResumeState` and surfaces a calm `[ ▶ Resume × ]` capsule on Row 1 left.
+ * 2. Silent submit: invokes AgentInputBox's native React `handleSubmit` directly (zero
+ *    text flash in the composer box; falls back cleanly to Lexical + Send if unavailable),
+ *    tagging the synthetic continuation prompt with an invisible sentinel.
+ * 3. Style B timeline divider: replaces the synthetic user message bubble in the chat
+ *    stream with a whisper-quiet centered hairline (`─── ▸ Resumed ───`) via pure CSS.
  */
 
 export function createResumeBannerRuntime() {
   const PILL_ID = 'agy-resume-pill';
   const DISMISS_STORAGE_KEY = 'agy_studio_resume_dismissed_v1';
   const MAX_DISMISSED = 120;
+  const RESUME_SENTINEL = '\u2063\u200B\u2063';
+  const LEGACY_RESUME_RE = /^(?:\u2063\u200B\u2063)?(?:请从上次中断处继续完成剩余任务|Please resume from where the task was interrupted)/;
 
   let disposed = false;
   let prevCid = '';
@@ -38,10 +43,7 @@ export function createResumeBannerRuntime() {
   }
 
   function isZh() {
-    return (
-      (document.documentElement.lang || '').toLowerCase().startsWith('zh') ||
-      document.documentElement.getAttribute('data-ag-ux-lang') === 'zh-CN'
-    );
+    return document.documentElement.getAttribute('data-ag-ux-lang') === 'zh-CN';
   }
 
   function L(zh, en) {
@@ -107,6 +109,18 @@ export function createResumeBannerRuntime() {
     document.getElementById(PILL_ID)?.remove();
   }
 
+  function findAgentHandleSubmit(box) {
+    if (!box) return null;
+    const fk = Object.keys(box).find((k) => k.startsWith('__reactFiber$'));
+    let fiber = fk ? box[fk] : null;
+    for (let i = 0; i < 8 && fiber; i++) {
+      const fn = fiber.memoizedProps?.handleSubmit;
+      if (typeof fn === 'function') return fn;
+      fiber = fiber.return;
+    }
+    return null;
+  }
+
   function findSendButton(box) {
     const direct = box.querySelector(
       '.agy-composer-footer button[data-testid="input-send-button"]:not(:disabled), ' +
@@ -127,18 +141,9 @@ export function createResumeBannerRuntime() {
     return last;
   }
 
-  function triggerResume(cid, lastIdx) {
-    const box = getMainBox();
+  function submitViaEditorFallback(box, prompt) {
     const editor = box?.querySelector('[data-lexical-editor="true"]');
     if (!box || !editor) return;
-
-    dismissCurrent(cid, lastIdx);
-
-    const prompt = L(
-      '请从上次中断处继续完成剩余任务，先快速核对当前实际状态再接着执行。',
-      'Please resume from where the task was interrupted — quickly verify the current state and continue the remaining steps.'
-    );
-
     try {
       editor.focus();
       const sel = window.getSelection();
@@ -160,7 +165,6 @@ export function createResumeBannerRuntime() {
         return;
       }
       if (attempt >= 12) {
-        // Final fallback: submit via Enter keydown on Lexical editor
         try {
           editor.focus();
           editor.dispatchEvent(
@@ -179,6 +183,60 @@ export function createResumeBannerRuntime() {
       setTimeout(() => clickSend(attempt + 1), 45);
     };
     setTimeout(() => clickSend(0), 60);
+  }
+
+  function triggerResume(cid, lastIdx) {
+    const box = getMainBox();
+    if (!box) return;
+
+    dismissCurrent(cid, lastIdx);
+
+    const prompt = `${RESUME_SENTINEL}Please resume from where the task was interrupted — quickly verify the current state and continue the remaining steps.`;
+
+    // Prefer silent React handleSubmit (never flashes text inside the input box)
+    const handleSubmit = findAgentHandleSubmit(box);
+    if (handleSubmit) {
+      try {
+        const res = handleSubmit(
+          [{ chunk: { case: 'text', value: prompt } }],
+          [],
+          () => {},
+          undefined,
+          undefined,
+          undefined
+        );
+        // Verify within 450ms that the run actually started; otherwise fall back cleanly to editor submit
+        Promise.resolve(res).catch(() => {});
+        setTimeout(() => {
+          if (!disposed && !isMainRunning() && getActiveCid() === cid) {
+            submitViaEditorFallback(box, prompt);
+          }
+        }, 450);
+        return;
+      } catch {}
+    }
+
+    submitViaEditorFallback(box, prompt);
+  }
+
+  function tagResumedSteps() {
+    const steps = document.querySelectorAll('[data-testid="conversation-view"] [data-testid="user-input-step"]');
+    const dividerLabel = L('已从中断处继续', 'Resumed');
+    for (const step of steps) {
+      if (step.getAttribute('data-agy-resumed-step') === '1') {
+        if (step.getAttribute('data-agy-resumed-label') !== dividerLabel) {
+          step.setAttribute('data-agy-resumed-label', dividerLabel);
+        }
+        continue;
+      }
+      const content = step.querySelector('[data-testid="user-message-content"]');
+      if (!content) continue;
+      const txt = content.textContent || '';
+      if (txt.startsWith(RESUME_SENTINEL) || LEGACY_RESUME_RE.test(txt.trim())) {
+        step.setAttribute('data-agy-resumed-step', '1');
+        step.setAttribute('data-agy-resumed-label', dividerLabel);
+      }
+    }
   }
 
   function fetchResumeState(cid, { force = false } = {}) {
@@ -206,6 +264,8 @@ export function createResumeBannerRuntime() {
 
   function render() {
     if (disposed) return;
+    tagResumedSteps();
+
     const cid = getActiveCid();
     const box = getMainBox();
     const footer = box?.querySelector('.agy-composer-footer');
@@ -297,7 +357,6 @@ export function createResumeBannerRuntime() {
       }
       if (cid && !running) fetchResumeState(cid, { force: true });
     } else if (prevRunning === true && !running && cid) {
-      // Wait briefly for Antigravity to flush the final SQLite step after stop/finish
       if (settleTimer) clearTimeout(settleTimer);
       settleTimer = setTimeout(() => {
         settleTimer = 0;
@@ -321,6 +380,10 @@ export function createResumeBannerRuntime() {
       settleTimer = 0;
     }
     removePill();
+    document.querySelectorAll('[data-agy-resumed-step="1"]').forEach((el) => {
+      el.removeAttribute('data-agy-resumed-step');
+      el.removeAttribute('data-agy-resumed-label');
+    });
   }
 
   return { sync, dispose };

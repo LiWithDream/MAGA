@@ -1,15 +1,18 @@
 /**
  * Internalized Daily & Per-Model Token Usage Card for Anti-Claude's Right Overview Panel.
- * Fetches incremental SQLite usage history from the unified daemon via window.__agProjectCall('getUsageStats')
- * and mounts a collapsible .ag-ov-card inside #ag-claude-ov-sections right after the Quota card.
+ * Features:
+ * - Slim, baseline-anchored stacked bars across Day (14d), Week (12w), and Month (12m)
+ * - Instant floating interactive hover tooltip across chart bars, KPI tiles, and model rows
+ * - Incremental SQLite usage history via unified daemon's getUsageStats action
  */
 
 export function createOverviewUsageRuntime({ motionThemes }) {
   const CARD_ID = 'agy-ov-usage-card';
+  const TOOLTIP_ID = 'agy-usage-tooltip';
   const STORAGE_KEY = 'agy_studio_usage_ui_v1';
   const CACHE_TTL_MS = 25000;
   const COUNTERS = ['uncached', 'cacheRead', 'cacheWrite', 'output'];
-  const SPANS = { day: 14, week: 8, month: 6 };
+  const SPANS = { day: 14, week: 12, month: 12 };
   const FALLBACK_PALETTE = ['#388bfd', '#e07b53', '#16a34a', '#d97706', '#8b5cf6', '#e14d67'];
   const TIER_LABEL = {
     off: 'Off', minimal: 'Minimal', low: 'Low', medium: 'Medium',
@@ -22,10 +25,12 @@ export function createOverviewUsageRuntime({ motionThemes }) {
 
   let disposed = false;
   let cardEl = null;
+  let tooltipEl = null;
   let usageData = null;
   let fetchInFlight = false;
   let lastFetchTs = 0;
   let lastTurnSig = '';
+  let lastRenderCtx = null;
 
   const uiState = loadUiState();
 
@@ -87,6 +92,7 @@ export function createOverviewUsageRuntime({ motionThemes }) {
   const emptyParts = () => ({ requests: 0, uncached: 0, cacheRead: 0, cacheWrite: 0, output: 0 });
   const addParts = (t, s = {}) => { t.requests += s.requests || 0; for (const k of COUNTERS) t[k] += s[k] || 0; };
   const tokensOf = (b = {}) => (b.uncached || 0) + (b.cacheRead || 0) + (b.cacheWrite || 0) + (b.output || 0);
+  const reqFmt = (n) => (isZh() ? `${exact(n)} 次请求` : `${exact(n)} req`);
 
   function splitModelName(raw) {
     const trimmed = String(raw || '').trim().replace(/^models\//i, '').trim();
@@ -118,16 +124,6 @@ export function createOverviewUsageRuntime({ motionThemes }) {
       if (c && c !== '#8e8e93') return c;
     } catch {}
     return FALLBACK_PALETTE[rankIdx % FALLBACK_PALETTE.length];
-  }
-
-  function breakdownTip(bucket) {
-    const parts = [
-      `${L('非缓存', 'Uncached')} ${exact(bucket.uncached)}`,
-      `${L('缓存读', 'Cache read')} ${exact(bucket.cacheRead)}`,
-      `${L('缓存写', 'Cache write')} ${exact(bucket.cacheWrite)}`,
-      `${L('输出', 'Output')} ${exact(bucket.output)}`,
-    ];
-    return parts.join(' · ');
   }
 
   function computeTotals(data, today) {
@@ -164,7 +160,7 @@ export function createOverviewUsageRuntime({ motionThemes }) {
           from: `${m}-01`,
           to: addDays(`${addMonths(m, 1)}-01`, -1),
           name: m,
-          label: `${Number(m.slice(5))}${L('月', '')}`,
+          label: `${Number(m.slice(5))}`,
         };
       });
     }
@@ -176,7 +172,8 @@ export function createOverviewUsageRuntime({ motionThemes }) {
       return {
         from,
         to,
-        name: from === to ? from : `${from} – ${to}`,
+        name: from === to ? from : `${from.slice(5)} – ${to.slice(5)}`,
+        fullName: from === to ? from : `${from} – ${to}`,
         label: period === 'week' ? `${Number(from.slice(5, 7))}/${Number(from.slice(8))}` : String(Number(from.slice(8))),
       };
     });
@@ -215,7 +212,7 @@ export function createOverviewUsageRuntime({ motionThemes }) {
     const bars = buildPeriodSpans(today, period, Math.min(0, shift)).map((s) => ({
       ...s,
       tokens: 0,
-      requests: 0,
+      ...emptyParts(),
       parts: series.map(() => 0),
     }));
     const pageParts = emptyParts();
@@ -230,7 +227,7 @@ export function createOverviewUsageRuntime({ motionThemes }) {
         const tok = tokensOf(m);
         bar.parts[slot] += tok;
         bar.tokens += tok;
-        bar.requests += m.requests || 0;
+        addParts(bar, m);
         addParts(pageParts, m);
         const entry = series[slot];
         addParts(entry, m);
@@ -279,12 +276,137 @@ export function createOverviewUsageRuntime({ motionThemes }) {
     };
   }
 
+  /* ---- Instant Floating Tooltip ---- */
+
+  function ensureTooltipEl() {
+    if (tooltipEl && tooltipEl.isConnected) return tooltipEl;
+    tooltipEl = document.getElementById(TOOLTIP_ID);
+    if (!tooltipEl) {
+      tooltipEl = document.createElement('div');
+      tooltipEl.id = TOOLTIP_ID;
+      tooltipEl.setAttribute('data-ag-i18n-ignore', '1');
+      document.body.appendChild(tooltipEl);
+    }
+    return tooltipEl;
+  }
+
+  function hideTooltip() {
+    if (tooltipEl) tooltipEl.removeAttribute('data-visible');
+  }
+
+  function buildTokenGridHtml(bucket) {
+    return `<div class="agy-utt-grid">
+      <div class="agy-utt-kv"><span class="agy-utt-k">${esc(L('非缓存', 'Uncached'))}</span><span class="agy-utt-v">${esc(fmtTokens(bucket.uncached))}</span></div>
+      <div class="agy-utt-kv"><span class="agy-utt-k">${esc(L('缓存读', 'Cache rd'))}</span><span class="agy-utt-v">${esc(fmtTokens(bucket.cacheRead))}</span></div>
+      <div class="agy-utt-kv"><span class="agy-utt-k">${esc(L('缓存写', 'Cache wr'))}</span><span class="agy-utt-v">${esc(fmtTokens(bucket.cacheWrite))}</span></div>
+      <div class="agy-utt-kv"><span class="agy-utt-k">${esc(L('输出', 'Output'))}</span><span class="agy-utt-v">${esc(fmtTokens(bucket.output))}</span></div>
+    </div>`;
+  }
+
+  function buildTooltipHtml(targetEl) {
+    if (!lastRenderCtx) return '';
+    const { totals, view, nameOf } = lastRenderCtx;
+
+    const barIdx = targetEl.getAttribute('data-agy-tip-bar');
+    if (barIdx !== null) {
+      const item = view.bars[Number(barIdx)];
+      if (!item) return '';
+      const heading = item.fullName || item.name;
+      if (!item.tokens) {
+        return `<div class="agy-utt-hdr"><span class="agy-utt-title">${esc(heading)}</span></div>
+          <div class="agy-utt-empty">${esc(L('该时段无用量记录', 'No token usage recorded'))}</div>`;
+      }
+      const rows = item.parts
+        .map((tok, sIdx) => ({ tok, s: view.series[sIdx] }))
+        .filter((x) => x.tok > 0)
+        .sort((a, b) => b.tok - a.tok)
+        .map(({ tok, s }) => {
+          const pct = Math.max(1, Math.round((tok / item.tokens) * 100));
+          return `<div class="agy-utt-row">
+            <span class="agy-utt-row-l"><span class="agy-utt-dot" style="background:${s.color}"></span><span class="agy-utt-name">${esc(nameOf(s))}</span></span>
+            <span class="agy-utt-val"><strong>${esc(fmtTokens(tok))}</strong> · ${pct}%</span>
+          </div>`;
+        })
+        .join('');
+      return `<div class="agy-utt-hdr"><span class="agy-utt-title">${esc(heading)}</span><span class="agy-utt-sub">${esc(reqFmt(item.requests))}</span></div>
+        <div class="agy-utt-total"><b>${esc(fmtTokens(item.tokens))}</b><span class="agy-utt-sub">${esc(exact(item.tokens))} tokens</span></div>
+        ${rows ? `<div class="agy-utt-list">${rows}</div>` : ''}
+        ${buildTokenGridHtml(item)}`;
+    }
+
+    const kpiKey = targetEl.getAttribute('data-agy-tip-kpi');
+    if (kpiKey && totals.parts[kpiKey]) {
+      const part = totals.parts[kpiKey];
+      const val = totals[kpiKey] || 0;
+      const titles = {
+        today: L('今日用量', 'Today'),
+        week: L('本周用量', 'This Week'),
+        month: L('本月用量', 'This Month'),
+        all: L('累计用量', 'All Time'),
+      };
+      return `<div class="agy-utt-hdr"><span class="agy-utt-title">${esc(titles[kpiKey] || kpiKey)}</span><span class="agy-utt-sub">${esc(reqFmt(part.requests))}</span></div>
+        <div class="agy-utt-total"><b>${esc(fmtTokens(val))}</b><span class="agy-utt-sub">${esc(exact(val))} tokens</span></div>
+        ${buildTokenGridHtml(part)}`;
+    }
+
+    const modelIdx = targetEl.getAttribute('data-agy-tip-model');
+    if (modelIdx !== null) {
+      const entry = view.models[Number(modelIdx)];
+      if (!entry) return '';
+      const tierRows = entry.tiers
+        .filter((t) => t.tier || entry.tiers.length > 1)
+        .map((t) => {
+          const pct = Math.max(1, Math.round((t.tokens / entry.tokens) * 100));
+          return `<div class="agy-utt-row">
+            <span class="agy-utt-row-l"><span class="agy-utt-dot" style="background:${entry.color};opacity:.75"></span><span class="agy-utt-name">${esc(t.tier || L('默认', 'Default'))}</span></span>
+            <span class="agy-utt-val"><strong>${esc(fmtTokens(t.tokens))}</strong> · ${pct}%</span>
+          </div>`;
+        })
+        .join('');
+      return `<div class="agy-utt-hdr"><span class="agy-utt-title">${esc(nameOf(entry))}</span><span class="agy-utt-sub">${esc(reqFmt(entry.requests))}</span></div>
+        <div class="agy-utt-total"><b>${esc(fmtTokens(entry.tokens))}</b><span class="agy-utt-sub">${esc(exact(entry.tokens))} tokens</span></div>
+        ${tierRows ? `<div class="agy-utt-list">${tierRows}</div>` : ''}
+        ${buildTokenGridHtml(entry)}`;
+    }
+
+    return '';
+  }
+
+  function showTooltipFor(targetEl) {
+    const html = buildTooltipHtml(targetEl);
+    if (!html) {
+      hideTooltip();
+      return;
+    }
+    const tt = ensureTooltipEl();
+    tt.innerHTML = html;
+
+    const r = targetEl.getBoundingClientRect();
+    const ttW = 244;
+    const ttH = tt.offsetHeight || 136;
+    const margin = 10;
+
+    // Prefer placing above the hovered bar/row; clamp horizontally inside viewport
+    let left = Math.round(r.left + r.width / 2 - ttW / 2);
+    left = Math.max(margin, Math.min(left, window.innerWidth - ttW - margin));
+
+    let top = Math.round(r.top - ttH - 8);
+    if (top < margin) {
+      top = Math.min(window.innerHeight - ttH - margin, Math.round(r.bottom + 8));
+    }
+
+    tt.style.left = `${left}px`;
+    tt.style.top = `${top}px`;
+    tt.setAttribute('data-visible', '1');
+  }
+
   function buildChevronSvg(open) {
     return `<svg class="ag-ov-chev" data-open="${open ? 'true' : 'false'}" width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 2.5L8 6L4.5 9.5"/></svg>`;
   }
 
   function renderCard() {
     if (!cardEl) return;
+    hideTooltip();
     const today = localDay();
     const totals = computeTotals(usageData, today);
     const todayBadge = usageData ? `${L('今日', 'Today')} ${fmtTokens(totals.today)}` : L('读取中…', 'Loading…');
@@ -292,32 +414,24 @@ export function createOverviewUsageRuntime({ motionThemes }) {
     let bodyHtml = '';
     if (uiState.open) {
       if (!usageData) {
+        lastRenderCtx = null;
         bodyHtml = `<div class="ag-ov-card-body"><div class="agy-usage-empty">${esc(L('正在统计本机对话用量…', 'Scanning local conversations…'))}</div></div>`;
       } else if (!(usageData.days || []).length && !totals.all) {
+        lastRenderCtx = null;
         bodyHtml = `<div class="ag-ov-card-body"><div class="agy-usage-empty">${esc(L('暂无用量记录', 'No usage recorded yet'))}</div></div>`;
       } else {
         const view = computeModelView(usageData, today, uiState.period, uiState.shift);
         const nameOf = (e) => (e.name === null ? L('其他模型', 'Other') : e.name || L('未知模型', 'Unknown'));
-        const reqFmt = (n) => (isZh() ? `${exact(n)} 次请求` : `${exact(n)} req`);
+        lastRenderCtx = { totals, view, nameOf };
 
-        const kpi = (label, val, part) => {
-          const tip = val > 0 ? `${exact(val)} tokens · ${reqFmt(part.requests)}\n${breakdownTip(part)}` : '0 tokens';
-          return `<div class="agy-usage-kpi" title="${esc(tip)}"><span class="agy-usage-kpi-lbl">${esc(label)}</span><span class="agy-usage-kpi-val">${esc(fmtTokens(val))}</span></div>`;
-        };
+        const kpi = (key, label, val) =>
+          `<div class="agy-usage-kpi" data-agy-tip-kpi="${key}"><span class="agy-usage-kpi-lbl">${esc(label)}</span><span class="agy-usage-kpi-val">${esc(fmtTokens(val))}</span></div>`;
 
-        const stride = uiState.period === 'day' ? 2 : 1;
+        const stride = uiState.period === 'week' ? 3 : 2;
         const barsHtml = view.bars
           .map((item, idx) => {
-            const pct = view.max > 0 && item.tokens > 0 ? Math.max(4, Math.round((item.tokens / view.max) * 100)) : 0;
-            const tipLines = item.tokens
-              ? [
-                  `${item.name} · ${exact(item.tokens)} tokens · ${reqFmt(item.requests)}`,
-                  ...item.parts
-                    .map((tok, sIdx) => (tok ? `${nameOf(view.series[sIdx])}: ${fmtTokens(tok)}` : ''))
-                    .filter(Boolean),
-                ]
-              : [item.name];
-            const stackHtml = item.tokens
+            const pct = view.max > 0 && item.tokens > 0 ? Math.max(7, Math.round((item.tokens / view.max) * 100)) : 0;
+            const colHtml = item.tokens
               ? `<div class="agy-usage-bar-stack" style="height:${pct}%">${item.parts
                   .map((tok, sIdx) =>
                     tok
@@ -325,24 +439,20 @@ export function createOverviewUsageRuntime({ motionThemes }) {
                       : ''
                   )
                   .join('')}</div>`
-              : '';
+              : `<span class="agy-usage-bar-zero"></span>`;
             const showX = (view.bars.length - 1 - idx) % stride === 0;
-            return `<div class="agy-usage-bar" title="${esc(tipLines.join('\n'))}"><div class="agy-usage-bar-track">${stackHtml}</div><span class="agy-usage-bar-x">${showX ? esc(item.label) : ''}</span></div>`;
+            const xLabel = showX
+              ? (uiState.period === 'month' && isZh() ? `${item.label}月` : item.label)
+              : '';
+            return `<div class="agy-usage-bar" data-agy-tip-bar="${idx}"><div class="agy-usage-bar-track">${colHtml}</div><span class="agy-usage-bar-x">${esc(xLabel)}</span></div>`;
           })
           .join('');
 
         const modelsHtml = view.models.length
           ? `<div class="agy-usage-models">${view.models
-              .map((entry) => {
+              .map((entry, idx) => {
                 const share = view.tokens > 0 ? Math.max(1, Math.round((entry.tokens / view.tokens) * 100)) : 0;
-                const tipLines = [`${breakdownTip(entry)} · ${reqFmt(entry.requests)}`];
-                if (entry.tiers.some((t) => t.tier)) {
-                  for (const t of entry.tiers) {
-                    const tp = Math.round((t.tokens / entry.tokens) * 100);
-                    tipLines.push(`${t.tier || L('默认', 'Default')}: ${fmtTokens(t.tokens)} (${tp}%) · ${reqFmt(t.requests)}`);
-                  }
-                }
-                return `<div class="agy-usage-model-row" title="${esc(tipLines.join('\n'))}">
+                return `<div class="agy-usage-model-row" data-agy-tip-model="${idx}">
                   <div class="agy-usage-model-top">
                     <span class="agy-usage-model-left">
                       <span class="agy-usage-dot" style="background:${entry.color}"></span>
@@ -370,12 +480,11 @@ export function createOverviewUsageRuntime({ motionThemes }) {
           )
           .join('');
 
-        const periodTip = view.tokens > 0 ? `${exact(view.tokens)} tokens · ${reqFmt(view.requests)}\n${breakdownTip(view.parts)}` : '0 tokens';
         bodyHtml = `<div class="ag-ov-card-body">
           <div class="agy-usage-kpi-grid">
-            ${kpi(L('今日', 'Today'), totals.today, totals.parts.today)}
-            ${kpi(L('本周', 'Week'), totals.week, totals.parts.week)}
-            ${kpi(L('本月', 'Month'), totals.month, totals.parts.month)}
+            ${kpi('today', L('今日', 'Today'), totals.today)}
+            ${kpi('week', L('本周', 'Week'), totals.week)}
+            ${kpi('month', L('本月', 'Month'), totals.month)}
           </div>
           <div class="agy-usage-toolbar">
             <span class="agy-usage-seg" role="group">${segHtml}</span>
@@ -385,11 +494,21 @@ export function createOverviewUsageRuntime({ motionThemes }) {
               <button type="button" data-agy-usage-shift="1" aria-label="${esc(L('更晚', 'Newer'))}"${view.newer ? '' : ' disabled'}>›</button>
             </span>
           </div>
-          <div class="agy-usage-bars">${barsHtml}</div>
+          <div class="agy-usage-chart" data-period="${uiState.period}">
+            <div class="agy-usage-chart-meta"><span class="agy-usage-ymax">${view.max > 0 ? esc(fmtTokens(view.max)) : ''}</span></div>
+            <div class="agy-usage-plot">
+              <div class="agy-usage-grid" aria-hidden="true">
+                <span class="agy-usage-grid-line"></span>
+                <span class="agy-usage-grid-line"></span>
+                <span class="agy-usage-grid-line is-base"></span>
+              </div>
+              <div class="agy-usage-bars">${barsHtml}</div>
+            </div>
+          </div>
           ${modelsHtml}
           <div class="agy-usage-foot">
-            <span title="${esc(periodTip)}">${esc(L('本期', 'Period'))} ${esc(fmtTokens(view.tokens))} · ${esc(reqFmt(view.requests))}</span>
-            <span>${esc(L('累计', 'All'))} ${esc(fmtTokens(totals.all))}</span>
+            <span>${esc(L('本期', 'Period'))} ${esc(fmtTokens(view.tokens))} · ${esc(reqFmt(view.requests))}</span>
+            <span data-agy-tip-kpi="all">${esc(L('累计', 'All'))} ${esc(fmtTokens(totals.all))}</span>
           </div>
         </div>`;
       }
@@ -416,6 +535,7 @@ export function createOverviewUsageRuntime({ motionThemes }) {
     cardEl.className = 'ag-ov-card';
     cardEl.setAttribute('data-ov-card', 'usage');
     cardEl.setAttribute('data-ag-i18n-ignore', '1');
+
     cardEl.addEventListener('click', (e) => {
       const btn = e.target?.closest?.('button');
       if (!btn || !cardEl.contains(btn)) return;
@@ -445,6 +565,27 @@ export function createOverviewUsageRuntime({ motionThemes }) {
         renderCard();
       }
     });
+
+    let activeTipTarget = null;
+    cardEl.addEventListener('pointermove', (e) => {
+      const target = e.target?.closest?.('[data-agy-tip-bar], [data-agy-tip-kpi], [data-agy-tip-model]');
+      if (!target || !cardEl.contains(target)) {
+        if (activeTipTarget) {
+          activeTipTarget = null;
+          hideTooltip();
+        }
+        return;
+      }
+      if (target !== activeTipTarget) {
+        activeTipTarget = target;
+        showTooltipFor(target);
+      }
+    });
+    cardEl.addEventListener('pointerleave', () => {
+      activeTipTarget = null;
+      hideTooltip();
+    });
+
     renderCard();
     return cardEl;
   }
@@ -476,7 +617,10 @@ export function createOverviewUsageRuntime({ motionThemes }) {
   function sync() {
     if (disposed) return;
     const panel = document.querySelector('[data-testid="overview-panel"]');
-    if (!panel || panel.hidden || panel.getAttribute('aria-hidden') === 'true') return;
+    if (!panel || panel.hidden || panel.getAttribute('aria-hidden') === 'true') {
+      hideTooltip();
+      return;
+    }
     const sections = document.getElementById('ag-claude-ov-sections');
     if (!sections) return;
 
@@ -503,6 +647,11 @@ export function createOverviewUsageRuntime({ motionThemes }) {
   function dispose() {
     if (disposed) return;
     disposed = true;
+    hideTooltip();
+    if (tooltipEl) {
+      try { tooltipEl.remove(); } catch {}
+      tooltipEl = null;
+    }
     if (cardEl) {
       try { cardEl.remove(); } catch {}
       cardEl = null;

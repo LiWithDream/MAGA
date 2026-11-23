@@ -1,6 +1,6 @@
 /* ==========================================================================
  * Internalized Token Usage Card in Right Overview Panel (#agy-ov-usage-card)
- * Matches Anti-Claude's .ag-ov-card design tokens seamlessly in Light & Dark.
+ * Sleek baseline-anchored slim bars (Day / Week / Month) + instant floating tooltip
  * ========================================================================== */
 
 #ag-claude-ov-sections #agy-ov-usage-card .agy-usage-hdr-right {
@@ -25,6 +25,12 @@
   background-color: var(--agy-pill-bg, rgba(128, 128, 128, 0.06));
   border: 1px solid var(--ag-ov-border);
   cursor: default;
+  transition: background-color 130ms ease, border-color 130ms ease;
+}
+
+#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-kpi:hover {
+  background-color: var(--agy-pill-bg-hover, rgba(128, 128, 128, 0.11));
+  border-color: color-mix(in srgb, var(--ag-ov-fg) 18%, var(--ag-ov-border));
 }
 
 #ag-claude-ov-sections #agy-ov-usage-card .agy-usage-kpi-lbl {
@@ -124,13 +130,64 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) #ag-claude-ov-sections #ag
   white-space: nowrap;
 }
 
-/* Stacked vertical bar chart */
+/* ==========================================================================
+ * Refined Chart Canvas: subtle horizontal guides + slim centered columns
+ * Consistent slim width across Day (14), Week (12), and Month (12) views.
+ * ========================================================================== */
+
+#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-chart {
+  position: relative;
+  padding: 6px 2px 0;
+}
+
+#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-chart-meta {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  height: 12px;
+  margin-bottom: 2px;
+}
+
+#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-ymax {
+  font-size: 9.5px;
+  line-height: 1;
+  color: var(--ag-ov-muted);
+  opacity: 0.78;
+  font-variant-numeric: tabular-nums;
+}
+
+#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-plot {
+  position: relative;
+  height: 78px;
+}
+
+/* Subtle horizontal 100% / 50% / 0% reference lines */
+#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-grid {
+  position: absolute;
+  inset: 0 0 16px 0;
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+
+#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-grid-line {
+  width: 100%;
+  border-top: 1px dashed color-mix(in srgb, var(--ag-ov-border) 85%, transparent);
+}
+
+#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-grid-line.is-base {
+  border-top-style: solid;
+  border-top-color: color-mix(in srgb, var(--ag-ov-fg) 14%, transparent);
+}
+
 #ag-claude-ov-sections #agy-ov-usage-card .agy-usage-bars {
+  position: relative;
+  z-index: 1;
   display: flex;
   align-items: stretch;
-  gap: 3px;
-  height: 68px;
-  padding: 4px 2px 0;
+  gap: 2px;
+  height: 100%;
 }
 
 #ag-claude-ov-sections #agy-ov-usage-card .agy-usage-bar {
@@ -138,27 +195,53 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) #ag-claude-ov-sections #ag
   min-width: 0;
   display: flex;
   flex-direction: column;
-  align-items: stretch;
-  cursor: default;
+  align-items: center;
+  cursor: pointer;
+  border-radius: 5px;
+  transition: opacity 140ms ease, background-color 140ms ease;
+}
+
+#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-bars:hover .agy-usage-bar {
+  opacity: 0.48;
+}
+
+#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-bars:hover .agy-usage-bar:hover,
+#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-bars:hover .agy-usage-bar[data-agy-active="1"] {
+  opacity: 1;
+  background-color: color-mix(in srgb, var(--ag-ov-fg) 6%, transparent);
 }
 
 #ag-claude-ov-sections #agy-ov-usage-card .agy-usage-bar-track {
   flex: 1 1 0;
+  width: 100%;
   display: flex;
   flex-direction: column;
   justify-content: flex-end;
-  border-radius: 3px;
-  background-color: color-mix(in srgb, var(--ag-ov-border) 42%, transparent);
-  overflow: hidden;
+  align-items: center;
+  padding-bottom: 1px;
 }
 
+/* Slim capped column width so Week & Month bars stay elegant and never look chunky */
 #ag-claude-ov-sections #agy-ov-usage-card .agy-usage-bar-stack {
   display: flex;
   flex-direction: column-reverse;
   width: 100%;
-  border-radius: 3px 3px 0 0;
+  max-width: 10px;
+  border-radius: 3.5px 3.5px 1.5px 1.5px;
   overflow: hidden;
-  min-height: 2px;
+  min-height: 4px;
+  transition: transform 140ms ease, filter 140ms ease;
+}
+
+#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-chart[data-period="week"] .agy-usage-bar-stack,
+#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-chart[data-period="month"] .agy-usage-bar-stack {
+  max-width: 12px;
+}
+
+#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-bar:hover .agy-usage-bar-stack,
+#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-bar[data-agy-active="1"] .agy-usage-bar-stack {
+  filter: brightness(1.08);
+  transform: scaleX(1.08);
 }
 
 #ag-claude-ov-sections #agy-ov-usage-card .agy-usage-bar-stack > i {
@@ -167,20 +250,36 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) #ag-claude-ov-sections #ag
   font-style: normal;
 }
 
+/* Subtle resting baseline tick for zero-usage slots (replaces heavy empty grey blocks) */
+#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-bar-zero {
+  width: 100%;
+  max-width: 8px;
+  height: 2.5px;
+  border-radius: 999px;
+  background-color: color-mix(in srgb, var(--ag-ov-muted) 26%, transparent);
+  transition: background-color 140ms ease;
+}
+
+#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-bar:hover .agy-usage-bar-zero {
+  background-color: color-mix(in srgb, var(--ag-ov-muted) 55%, transparent);
+}
+
 #ag-claude-ov-sections #agy-ov-usage-card .agy-usage-bar-x {
-  margin-top: 3px;
+  margin-top: 4px;
   height: 12px;
   font-size: 9.5px;
   line-height: 12px;
   text-align: center;
   color: var(--ag-ov-muted);
   font-variant-numeric: tabular-nums;
-  overflow: hidden;
   white-space: nowrap;
+  transition: color 120ms ease;
 }
 
-#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-bar:hover .agy-usage-bar-track {
-  background-color: color-mix(in srgb, var(--ag-ov-fg) 10%, transparent);
+#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-bar:hover .agy-usage-bar-x,
+#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-bar[data-agy-active="1"] .agy-usage-bar-x {
+  color: var(--ag-ov-fg);
+  font-weight: 500;
 }
 
 /* Per-model breakdown rows */
@@ -188,15 +287,23 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) #ag-claude-ov-sections #ag
   display: flex;
   flex-direction: column;
   gap: 5px;
-  padding-top: 3px;
+  padding-top: 5px;
   border-top: 1px solid var(--ag-ov-border);
 }
 
 #ag-claude-ov-sections #agy-ov-usage-card .agy-usage-model-row {
   display: flex;
   flex-direction: column;
-  gap: 2.5px;
-  cursor: default;
+  gap: 3px;
+  padding: 3px 4px;
+  margin: 0 -4px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+
+#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-model-row:hover {
+  background-color: var(--ag-ov-hover);
 }
 
 #ag-claude-ov-sections #agy-ov-usage-card .agy-usage-model-top {
@@ -262,7 +369,7 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) #ag-claude-ov-sections #ag
 #ag-claude-ov-sections #agy-ov-usage-card .agy-usage-model-fill {
   height: 100%;
   border-radius: 999px;
-  opacity: 0.85;
+  opacity: 0.88;
 }
 
 #ag-claude-ov-sections #agy-ov-usage-card .agy-usage-foot {
@@ -279,4 +386,193 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) #ag-claude-ov-sections #ag
   font-size: 11.5px;
   color: var(--ag-ov-muted);
   padding: 4px 0;
+}
+
+/* ==========================================================================
+ * Instant Floating Interactive Tooltip (#agy-usage-tooltip)
+ * High-specificity opaque surface so host theme rules never bleach it out.
+ * ========================================================================== */
+
+#agy-usage-tooltip#agy-usage-tooltip {
+  position: fixed !important;
+  z-index: 2147483647 !important;
+  pointer-events: none !important;
+  box-sizing: border-box !important;
+  width: 248px !important;
+  padding: 10px 12px !important;
+  border-radius: 11px !important;
+  border: 1px solid rgba(28, 28, 26, 0.14) !important;
+  background-color: #FFFFFF !important;
+  background: #FFFFFF !important;
+  box-shadow: 0 14px 34px -8px rgba(0, 0, 0, 0.22), 0 2px 8px rgba(0, 0, 0, 0.08) !important;
+  color: #1C1C1A !important;
+  font-family: var(--font-sans) !important;
+  font-size: 11.5px !important;
+  line-height: 1.4 !important;
+  font-variant-numeric: tabular-nums !important;
+  opacity: 0 !important;
+  visibility: hidden !important;
+  transform: translateY(3px) !important;
+  transition: opacity 110ms ease, transform 110ms ease !important;
+  -webkit-font-smoothing: antialiased !important;
+}
+
+:is(html[data-ag-theme-mode="dark"], html.dark, body.dark) #agy-usage-tooltip#agy-usage-tooltip {
+  border-color: rgba(255, 255, 255, 0.16) !important;
+  background-color: #242422 !important;
+  background: #242422 !important;
+  box-shadow: 0 18px 42px -6px rgba(0, 0, 0, 0.68), 0 4px 12px rgba(0, 0, 0, 0.45) !important;
+  color: #EFEFED !important;
+}
+
+#agy-usage-tooltip#agy-usage-tooltip[data-visible="1"] {
+  opacity: 1 !important;
+  visibility: visible !important;
+  transform: translateY(0) !important;
+}
+
+#agy-usage-tooltip#agy-usage-tooltip .agy-utt-hdr {
+  display: flex !important;
+  align-items: baseline !important;
+  justify-content: space-between !important;
+  gap: 8px !important;
+  margin-bottom: 4px !important;
+}
+
+#agy-usage-tooltip#agy-usage-tooltip .agy-utt-title {
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  color: inherit !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+#agy-usage-tooltip#agy-usage-tooltip .agy-utt-sub {
+  font-size: 10.5px !important;
+  color: #6E6D68 !important;
+  white-space: nowrap !important;
+  flex-shrink: 0 !important;
+}
+
+:is(html[data-ag-theme-mode="dark"], html.dark, body.dark) #agy-usage-tooltip#agy-usage-tooltip .agy-utt-sub {
+  color: #9A9994 !important;
+}
+
+#agy-usage-tooltip#agy-usage-tooltip .agy-utt-total {
+  display: flex !important;
+  align-items: baseline !important;
+  justify-content: space-between !important;
+  gap: 6px !important;
+  padding-bottom: 6px !important;
+  margin-bottom: 6px !important;
+  border-bottom: 1px solid rgba(28, 28, 26, 0.10) !important;
+}
+
+:is(html[data-ag-theme-mode="dark"], html.dark, body.dark) #agy-usage-tooltip#agy-usage-tooltip .agy-utt-total {
+  border-bottom-color: rgba(255, 255, 255, 0.10) !important;
+}
+
+#agy-usage-tooltip#agy-usage-tooltip .agy-utt-total b {
+  font-size: 14px !important;
+  font-weight: 600 !important;
+  color: inherit !important;
+}
+
+#agy-usage-tooltip#agy-usage-tooltip .agy-utt-list {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 4px !important;
+  margin-bottom: 6px !important;
+}
+
+#agy-usage-tooltip#agy-usage-tooltip .agy-utt-row {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 8px !important;
+  font-size: 11px !important;
+}
+
+#agy-usage-tooltip#agy-usage-tooltip .agy-utt-row-l {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 5px !important;
+  min-width: 0 !important;
+  overflow: hidden !important;
+}
+
+#agy-usage-tooltip#agy-usage-tooltip .agy-utt-dot {
+  width: 6px !important;
+  height: 6px !important;
+  border-radius: 50% !important;
+  flex-shrink: 0 !important;
+}
+
+#agy-usage-tooltip#agy-usage-tooltip .agy-utt-name {
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+  color: inherit !important;
+}
+
+#agy-usage-tooltip#agy-usage-tooltip .agy-utt-val {
+  color: #6E6D68 !important;
+  white-space: nowrap !important;
+  flex-shrink: 0 !important;
+}
+
+:is(html[data-ag-theme-mode="dark"], html.dark, body.dark) #agy-usage-tooltip#agy-usage-tooltip .agy-utt-val {
+  color: #9A9994 !important;
+}
+
+#agy-usage-tooltip#agy-usage-tooltip .agy-utt-val strong {
+  color: #1C1C1A !important;
+  font-weight: 500 !important;
+}
+
+:is(html[data-ag-theme-mode="dark"], html.dark, body.dark) #agy-usage-tooltip#agy-usage-tooltip .agy-utt-val strong {
+  color: #EFEFED !important;
+}
+
+#agy-usage-tooltip#agy-usage-tooltip .agy-utt-grid {
+  display: grid !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  gap: 3px 10px !important;
+  padding-top: 6px !important;
+  border-top: 1px solid rgba(28, 28, 26, 0.10) !important;
+  font-size: 10.5px !important;
+}
+
+:is(html[data-ag-theme-mode="dark"], html.dark, body.dark) #agy-usage-tooltip#agy-usage-tooltip .agy-utt-grid {
+  border-top-color: rgba(255, 255, 255, 0.10) !important;
+}
+
+#agy-usage-tooltip#agy-usage-tooltip .agy-utt-kv {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 4px !important;
+}
+
+#agy-usage-tooltip#agy-usage-tooltip .agy-utt-k {
+  color: #6E6D68 !important;
+}
+
+:is(html[data-ag-theme-mode="dark"], html.dark, body.dark) #agy-usage-tooltip#agy-usage-tooltip .agy-utt-k {
+  color: #9A9994 !important;
+}
+
+#agy-usage-tooltip#agy-usage-tooltip .agy-utt-v {
+  font-weight: 500 !important;
+  color: inherit !important;
+}
+
+#agy-usage-tooltip#agy-usage-tooltip .agy-utt-empty {
+  color: #6E6D68 !important;
+  font-size: 11px !important;
+}
+
+:is(html[data-ag-theme-mode="dark"], html.dark, body.dark) #agy-usage-tooltip#agy-usage-tooltip .agy-utt-empty {
+  color: #9A9994 !important;
 }

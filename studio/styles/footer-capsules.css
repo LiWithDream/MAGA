@@ -1,5 +1,9 @@
 /* ==========================================================================
- * Unified 3-Pill Footer Capsule System (Light + Dark, Wide + Narrow 2-Row)
+ * Unified 2-Row 4-Capsule Footer System + 4-Tier Progressive Compression
+ * Layout (Main & Side-Panel Subagent Composers):
+ *   Row 1: [ + ]                                  [ Turbo ] [ Mic ] [ Send ]
+ *   ────────────────────────── 1px hairline divider ──────────────────────────
+ *   Row 2: [ Model ] [ Context ] [ Token Speed ] [ Subagent ]   (left-aligned)
  * Shared tokens inherit cleanly into Shadow DOM ([data-agy-picker-host="1"]).
  * ========================================================================== */
 
@@ -12,6 +16,8 @@
   --agy-speed-mid: #B45309;
   --agy-speed-slow: #DC2626;
   --agy-speed-active: #4F46E5;
+  --agy-sub-run: #2563EB;
+  --agy-sub-done: #059669;
 }
 
 :is(html[data-ag-theme-mode="dark"], html.dark, body.dark) {
@@ -23,6 +29,22 @@
   --agy-speed-mid: #FBBF24;
   --agy-speed-slow: #F87171;
   --agy-speed-active: #818CF8;
+  --agy-sub-run: #60A5FA;
+  --agy-sub-done: #34D399;
+}
+
+/* ==========================================================================
+ * Chat Pane Minimum Width Floor (420px) + Aux Side Panel Max-Width Guard
+ * Prevents crushing the main composer below a comfortable headroom floor.
+ * ========================================================================== */
+
+[data-testid="aux-pane-split"] > div:first-child {
+  min-width: min(420px, 100%) !important;
+}
+
+[data-testid="aux-pane-split"] > div:last-child:not([style*="width: 0px"]),
+[data-testid="aux-pane-split"] > div:last-child:not([style*="width: 0px"]) > div:first-child {
+  max-width: max(308px, calc(var(--split-root-size, 100%) - 420px - 1px)) !important;
 }
 
 /* Scope composer proportions to primary/subagent composers (never compact voice-dock or side-question) */
@@ -35,58 +57,117 @@
   min-height: 44px !important;
 }
 
+/* ==========================================================================
+ * Permanent Unified 2-Row Composer Footer
+ * Row 1: order 1 ('+'), order 2 (right actions, margin-left: auto)
+ * Line : ::after order 3 (flex: 0 0 100%, 1px hairline)
+ * Row 2: order 4 (Model), order 5 (Context), order 6 (Speed), order 7 (Subagent)
+ * ========================================================================== */
+
 .agy-composer-footer {
-  --agy-model-order: 2;
+  --agy-model-order: 4;
   padding: 2px 0 0 !important;
   gap: 8px !important;
   min-height: 30px !important;
 }
 
-.agy-composer-footer > div:first-child {
-  position: relative !important;
-  flex: 1 1 0% !important;
-  min-width: 0 !important;
+.agy-composer-footer[data-agy-has-row2="true"] {
+  --agy-model-order: 4;
+  display: flex !important;
+  flex-wrap: wrap !important;
+  justify-content: flex-start !important;
+  align-items: center !important;
+  column-gap: 5px !important;
+  row-gap: 6px !important;
+}
+
+.agy-composer-footer[data-agy-has-row2="true"] > div:first-child {
+  display: contents !important;
+}
+
+/* Row 1: Left '+' button */
+.agy-composer-footer > div:first-child > button:first-of-type,
+#antigravity\.agentSidePanelInputBox .agy-composer-footer > div:first-child > button:first-of-type {
+  order: 1 !important;
+  width: 28px !important;
+  height: 28px !important;
+  border-radius: 8px !important;
+  flex-shrink: 0 !important;
+}
+
+/* Row 1: Right actions (Turbo, Mic, Send/Stop) */
+.agy-composer-footer > div:last-child {
+  flex-shrink: 0 !important;
   gap: 5px !important;
   align-items: center !important;
 }
 
-/* Explicit wide-mode flex ordering:
- * 1: '+' attach | 2: Model+Effort | 3: Context | 4: Speed | 5: Subagent / extra native chips
- */
-.agy-composer-footer > div:first-child > button:first-of-type {
-  order: 1 !important;
-}
-.agy-composer-footer > div:first-child > [data-agy-sub-pill="model"] {
+.agy-composer-footer[data-agy-has-row2="true"] > div:last-child {
   order: 2 !important;
+  margin-left: auto !important;
+  gap: 5px !important;
 }
-.agy-composer-footer > div:first-child > #ag-claude-ctx-ring,
-.agy-composer-footer > div:first-child > [data-agy-sub-pill="ctx"] {
+
+/* Hairline divider between Row 1 (input controls) and Row 2 (4-capsule status dock) */
+.agy-composer-footer[data-agy-has-row2="true"]::after {
+  content: "" !important;
   order: 3 !important;
+  flex: 0 0 100% !important;
+  height: 1px !important;
+  margin: 0 !important;
+  background-color: color-mix(in srgb, var(--foreground, #8E8D88) 9%, transparent) !important;
 }
-.agy-composer-footer > div:first-child > #ag-live-metrics-pill,
-.agy-composer-footer > div:first-child > [data-agy-sub-pill="speed"] {
+
+/* Row 2 Ordering: 4 Model | 5 Context | 6 Speed | 7 Subagent (all left-aligned, 26px uniform height) */
+.agy-composer-footer[data-agy-has-row2="true"] > div:first-child > [data-agy-sub-pill="model"] {
   order: 4 !important;
 }
-.agy-composer-footer > div:first-child > *:not(button:first-of-type):not(input):not([data-agy-picker-host]):not([data-agy-sub-pill]):not(#ag-claude-ctx-ring):not(#ag-live-metrics-pill):not(:has(button[data-deck-model-bubble="hidden"])) {
+
+#antigravity\.agentSidePanelInputBox .agy-composer-footer[data-agy-has-row2="true"] #ag-claude-ctx-ring#ag-claude-ctx-ring,
+.agy-composer-footer[data-agy-has-row2="true"] #ag-claude-ctx-ring#ag-claude-ctx-ring,
+.agy-composer-footer[data-agy-has-row2="true"] > div:first-child > [data-agy-sub-pill="ctx"] {
   order: 5 !important;
+  height: 26px !important;
+  min-height: 26px !important;
+  max-height: 26px !important;
+  border-radius: 7px !important;
+}
+
+#antigravity\.agentSidePanelInputBox .agy-composer-footer[data-agy-has-row2="true"] #ag-live-metrics-pill#ag-live-metrics-pill,
+.agy-composer-footer[data-agy-has-row2="true"] #ag-live-metrics-pill#ag-live-metrics-pill,
+.agy-composer-footer[data-agy-has-row2="true"] > div:first-child > [data-agy-sub-pill="speed"] {
+  order: 6 !important;
+  margin-left: 0 !important;
+  height: 26px !important;
+  min-height: 26px !important;
+  max-height: 26px !important;
+  border-radius: 7px !important;
+  padding: 0 8px 0 7px !important;
+  font-size: 11.5px !important;
+}
+
+/* Order 7: Any unknown extra native chip (excludes our styled subagent capsules) */
+.agy-composer-footer > div:first-child > *:not(button:first-of-type):not(input):not([data-agy-picker-host]):not([data-agy-sub-pill]):not(#ag-claude-ctx-ring):not(#ag-live-metrics-pill):not(#agy-main-subagent-pill):not([data-agy-native-sub-chip="1"]):not(:has(button[data-deck-model-bubble="hidden"])) {
+  order: 7 !important;
   display: inline-flex !important;
   align-items: center !important;
   gap: 5px !important;
-  height: 28px !important;
+  height: 26px !important;
   min-width: 0 !important;
   max-width: 14em !important;
   flex: 0 1 auto !important;
-  border-radius: 8px !important;
-  padding: 0 8px !important;
-  font-size: 12px !important;
+  border-radius: 7px !important;
+  padding: 0 7.5px !important;
+  font-size: 11.5px !important;
+  line-height: 16px !important;
   background-color: var(--agy-pill-bg) !important;
   box-shadow: inset 0 0 0 1px var(--agy-pill-border) !important;
   overflow: hidden !important;
   text-overflow: ellipsis !important;
   white-space: nowrap !important;
-  transition: background-color 140ms ease, box-shadow 140ms ease !important;
+  transition: background-color 140ms ease, box-shadow 140ms ease, color 140ms ease !important;
 }
-.agy-composer-footer > div:first-child > *:not(button:first-of-type):not(input):not([data-agy-picker-host]):not([data-agy-sub-pill]):not(#ag-claude-ctx-ring):not(#ag-live-metrics-pill):not(:has(button[data-deck-model-bubble="hidden"])):hover {
+.agy-composer-footer > div:first-child > *:not(button:first-of-type):not(input):not([data-agy-picker-host]):not([data-agy-sub-pill]):not(#ag-claude-ctx-ring):not(#ag-live-metrics-pill):not(#agy-main-subagent-pill):not([data-agy-native-sub-chip="1"]):not(:has(button[data-deck-model-bubble="hidden"])):hover {
   background-color: var(--agy-pill-bg-hover) !important;
   box-shadow: inset 0 0 0 1px var(--agy-pill-border-hover) !important;
 }
@@ -109,105 +190,6 @@
   pointer-events: none !important;
 }
 
-.agy-composer-footer > div:last-child {
-  flex-shrink: 0 !important;
-  gap: 5px !important;
-  align-items: center !important;
-}
-
-/* ==========================================================================
- * Symmetrical 2-Row Narrow Footer (when side panel / browser pane is open)
- * Row 1: Controls  [ + ] [ Model + Effort ]        [ Turbo ] [ Mic ] [ Send ]
- * ────────────────────────── 1px hairline divider ──────────────────────────
- * Row 2: Telemetry [ ○ 242.7k / 512k ] [ 🤖 sub ] [ ● 162 tok/s · TTFT 6.8s ]
- * Zero DOM reparenting: uses display:contents + explicit CSS flex order.
- * ========================================================================== */
-
-.agy-composer-footer[data-agy-has-row2="true"] {
-  --agy-model-order: 2;
-  display: flex !important;
-  flex-wrap: wrap !important;
-  justify-content: flex-start !important;
-  align-items: center !important;
-  column-gap: 5px !important;
-  row-gap: 6px !important;
-}
-
-.agy-composer-footer[data-agy-has-row2="true"] > div:first-child {
-  display: contents !important;
-}
-
-.agy-composer-footer[data-agy-has-row2="true"] > div:first-child > button:first-of-type {
-  order: 1 !important;
-}
-
-.agy-composer-footer[data-agy-has-row2="true"] > div:last-child {
-  order: 3 !important;
-  margin-left: auto !important;
-  gap: 4px !important;
-}
-
-.agy-composer-footer[data-agy-has-row2="true"]::after {
-  content: "" !important;
-  order: 4 !important;
-  flex: 0 0 100% !important;
-  height: 1px !important;
-  margin: 0 !important;
-  background-color: color-mix(in srgb, var(--foreground, #8E8D88) 8%, transparent) !important;
-}
-
-#antigravity\.agentSidePanelInputBox .agy-composer-footer[data-agy-has-row2="true"] #ag-claude-ctx-ring#ag-claude-ctx-ring,
-.agy-composer-footer[data-agy-has-row2="true"] #ag-claude-ctx-ring#ag-claude-ctx-ring,
-.agy-composer-footer[data-agy-has-row2="true"] > div:first-child > [data-agy-sub-pill="ctx"] {
-  order: 5 !important;
-  height: 26px !important;
-  border-radius: 7px !important;
-}
-
-#antigravity\.agentSidePanelInputBox .agy-composer-footer[data-agy-has-row2="true"] #ag-claude-ctx-ring#ag-claude-ctx-ring .agy-ctx-ratio,
-.agy-composer-footer[data-agy-has-row2="true"] #ag-claude-ctx-ring#ag-claude-ctx-ring .agy-ctx-ratio,
-.agy-composer-footer[data-agy-has-row2="true"] > div:first-child > [data-agy-sub-pill="ctx"] .agy-sub-ctx-txt {
-  font-size: 11.5px !important;
-}
-
-/* Any extra chip (e.g. subagent chip / main subagent entry) lands cleanly in Row 2 beside Context */
-.agy-composer-footer[data-agy-has-row2="true"] > div:first-child > *:not(button:first-of-type):not(input):not([data-agy-picker-host]):not([data-agy-sub-pill]):not(#ag-claude-ctx-ring):not(#ag-live-metrics-pill):not(:has(button[data-deck-model-bubble="hidden"])) {
-  order: 6 !important;
-  height: 26px !important;
-  border-radius: 7px !important;
-  padding: 0 7px !important;
-  font-size: 11.5px !important;
-  flex: 0 1 auto !important;
-  max-width: 9.5em !important;
-}
-
-#antigravity\.agentSidePanelInputBox .agy-composer-footer[data-agy-has-row2="true"] #ag-live-metrics-pill#ag-live-metrics-pill,
-.agy-composer-footer[data-agy-has-row2="true"] #ag-live-metrics-pill#ag-live-metrics-pill,
-.agy-composer-footer[data-agy-has-row2="true"] > div:first-child > [data-agy-sub-pill="speed"] {
-  order: 7 !important;
-  margin-left: auto !important;
-  height: 26px !important;
-  min-height: 26px !important;
-  max-height: 26px !important;
-  border-radius: 7px !important;
-  padding: 0 8px 0 7px !important;
-  font-size: 11.5px !important;
-}
-
-#antigravity\.agentSidePanelInputBox .agy-composer-footer[data-agy-has-row2="true"] #ag-live-metrics-pill#ag-live-metrics-pill #ag-live-metrics-text,
-.agy-composer-footer[data-agy-has-row2="true"] #ag-live-metrics-pill#ag-live-metrics-pill #ag-live-metrics-text {
-  font-size: 11.5px !important;
-}
-
-/* Left '+' button */
-.agy-composer-footer > div:first-child > button:first-of-type,
-#antigravity\.agentSidePanelInputBox .agy-composer-footer > div:first-child > button:first-of-type {
-  width: 28px !important;
-  height: 28px !important;
-  border-radius: 8px !important;
-  flex-shrink: 0 !important;
-}
-
 /* ==========================================================================
  * Pill 2: Context Ratio Capsule (#ag-claude-ctx-ring)
  * Unified 3-tier thresholds (<60% cool, 60-74% warn amber, >=75% crit red)
@@ -216,10 +198,12 @@
 
 #antigravity\.agentSidePanelInputBox #ag-claude-ctx-ring#ag-claude-ctx-ring,
 .agy-composer-footer #ag-claude-ctx-ring#ag-claude-ctx-ring {
-  width: 28px !important;
-  height: 28px !important;
-  border-radius: 8px !important;
+  width: 26px !important;
+  height: 26px !important;
+  border-radius: 7px !important;
   margin-left: 0 !important;
+  padding: 0 !important;
+  justify-content: center !important;
   background-color: var(--agy-pill-bg) !important;
   box-shadow: inset 0 0 0 1px var(--agy-pill-border) !important;
   transition: background-color 140ms ease, box-shadow 140ms ease, color 140ms ease !important;
@@ -234,14 +218,14 @@
 #antigravity\.agentSidePanelInputBox #ag-claude-ctx-ring#ag-claude-ctx-ring[data-agy-has-ratio="true"],
 .agy-composer-footer #ag-claude-ctx-ring#ag-claude-ctx-ring[data-agy-has-ratio="true"] {
   width: auto !important;
-  padding: 0 9px 0 7px !important;
-  gap: 6px !important;
+  padding: 0 8.5px 0 6.5px !important;
+  gap: 5.5px !important;
 }
 
 #antigravity\.agentSidePanelInputBox #ag-claude-ctx-ring#ag-claude-ctx-ring .agy-ctx-ratio,
 .agy-composer-footer #ag-claude-ctx-ring#ag-claude-ctx-ring .agy-ctx-ratio {
   font-family: var(--font-sans) !important;
-  font-size: 12px !important;
+  font-size: 11.5px !important;
   font-weight: 450 !important;
   line-height: 16px !important;
   font-variant-numeric: tabular-nums !important;
@@ -349,7 +333,7 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) :is(#ag-claude-quota-popov
 
 /* ==========================================================================
  * Pill 3: Live Speed + Working Activity Capsule (#ag-live-metrics-pill)
- * Harmonized with Model & Context capsules + live dot & speed tiers
+ * Harmonized with Model & Context capsules + live dot & 4-tier compression
  * ========================================================================== */
 
 @keyframes agySpeedBreathe {
@@ -375,15 +359,15 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) :is(#ag-claude-quota-popov
   max-width: max-content !important;
   margin-left: 0 !important;
   margin-right: 0 !important;
-  padding: 0 8.5px 0 7.5px !important;
-  height: 28px !important;
-  min-height: 28px !important;
-  max-height: 28px !important;
+  padding: 0 8px 0 7px !important;
+  height: 26px !important;
+  min-height: 26px !important;
+  max-height: 26px !important;
   line-height: 16px !important;
-  gap: 5.5px !important;
+  gap: 5px !important;
   border-left: none !important;
-  border-radius: 8px !important;
-  font-size: 12px !important;
+  border-radius: 7px !important;
+  font-size: 11.5px !important;
   opacity: 1 !important;
   align-items: center !important;
   cursor: pointer !important;
@@ -468,19 +452,21 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) :is(#ag-claude-quota-popov
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--agy-spd-color) 18%, transparent) !important;
 }
 
-/* Color the tok/s span with speed tier while keeping TTFT calm secondary (4-ID specificity outranks base theme) */
+/* Color tok/s + number spans with speed tier (4-ID specificity outranks base theme) */
 #antigravity\.agentSidePanelInputBox #ag-live-metrics-pill#ag-live-metrics-pill #ag-live-metrics-text,
 .agy-composer-footer #ag-live-metrics-pill#ag-live-metrics-pill #ag-live-metrics-text {
   display: inline-flex !important;
   align-items: center !important;
-  font-size: 12px !important;
+  font-size: 11.5px !important;
   line-height: 16px !important;
   overflow: hidden !important;
   text-overflow: ellipsis !important;
 }
 
 #antigravity\.agentSidePanelInputBox #ag-live-metrics-pill#ag-live-metrics-pill #ag-live-metrics-text span[data-agy-speed-num="1"],
-.agy-composer-footer #ag-live-metrics-pill#ag-live-metrics-pill #ag-live-metrics-text span[data-agy-speed-num="1"] {
+#antigravity\.agentSidePanelInputBox #ag-live-metrics-pill#ag-live-metrics-pill #ag-live-metrics-text span[data-agy-speed-short="1"],
+.agy-composer-footer #ag-live-metrics-pill#ag-live-metrics-pill #ag-live-metrics-text span[data-agy-speed-num="1"],
+.agy-composer-footer #ag-live-metrics-pill#ag-live-metrics-pill #ag-live-metrics-text span[data-agy-speed-short="1"] {
   color: var(--agy-spd-color) !important;
   font-weight: 500 !important;
   transition: color 220ms ease !important;
@@ -492,7 +478,50 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) :is(#ag-claude-quota-popov
   font-weight: 500 !important;
 }
 
-/* Right side permissions ('Turbo') capsule & action buttons */
+/* 4-Tier Progressive Compression for Speed Capsule (#ag-live-metrics-pill) */
+.agy-composer-footer #ag-live-metrics-pill #ag-live-metrics-text span[data-agy-speed-short="1"] {
+  display: none !important;
+}
+
+/* Compact: drop " · TTFT 9.4s", keep "108 tok/s" */
+#antigravity\.agentSidePanelInputBox .agy-composer-footer[data-agy-dock-tier="compact"] #ag-live-metrics-pill#ag-live-metrics-pill #ag-live-metrics-text span[data-agy-speed-extra="1"],
+.agy-composer-footer[data-agy-dock-tier="compact"] #ag-live-metrics-pill#ag-live-metrics-pill #ag-live-metrics-text span[data-agy-speed-extra="1"] {
+  display: none !important;
+}
+
+/* Tight: show number only ("108"), hide "108 tok/s" & "· TTFT" */
+#antigravity\.agentSidePanelInputBox .agy-composer-footer[data-agy-dock-tier="tight"] #ag-live-metrics-pill#ag-live-metrics-pill #ag-live-metrics-text span[data-agy-speed-num="1"],
+#antigravity\.agentSidePanelInputBox .agy-composer-footer[data-agy-dock-tier="tight"] #ag-live-metrics-pill#ag-live-metrics-pill #ag-live-metrics-text span[data-agy-speed-extra="1"],
+.agy-composer-footer[data-agy-dock-tier="tight"] #ag-live-metrics-pill#ag-live-metrics-pill #ag-live-metrics-text span[data-agy-speed-num="1"],
+.agy-composer-footer[data-agy-dock-tier="tight"] #ag-live-metrics-pill#ag-live-metrics-pill #ag-live-metrics-text span[data-agy-speed-extra="1"] {
+  display: none !important;
+}
+#antigravity\.agentSidePanelInputBox .agy-composer-footer[data-agy-dock-tier="tight"] #ag-live-metrics-pill#ag-live-metrics-pill #ag-live-metrics-text span[data-agy-speed-short="1"],
+.agy-composer-footer[data-agy-dock-tier="tight"] #ag-live-metrics-pill#ag-live-metrics-pill #ag-live-metrics-text span[data-agy-speed-short="1"] {
+  display: inline !important;
+}
+#antigravity\.agentSidePanelInputBox .agy-composer-footer[data-agy-dock-tier="tight"] #ag-live-metrics-pill#ag-live-metrics-pill,
+.agy-composer-footer[data-agy-dock-tier="tight"] #ag-live-metrics-pill#ag-live-metrics-pill {
+  padding: 0 7px 0 6.5px !important;
+  gap: 4.5px !important;
+}
+
+/* Icon: pure status/speed color dot (26x26 square) */
+#antigravity\.agentSidePanelInputBox .agy-composer-footer[data-agy-dock-tier="icon"] #ag-live-metrics-pill#ag-live-metrics-pill,
+.agy-composer-footer[data-agy-dock-tier="icon"] #ag-live-metrics-pill#ag-live-metrics-pill {
+  width: 26px !important;
+  min-width: 26px !important;
+  max-width: 26px !important;
+  padding: 0 !important;
+  justify-content: center !important;
+  gap: 0 !important;
+}
+#antigravity\.agentSidePanelInputBox .agy-composer-footer[data-agy-dock-tier="icon"] #ag-live-metrics-pill#ag-live-metrics-pill #ag-live-metrics-text,
+.agy-composer-footer[data-agy-dock-tier="icon"] #ag-live-metrics-pill#ag-live-metrics-pill #ag-live-metrics-text {
+  display: none !important;
+}
+
+/* Right side permissions ('Turbo') capsule & action buttons (Row 1) */
 .agy-composer-footer button[data-testid="permissions-selector-trigger"],
 #antigravity\.agentSidePanelInputBox button[data-testid="permissions-selector-trigger"] {
   height: 28px !important;
@@ -523,24 +552,25 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) :is(#ag-claude-quota-popov
 @media (prefers-reduced-motion: reduce) {
   #ag-live-metrics-pill#ag-live-metrics-pill[data-agy-motion="active"] .agy-speed-dot,
   [data-agy-sub-pill="speed"][data-agy-motion="active"] .agy-sub-sdot,
+  #agy-main-subagent-pill .agy-sub-live-dot,
   #antigravity\.agentSidePanelInputBox #ag-claude-ctx-ring#ag-claude-ctx-ring[data-agy-ctx-tier="crit"] {
     animation: none !important;
   }
 }
 
 /* ==========================================================================
- * Side-Panel Subagent 3 Capsules + Main Composer Subagent Entry Pill & Menu
+ * Side-Panel Subagent 3 Capsules + Pill 4 Main Subagent Entry & Semantic Colors
  * ========================================================================== */
 
 .agy-sub-pill {
   display: inline-flex !important;
   align-items: center !important;
-  gap: 5.5px !important;
-  height: 28px !important;
-  padding: 0 8px !important;
-  border-radius: 8px !important;
+  gap: 5px !important;
+  height: 26px !important;
+  padding: 0 7.5px !important;
+  border-radius: 7px !important;
   font-family: var(--font-sans) !important;
-  font-size: 12px !important;
+  font-size: 11.5px !important;
   line-height: 16px !important;
   font-variant-numeric: tabular-nums !important;
   white-space: nowrap !important;
@@ -549,6 +579,13 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) :is(#ag-claude-quota-popov
   background-color: var(--agy-pill-bg) !important;
   box-shadow: inset 0 0 0 1px var(--agy-pill-border) !important;
   color: var(--foreground, #1C1C1A) !important;
+}
+
+.agy-sub-pill[data-agy-icon-only="true"] {
+  width: 26px !important;
+  padding: 0 !important;
+  justify-content: center !important;
+  gap: 0 !important;
 }
 
 .agy-sub-pill.agy-sub-model {
@@ -578,12 +615,12 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) :is(#ag-claude-quota-popov
 .agy-sub-pill .agy-sub-effort {
   display: inline-flex !important;
   align-items: center !important;
-  height: 17px !important;
+  height: 16px !important;
   padding: 0 5px !important;
-  border-radius: 5px !important;
-  font-size: 11px !important;
+  border-radius: 4.5px !important;
+  font-size: 10.5px !important;
   font-weight: 500 !important;
-  line-height: 17px !important;
+  line-height: 16px !important;
   background: color-mix(in srgb, var(--agy-model-accent) 14%, transparent) !important;
   color: color-mix(in srgb, var(--agy-model-accent) 72%, var(--foreground)) !important;
 }
@@ -659,20 +696,67 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) :is(#ag-claude-quota-popov
   color: var(--muted-foreground) !important;
 }
 
-/* Main Composer Subagent Entry Pill (#agy-main-subagent-pill) */
-#agy-main-subagent-pill {
+/* ==========================================================================
+ * Pill 4: Subagent Entry Capsule (#agy-main-subagent-pill) & Native Side-Panel Chip
+ * Semantic tinting matching the other 3 capsules:
+ *   running -> blue/indigo tint + breathing live dot
+ *   done    -> emerald green tint (completed / ready)
+ * ========================================================================== */
+
+#agy-main-subagent-pill,
+.agy-composer-footer [data-agy-native-sub-chip="1"] {
+  --agy-sub-color: var(--agy-sub-done);
+}
+#agy-main-subagent-pill[data-agy-sub-state="running"],
+.agy-composer-footer [data-agy-native-sub-chip="1"][data-agy-sub-state="running"] {
+  --agy-sub-color: var(--agy-sub-run);
+}
+#agy-main-subagent-pill[data-agy-sub-state="done"],
+.agy-composer-footer [data-agy-native-sub-chip="1"][data-agy-sub-state="done"] {
+  --agy-sub-color: var(--agy-sub-done);
+}
+
+.agy-composer-footer > div:first-child > #agy-main-subagent-pill,
+.agy-composer-footer > div:first-child > [data-agy-native-sub-chip="1"] {
+  order: 7 !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 5px !important;
+  height: 26px !important;
+  min-width: 0 !important;
+  max-width: 14em !important;
+  flex: 0 1 auto !important;
+  border-radius: 7px !important;
+  padding: 0 7.5px !important;
+  font-size: 11.5px !important;
+  line-height: 16px !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
   cursor: pointer !important;
   border: none !important;
-  color: var(--secondary-foreground) !important;
+  color: color-mix(in srgb, var(--agy-sub-color) 76%, var(--foreground)) !important;
+  background-color: color-mix(in srgb, var(--agy-sub-color) 7.5%, var(--agy-pill-bg)) !important;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--agy-sub-color) 22%, var(--agy-pill-border)) !important;
+  transition: background-color 140ms ease, box-shadow 140ms ease, color 140ms ease !important;
 }
-#agy-main-subagent-pill[data-active="true"] {
-  color: var(--foreground) !important;
-  background-color: var(--agy-pill-bg-hover) !important;
-  box-shadow: inset 0 0 0 1px var(--agy-pill-border-hover) !important;
+.agy-composer-footer > div:first-child > [data-agy-native-sub-chip="1"] svg {
+  color: var(--agy-sub-color) !important;
+  flex-shrink: 0 !important;
 }
+.agy-composer-footer > div:first-child > #agy-main-subagent-pill:hover,
+.agy-composer-footer > div:first-child > [data-agy-native-sub-chip="1"]:hover {
+  background-color: color-mix(in srgb, var(--agy-sub-color) 14%, var(--agy-pill-bg-hover)) !important;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--agy-sub-color) 38%, var(--agy-pill-border-hover)) !important;
+}
+.agy-composer-footer > div:first-child > #agy-main-subagent-pill[data-active="true"] {
+  background-color: color-mix(in srgb, var(--agy-sub-color) 15%, var(--agy-pill-bg-hover)) !important;
+  box-shadow: inset 0 0 0 1.25px color-mix(in srgb, var(--agy-sub-color) 52%, var(--agy-pill-border-hover)) !important;
+}
+
 #agy-main-subagent-pill .agy-sub-ico {
   flex-shrink: 0 !important;
-  opacity: 0.85 !important;
+  color: var(--agy-sub-color) !important;
 }
 #agy-main-subagent-pill .agy-sub-name {
   overflow: hidden !important;
@@ -690,17 +774,56 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) :is(#ag-claude-quota-popov
   border-radius: 999px !important;
   font-size: 10.5px !important;
   font-weight: 500 !important;
-  background-color: color-mix(in srgb, var(--foreground) 10%, transparent) !important;
-  color: var(--secondary-foreground) !important;
+  background-color: color-mix(in srgb, var(--agy-sub-color) 16%, transparent) !important;
+  color: var(--agy-sub-color) !important;
 }
 #agy-main-subagent-pill .agy-sub-live-dot {
   width: 6px !important;
   height: 6px !important;
   border-radius: 50% !important;
   flex-shrink: 0 !important;
-  background-color: #3B82F6 !important;
-  color: #3B82F6 !important;
+  background-color: var(--agy-sub-run) !important;
+  color: var(--agy-sub-run) !important;
   animation: agySpeedBreathe 1.2s ease-in-out infinite !important;
+}
+
+/* 4-Tier Progressive Compression for Subagent Capsule */
+.agy-composer-footer[data-agy-dock-tier="compact"] > div:first-child > #agy-main-subagent-pill .agy-sub-name,
+.agy-composer-footer[data-agy-dock-tier="compact"] > div:first-child > [data-agy-native-sub-chip="1"] {
+  max-width: 7.5em !important;
+}
+
+.agy-composer-footer[data-agy-dock-tier="tight"] > div:first-child > #agy-main-subagent-pill {
+  padding: 0 6.5px !important;
+  gap: 4px !important;
+}
+.agy-composer-footer[data-agy-dock-tier="tight"] > div:first-child > #agy-main-subagent-pill .agy-sub-name {
+  display: none !important;
+}
+
+.agy-composer-footer[data-agy-dock-tier="icon"] > div:first-child > #agy-main-subagent-pill {
+  width: 26px !important;
+  padding: 0 !important;
+  justify-content: center !important;
+  gap: 0 !important;
+}
+.agy-composer-footer[data-agy-dock-tier="icon"] > div:first-child > #agy-main-subagent-pill .agy-sub-name,
+.agy-composer-footer[data-agy-dock-tier="icon"] > div:first-child > #agy-main-subagent-pill .agy-sub-count,
+.agy-composer-footer[data-agy-dock-tier="icon"] > div:first-child > #agy-main-subagent-pill .agy-sub-live-dot {
+  display: none !important;
+}
+
+/* Native subagent chip inside side-panel subagent composer: condense to robot icon in tight/icon tiers */
+.agy-composer-footer[data-agy-dock-tier="tight"] > div:first-child > [data-agy-native-sub-chip="1"],
+.agy-composer-footer[data-agy-dock-tier="icon"] > div:first-child > [data-agy-native-sub-chip="1"] {
+  width: 26px !important;
+  padding: 0 !important;
+  justify-content: center !important;
+  gap: 0 !important;
+}
+.agy-composer-footer[data-agy-dock-tier="tight"] > div:first-child > [data-agy-native-sub-chip="1"] span,
+.agy-composer-footer[data-agy-dock-tier="icon"] > div:first-child > [data-agy-native-sub-chip="1"] span {
+  display: none !important;
 }
 
 /* Compact Floating Subagent Selector Menu (#agy-subagent-menu) */

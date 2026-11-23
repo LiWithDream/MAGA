@@ -52,20 +52,21 @@ export function buildPickerShadowCss({ effortBarCss, agentEntryCss }) {
   -webkit-font-smoothing: antialiased;
 }
 
-/* Pill 1: Unified Model + Effort Capsule (harmonized with Context & Speed pills) */
+/* Pill 1: Unified Model + Effort Capsule (harmonized with Context, Speed & Subagent pills) */
 #deck-metrics-strip button.dk-pill[data-el="modelPicker"] {
   --agy-model-accent: #7c5ce6;
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  height: 28px;
+  height: 26px;
   min-width: 0;
   max-width: min(22em, 100%);
   padding: 0 6.5px 0 7.5px;
   margin-right: 0;
-  border-radius: 8px;
+  border-radius: 7px;
   cursor: pointer;
   white-space: nowrap;
+  font-size: 12px;
   color: var(--foreground, #1C1C1A);
   background: color-mix(in srgb, var(--agy-model-accent) 7%, var(--agy-pill-bg, rgba(128, 128, 128, 0.06)));
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--agy-model-accent) 20%, var(--agy-pill-border, rgba(128, 128, 128, 0.12)));
@@ -97,12 +98,16 @@ export function buildPickerShadowCss({ effortBarCss, agentEntryCss }) {
   overflow: hidden;
   white-space: nowrap;
 }
-#deck-metrics-strip button.dk-pill[data-el="modelPicker"] .dk-mp-name {
+#deck-metrics-strip button.dk-pill[data-el="modelPicker"] .dk-mp-name,
+#deck-metrics-strip button.dk-pill[data-el="modelPicker"] .agy-mp-short {
   color: inherit;
   font-weight: 450;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+#deck-metrics-strip button.dk-pill[data-el="modelPicker"] .agy-mp-short {
+  display: none;
 }
 #deck-metrics-strip button.dk-pill[data-el="modelPicker"] .dk-mp-effort {
   display: inline-flex;
@@ -131,6 +136,41 @@ export function buildPickerShadowCss({ effortBarCss, agentEntryCss }) {
   color: var(--muted-foreground, #787774);
   opacity: 0.85;
   margin-left: -1px;
+}
+
+/* 4-Tier Progressive Compression for Model Capsule */
+#deck-metrics-strip[data-dock-tier="compact"] button.dk-pill[data-el="modelPicker"] .dk-mp-name {
+  display: none;
+}
+#deck-metrics-strip[data-dock-tier="compact"] button.dk-pill[data-el="modelPicker"] .agy-mp-short {
+  display: inline;
+}
+
+#deck-metrics-strip[data-dock-tier="tight"] button.dk-pill[data-el="modelPicker"],
+#deck-metrics-strip[data-dock-tier="icon"] button.dk-pill[data-el="modelPicker"] {
+  padding: 0 5.5px 0 6.5px;
+  gap: 4.5px;
+}
+#deck-metrics-strip[data-dock-tier="tight"] button.dk-pill[data-el="modelPicker"] .dk-mp-name,
+#deck-metrics-strip[data-dock-tier="icon"] button.dk-pill[data-el="modelPicker"] .dk-mp-name {
+  display: none;
+}
+#deck-metrics-strip[data-dock-tier="tight"] button.dk-pill[data-el="modelPicker"][data-has-effort="1"] .agy-mp-short,
+#deck-metrics-strip[data-dock-tier="icon"] button.dk-pill[data-el="modelPicker"][data-has-effort="1"] .agy-mp-short {
+  display: none;
+}
+#deck-metrics-strip[data-dock-tier="tight"] button.dk-pill[data-el="modelPicker"][data-has-effort="1"] .dk-mp-effort,
+#deck-metrics-strip[data-dock-tier="icon"] button.dk-pill[data-el="modelPicker"][data-has-effort="1"] .dk-mp-effort {
+  margin-left: 0;
+}
+/* Fallback for models without effort tiers: display short model name instead of empty button */
+#deck-metrics-strip[data-dock-tier="tight"] button.dk-pill[data-el="modelPicker"][data-has-effort="0"] .agy-mp-short,
+#deck-metrics-strip[data-dock-tier="icon"] button.dk-pill[data-el="modelPicker"][data-has-effort="0"] .agy-mp-short {
+  display: inline;
+  max-width: 5.5em;
+}
+#deck-metrics-strip[data-dock-tier="icon"] button.dk-pill[data-el="modelPicker"] .dk-mp-down {
+  display: none;
 }
 
 /* Popover cards */
@@ -513,9 +553,27 @@ export function createCapsulePickerRuntime({
     return inst;
   }
 
-  function decorateModelCapsule(root) {
+  function shortenModelName(name) {
+    const raw = String(name || '').trim();
+    if (!raw) return 'Model';
+    const stripped = raw
+      .replace(/^(?:Google\s+)?Gemini\s+\d+(?:\.\d+)?\s+/i, '')
+      .replace(/^Claude\s+(?:\d+(?:\.\d+)?\s+)?/i, '')
+      .replace(/^OpenAI\s+/i, '')
+      .trim();
+    if (stripped && stripped.length >= 2 && stripped.length < raw.length) return stripped;
+    return raw.length > 10 ? raw.slice(0, 10) : raw;
+  }
+
+  function decorateModelCapsule(root, footerLeft) {
     const btn = root?.querySelector('button.dk-pill[data-el="modelPicker"]');
     if (!btn) return;
+
+    const footer = footerLeft?.closest?.('.agy-composer-footer');
+    const dockTier = footer?.getAttribute('data-agy-dock-tier') || 'full';
+    if (root.getAttribute('data-dock-tier') !== dockTier) {
+      root.setAttribute('data-dock-tier', dockTier);
+    }
 
     let dot = btn.querySelector('.agy-mp-dot');
     if (!dot) {
@@ -525,13 +583,36 @@ export function createCapsulePickerRuntime({
       btn.insertBefore(dot, btn.firstChild);
     }
 
+    const textWrap = btn.querySelector('.dk-mp-text');
     const nameEl = btn.querySelector('.dk-mp-name');
     const effortEl = btn.querySelector('.dk-mp-effort');
+    let effortText = '';
     if (effortEl) {
-      const trimmed = (effortEl.textContent || '').trim();
-      if (effortEl.textContent !== trimmed) effortEl.textContent = trimmed;
+      effortText = (effortEl.textContent || '').trim();
+      if (effortEl.textContent !== effortText) effortEl.textContent = effortText;
     }
-    const modelName = (nameEl?.textContent || btn.textContent || '').trim();
+
+    const modelName = (nameEl?.textContent || '').trim();
+    const shortName = shortenModelName(modelName);
+    if (textWrap && nameEl) {
+      let shortEl = textWrap.querySelector('.agy-mp-short');
+      if (!shortEl) {
+        shortEl = document.createElement('span');
+        shortEl.className = 'agy-mp-short';
+        nameEl.insertAdjacentElement('afterend', shortEl);
+      }
+      if (shortEl.textContent !== shortName) shortEl.textContent = shortName;
+    }
+
+    const hasEffort = effortText.length > 0 ? '1' : '0';
+    if (btn.getAttribute('data-has-effort') !== hasEffort) {
+      btn.setAttribute('data-has-effort', hasEffort);
+    }
+    const fullTitle = `${modelName}${effortText ? ` · ${effortText}` : ''}`.trim();
+    if (fullTitle && btn.title !== fullTitle) {
+      btn.title = fullTitle;
+    }
+
     let accent = '#7c5ce6';
     try {
       const c = motionThemes().dotColorFor(modelName);
@@ -589,7 +670,7 @@ export function createCapsulePickerRuntime({
       try {
         syncModelPicker(inst.rootEl, footerLeft, prefs, labels, scopedFind, settingsLabels);
         if (inst.rootEl._modelPicker) inst.rootEl._modelPicker.setBubble(true);
-        decorateModelCapsule(inst.rootEl);
+        decorateModelCapsule(inst.rootEl, footerLeft);
       } catch (err) {
         console.warn('[agy-studio/picker] sync failed:', err);
       }

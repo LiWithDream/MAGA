@@ -201,7 +201,7 @@ ${moduleFns}
     effortEffects,
     motionThemes,
   });
-  const footer = createFooterUnifiedRuntime();
+  const footer = createFooterUnifiedRuntime({ onTierChange: () => scheduleSync() });
   const usage = createOverviewUsageRuntime({ motionThemes });
   const subagentFooter = createSubagentFooterRuntime({ motionThemes });
 

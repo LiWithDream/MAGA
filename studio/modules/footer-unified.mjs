@@ -1,14 +1,17 @@
 /**
  * Unified Footer Runtime Module:
- * 1. Manages responsive wide / narrow 2-row / xs footer sizing cleanly across main & side composers
- *    with zero DOM tug-of-war against core/runtime.js's ensureMetricsPill().
- * 2. Syncs Context Ratio ("used / limit") + unified 0/60/75 3-tier warnings across Footer,
- *    Quota Popover (+ Compact urgency + instant .ag-qp-reset sync), and Overview Context card.
- * 3. Enhances #ag-live-metrics-pill with live working indicator dot (active/recent/idle),
- *    accurate per-conversation Working… placeholder, and color-coded tok/s speed tiers.
+ * 1. Drives the permanent 2-row composer footer architecture across main & side-panel composers:
+ *      Row 1 (above hairline): [ + ] ... [ Turbo ] [ Mic ] [ Send/Stop ]
+ *      Row 2 (below hairline): [ Model ] [ Context ] [ Speed ] [ Subagent ]  (left-aligned)
+ * 2. Computes deterministic 4-tier progressive compression (`full | compact | tight | icon`)
+ *    via ResizeObserver (`data-agy-dock-tier`) with zero wrapping or clipping.
+ * 3. Syncs Context Ratio + unified 0/60/75 3-tier warnings across Footer, Quota Popover,
+ *    and Overview Context card.
+ * 4. Enhances #ag-live-metrics-pill with live working indicator dot, color-coded tok/s
+ *    tiers, and progressive compression spans (full -> no TTFT -> number only -> dot only).
  */
 
-export function createFooterUnifiedRuntime() {
+export function createFooterUnifiedRuntime({ onTierChange } = {}) {
   let disposed = false;
   let footerResizeObs = null;
   const observedFooters = new Set();
@@ -142,6 +145,19 @@ export function createFooterUnifiedRuntime() {
     return false;
   }
 
+  function computeDockTier(footerW, hasSubChip) {
+    if (hasSubChip) {
+      if (footerW >= 575) return 'full';
+      if (footerW >= 445) return 'compact';
+      if (footerW >= 305) return 'tight';
+      return 'icon';
+    }
+    if (footerW >= 465) return 'full';
+    if (footerW >= 355) return 'compact';
+    if (footerW >= 255) return 'tight';
+    return 'icon';
+  }
+
   function syncFooterResponsiveLayout() {
     const excluded = '[data-testid="side-question-tab-content"], [data-testid="voice-dock-composer"]';
     const footers = Array.from(document.querySelectorAll('.agy-composer-footer')).filter(
@@ -154,7 +170,6 @@ export function createFooterUnifiedRuntime() {
       if (footerW <= 0) continue;
 
       const leftGroup = footer.children[0];
-      const ring = footer.querySelector('#ag-claude-ctx-ring');
       const speedPill = footer.querySelector('#ag-live-metrics-pill')
         || (footer.nextElementSibling?.id === 'ag-live-metrics-pill' ? footer.nextElementSibling : null);
 
@@ -164,34 +179,29 @@ export function createFooterUnifiedRuntime() {
         footer.setAttribute('data-ag-row-mode', 'middle');
       }
 
-      const speedVisible = Boolean(
-        speedPill &&
-        (speedPill.getAttribute('data-agy-working-placeholder') === 'true' ||
-          (speedPill.style.display !== 'none' && getComputedStyle(speedPill).display !== 'none'))
-      );
-      const ringHasRatio = Boolean(ring && ring.getAttribute('data-agy-has-ratio') === 'true');
-      const hasSubPills = Boolean(leftGroup?.querySelector('[data-agy-sub-pill="ctx"], [data-agy-sub-pill="speed"]:not([hidden])'));
-      const hasExtraChip = hasExtraVisibleChip(leftGroup);
+      const hasSubChip = hasExtraVisibleChip(leftGroup);
+      const dockTier = computeDockTier(footerW, hasSubChip);
 
-      // Only enter 2-row layout when telemetry pills (Context / Speed / Subagent metrics) actually exist
-      const hasRow2Content = ringHasRatio || speedVisible || hasSubPills;
-      const narrowThreshold = hasExtraChip ? 760 : 600;
-      const compactCtxThreshold = hasExtraChip ? 440 : 315;
-
-      const footerSize = !hasRow2Content
-        ? 'wide'
-        : footerW < compactCtxThreshold
-          ? 'xs'
-          : footerW < narrowThreshold
-            ? 'narrow'
-            : 'wide';
-
-      if (footer.getAttribute('data-agy-footer-size') !== footerSize) {
-        footer.setAttribute('data-agy-footer-size', footerSize);
+      // Unified 2-row layout is ALWAYS active on main & subagent composers so the 4-capsule dock
+      // stays rock-solid in the same position at every width.
+      if (footer.getAttribute('data-agy-has-row2') !== 'true') {
+        footer.setAttribute('data-agy-has-row2', 'true');
       }
-      const row2Attr = hasRow2Content && (footerSize === 'narrow' || footerSize === 'xs') ? 'true' : 'false';
-      if (footer.getAttribute('data-agy-has-row2') !== row2Attr) {
-        footer.setAttribute('data-agy-has-row2', row2Attr);
+      if (footer.getAttribute('data-agy-dock-tier') !== dockTier) {
+        footer.setAttribute('data-agy-dock-tier', dockTier);
+        if (typeof onTierChange === 'function') onTierChange();
+      }
+
+      // Mirror dock tier onto Shadow DOM picker host + its root so Model capsule compresses synchronously
+      const pickerHost = leftGroup?.querySelector(':scope > [data-agy-picker-host="1"]');
+      if (pickerHost) {
+        if (pickerHost.getAttribute('data-agy-dock-tier') !== dockTier) {
+          pickerHost.setAttribute('data-agy-dock-tier', dockTier);
+        }
+        const strip = pickerHost.shadowRoot?.getElementById('deck-metrics-strip');
+        if (strip && strip.getAttribute('data-dock-tier') !== dockTier) {
+          strip.setAttribute('data-dock-tier', dockTier);
+        }
       }
     }
   }
@@ -205,7 +215,7 @@ export function createFooterUnifiedRuntime() {
     if (!ring) return;
 
     const footer = ring.closest('.agy-composer-footer');
-    const footerSize = footer?.getAttribute('data-agy-footer-size') || 'wide';
+    const dockTier = footer?.getAttribute('data-agy-dock-tier') || 'full';
     const cState = ring.getAttribute('data-compact-state');
     const title = ring.getAttribute('title') || '';
 
@@ -241,7 +251,7 @@ export function createFooterUnifiedRuntime() {
     }
 
     if (cState === 'compacting') {
-      const label = footerSize === 'xs' ? '' : isZhUi() ? '压缩中…' : 'Compacting…';
+      const label = (dockTier === 'icon' || dockTier === 'tight') ? '' : (isZhUi() ? '压缩中…' : 'Compacting…');
       if (ratioSpan.textContent !== label) ratioSpan.textContent = label;
       ratioSpan.hidden = !label;
       if (label) ring.setAttribute('data-agy-has-ratio', 'true');
@@ -252,10 +262,20 @@ export function createFooterUnifiedRuntime() {
       return;
     }
 
-    // Full "used / limit" in wide & narrow 2-row mode; condense to "%" only on ultra-narrow (<315px) panes
-    const displayText = footerSize === 'xs'
-      ? (Number.isFinite(pct) ? `${Math.round(pct)}%` : (ratioText ? ratioText.split('/')[0].trim() : ''))
-      : ratioText;
+    // Progressive compression:
+    //   full / compact -> "4.8k / 512k"
+    //   tight          -> "12%"
+    //   icon           -> "" (pure progress ring, full ratio on hover tooltip)
+    let displayText = '';
+    if (dockTier === 'icon') {
+      displayText = '';
+    } else if (dockTier === 'tight') {
+      displayText = Number.isFinite(pct)
+        ? `${Math.round(pct)}%`
+        : (ratioText ? ratioText.split('/')[0].trim() : '');
+    } else {
+      displayText = ratioText;
+    }
 
     if (displayText) {
       if (ratioSpan.textContent !== displayText) ratioSpan.textContent = displayText;
@@ -323,7 +343,6 @@ export function createFooterUnifiedRuntime() {
     const running = isComposerRunning();
     const validMetrics = hasValidMetricsForCurrentChat();
 
-    // Clear stale spans from previous conversations so Working… works cleanly on every new chat
     if (!validMetrics) {
       for (const ch of Array.from(textEl.children)) {
         if (ch.getAttribute('data-agy-working-label') !== '1') ch.remove();
@@ -337,7 +356,10 @@ export function createFooterUnifiedRuntime() {
 
     const existingPlaceholder = textEl.querySelector('[data-agy-working-label="1"]');
     const hasRealContent = validMetrics && Array.from(textEl.children).some(
-      (ch) => ch.getAttribute('data-agy-working-label') !== '1' && (ch.textContent || '').trim() !== ''
+      (ch) =>
+        ch.getAttribute('data-agy-working-label') !== '1' &&
+        ch.getAttribute('data-agy-speed-short') !== '1' &&
+        (ch.textContent || '').trim() !== ''
     );
 
     if (running && !hasRealContent) {
@@ -357,22 +379,52 @@ export function createFooterUnifiedRuntime() {
     }
 
     let tps = NaN;
+    let speedNumStr = '';
+    const fullParts = [];
     if (hasRealContent) {
-      for (const child of textEl.children) {
+      for (const child of Array.from(textEl.children)) {
+        if (child.getAttribute('data-agy-speed-short') === '1') continue;
+        if (child.getAttribute('data-agy-working-label') === '1') continue;
         const txt = (child.textContent || '').trim();
+        if (txt) fullParts.push(txt);
         const tm = txt.match(/^([\d.]+)\s*tok\/s$/i);
         if (tm) {
           tps = parseFloat(tm[1]);
+          speedNumStr = String(Math.round(tps));
           if (child.getAttribute('data-agy-speed-num') !== '1') {
             child.setAttribute('data-agy-speed-num', '1');
           }
-        } else if (child.getAttribute('data-agy-speed-num') === '1') {
-          child.removeAttribute('data-agy-speed-num');
+          child.removeAttribute('data-agy-speed-extra');
+        } else {
+          if (child.getAttribute('data-agy-speed-num') === '1') {
+            child.removeAttribute('data-agy-speed-num');
+          }
+          // Tag separator & TTFT spans so compact/tight tiers can cleanly hide them via CSS
+          if (child.getAttribute('data-agy-speed-extra') !== '1') {
+            child.setAttribute('data-agy-speed-extra', '1');
+          }
         }
       }
     }
 
-    const currentText = hasRealContent ? (textEl.textContent || '').trim() : '';
+    // Maintain a compact number-only span ("108") for `tight` tier without touching runtime.js spans
+    let shortSpan = textEl.querySelector('[data-agy-speed-short="1"]');
+    if (speedNumStr) {
+      if (!shortSpan) {
+        shortSpan = document.createElement('span');
+        shortSpan.setAttribute('data-agy-speed-short', '1');
+        textEl.insertBefore(shortSpan, textEl.firstChild);
+      }
+      if (shortSpan.textContent !== speedNumStr) shortSpan.textContent = speedNumStr;
+    } else if (shortSpan) {
+      shortSpan.remove();
+    }
+
+    const currentText = fullParts.join(' ');
+    if (currentText && pill.title !== currentText) {
+      pill.title = currentText;
+    }
+
     if (running) {
       speedActivity.coolUntil = 0;
     } else if (speedActivity.running) {
@@ -403,10 +455,8 @@ export function createFooterUnifiedRuntime() {
   function sync() {
     if (disposed) return;
     wrapEnsureMetricsPillOnce();
-    syncSpeedCapsule();
-    syncContextCapsule();
     syncFooterResponsiveLayout();
-    // Re-sync context display label in case footerSize just transitioned between wide/narrow/xs
+    syncSpeedCapsule();
     syncContextCapsule();
   }
 
@@ -427,8 +477,8 @@ export function createFooterUnifiedRuntime() {
       popObs = null;
     }
     observedPop = null;
-    document.querySelectorAll('.agy-composer-footer[data-agy-footer-size]').forEach((el) => {
-      el.removeAttribute('data-agy-footer-size');
+    document.querySelectorAll('.agy-composer-footer[data-agy-dock-tier]').forEach((el) => {
+      el.removeAttribute('data-agy-dock-tier');
       el.removeAttribute('data-agy-has-row2');
     });
     const ring = document.getElementById('ag-claude-ctx-ring');
@@ -446,7 +496,9 @@ export function createFooterUnifiedRuntime() {
       pill.removeAttribute('data-agy-working-placeholder');
       pill.querySelector(':scope > .agy-speed-dot')?.remove();
       pill.querySelector('[data-agy-working-label="1"]')?.remove();
+      pill.querySelector('[data-agy-speed-short="1"]')?.remove();
       pill.querySelectorAll('[data-agy-speed-num="1"]').forEach((el) => el.removeAttribute('data-agy-speed-num'));
+      pill.querySelectorAll('[data-agy-speed-extra="1"]').forEach((el) => el.removeAttribute('data-agy-speed-extra'));
     }
   }
 

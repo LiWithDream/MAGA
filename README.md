@@ -50,14 +50,14 @@ We stopped waiting for Google to polish the cockpit and built a lightweight runt
 
 No more cluttered bottom bar. Actions stay cleanly on Row 1 (`+ Add context`, permissions, voice, send), while live telemetry lives on Row 2 across four cohesive capsules: **Model & Effort**, **Context Window**, **Live Speed**, and **Subagents**.
 
-- **Tactile Model & Effort Picker** — Family-tinted pills, smooth Effort level slider, quick Orchestrator toggle, and customizable hidden models.
+- **Tactile Model & Effort Picker** — Each model family ships with its own color accent and animated effort slider track (Gemini 4 Neon, Carbon, Hydrogen, Claude Opus), quick Orchestrator toggle, and customizable hidden models.
 - **Context & Plan Quota Popover** — Instant visibility into context window usage, one-click compact, and rolling 5-hour / weekly limits across Gemini and Claude / GPT pools.
 - **Built for Any Width** — Resize from ultrawide down to a tight split pane; every capsule scales gracefully instead of wrapping or clipping.
 
 <p align="center">
-  <img src="./docs/images/demo-composer.gif" alt="Interactive Model & Effort Slider and Context/Quota Popover Demo" width="88%" />
+  <img src="./docs/images/demo-composer.webp" alt="Interactive Multi-Model Family Effort Slider and Context/Quota Popover Demo" width="90%" />
   <br />
-  <sub><i>Click the Model pill to glide Effort levels, or inspect live Context & 5h/Weekly Plan Quotas in one click.</i></sub>
+  <sub><i>Switch between model families with bespoke animated effort tracks, or inspect live Context & 5h/Weekly Quotas in one click.</i></sub>
 </p>
 
 ---
@@ -66,14 +66,14 @@ No more cluttered bottom bar. Actions stay cleanly on Row 1 (`+ Add context`, pe
 
 Antigravity's parallel subagents shine when your workspace gets out of the way.
 
-- **One-Click Linkage** — Active subagents surface directly in your main dock. Click to jump straight to that worker; click again to tuck the side panel away.
-- **Equal 50/50 & Mutual Exclusion** — Opening the side panel automatically closes Overview and splits your screen evenly down the middle, keeping manual resizing free while protecting both panes from ever collapsing too narrow.
-- **Matching Dock & Calm Lifecycle** — Subagent panes inherit the same adaptive 4-capsule dock (automatically shifting into compact/icon tiers as needed), and completed workers retire silently once you've viewed them or moved on.
+- **Live Birth-to-Retire Dock Pill** — Spawned subagents surface live in your main dock (blue while running, emerald when ready). Click the capsule to jump straight into that worker; click again to tuck the side panel away and retire it quietly.
+- **Equal 50/50 & Mutual Exclusion** — Clicking the dock capsule automatically closes Overview and splits your screen evenly down the middle, keeping manual resizing free while protecting both panes from ever collapsing too narrow.
+- **Matching Dock Everywhere** — Subagent panes inherit the same adaptive 4-capsule dock, automatically shifting into compact/icon tiers as needed.
 
 <p align="center">
-  <img src="./docs/images/demo-subagent-split.gif" alt="Symmetrical 50/50 Subagent Split and Overview Mutual Exclusion Demo" width="100%" />
+  <img src="./docs/images/demo-subagent-split.webp" alt="End-to-End Subagent Lifecycle and 50/50 Split Demo" width="100%" />
   <br />
-  <sub><i>Opening the side panel automatically closes Overview, splits 50/50, and links live status capsules across both panes.</i></sub>
+  <sub><i>Spawned subagent appears live in the dock (blue → emerald) → click the dock capsule to open a 50/50 split and auto-close Overview → click again to tuck away.</i></sub>
 </p>
 
 ---
@@ -87,7 +87,7 @@ Whenever Antigravity quits unexpectedly, restarts mid-refactor, hits an error, o
 Click once to silently wake the agent back up: **zero awkward prompt flashing in your input box**, and **no noisy user chat bubble** cluttering your conversation—just a crisp, whisper-quiet **`▸ Resumed`** hairline in the timeline.
 
 <p align="center">
-  <img src="./docs/images/demo-silent-resume.gif" alt="One-Click Silent Resume Capsule and Timeline Divider Demo" width="88%" />
+  <img src="./docs/images/demo-silent-resume.webp" alt="One-Click Silent Resume Capsule and Timeline Divider Demo" width="90%" />
   <br />
   <sub><i>One click on the Row 1 Resume capsule silently continues the interrupted run with a clean <code>▸ Resumed</code> divider.</i></sub>
 </p>

@@ -11,6 +11,7 @@ export function buildPickerShadowCss({ effortBarCss, agentEntryCss }) {
   display: inline-flex;
   align-items: center;
   flex: 0 1 auto;
+  order: var(--agy-model-order, 0);
   min-width: 0;
   max-width: 100%;
   gap: 0;

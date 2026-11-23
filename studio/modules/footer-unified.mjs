@@ -41,37 +41,30 @@ export function createFooterUnifiedRuntime() {
     const footer = ring.closest('.agy-composer-footer');
     watchFooterResize(footer);
     const footerW = footer ? Math.round(footer.getBoundingClientRect().width) : 0;
-    const footerSize = footerW > 0 && footerW < 410
+    const footerSize = footerW > 0 && footerW < 305
       ? 'xs'
-      : footerW > 0 && footerW < 540
+      : footerW > 0 && footerW < 550
         ? 'narrow'
-        : footerW > 0 && footerW < 640
-          ? 'compact'
-          : 'wide';
+        : 'wide';
     if (footer && footer.getAttribute('data-agy-footer-size') !== footerSize) {
       footer.setAttribute('data-agy-footer-size', footerSize);
     }
 
-    // When narrow/xs, always drop #ag-live-metrics-pill cleanly to row 2 so row 1
-    // gives full unclipped room to Model + Effort + Context % without squeezing either.
+    // Keep #ag-live-metrics-pill inside leftGroup so CSS 2-row flex ordering aligns
+    // Context (Row 2 left) and Speed (Row 2 right) symmetrically on narrow widths.
     const speedPill = document.getElementById('ag-live-metrics-pill');
-    if (footer && speedPill && footer.parentElement) {
+    if (footer && speedPill) {
       const leftGroup = footer.children[0];
-      const wantBottom = footerSize === 'narrow' || footerSize === 'xs';
-      if (wantBottom) {
-        if (speedPill.parentElement !== footer.parentElement || speedPill.previousElementSibling !== footer) {
-          footer.insertAdjacentElement('afterend', speedPill);
+      if (leftGroup && (footerSize === 'narrow' || footerSize === 'xs' || footerW >= 550)) {
+        if (speedPill.parentElement !== leftGroup) {
+          leftGroup.appendChild(speedPill);
         }
-        if (speedPill.getAttribute('data-ag-row-mode') !== 'bottom') {
-          speedPill.setAttribute('data-ag-row-mode', 'bottom');
+        if (speedPill.getAttribute('data-ag-row-mode') !== 'middle') {
+          speedPill.setAttribute('data-ag-row-mode', 'middle');
         }
-        if (footer.getAttribute('data-ag-row-mode') !== 'bottom') {
-          footer.setAttribute('data-ag-row-mode', 'bottom');
+        if (footer.getAttribute('data-ag-row-mode') !== 'middle') {
+          footer.setAttribute('data-ag-row-mode', 'middle');
         }
-      } else if (leftGroup && speedPill.getAttribute('data-ag-row-mode') === 'bottom' && footerW >= 570) {
-        leftGroup.appendChild(speedPill);
-        speedPill.setAttribute('data-ag-row-mode', 'middle');
-        footer.setAttribute('data-ag-row-mode', 'middle');
       }
     }
 
@@ -117,14 +110,10 @@ export function createFooterUnifiedRuntime() {
       return;
     }
 
-    // Progressive responsive label:
-    // wide/compact (>=490px): "230.8k / 512k"
-    // narrow (340-489px, e.g. side pane open): "45%" (fits cleanly with zero clipping)
-    // xs (<340px): ring icon only
+    // Full "used / limit" in wide & narrow 2-row mode (Row 2 has plenty of space);
+    // only condense to "%" on ultra-narrow (<305px) panes.
     let displayText = '';
     if (footerSize === 'xs') {
-      displayText = '';
-    } else if (footerSize === 'narrow') {
       displayText = Number.isFinite(pct) ? `${Math.round(pct)}%` : (ratioText ? ratioText.split('/')[0].trim() : '');
     } else {
       displayText = ratioText;

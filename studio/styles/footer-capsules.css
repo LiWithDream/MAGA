@@ -42,33 +42,12 @@
   min-height: 30px !important;
 }
 
-.agy-composer-footer[data-agy-footer-size="narrow"],
-.agy-composer-footer[data-agy-footer-size="xs"] {
-  gap: 6px !important;
-}
-
 .agy-composer-footer > div:first-child {
   position: relative !important;
   flex: 1 1 0% !important;
   min-width: 0 !important;
   gap: 5px !important;
   align-items: center !important;
-}
-
-.agy-composer-footer[data-agy-footer-size="narrow"] > div:first-child,
-.agy-composer-footer[data-agy-footer-size="xs"] > div:first-child {
-  gap: 4px !important;
-}
-
-/* Allow model capsule host to flex-shrink gracefully on ultra-narrow panes while keeping + and context pill crisp */
-#antigravity\.agentSidePanelInputBox .agy-composer-footer > div:first-child > #agy-capsule-picker-host {
-  min-width: 0 !important;
-  flex-shrink: 1 !important;
-}
-
-#antigravity\.agentSidePanelInputBox .agy-composer-footer[data-agy-footer-size="narrow"] #ag-claude-ctx-ring[data-agy-has-ratio="true"] {
-  padding: 0 7px 0 6px !important;
-  gap: 5px !important;
 }
 
 /* Remove zero-width hidden file input & hidden native model wrapper from flex gap accounting */
@@ -90,9 +69,74 @@
   align-items: center !important;
 }
 
+/* ==========================================================================
+ * Symmetrical 2-Row Narrow Footer (when side panel / browser pane is open)
+ * Row 1: Controls  [ + ] [ Model + Effort ]        [ Turbo ] [ Mic ] [ Send ]
+ * ────────────────────────── 1px hairline divider ──────────────────────────
+ * Row 2: Telemetry [ ○ 242.7k / 512k ]           [ ● 162 tok/s · TTFT 6.8s ]
+ * Zero DOM reparenting: uses display:contents + CSS flex order.
+ * ========================================================================== */
+
+.agy-composer-footer[data-agy-footer-size="narrow"],
+.agy-composer-footer[data-agy-footer-size="xs"] {
+  --agy-model-order: 2;
+  display: flex !important;
+  flex-wrap: wrap !important;
+  align-items: center !important;
+  column-gap: 5px !important;
+  row-gap: 6px !important;
+}
+
+.agy-composer-footer[data-agy-footer-size="narrow"] > div:first-child,
+.agy-composer-footer[data-agy-footer-size="xs"] > div:first-child {
+  display: contents !important;
+}
+
+.agy-composer-footer[data-agy-footer-size="narrow"] > div:first-child > button:first-child,
+.agy-composer-footer[data-agy-footer-size="xs"] > div:first-child > button:first-child {
+  order: 1 !important;
+}
+
 .agy-composer-footer[data-agy-footer-size="narrow"] > div:last-child,
 .agy-composer-footer[data-agy-footer-size="xs"] > div:last-child {
+  order: 3 !important;
+  margin-left: auto !important;
   gap: 4px !important;
+}
+
+.agy-composer-footer[data-agy-footer-size="narrow"]::after,
+.agy-composer-footer[data-agy-footer-size="xs"]::after {
+  content: "" !important;
+  order: 4 !important;
+  flex: 0 0 100% !important;
+  height: 1px !important;
+  margin: 0 !important;
+  background-color: color-mix(in srgb, var(--foreground, #8E8D88) 8%, transparent) !important;
+}
+
+#antigravity\.agentSidePanelInputBox .agy-composer-footer[data-agy-footer-size="narrow"] #ag-claude-ctx-ring,
+#antigravity\.agentSidePanelInputBox .agy-composer-footer[data-agy-footer-size="xs"] #ag-claude-ctx-ring {
+  order: 5 !important;
+  height: 26px !important;
+  border-radius: 7px !important;
+  font-size: 11.5px !important;
+}
+
+#antigravity\.agentSidePanelInputBox .agy-composer-footer[data-agy-footer-size="narrow"] #ag-live-metrics-pill#ag-live-metrics-pill,
+#antigravity\.agentSidePanelInputBox .agy-composer-footer[data-agy-footer-size="xs"] #ag-live-metrics-pill#ag-live-metrics-pill {
+  order: 6 !important;
+  margin-left: auto !important;
+  height: 26px !important;
+  min-height: 26px !important;
+  max-height: 26px !important;
+  border-radius: 7px !important;
+  padding: 0 8px 0 7px !important;
+  font-size: 11.5px !important;
+}
+
+#antigravity\.agentSidePanelInputBox .agy-composer-footer[data-agy-footer-size="narrow"] #ag-live-metrics-pill#ag-live-metrics-pill #ag-live-metrics-text,
+#antigravity\.agentSidePanelInputBox .agy-composer-footer[data-agy-footer-size="xs"] #ag-live-metrics-pill#ag-live-metrics-pill #ag-live-metrics-text {
+  font-size: 11.5px !important;
 }
 
 /* Left '+' button */

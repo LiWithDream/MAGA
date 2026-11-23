@@ -3235,6 +3235,11 @@ async function handleProjectRpcRequest(rawPayload, callerEntry = null) {
       const result = await collectOverviewSnapshotAsync(payload);
       return { reqId, result };
     }
+    if (action === 'getUsageStats') {
+      const { collectUsageStatsAsync } = await import('../studio/daemon/usage-service.mjs');
+      const result = await collectUsageStatsAsync(payload);
+      return { reqId, result };
+    }
     if (action === 'revealFile') {
       const rawTarget = typeof payload?.targetPath === 'string' ? payload.targetPath.trim() : '';
       if (!rawTarget) return { reqId, result: { ok: false, error: 'missing_path' } };

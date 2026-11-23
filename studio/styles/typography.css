@@ -1,0 +1,53 @@
+/* Balanced typography: Regular 400 weight + 100% CJK scale + refined antialiased smoothing + mid-high contrast */
+:root,
+html,
+html[data-ag-cjk-scale="95"],
+html[data-ag-cjk-scale="94.5"],
+html[data-ag-cjk-scale="100"],
+body,
+body[data-agy-theme],
+body[data-agy-font] {
+  --ag-sans-stack: "Google Sans Flex", "Google Sans", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI", sans-serif !important;
+  --font-sans: var(--ag-sans-stack) !important;
+  -webkit-font-smoothing: antialiased !important;
+  -moz-osx-font-smoothing: grayscale !important;
+}
+
+body {
+  font-weight: 400 !important;
+}
+
+:is([data-testid="planner-response-text"], [data-markdown-root], .select-text, .prose, .markdown, article),
+:is([data-testid="planner-response-text"], [data-markdown-root], .select-text, .prose, .markdown, article) :is(p, li, ul, ol, blockquote, td, th, span, strong, b, em, h1, h2, h3, h4, h5, h6) {
+  -webkit-font-smoothing: antialiased !important;
+}
+
+:is([data-testid="planner-response-text"], [data-markdown-root], .select-text, .prose, .markdown, article) :is(p, li, ul, ol, blockquote, td, th) {
+  font-weight: 400;
+}
+
+:is([data-testid="planner-response-text"], [data-markdown-root], .prose, .markdown) :is(strong, b, h1, h2, h3, h4, h5, h6) {
+  font-weight: 600 !important;
+}
+
+/* Balanced editorial contrast in both Dark and Light modes */
+:is(html[data-ag-theme-mode="dark"], html.dark, body.dark, html[data-ag-theme-mode="dark"] body[data-agy-theme], body.dark[data-agy-theme]) {
+  --foreground: #EFEFED !important;
+  --secondary-foreground: #C4C3BD !important;
+  --muted-foreground: #9A9994 !important;
+}
+
+:is(html:not([data-ag-theme-mode="dark"]):not(.dark), html:not([data-ag-theme-mode="dark"]) body:not(.dark), html:not([data-ag-theme-mode="dark"]) body[data-agy-theme]:not(.dark)) {
+  --foreground: #1C1C1A !important;
+  --secondary-foreground: #4B4B47 !important;
+  --muted-foreground: #6E6D68 !important;
+}
+
+:is(html[data-ag-theme-mode="dark"] body, body.dark) #antigravity\.agentSidePanelInputBox [data-lexical-editor="true"] ~ p.pointer-events-none {
+  color: #8E8D88 !important;
+}
+
+/* Hide English thinking prose while keeping Thought for Xs / Thinking... header row & all tool rows */
+[data-testid="thinking-collapsible-trigger"] + div {
+  display: none !important;
+}

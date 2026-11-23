@@ -1,0 +1,282 @@
+/* ==========================================================================
+ * Internalized Token Usage Card in Right Overview Panel (#agy-ov-usage-card)
+ * Matches Anti-Claude's .ag-ov-card design tokens seamlessly in Light & Dark.
+ * ========================================================================== */
+
+#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-hdr-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
+}
+
+#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-kpi {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 5px 7px;
+  border-radius: 7px;
+  background-color: var(--agy-pill-bg, rgba(128, 128, 128, 0.06));
+  border: 1px solid var(--ag-ov-border);
+  cursor: default;
+}
+
+#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-kpi-lbl {
+  font-size: 10.5px;
+  line-height: 1.25;
+  color: var(--ag-ov-muted);
+  white-space: nowrap;
+}
+
+#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-kpi-val {
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--ag-ov-fg);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-seg {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  border-radius: 7px;
+  background-color: var(--agy-pill-bg, rgba(128, 128, 128, 0.08));
+  border: 1px solid var(--ag-ov-border);
+  gap: 1px;
+}
+
+#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-seg button {
+  border: none;
+  background: transparent;
+  color: var(--ag-ov-muted);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1;
+  padding: 3px 7px;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-seg button[aria-pressed="true"] {
+  background-color: color-mix(in srgb, var(--ag-ov-fg) 12%, var(--ag-ov-card));
+  color: var(--ag-ov-fg);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.14);
+}
+
+html:not([data-ag-theme-mode="dark"]) body:not(.dark) #ag-claude-ov-sections #agy-ov-usage-card .agy-usage-seg button[aria-pressed="true"] {
+  background-color: #FFFFFF;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+
+#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-nav {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+}
+
+#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-nav button {
+  border: none;
+  background: transparent;
+  color: var(--ag-ov-muted);
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+}
+
+#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-nav button:hover:not(:disabled) {
+  background-color: var(--ag-ov-hover);
+  color: var(--ag-ov-fg);
+}
+
+#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-nav button:disabled {
+  opacity: 0.32;
+  cursor: default;
+}
+
+#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-range {
+  font-size: 11px;
+  color: var(--ag-ov-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* Stacked vertical bar chart */
+#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-bars {
+  display: flex;
+  align-items: stretch;
+  gap: 3px;
+  height: 68px;
+  padding: 4px 2px 0;
+}
+
+#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-bar {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  cursor: default;
+}
+
+#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-bar-track {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  border-radius: 3px;
+  background-color: color-mix(in srgb, var(--ag-ov-border) 42%, transparent);
+  overflow: hidden;
+}
+
+#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-bar-stack {
+  display: flex;
+  flex-direction: column-reverse;
+  width: 100%;
+  border-radius: 3px 3px 0 0;
+  overflow: hidden;
+  min-height: 2px;
+}
+
+#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-bar-stack > i {
+  display: block;
+  width: 100%;
+  font-style: normal;
+}
+
+#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-bar-x {
+  margin-top: 3px;
+  height: 12px;
+  font-size: 9.5px;
+  line-height: 12px;
+  text-align: center;
+  color: var(--ag-ov-muted);
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-bar:hover .agy-usage-bar-track {
+  background-color: color-mix(in srgb, var(--ag-ov-fg) 10%, transparent);
+}
+
+/* Per-model breakdown rows */
+#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-models {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding-top: 3px;
+  border-top: 1px solid var(--ag-ov-border);
+}
+
+#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-model-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2.5px;
+  cursor: default;
+}
+
+#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-model-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 11.5px;
+  line-height: 1.3;
+}
+
+#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-model-left {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-model-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ag-ov-fg);
+  font-weight: 450;
+}
+
+#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-model-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-model-share {
+  font-size: 10.5px;
+  color: var(--ag-ov-muted);
+}
+
+#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-model-tok {
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--ag-ov-fg);
+}
+
+#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-model-track {
+  height: 3px;
+  width: 100%;
+  border-radius: 999px;
+  background-color: color-mix(in srgb, var(--ag-ov-border) 65%, transparent);
+  overflow: hidden;
+}
+
+#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-model-fill {
+  height: 100%;
+  border-radius: 999px;
+  opacity: 0.85;
+}
+
+#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 10.5px;
+  color: var(--ag-ov-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-empty {
+  font-size: 11.5px;
+  color: var(--ag-ov-muted);
+  padding: 4px 0;
+}

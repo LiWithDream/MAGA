@@ -1,9 +1,17 @@
 {
-  "name": "anti-claude",
-  "version": "3.1.5",
+  "name": "agy-studio",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "engines": { "node": ">=22" },
-  "scripts": { "test": "node --test test/" },
+  "scripts": {
+    "install-all": "node studio/cli.mjs install",
+    "deploy": "node studio/cli.mjs deploy",
+    "doctor": "node studio/cli.mjs doctor",
+    "sync-rules": "node studio/cli.mjs sync-rules",
+    "sync-capsule": "node studio/cli.mjs sync-capsule",
+    "rollback": "node studio/cli.mjs rollback",
+    "test": "node --test test/"
+  },
   "devDependencies": { "jsdom": "^31.0.1" }
 }

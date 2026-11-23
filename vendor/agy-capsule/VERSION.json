@@ -1,0 +1,18 @@
+{
+  "source": "https://github.com/Lumidarin/agy-capsule.git",
+  "commit": "0aa1ba4085f0bbf21871968c7c4bca30b4e78790",
+  "version": "1.5.1",
+  "syncedAt": "2026-11-23",
+  "files": [
+    "agent_entry.mjs",
+    "effort_bar.mjs",
+    "effort_upstream.mjs",
+    "model_picker.mjs",
+    "motion_themes.mjs",
+    "sqlite_cache.mjs",
+    "turn_ui.mjs",
+    "ui.mjs",
+    "usage_history.mjs",
+    "usage_ui.mjs"
+  ]
+}

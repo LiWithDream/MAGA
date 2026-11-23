@@ -761,7 +761,7 @@ test('[Audit #6 & #15 & R2-#4] early pre-body injection mounts full UI once body
     await new Promise((r) => setTimeout(r, 20));
 
     assert.equal(window.__ag_custom_js_mounted, true, 'custom.js mounted automatically once body appeared');
-    assert.ok(window.document.querySelector('.ag-claude-todo-card'), 'TodoWrite card rendered after pre-body injection');
+    assert.equal(window.document.querySelector('.ag-claude-todo-card'), null, 'TodoWrite card is retired and checklists remain native');
     assert.ok(window.document.getElementById('ag-claude-projects-nav-btn'), 'Projects nav entry mounted after pre-body injection');
     assert.ok(window.document.getElementById('ag-live-metrics-pill'), 'metrics pill honored boot.config.selectors.inputBoxId');
     const countBeforeDisable = metricsRequests.length;
@@ -3392,7 +3392,7 @@ test('[Audit-2026-11-21 · Projects UI] aborts save when readContext fails, rend
   }
 });
 
-test('[Audit-2026-11-21 · Model Menu, Pill & TodoWrite] Option+click works on fallback path, customCss:false skips hijack, 1-5 ignored in input, pill restore keeps streamed suffix, unrelated all-[x] list stays visible', { skip: skipDom }, async () => {
+test('[Audit-2026-11-21 · Model Menu & Pill] Option+click works on fallback path, customCss:false skips hijack, 1-5 ignored in input, pill restore keeps streamed suffix, checklists stay native', { skip: skipDom }, async () => {
   const customJsSrc = fs.readFileSync(path.join(REPO, 'user', 'custom.js'), 'utf8');
 
   /* Bug #13 & #19: Redux fallback path still allows Option+click and renders Native menu row; 1-5 ignored when input focused */
@@ -3506,12 +3506,12 @@ test('[Audit-2026-11-21 · Model Menu, Pill & TodoWrite] Option+click works on f
     );
     const { window } = dom;
     const doc = window.document;
-    window.ctx = { modules: { i18n: false, claudeUxTodoCard: true }, onCleanup: () => {} };
+    window.ctx = { modules: { i18n: false }, onCleanup: () => {} };
     window.eval(customJsSrc);
     try {
-      /* Bug #10: ordinary all-[x] list in turn 2 must NOT be merged/hidden into turn 1's interrupted checklist */
+      /* Ordinary checklists remain native and untouched */
       const ordinaryUl = doc.getElementById('ordinary-checked');
-      assert.equal(ordinaryUl.hasAttribute('data-ag-todo-merged'), false, 'unrelated all-[x] list in later turn stays visible');
+      assert.equal(ordinaryUl.hasAttribute('data-ag-todo-merged'), false, 'ordinary checklist stays native and visible');
 
       /* Bug #11: simulate streaming appending more text to the text node after <code> */
       const codeEl = doc.querySelector('code');

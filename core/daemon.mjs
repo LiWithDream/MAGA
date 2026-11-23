@@ -86,7 +86,6 @@ const ALLOWED_UI_MODULE_KEYS = new Set([
   'customJs',
   'claudeUxStepUnfold',
   'claudeUxCollapseAnimation',
-  'claudeUxTodoCard',
   'claudeUxRunningTimer',
   'claudeUxContextRing',
   'claudeUxModelMenu',

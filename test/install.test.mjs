@@ -83,7 +83,7 @@ test('fresh install deploys standalone user layer and uninstall removes state cl
     assert.equal(inst.status, 0, inst.stderr);
     assert.equal(inst.out.status, 'ok', JSON.stringify(inst.out));
     assert.equal(h.exists('.gemini/antigravity/theme-patch'), false, 'no external theme-patch directory created');
-    assert.match(h.readUser('custom.js'), /ag-claude-todo-card/);
+    assert.match(h.readUser('custom.js'), /__agClaudeUxDispose/);
     assert.match(h.read('.gemini/antigravity/antigravity_state.pbtxt'), /PRODUCT_SKIN_DEVELOPER/);
     assert.equal(JSON.parse(h.read('.gemini/config/config.json')).userSettings.verboseConversationSteps, true);
     assert.match(h.read('.gemini/AGENTS.md'), /BEGIN anti-claude/);

@@ -4,7 +4,7 @@
 
 让 Google Antigravity 桌面端拥有接近 `Claude.app`（Code / Cowork）风格的 **AI 回答节奏、过程呈现形式与界面交互**。
 
-它不只是一套界面样式——除了优化视觉排版与高频控件，还同时改写了 Agent 的输出习惯与前端渲染逻辑：把原生「闷头调工具、跑完折叠成黑盒」改成「边做边汇报 + 流内实时进度卡片」。全程通过本地 CDP 注入与用户目录配置实现，不改 `Antigravity.app` 安装包，不破签名。
+它不只是一套界面样式——除了优化视觉排版与高频控件，还同时改写了 Agent 的输出习惯与前端渲染逻辑：把原生「闷头调工具、跑完折叠成黑盒」改成「边做边汇报 + 平铺实时步骤流」。全程通过本地 CDP 注入与用户目录配置实现，不改 `Antigravity.app` 安装包，不破签名。
 
 ![Anti-Claude 效果预览](assets/preview.png)
 
@@ -32,11 +32,10 @@ node ~/Developer/Anti-Claude/install.mjs uninstall             # 卸载并还原
 
 ### 1. AI 的回答方式与执行呈现
 
-原生 Antigravity 默认把推理藏在 `thinking` 里不说话，连跑十几个工具也不吭声，回合一结束还把整轮步骤收进「已工作 Xm」（知识工作模式下工具记录跑完直接销毁）。本项目把这套黑盒流程改成了三件事：
+原生 Antigravity 默认把推理藏在 `thinking` 里不说话，连跑十几个工具也不吭声，回合一结束还把整轮步骤收进「已工作 Xm」（知识工作模式下工具记录跑完直接销毁）。本项目把这套黑盒流程改成了两件事：
 
-- **边做边汇报的叙事流**：去掉空洞客套话，AI 每次调工具前先用一两句短话讲清「刚查到什么、下一步干什么」，进展汇报、命令摘要与任务清单自动跟随你的对话语言（默认英文），形成「一句进展 → 一行可展开工具摘要 → 下一句进展」的节奏。
+- **边做边汇报的叙事流**：去掉空洞客套话，AI 每次调工具前先用一两句短话讲清「刚查到什么、下一步干什么」，进展汇报与命令摘要自动跟随你的对话语言（默认英文），形成「一句进展 → 一行可展开工具摘要 → 下一句进展」的节奏。
 - **完整步骤平铺与实时读秒**：自动解锁客户端隐藏的完整步骤引擎，拆掉回合末的「已工作 Xm」外层二次折叠；正在执行的工具行显示蓝色旋转点与读秒，思考展开区退为次级灰字，主次分明。
-- **流内跟随的 `TodoWrite` 任务卡片**：遇到 3 步以上的复杂任务，AI 开场列出任务清单，前端在消息流内渲染圆角白卡并紧跟最新步骤滚动；中途靠隐形注释推进打勾（不在正文里重复刷清单），被打断时标「已暂停」，全部完成后卡片自动消失（与 Claude Desktop 一致）。普通回答里的 Markdown 列表原样保留，不会被误接管。
 
 ### 2. 客户端界面与高频交互
 
@@ -58,7 +57,7 @@ node ~/Developer/Anti-Claude/install.mjs uninstall             # 卸载并还原
 
 安装器不触碰 `/Applications/Antigravity.app`，仅修改以下用户层文件（全部记录在 `~/.gemini/antigravity/anti-claude/install-state.json`，执行 `uninstall` 逐项还原）：
 
-- `~/.gemini/AGENTS.md`：写入「边做边汇报 + 隐形进度标记 + 交互式选择卡」协作规则（可用 `--no-agents-rule` 跳过）。
+- `~/.gemini/AGENTS.md`：写入「边做边汇报 + 交互式选择卡」协作规则（可用 `--no-agents-rule` 跳过）。
 - `antigravity_state.pbtxt` 与 `~/.gemini/config/config.json`：开启完整步骤详情展示（可用 `--no-step-unlock` 跳过）。
 - `~/.gemini/antigravity/anti-claude/user/`：写入样式、脚本与配置，由仓库内置零依赖 `core/` CDP 守护进程直接驱动（升级时通过三路合并保留本地自定义改动；旧版 `theme-patch` 环境会自动迁移配置并清理退役）。
 - `~/.gemini/antigravity-cli/anti-claude-statusline.mjs` 与 `~/.gemini/antigravity-cli/settings.json`：检测到 `agy` 或传入 `--cli` / `--cli-only` 时部署终端状态栏并启用 `statusLine`（可用 `--no-cli` 或 `--no-cli-statusline` 跳过）。

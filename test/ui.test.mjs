@@ -63,89 +63,48 @@ const pane = (turns, { generating = false } = {}) =>
     generating ? '<button data-testid="input-cancel-button"></button>' : ''
   }</div></section>`;
 
-test('ordinary answer checklist stays native and visible', { skip }, () => {
-  const h = mount(pane([ul(li('身份证复印件'), li('合同原件'))]));
+test('markdown task lists stay native and stale legacy TodoWrite DOM is cleaned on mount', { skip }, () => {
+  const h = mount(
+    pane([
+      `<div data-ag-todo-empty-wrap="true"><ul class="contains-task-list" data-ag-todo-merged="true">${li('步骤一', 'in_progress')}${li('步骤二')}</ul></div>` +
+        `<div class="ag-claude-todo-card" data-ag-todo-mount="true"></div>` +
+        `<div data-ag-todo-dock="true"><div class="ag-claude-todo-card"></div></div>` +
+        `<p data-ag-todo-marker-line="true">legacy</p>`
+    ], { generating: true })
+  );
   const list = h.doc.querySelector('ul');
   assert.equal(list.hasAttribute('data-ag-todo-merged'), false);
   assert.equal(list.hasAttribute('data-ag-todo-primary'), false);
-  assert.equal(h.doc.querySelectorAll('.ag-claude-todo-card').length, 0);
-  h.close();
-});
-
-test('ordinary checklist with some items ticked is also left alone', { skip }, () => {
-  const h = mount(pane([ul(li('营业执照', 'completed'), li('授权委托书'), li('身份证明'))]));
-  assert.equal(h.doc.querySelectorAll('.ag-claude-todo-card').length, 0);
-  assert.equal(h.doc.querySelector('ul').attributes.length, 1);
-  h.close();
-});
-
-test('interrupted execution checklist keeps a visible paused card', { skip }, () => {
-  const h = mount(pane([ul(li('读代码', 'completed'), li('修复 bug', 'in_progress'), li('跑测试'))]));
-  const list = h.doc.querySelector('ul');
-  assert.equal(list.getAttribute('data-ag-todo-primary'), 'true');
-  const card = list.nextElementSibling;
-  assert.ok(card && card.classList.contains('ag-claude-todo-card'));
-  assert.equal(card.getAttribute('data-ag-todo-paused'), 'true');
-  assert.equal(card.querySelectorAll('.ag-claude-todo-row').length, 3);
-  h.close();
-});
-
-test('cross-turn completed progress hides TodoWrite card cleanly; ordinary list in a later turn is untouched', { skip }, () => {
-  const h = mount(
-    pane([
-      ul(li('阶段一 读代码', 'in_progress'), li('阶段二 修复'), li('阶段三 测试')),
-      ul(li('阶段一 读代码', 'completed'), li('阶段二 修复', 'completed'), li('阶段三 测试', 'completed')),
-      ul(li('身份证复印件'), li('合同原件'))
-    ])
-  );
-  const lists = h.doc.querySelectorAll('ul');
-  assert.equal(lists[0].getAttribute('data-ag-todo-merged'), 'true');
-  assert.equal(lists[1].getAttribute('data-ag-todo-merged'), 'true');
-  assert.equal(lists[2].hasAttribute('data-ag-todo-merged'), false);
-  assert.equal(lists[2].hasAttribute('data-ag-todo-primary'), false);
-  assert.equal(h.doc.querySelectorAll('.ag-claude-todo-card').length, 0, 'completed TodoWrite card disappears like Claude Desktop');
-  h.close();
-});
-
-test('live execution checklist follows the bottom of the active turn in-flow (never fixed outside on composer)', { skip }, async () => {
-  const h = mount(pane([ul(li('读代码', 'in_progress'), li('修复'))], { generating: true }));
-  const turn = h.doc.querySelector('[data-testid="agent-response"]');
-  const dock = h.doc.querySelector('[data-ag-todo-dock]');
-  assert.ok(dock);
-  assert.equal(dock.parentElement, turn);
-  assert.equal(turn.lastElementChild, dock);
-  /* when new tool steps append into the turn, the card jumps down below the newest step */
-  const toolStep = h.doc.createElement('div');
-  toolStep.textContent = 'Running tool';
-  turn.appendChild(toolStep);
-  await h.microtasks();
-  await new Promise((r) => setTimeout(r, 100));
-  h.flushFrames();
-  assert.equal(turn.lastElementChild, dock, 'card stays at the very bottom of the active turn');
+  assert.equal(h.doc.querySelector('[data-ag-todo-empty-wrap]'), null);
+  assert.equal(h.doc.querySelector('[data-ag-todo-marker-line]'), null);
+  assert.equal(h.doc.querySelectorAll('.ag-claude-todo-card, [data-ag-todo-dock], [data-ag-todo-mount]').length, 0);
   h.cleanups.forEach((fn) => fn());
   h.close();
 });
 
-test('dispose cancels queued frames: no marker is resurrected', { skip }, async () => {
-  const h = mount(pane([ul(li('读代码', 'in_progress'), li('修复'))]));
-  h.doc.querySelector('section').appendChild(h.doc.createElement('p')); /* trigger a mutation -> scheduled sync */
+test('dispose cancels queued frames: no indicator is resurrected', { skip }, async () => {
+  const row = '<button data-testid="tool-group-collapsible" aria-expanded="false"><span title="Running command">Running command</span><svg></svg></button>';
+  const h = mount(pane([row], { generating: true }));
+  assert.ok(h.doc.querySelector('.ag-orbit-dots'));
+  h.doc.querySelector('section').appendChild(h.doc.createElement('p'));
   await h.microtasks();
   h.window.__t.scheduleSync();
   h.cleanups.forEach((fn) => fn());
-  assert.equal(h.doc.querySelector('ul').hasAttribute('data-ag-todo-primary'), false);
+  assert.equal(h.doc.querySelector('.ag-orbit-dots'), null);
   h.flushFrames();
-  await new Promise((r) => setTimeout(r, 120)); /* any throttled timeout would have fired by now */
+  await new Promise((r) => setTimeout(r, 120));
   h.flushFrames();
-  assert.equal(h.doc.querySelector('ul').hasAttribute('data-ag-todo-primary'), false);
-  assert.equal(h.doc.querySelectorAll('.ag-claude-todo-card').length, 0);
+  assert.equal(h.doc.querySelector('.ag-orbit-dots'), null);
   h.close();
 });
 
 test('own DOM writes do not schedule another sync (no self-trigger loop)', { skip }, async () => {
-  const h = mount(pane([ul(li('读代码', 'in_progress'), li('修复'))], { generating: true }));
+  const row = '<button data-testid="tool-group-collapsible" aria-expanded="false"><span title="Running command">Running command</span><svg></svg></button>';
+  const h = mount(pane([row], { generating: true }));
   await h.microtasks();
   await h.microtasks();
-  assert.equal(h.queue.size, 0, 'card/dock insertion must not re-trigger syncStepStream');
+  assert.equal(h.queue.size, 0, 'running indicator insertion must not re-trigger syncStepStream');
+  h.cleanups.forEach((fn) => fn());
   h.close();
 });
 
@@ -235,7 +194,7 @@ test('Enter opens + focuses menu, arrows move, Escape returns focus', { skip }, 
 
 test('feature switch off: model menu is not intercepted, checklists untouched', { skip }, () => {
   const h = mount(pane([ul(li('读代码', 'in_progress'), li('修复'))]), {
-    modules: { claudeUxModelMenu: false, claudeUxTodoCard: false }
+    modules: { claudeUxModelMenu: false }
   });
   const { btn } = modelTrigger(h);
   let native = 0;
@@ -247,285 +206,11 @@ test('feature switch off: model menu is not intercepted, checklists untouched', 
   h.close();
 });
 
-test('virtualised step stream: card keeps the newest progress after the mid-turn list is unmounted', { skip }, async () => {
-  const h = mount(pane([ul(li('阶段一 读代码', 'in_progress'), li('阶段二 修复'), li('阶段三 测试'))], { generating: true }));
-  const statuses = () => Array.from(h.doc.querySelectorAll('[data-ag-todo-dock] .ag-claude-todo-row')).map((r) => r.getAttribute('data-status'));
-  const settle = async () => {
-    await h.microtasks();
-    await new Promise((r) => setTimeout(r, 100));
-    h.flushFrames();
-  };
-  assert.deepEqual(statuses(), ['in_progress', 'pending', 'pending']);
-
-  /* a later step streams in with an updated checklist ... */
-  const turn = h.doc.querySelector('[data-testid="agent-response"]');
-  const step = h.doc.createElement('div');
-  step.innerHTML = `<div data-testid="planner-response-text">${ul(li('阶段一 读代码', 'completed'), li('阶段二 修复', 'completed'), li('阶段三 测试', 'in_progress'))}</div>`;
-  turn.appendChild(step);
-  await settle();
-  assert.deepEqual(statuses(), ['completed', 'completed', 'in_progress']);
-
-  /* ... then scrolls out of the render window and is unmounted by the app */
-  step.remove();
-  await settle();
-  assert.deepEqual(statuses(), ['completed', 'completed', 'in_progress'], 'must not fall back to the first list');
-
-  /* scrolling back up re-mounts the first list: progress must not regress either */
-  turn.appendChild(h.doc.createElement('p'));
-  await settle();
-  assert.deepEqual(statuses(), ['completed', 'completed', 'in_progress']);
-  h.cleanups.forEach((fn) => fn());
-  h.close();
-});
-
-function attachTurnSteps(h, texts) {
-  const turn = h.doc.querySelector('[data-testid="agent-response"]');
-  const steps = texts.map((t) => ({ step: { case: 'plannerResponse', value: { response: t, thinking: '- [x] 阶段一 (thinking must be ignored)' } } }));
-  turn.__reactFiber$t = { memoizedProps: {}, return: { memoizedProps: { container: { steps } } } };
-  return { turn, steps };
-}
-
 async function settle(h) {
   await h.microtasks();
   await new Promise((r) => setTimeout(r, 100));
   h.flushFrames();
 }
-
-const dockStatuses = (h) => Array.from(h.doc.querySelectorAll('[data-ag-todo-dock] .ag-claude-todo-row')).map((r) => r.getAttribute('data-status'));
-
-test('invisible <!-- todo:N/M --> comment advances the live card; legacy 〔进度 N/M〕 lines are hidden', { skip }, async () => {
-  const h = mount(
-    pane([`${ul(li('切换守护', 'in_progress'), li('真机验证'), li('收尾说明'))}<p>〔进度 2/3〕真机验证</p>`], { generating: true })
-  );
-  assert.equal(h.doc.querySelector('p').getAttribute('data-ag-todo-marker-line'), 'true', 'legacy visible marker line is hidden');
-  const { turn, steps } = attachTurnSteps(h, ['开场说明', '守护已切换。<!-- todo:2/3 -->']);
-  turn.appendChild(h.doc.createElement('div'));
-  await settle(h);
-  assert.deepEqual(dockStatuses(h), ['completed', 'in_progress', 'pending']);
-
-  steps.push({ step: { case: 'plannerResponse', value: { response: '进入收尾。<!-- todo:3/3 -->' } } });
-  turn.appendChild(h.doc.createElement('div'));
-  await settle(h);
-  assert.deepEqual(dockStatuses(h), ['completed', 'completed', 'in_progress']);
-  h.cleanups.forEach((fn) => fn());
-  h.close();
-});
-
-test('full checklist in an unrendered step response is used; thinking text is ignored', { skip }, async () => {
-  const h = mount(pane([ul(li('阶段一', 'in_progress'), li('阶段二'), li('阶段三'))], { generating: true }));
-  const { turn } = attachTurnSteps(h, ['进展：\n- [x] 阶段一\n- [/] 阶段二\n- [ ] 阶段三']);
-  turn.appendChild(h.doc.createElement('p'));
-  await settle(h);
-  assert.deepEqual(dockStatuses(h), ['completed', 'in_progress', 'pending']);
-  h.cleanups.forEach((fn) => fn());
-  h.close();
-});
-
-test('marker with a mismatched total is ignored', { skip }, async () => {
-  const h = mount(pane([ul(li('阶段一', 'in_progress'), li('阶段二'), li('阶段三'))], { generating: true }));
-  const { turn } = attachTurnSteps(h, ['〔进度 2/5〕别的任务']);
-  turn.appendChild(h.doc.createElement('p'));
-  await settle(h);
-  assert.deepEqual(dockStatuses(h), ['in_progress', 'pending', 'pending']);
-  h.cleanups.forEach((fn) => fn());
-  h.close();
-});
-
-test('inline backtick or fenced code examples never pollute progress; fresher fiber.alternate wins', { skip }, async () => {
-  const h = mount(pane([ul(li('阶段一', 'in_progress'), li('阶段二'), li('阶段三'))], { generating: true }));
-  const turn = h.doc.querySelector('[data-testid="agent-response"]');
-  const staleSteps = [{ step: { case: 'plannerResponse', value: { response: '开场说明' } } }];
-  const freshSteps = [
-    { step: { case: 'plannerResponse', value: { response: '开场说明' } } },
-    {
-      step: {
-        case: 'plannerResponse',
-        value: {
-          response: '正文引用示例 `<!-- todo:3/3 -->` 和 `〔进度 3/3〕` 不应生效，只有真实注释生效。<!-- todo:2/3 -->'
-        }
-      }
-    }
-  ];
-  /* Simulate React 18 double-buffering where __reactFiber$ points to the stale branch and fresher steps sit on .alternate */
-  turn.__reactFiber$t = {
-    memoizedProps: {},
-    return: {
-      memoizedProps: { container: { steps: staleSteps } },
-      alternate: { memoizedProps: { container: { steps: freshSteps } } }
-    }
-  };
-  turn.appendChild(h.doc.createElement('div'));
-  await settle(h);
-  assert.deepEqual(dockStatuses(h), ['completed', 'in_progress', 'pending']);
-  h.cleanups.forEach((fn) => fn());
-  h.close();
-});
-
-test('follow-up live turn relays incomplete checklist and advances via <!-- todo:N/M --> without re-emitting <ul>', { skip }, async () => {
-  const h = mount(
-    pane([ul(li('阶段一', 'in_progress'), li('阶段二'), li('阶段三')), '<p>继续执行第二阶段</p>'], { generating: true })
-  );
-  const turns = h.doc.querySelectorAll('[data-testid="agent-response"]');
-  const secondTurn = turns[1];
-  secondTurn.__reactFiber$t = {
-    memoizedProps: {},
-    return: {
-      memoizedProps: {
-        container: {
-          steps: [{ step: { case: 'plannerResponse', value: { response: '继续第二阶段。<!-- todo:2/3 -->' } } }]
-        }
-      }
-    }
-  };
-  secondTurn.appendChild(h.doc.createElement('div'));
-  await settle(h);
-  const dock = h.doc.querySelector('[data-ag-todo-dock]');
-  assert.equal(dock.parentElement, secondTurn, 'live card relays into the follow-up turn');
-  assert.deepEqual(dockStatuses(h), ['completed', 'in_progress', 'pending']);
-  h.cleanups.forEach((fn) => fn());
-  h.close();
-});
-
-test('Knowledge Work mode: final all-[x] DOM <ul> hides cleanly when container.steps had [/] origin, while ordinary checklists stay native', { skip }, async () => {
-  const h = mount(
-    pane([
-      ul(li('首航体检', 'completed'), li('查更新日志', 'completed'), li('汇总报告', 'completed')),
-      ul(li('身份证复印件', 'completed'), li('合同原件'))
-    ])
-  );
-  const turns = h.doc.querySelectorAll('[data-testid="agent-response"]');
-  turns[0].__reactFiber$t = {
-    memoizedProps: {},
-    return: {
-      memoizedProps: {
-        container: {
-          steps: [
-            {
-              step: {
-                case: 'plannerResponse',
-                value: { response: '- [/] 首航体检\n- [ ] 查更新日志\n- [ ] 汇总报告' }
-              }
-            },
-            {
-              step: {
-                case: 'plannerResponse',
-                value: { response: '- [x] 首航体检\n- [x] 查更新日志\n- [x] 汇总报告' }
-              }
-            }
-          ]
-        }
-      }
-    }
-  };
-  turns[1].__reactFiber$t = {
-    memoizedProps: {},
-    return: {
-      memoizedProps: {
-        container: {
-          steps: [{ step: { case: 'plannerResponse', value: { response: '- [x] 身份证复印件\n- [ ] 合同原件' } } }]
-        }
-      }
-    }
-  };
-  turns[0].appendChild(h.doc.createElement('span'));
-  await settle(h);
-
-  const cards = h.doc.querySelectorAll('.ag-claude-todo-card');
-  assert.equal(cards.length, 0, 'completed execution-progress card disappears cleanly');
-  assert.equal(turns[0].querySelector('ul').getAttribute('data-ag-todo-merged'), 'true', 'completed TodoWrite <ul> stays hidden');
-  assert.equal(turns[1].querySelector('ul').hasAttribute('data-ag-todo-merged'), false, 'ordinary answer checklist untouched');
-  assert.equal(turns[1].querySelector('ul').hasAttribute('data-ag-todo-primary'), false, 'ordinary answer checklist untouched');
-  h.cleanups.forEach((fn) => fn());
-  h.close();
-});
-
-test('Knowledge Work mode live turn: mounts live dock card from container.steps even when zero <ul> exist in DOM', { skip }, async () => {
-  const h = mount(
-    pane(['<button type="button" data-testid="progress-updates-collapsible" aria-expanded="false">已工作 12s · 2 条进展</button>'], {
-      generating: true
-    })
-  );
-  attachTurnSteps(h, ['- [/] 阶段一\n- [ ] 阶段二\n- [ ] 阶段三', '推进第二阶段。<!-- todo:2/3 -->']);
-  const turn = h.doc.querySelector('[data-testid="agent-response"]');
-  turn.appendChild(h.doc.createElement('span'));
-  await settle(h);
-  assert.deepEqual(dockStatuses(h), ['completed', 'in_progress', 'pending']);
-  h.cleanups.forEach((fn) => fn());
-  h.close();
-});
-
-test('v2.33+ virtualized scroll: follow-up turn with <!-- todo:N/M --> + all-[x] <ul> renders card even when opening [/] turn is unmounted', { skip }, async () => {
-  const h = mount(
-    pane([
-      ul(li('检查版本与日志', 'completed'), li('修复调试端口守护', 'completed'), li('实机校验自愈状态', 'completed')),
-      ul(li('普通附件核对一', 'completed'), li('普通附件核对二', 'completed'), li('普通附件核对三', 'completed'))
-    ])
-  );
-  const turns = h.doc.querySelectorAll('[data-testid="agent-response"]');
-  turns[0].__reactFiber$t = {
-    memoizedProps: {},
-    return: {
-      memoizedProps: {
-        container: {
-          steps: [
-            { step: { case: 'plannerResponse', value: { response: '开始第三阶段校验。<!-- todo:3/3 -->' } } },
-            {
-              step: {
-                case: 'plannerResponse',
-                value: { response: '- [x] 检查版本与日志\n- [x] 修复调试端口守护\n- [x] 实机校验自愈状态' }
-              }
-            }
-          ]
-        }
-      }
-    }
-  };
-  turns[0].appendChild(h.doc.createElement('span'));
-  await settle(h);
-
-  const cards = h.doc.querySelectorAll('.ag-claude-todo-card');
-  assert.equal(cards.length, 0, 'completed follow-up TodoWrite card disappears cleanly');
-  assert.equal(turns[0].querySelector('ul').getAttribute('data-ag-todo-merged'), 'true', 'completed TodoWrite <ul> stays hidden');
-  assert.equal(turns[1].querySelector('ul').hasAttribute('data-ag-todo-merged'), false, 'ordinary all-[x] list without todo marker stays native');
-  assert.equal(turns[1].querySelector('ul').hasAttribute('data-ag-todo-primary'), false, 'ordinary all-[x] list without todo marker stays native');
-  h.cleanups.forEach((fn) => fn());
-  h.close();
-});
-
-test('v2.33+ trajectorySlice.stepsInSlice: hides completed all-[x] list cleanly when earlier turn DOM node was virtual-scroll unmounted', { skip }, async () => {
-  const h = mount(
-    pane([
-      `<div data-testid="autoscroll-viewport"></div>`,
-      ul(li('拉取补丁源码', 'completed'), li('验证热重载', 'completed'), li('推送远端仓库', 'completed'))
-    ])
-  );
-  const vp = h.doc.querySelector('[data-testid="autoscroll-viewport"]');
-  vp.__reactFiber$vp = {
-    memoizedProps: {},
-    return: {
-      memoizedProps: {
-        trajectorySlice: {
-          stepsInSlice: [
-            {
-              step: {
-                case: 'plannerResponse',
-                value: { response: '- [/] 拉取补丁源码\n- [ ] 验证热重载\n- [ ] 推送远端仓库' }
-              }
-            }
-          ]
-        }
-      }
-    }
-  };
-  const turns = h.doc.querySelectorAll('[data-testid="agent-response"]');
-  turns[1].appendChild(h.doc.createElement('span'));
-  await settle(h);
-
-  assert.equal(h.doc.querySelectorAll('.ag-claude-todo-card').length, 0, 'completed TodoWrite card disappears');
-  assert.equal(turns[1].querySelector('ul').getAttribute('data-ag-todo-merged'), 'true', 'completed TodoWrite <ul> stays hidden');
-  h.cleanups.forEach((fn) => fn());
-  h.close();
-});
 
 test('inline undo & edit: expands in-bubble editor, previews modified files, toggles file revert, and resends via host', { skip }, async () => {
   const h = mount(`
@@ -959,55 +644,6 @@ test('metrics slimming: keeps outer TTFT pill, renders minimalist two-section po
   h.close();
 });
 
-test('historical incomplete or split-turn checklist never resurrects into an unrelated new live turn', { skip }, async () => {
-  const h = mount(
-    pane(
-      [
-        ul(li('排查发虚根因', 'in_progress'), li('修复设置侧栏'), li('融合遥测浮窗'), li('同步仓库提交')),
-        '<p>异步任务汇总结果</p>',
-        '<p>正在思考新问题</p>'
-      ],
-      { generating: true }
-    )
-  );
-  const turns = h.doc.querySelectorAll('[data-testid="agent-response"]');
-  turns[2].__reactFiber$t = {
-    memoizedProps: { container: { steps: [{ step: { case: 'plannerResponse', value: { response: '正在思考新问题' } } }] } }
-  };
-  await settle(h);
-
-  assert.equal(h.doc.querySelector('[data-ag-todo-dock]'), null, 'must never hijack an unrelated new live turn');
-  const card = h.doc.querySelector('[data-ag-todo-mount]');
-  assert.ok(card && card.getAttribute('data-ag-todo-paused') === 'true', 'historical incomplete card stays paused in place');
-
-  /* Next sub-turn completes the checklist right after plain bullets in markdown */
-  turns[1].__reactFiber$t = {
-    memoizedProps: {
-      container: {
-        steps: [
-          {
-            step: {
-              case: 'plannerResponse',
-              value: {
-                response:
-                  '- 说明文字一行\n- 说明文字二行\n- [x] 排查发虚根因\n- [x] 修复设置侧栏\n- [x] 融合遥测浮窗\n- [x] 同步仓库提交'
-              }
-            }
-          }
-        ]
-      }
-    }
-  };
-  turns[1].appendChild(h.doc.createElement('span'));
-  await settle(h);
-
-  assert.equal(h.doc.querySelector('[data-ag-todo-dock]'), null, 'live dock still stays unmounted on unrelated Turn 2');
-  assert.equal(h.doc.querySelectorAll('.ag-claude-todo-card').length, 0, 'completed historical card disappears cleanly once Turn 1 completes it');
-  assert.equal(turns[0].querySelector('ul').getAttribute('data-ag-todo-merged'), 'true', 'original opening <ul> stays hidden');
-  h.cleanups.forEach((fn) => fn());
-  h.close();
-});
-
 test('context ring & quota popover: adds inline compact button and immediately clears post-/compact 94% red state', { skip }, async () => {
   const html = `
     <section>
@@ -1191,7 +827,7 @@ test('context ring & quota popover: adds inline compact button and immediately c
   h.close();
 });
 
-test('inline pill CJK hygiene, slice marker TodoWrite recovery & fractional sub-1 tok/s metrics formatting', { skip }, async () => {
+test('inline pill CJK hygiene & fractional sub-1 tok/s metrics formatting', { skip }, async () => {
   const html = `
     <section>
       <div data-testid="autoscroll-viewport" id="vp">
@@ -1241,11 +877,11 @@ test('inline pill CJK hygiene, slice marker TodoWrite recovery & fractional sub-
   assert.equal(codes[0].nextSibling.nodeValue, '\u2060，发布');
   assert.equal(codes[1].nextSibling.nodeValue, '\u2060。');
 
-  /* 2. Slice <!-- todo:N/M --> + all-[x] list hides completed TodoWrite list cleanly without touching unrelated next list */
-  assert.equal(h.doc.querySelectorAll('.ag-claude-todo-card').length, 0, 'completed TodoWrite card disappears cleanly');
-  const uls = h.doc.querySelectorAll('ul.contains-task-list');
-  assert.equal(uls[0].getAttribute('data-ag-todo-merged'), 'true', 'marker-backed completed TodoWrite <ul> stays hidden');
-  assert.equal(uls[1].hasAttribute('data-ag-todo-merged'), false, 'unrelated ordinary checklist stays native');
+  /* 2. Checklists stay completely native now that TodoWrite card is retired */
+  assert.equal(h.doc.querySelectorAll('.ag-claude-todo-card').length, 0);
+  for (const listEl of h.doc.querySelectorAll('ul.contains-task-list')) {
+    assert.equal(listEl.hasAttribute('data-ag-todo-merged'), false);
+  }
 
   /* 3. Fractional 0.3 tok/s + Hold >= 60s formatted cleanly instead of "0 tok/s · Hold 264.5s" */
   const slim = h.window.__t.parseAndSlimMetricsPayload({
@@ -1353,7 +989,7 @@ test('dictation editor isolation, ask-question icon removal & Orchestrator model
   h.close();
 });
 
-test('answered ask_question card hides speech-bubble ? icon and live TodoWrite stays spinning while drafting in composer', { skip }, async () => {
+test('answered ask_question card hides speech-bubble ? icon and running timer stays live while drafting in composer', { skip }, async () => {
   const css = fs.readFileSync(path.join(REPO, 'user', 'custom.css'), 'utf8');
   assert.match(css, /\.rounded-xl\.border\s*>\s*div\.border-b\s*>\s*svg:has\(>\s*path\[d\^="M477\.92-295\.77"\]\)/);
 
@@ -1362,10 +998,7 @@ test('answered ask_question card hides speech-bubble ? icon and live TodoWrite s
     <section>
       <div data-testid="agent-response">
         <h6 class="sr-only">Agent working</h6>
-        <div data-markdown-root="true">
-          ${ul(li('Step one', 'completed'), li('Step two', 'in_progress'), li('Step three', 'pending'))}
-        </div>
-        <p>Working on step two...</p>
+        <button data-testid="tool-group-collapsible" aria-expanded="false"><span title="Running command">Running command</span><svg></svg></button>
       </div>
       <div id="antigravity.agentSidePanelInputBox">
         <button type="button" data-testid="input-send-button">Send</button>
@@ -1376,59 +1009,21 @@ test('answered ask_question card hides speech-bubble ? icon and live TodoWrite s
   h.window.__t.syncStepStream();
   await settle(h);
 
-  const dock = h.doc.querySelector('[data-ag-todo-dock="true"]');
-  assert.ok(dock, 'live dock stays mounted even when composer swaps cancel button for send button');
-  const card = dock.querySelector('.ag-claude-todo-card');
-  assert.ok(card && !card.hasAttribute('data-ag-todo-paused'), 'active turn is never marked Paused while Agent working');
+  assert.ok(h.doc.querySelector('.ag-orbit-dots'), 'running indicator stays active when composer swaps cancel button for send button');
 
-  /* Localized Chinese heading (`Agent 正在执行`) also keeps card live */
+  /* Localized Chinese heading (`Agent 正在执行`) also keeps indicator live */
   const h6 = h.doc.querySelector('[data-testid="agent-response"] > h6');
   h6.textContent = 'Agent 正在执行';
   h.window.__t.syncStepStream();
-  assert.ok(h.doc.querySelector('[data-ag-todo-dock="true"]'), 'localized Agent 正在执行 keeps dock live');
+  assert.ok(h.doc.querySelector('.ag-orbit-dots'), 'localized Agent 正在执行 keeps running indicator live');
 
-  /* Once the turn finishes/cancels (`Agent said`), undock & show Paused if incomplete */
+  /* Once the turn finishes/cancels (`Agent said`), indicator clears */
   h6.textContent = 'Agent said';
   h.window.__t.syncStepStream();
-  await new Promise((r) => setTimeout(r, 340));
-  h.window.__t.syncStepStream();
-  const inlineCard = h.doc.querySelector('.ag-claude-todo-card[data-ag-todo-paused="true"]');
-  assert.ok(inlineCard, 'incomplete turn becomes Paused once heading switches to Agent said');
+  assert.equal(h.doc.querySelector('.ag-orbit-dots'), null, 'indicator clears once heading switches to Agent said');
 
   h.cleanups.forEach((fn) => fn());
   h.close();
-});
-
-test('Claude-style auto-hide: <!-- todo:done --> and final-phase natural finish hide the TodoWrite card cleanly', { skip }, async () => {
-  /* Case A: explicit <!-- todo:done --> hides live dock immediately and leaves opening <ul> hidden */
-  const h1 = mount(pane([ul(li('Phase 1', 'in_progress'), li('Phase 2'), li('Phase 3'))], { generating: true }));
-  attachTurnSteps(h1, ['- [/] Phase 1\n- [ ] Phase 2\n- [ ] Phase 3', 'Step 2 <!-- todo:2/3 -->']);
-  h1.doc.querySelector('[data-testid="agent-response"]').appendChild(h1.doc.createElement('span'));
-  await settle(h1);
-  assert.deepEqual(dockStatuses(h1), ['completed', 'in_progress', 'pending']);
-
-  attachTurnSteps(h1, [
-    '- [/] Phase 1\n- [ ] Phase 2\n- [ ] Phase 3',
-    'Step 2 <!-- todo:2/3 -->',
-    'All finished! <!-- todo:done -->'
-  ]);
-  h1.doc.querySelector('[data-testid="agent-response"]').appendChild(h1.doc.createElement('span'));
-  await settle(h1);
-  assert.equal(h1.doc.querySelector('[data-ag-todo-dock]'), null, 'dock disappears on <!-- todo:done -->');
-  assert.equal(h1.doc.querySelectorAll('.ag-claude-todo-card').length, 0, 'no archived card left behind');
-  assert.equal(h1.doc.querySelector('ul').getAttribute('data-ag-todo-merged'), 'true', 'opening <ul> stays hidden');
-  h1.cleanups.forEach((fn) => fn());
-  h1.close();
-
-  /* Case B: model reached final phase <!-- todo:3/3 --> and finished naturally without <!-- todo:done --> */
-  const h2 = mount(pane([ul(li('Phase 1', 'in_progress'), li('Phase 2'), li('Phase 3'))], { generating: false }));
-  attachTurnSteps(h2, ['- [/] Phase 1\n- [ ] Phase 2\n- [ ] Phase 3', 'Final verification <!-- todo:3/3 -->', 'Done!']);
-  h2.doc.querySelector('[data-testid="agent-response"]').appendChild(h2.doc.createElement('span'));
-  await settle(h2);
-  assert.equal(h2.doc.querySelectorAll('.ag-claude-todo-card').length, 0, 'card auto-hides after final phase finishes cleanly');
-  assert.equal(h2.doc.querySelector('ul').getAttribute('data-ag-todo-merged'), 'true', 'opening <ul> stays hidden');
-  h2.cleanups.forEach((fn) => fn());
-  h2.close();
 });
 
 test('Home composer with top project/location bar mounts context ring beside model picker, not top row', { skip }, async () => {

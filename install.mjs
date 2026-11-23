@@ -2014,7 +2014,7 @@ async function cmdDoctor() {
       },
       legacyThemePatchPresent,
       installState: state ? { installedAt: state.installedAt, options: state.options, files: Object.keys(state.files || {}) } : null,
-      userLayerInstalled: (readTextSafe(path.join(USER_DIR, 'custom.js')) || '').includes('ag-claude-todo-card'),
+      userLayerInstalled: (readTextSafe(path.join(USER_DIR, 'custom.js')) || '').includes('__agClaudeUxDispose'),
       autoUpdate: agent,
       lastSync: state?.sync || null,
       fonts: checkFontsInstalled(),

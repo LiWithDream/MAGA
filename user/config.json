@@ -15,7 +15,6 @@
     "customJs": true,
     "claudeUxStepUnfold": true,
     "claudeUxCollapseAnimation": true,
-    "claudeUxTodoCard": true,
     "claudeUxRunningTimer": true,
     "claudeUxContextRing": true,
     "claudeUxModelMenu": true,

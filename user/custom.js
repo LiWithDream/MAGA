@@ -3,12 +3,10 @@
  * Non-invasive runtime UX extension for Google Antigravity Desktop 2.0:
  * 1. Unfolds outer `worked-for-collapsible` end-of-turn wrapper so interleaved narration & tool summaries stay inline.
  * 2. Adds smooth 190ms collapse transition when React unmounts finished `tool-group-collapsible` panels.
- * 3. Renders an in-place reactive Claude `TodoWrite` checklist card (`- [ ]` pending / `- [/]` active / `- [x]` completed),
- *    deduplicating and merging all checklist updates within the same turn into a single card.
- * 4. Attaches orbiting official-blue dots + live `1s / 2s...` elapsed timer exclusively to the actively executing step row.
+ * 3. Attaches orbiting official-blue dots + live `1s / 2s...` elapsed timer exclusively to the actively executing step row.
  *
  * Feature switches (user/config.json -> "modules", all default true):
- *   claudeUxStepUnfold, claudeUxCollapseAnimation, claudeUxTodoCard, claudeUxRunningTimer,
+ *   claudeUxStepUnfold, claudeUxCollapseAnimation, claudeUxRunningTimer,
  *   claudeUxContextRing, claudeUxModelMenu
  */
 (function () {
@@ -71,7 +69,6 @@
     i18n: effectiveModBool('i18n', false),
     stepUnfold: effectiveModBool('claudeUxStepUnfold', true),
     collapseAnim: effectiveModBool('claudeUxCollapseAnimation', true),
-    todoCard: effectiveModBool('claudeUxTodoCard', true),
     runningTimer: effectiveModBool('claudeUxRunningTimer', true),
     contextRing: effectiveModBool('claudeUxContextRing', true),
     modelMenu: effectiveModBool('claudeUxModelMenu', true),
@@ -109,9 +106,6 @@
   const autoExpandCount = new WeakMap();
   const openSnapshots = new WeakMap();
   const runningTimers = new WeakMap();
-  const paneLastActiveTs = new WeakMap();
-  const paneUndockTimers = new WeakMap();
-  const todoParseCache = new WeakMap();
   let timerIntervalId = null;
   let rafPending = false;
 
@@ -142,13 +136,6 @@
     clearTimeout(id);
     pendingTimeouts.delete(id);
   }
-
-  const SVG_PENDING =
-    '<svg class="ag-todo-ico ag-todo-pending" width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="8" cy="8" r="6.3" stroke="currentColor" stroke-width="1.35"/></svg>';
-  const SVG_ACTIVE =
-    '<svg class="ag-todo-ico ag-todo-active" width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="8" cy="8" r="6.3" stroke="currentColor" stroke-opacity="0.32" stroke-width="1.4"/><path d="M8 1.7a6.3 6.3 0 0 1 6.3 6.3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>';
-  const SVG_DONE =
-    '<svg class="ag-todo-ico ag-todo-done" width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="8" cy="8" r="7.1" fill="currentColor"/><path class="ag-todo-done-check" d="M5.05 8.15l1.95 1.95 3.95-4.1" stroke="#FFFFFF" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
   const PAST_LABEL_RE =
     /^(?:Explored|Ran\b|Edited\b|Done\b|Read\b|Searched|Listed|Viewed|Checked|Found\b|Created|Updated|Deleted|Wrote\b|Written|Built\b|Tested|Installed|Fetched|Analyzed|Reviewed|Thought\b|Worked\b|Completed|Finished|Failed|Stopped|Cancelled|Canceled|Skipped|已探索|已运行|已编辑|已完成|已读取|已搜索|已查看|已检查|已创建|已更新|已删除|已写入|已构建|已测试|已失败|已取消|完成了|思考了)/i;
@@ -216,150 +203,6 @@
     setTimeout(cleanup, 220); /* intentionally untracked: must also run after dispose */
   }
 
-  function parseTodoUlUncached(ul) {
-    const allLis = Array.from(ul.children).filter((el) => el.tagName === 'LI');
-    const lis = allLis.filter((el) => el.classList.contains('task-list-item'));
-    if (lis.length < 2 || lis.length > 15 || lis.length !== allLis.length) return null;
-
-    const items = [];
-    for (const li of lis) {
-      const iconBox = li.querySelector(':scope > div:first-child, :scope > p:first-child > div:first-child');
-      let status = 'pending';
-      if (li.classList.contains('task-checked')) {
-        status = 'completed';
-      } else if (iconBox && iconBox.classList.contains('bg-primary')) {
-        status = 'in_progress';
-      }
-      const clone = li.cloneNode(true);
-      const firstDiv = clone.querySelector(':scope > div:first-child, :scope > p:first-child > div:first-child');
-      if (firstDiv) firstDiv.remove();
-      const checkedSpan = clone.querySelector(':scope > span.task-checked-content, :scope > p > span.task-checked-content');
-      const labelHtml = (checkedSpan ? checkedSpan.innerHTML : clone.innerHTML).trim();
-      if (!labelHtml) return null;
-      items.push({ status, html: labelHtml });
-    }
-    return items;
-  }
-
-  function parseTodoUl(ul) {
-    if (!ul.classList || !ul.classList.contains('contains-task-list')) return null;
-    if (ul.closest('pre, code, [data-testid="user-input-step"], .agy-user-bubble')) return null;
-    if (ul.closest('[data-testid="tool-group-collapsible"] + div')) return null;
-    if (ul.closest('.ag-claude-todo-card, .ag-collapse-ghost')) return null;
-
-    /* cheap signature: item count + status classes + inline tag count + text; avoids re-cloning unchanged lists every sync */
-    const sig = `${ul.children.length}|${ul.querySelectorAll(':scope > li.task-checked').length}|${
-      ul.querySelectorAll(':scope > li > div.bg-primary:first-child, :scope > li > p:first-child > div.bg-primary:first-child').length
-    }|${ul.querySelectorAll('code, strong, em, a, del, span').length}|${ul.textContent}`;
-    const cached = todoParseCache.get(ul);
-    if (cached && cached.sig === sig) return cached.items;
-    const items = parseTodoUlUncached(ul);
-    todoParseCache.set(ul, { sig, items });
-    return items;
-  }
-
-  function normalizeTodoText(html) {
-    return html
-      .replace(/<[^>]*>/g, '')
-      .replace(/\s+/g, ' ')
-      .trim()
-      .toLowerCase();
-  }
-
-  function isChecklistEvolution(prevItems, nextItems) {
-    if (!prevItems || !nextItems) return false;
-    const a = prevItems.map((it) => normalizeTodoText(it.html));
-    const b = nextItems.map((it) => normalizeTodoText(it.html));
-    let matches = 0;
-    for (const txtB of b) {
-      if (!txtB) continue;
-      const hit = a.some(
-        (txtA) =>
-          txtA === txtB ||
-          (txtA.length >= 6 && txtB.length >= 6 && (txtA.includes(txtB.slice(0, 6)) || txtB.includes(txtA.slice(0, 6))))
-      );
-      if (hit) matches += 1;
-    }
-    return matches >= Math.max(1, Math.ceil(Math.min(a.length, b.length) * 0.4));
-  }
-
-  function iconForStatus(status) {
-    return status === 'completed' ? SVG_DONE : status === 'in_progress' ? SVG_ACTIVE : SVG_PENDING;
-  }
-
-  function patchCardDom(card, items, paused) {
-    if (paused) card.setAttribute('data-ag-todo-paused', 'true');
-    else card.removeAttribute('data-ag-todo-paused');
-    const sig = JSON.stringify(items);
-    if (card.getAttribute('data-ag-todo-sig') === sig) return;
-    card.setAttribute('data-ag-todo-sig', sig);
-
-    const existingRows = Array.from(card.children).filter((el) => el.classList.contains('ag-claude-todo-row'));
-    if (existingRows.length === items.length) {
-      for (let i = 0; i < items.length; i++) {
-        const row = existingRows[i];
-        const it = items[i];
-        const prevStatus = row.getAttribute('data-status');
-        if (prevStatus !== it.status) {
-          row.setAttribute('data-status', it.status);
-          const ico = row.querySelector(':scope > .ag-todo-ico');
-          if (ico) {
-            ico.outerHTML = iconForStatus(it.status);
-          }
-        }
-        const lbl = row.querySelector(':scope > .ag-claude-todo-label');
-        if (lbl && lbl.innerHTML !== it.html) {
-          lbl.innerHTML = it.html;
-        }
-      }
-      return;
-    }
-
-    card.innerHTML = items
-      .map(
-        (it) =>
-          `<div class="ag-claude-todo-row" data-status="${it.status}">${iconForStatus(it.status)}<span class="ag-claude-todo-label">${it.html}</span></div>`
-      )
-      .join('');
-  }
-
-  function removeInlineMount(ul) {
-    if (ul.nextElementSibling && ul.nextElementSibling.hasAttribute('data-ag-todo-mount')) {
-      ul.nextElementSibling.remove();
-    }
-  }
-
-  function markMergedUl(ul) {
-    ul.removeAttribute('data-ag-todo-primary');
-    ul.setAttribute('data-ag-todo-merged', 'true');
-    removeInlineMount(ul);
-    const pWrap = ul.parentElement;
-    if (pWrap && pWrap.children.length === 1) {
-      pWrap.setAttribute('data-ag-todo-empty-wrap', 'true');
-    }
-  }
-
-  function restoreNativeUl(ul) {
-    ul.removeAttribute('data-ag-todo-primary');
-    ul.removeAttribute('data-ag-todo-merged');
-    removeInlineMount(ul);
-    const pWrap = ul.parentElement;
-    if (pWrap) pWrap.removeAttribute('data-ag-todo-empty-wrap');
-  }
-
-  function renderInlineTodoCard(anchorUl, items, paused) {
-    anchorUl.setAttribute('data-ag-todo-primary', 'true');
-    anchorUl.removeAttribute('data-ag-todo-merged');
-    let card = anchorUl.nextElementSibling;
-    if (!card || !card.hasAttribute('data-ag-todo-mount')) {
-      card = document.createElement('div');
-      card.className = 'ag-claude-todo-card';
-      card.setAttribute('data-ag-todo-mount', 'true');
-      anchorUl.insertAdjacentElement('afterend', card);
-    }
-    patchCardDom(card, items, paused);
-  }
-
   /* One pane = one composer input box + its conversation. Computed once per sync (panes are few). */
   const INPUT_BOX_SEL = '[id="antigravity.agentSidePanelInputBox"]';
   function collectPanes() {
@@ -395,685 +238,6 @@
       h6.textContent ||
       '';
     return AGENT_WORKING_H6_RE.test(raw.trim());
-  }
-
-  function isPaneActivelyGenerating(pane) {
-    if (!pane) return false;
-    /* Composer replaces `input-cancel-button` with the send/queue arrow whenever the user drafts a follow-up
-       or attaches an image mid-turn, so also check the active turn's native `<h6>Agent working</h6>` heading. */
-    const isActive =
-      Boolean(pane.inputBox.querySelector('button[data-testid="input-cancel-button"]')) ||
-      paneHasWorkingHeading(pane.root);
-    const now = Date.now();
-    if (isActive) {
-      paneLastActiveTs.set(pane.root, now);
-      const pendingTimer = paneUndockTimers.get(pane.root);
-      if (pendingTimer) {
-        cancelLater(pendingTimer);
-        paneUndockTimers.delete(pane.root);
-      }
-      return true;
-    }
-    const lastTs = paneLastActiveTs.get(pane.root) || 0;
-    if (now - lastTs < 280) {
-      if (!paneUndockTimers.has(pane.root)) {
-        const tid = later(() => {
-          paneUndockTimers.delete(pane.root);
-          scheduleSync();
-        }, 300);
-        paneUndockTimers.set(pane.root, tid);
-      }
-      return true;
-    }
-    return false;
-  }
-
-  function renderLiveDockedTodoCard(turnEl, items) {
-    if (!turnEl) return false;
-    let dock = turnEl.querySelector(':scope > [data-ag-todo-dock="true"]');
-    if (!dock) {
-      dock = document.createElement('div');
-      dock.className = 'ag-claude-todo-live-dock';
-      dock.setAttribute('data-ag-todo-dock', 'true');
-      turnEl.appendChild(dock);
-    } else if (turnEl.lastElementChild !== dock) {
-      turnEl.appendChild(dock);
-    }
-    let card = dock.querySelector(':scope > .ag-claude-todo-card');
-    if (!card) {
-      card = document.createElement('div');
-      card.className = 'ag-claude-todo-card';
-      card.setAttribute('data-ag-todo-mount', 'true');
-      dock.appendChild(card);
-    }
-    patchCardDom(card, items, false);
-    return dock;
-  }
-
-  function isAllTodoCompleted(items) {
-    return Boolean(items && items.length > 0 && items.every((it) => it.status === 'completed'));
-  }
-
-  function hasActiveTodo(items) {
-    return Boolean(items && items.some((it) => it.status === 'in_progress'));
-  }
-
-  /*
-   * Per-turn checklist memory. Antigravity virtualises the step stream: once a mid-turn narration scrolls out
-   * of its render window the node (and its checklist) is unmounted, leaving only the turn's first list and the
-   * final summary in the DOM. Every checklist version seen while mounted is remembered here, keyed by content
-   * signature (so a version re-mounted by scrolling up keeps its original order). The newest version is the one
-   * with the most progress; ties go to the one seen last.
-   */
-  const turnTodoMemory = new WeakMap();
-  let todoSeenSeq = 0;
-  function todoSignature(items) {
-    return items.map((it) => `${it.status.charAt(0)}:${normalizeTodoText(it.html)}`).join('|');
-  }
-  function todoProgress(items) {
-    let score = 0;
-    for (const it of items) score += it.status === 'completed' ? 2 : it.status === 'in_progress' ? 1 : 0;
-    return score;
-  }
-  function rememberTurnTodo(turnEl, items) {
-    if (!turnEl || !items) return;
-    let mem = turnTodoMemory.get(turnEl);
-    if (!mem) {
-      mem = new Map();
-      turnTodoMemory.set(turnEl, mem);
-    }
-    const sig = todoSignature(items);
-    if (!mem.has(sig)) mem.set(sig, { seq: ++todoSeenSeq, items, progress: todoProgress(items) });
-  }
-  function latestRememberedTodo(turnEl, baseItems) {
-    const mem = turnEl && turnTodoMemory.get(turnEl);
-    if (!mem || !baseItems) return null;
-    let best = null;
-    for (const rec of mem.values()) {
-      if (!isChecklistEvolution(baseItems, rec.items)) continue;
-      if (!best || rec.progress > best.progress || (rec.progress === best.progress && rec.seq > best.seq)) best = rec;
-    }
-    if (!best || todoProgress(baseItems) > best.progress) return null;
-    return best.items;
-  }
-
-  /*
-   * Mid-turn narration is frequently NOT rendered as markdown: Antigravity stores the text that accompanies tool
-   * calls in the planner step's `thinking` field and shows it inside the (often collapsed) tool group, so no
-   * <ul class="contains-task-list"> ever exists for it. Read checklists straight from the step data instead.
-   */
-  const TASK_LINE_RE = /^\s*(?:[-*+]|\d+[.)])\s+\[([ xX/])\]\s+(.+?)\s*$/;
-  function stripFencedCode(md) {
-    return String(md || '')
-      .replace(/```[\s\S]*?```/g, '')
-      .replace(/~~~[\s\S]*?~~~/g, '');
-  }
-  function stripAllCode(md) {
-    return stripFencedCode(md).replace(/`[^`\n]+`/g, '');
-  }
-  function renderInlineMd(text) {
-    return escapeHtml(text)
-      .replace(/`([^`]+)`/g, '<code>$1</code>')
-      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-  }
-  function extractTaskLists(md) {
-    const lists = [];
-    let cur = null;
-    const flush = () => {
-      if (cur && cur.length >= 2 && cur.length <= 15) lists.push(cur);
-      cur = null;
-    };
-    for (const line of stripFencedCode(md).split('\n')) {
-      const m = line.match(TASK_LINE_RE);
-      if (m) {
-        if (!cur) cur = [];
-        const mark = m[1];
-        cur.push({
-          status: mark === '/' ? 'in_progress' : mark === ' ' ? 'pending' : 'completed',
-          html: renderInlineMd(m[2])
-        });
-      } else if (line.trim() || cur === null) {
-        flush();
-      }
-    }
-    flush();
-    return lists;
-  }
-  /*
-   * The turn container's props hold the complete, ordered step list (independent of what is mounted).
-   * Crucial React 18/19 detail: `turnEl.__reactFiber$` is bound at initial mount and is NOT swapped when React
-   * commits to `fiber.alternate`; we therefore inspect BOTH `f` and `f.alternate` and pick the fresher step array.
-   * Mid-turn progress is signalled via an invisible HTML comment `<!-- todo:N/M -->` (never shown in prose), with
-   * fenced & inline code stripped first so prose examples like `` `〔进度 2/4〕` `` can never pollute progress state.
-   */
-  const PROGRESS_RE =
-    /<!--\s*todo\s*:\s*(\d+)\s*\/\s*(\d+)\s*-->|〔\s*进度\s*(\d+)\s*\/\s*(\d+)\s*〕|\[\s*progress\s*(\d+)\s*\/\s*(\d+)\s*\]/gi;
-  const TODO_DONE_RE = /<!--\s*todo\s*:\s*done(?:\s*\/\s*\d+)?\s*-->/i;
-  const LEGACY_MARKER_LINE_RE = /^\s*(?:〔\s*进度\s*\d+\s*\/\s*\d+\s*〕|\[\s*progress\s*\d+\s*\/\s*\d+\s*\])[^\n]*$/i;
-  const turnProgressByTotal = new WeakMap();
-  const turnTodoDone = new WeakSet();
-  const stepScanState = new WeakMap();
-
-  function hideLegacyProgressParagraphs() {
-    for (const p of document.querySelectorAll('[data-testid="agent-response"] p')) {
-      if (p.hasAttribute('data-ag-todo-marker-line')) continue;
-      if (LEGACY_MARKER_LINE_RE.test((p.textContent || '').trim())) {
-        p.setAttribute('data-ag-todo-marker-line', 'true');
-        const pWrap = p.parentElement;
-        if (pWrap && pWrap.children.length === 1) {
-          pWrap.setAttribute('data-ag-todo-empty-wrap', 'true');
-        }
-      }
-    }
-  }
-
-  function stepsFromFiberBranch(f) {
-    const p = f && f.memoizedProps;
-    return p && p.container && Array.isArray(p.container.steps) ? p.container.steps : null;
-  }
-
-  function stepTailSig(steps) {
-    if (!steps || !steps.length) return 0;
-    const last = steps[steps.length - 1];
-    const v = last && last.step && last.step.value;
-    const txt = v && typeof v === 'object' ? v.modifiedResponse || v.response || '' : '';
-    return steps.length * 1000000 + txt.length;
-  }
-
-  function turnStepsOf(turnEl) {
-    const fk = Object.keys(turnEl).find((k) => k.startsWith('__reactFiber$'));
-    let f = fk ? turnEl[fk] : null;
-    let best = null;
-    for (let i = 0; i < 8 && f; i++, f = f.return) {
-      const a = stepsFromFiberBranch(f);
-      const b = stepsFromFiberBranch(f.alternate);
-      const pick = stepTailSig(b) > stepTailSig(a) ? b : a;
-      if (pick && stepTailSig(pick) > stepTailSig(best)) {
-        best = pick;
-      }
-      if (best) break;
-    }
-    return best;
-  }
-
-  function turnContinuesChecklist(turnEl, baseItems) {
-    if (!turnEl || !baseItems || !baseItems.length) return false;
-    const mem = turnTodoMemory.get(turnEl);
-    if (mem && mem.size > 0) {
-      for (const rec of mem.values()) {
-        if (isChecklistEvolution(baseItems, rec.items)) return true;
-      }
-      return false;
-    }
-    const byTotal = turnProgressByTotal.get(turnEl);
-    return Boolean(byTotal && byTotal.has(baseItems.length));
-  }
-
-  function recordProgressMarker(turnEl, total, n) {
-    if (!turnEl || !(n >= 1 && total >= n && total <= 15)) return false;
-    let byTotal = turnProgressByTotal.get(turnEl);
-    if (!byTotal) {
-      byTotal = new Map();
-      turnProgressByTotal.set(turnEl, byTotal);
-    }
-    const prev = byTotal.get(total) || 0;
-    if (n > prev) {
-      byTotal.set(total, n);
-      return true;
-    }
-    return false;
-  }
-
-  function harvestStepChecklists(turnEl, isLiveTurn = true) {
-    if (!turnEl) return false;
-    const steps = turnStepsOf(turnEl);
-    if (!steps || !steps.length) return false;
-    let changed = false;
-    const lastIdx = steps.length - 1;
-    for (let idx = 0; idx < steps.length; idx++) {
-      const s = steps[idx];
-      const v = s && s.step && s.step.case === 'plannerResponse' ? s.step.value : null;
-      if (!v || typeof v !== 'object') continue;
-      const text = v.modifiedResponse || v.response || '';
-      if (!text) continue;
-      /* Re-evaluate the trailing planner step on live turns in case SSE appended `<!-- todo:N/M -->` without a DOM childList mutation */
-      if ((!isLiveTurn || idx < lastIdx) && stepScanState.get(v) === text.length) continue;
-      stepScanState.set(v, text.length);
-
-      for (const items of extractTaskLists(text)) {
-        const before = latestRememberedTodo(turnEl, items);
-        rememberTurnTodo(turnEl, items);
-        const after = latestRememberedTodo(turnEl, items);
-        if (after && (!before || todoSignature(after) !== todoSignature(before))) changed = true;
-      }
-
-      const cleanText = stripAllCode(text);
-      if (TODO_DONE_RE.test(cleanText) && !turnTodoDone.has(turnEl)) {
-        turnTodoDone.add(turnEl);
-        changed = true;
-      }
-      PROGRESS_RE.lastIndex = 0;
-      let m;
-      while ((m = PROGRESS_RE.exec(cleanText))) {
-        const n = Number(m[1] || m[3] || m[5]);
-        const total = Number(m[2] || m[4] || m[6]);
-        if (recordProgressMarker(turnEl, total, n)) changed = true;
-      }
-    }
-    return changed;
-  }
-
-  function harvestDomTodoComments(turnEl) {
-    if (!turnEl || !document.createTreeWalker || typeof NodeFilter === 'undefined') return;
-    try {
-      const walker = document.createTreeWalker(turnEl, NodeFilter.SHOW_COMMENT);
-      let node;
-      while ((node = walker.nextNode())) {
-        const raw = `<!--${node.nodeValue || ''}-->`;
-        if (TODO_DONE_RE.test(raw)) turnTodoDone.add(turnEl);
-        PROGRESS_RE.lastIndex = 0;
-        let m;
-        while ((m = PROGRESS_RE.exec(raw))) {
-          recordProgressMarker(turnEl, Number(m[2] || m[4] || m[6]), Number(m[1] || m[3] || m[5]));
-        }
-      }
-    } catch {}
-  }
-
-  function applyProgressMarker(turnEls, items) {
-    if (!items || !items.length) return items;
-    const list = Array.isArray(turnEls) ? turnEls : [turnEls];
-    for (const t of list) {
-      if (t && turnTodoDone.has(t)) {
-        return items.map((it) => ({ status: 'completed', html: it.html }));
-      }
-    }
-    let maxN = 0;
-    for (const t of list) {
-      const byTotal = t && turnProgressByTotal.get(t);
-      const n = byTotal ? byTotal.get(items.length) || 0 : 0;
-      if (n > maxN) maxN = n;
-    }
-    if (!maxN) return items;
-    const next = items.map((it, i) => ({
-      status: i < maxN - 1 ? 'completed' : i === maxN - 1 ? 'in_progress' : 'pending',
-      html: it.html
-    }));
-    return todoProgress(next) > todoProgress(items) ? next : items;
-  }
-
-  const CANCELLED_TURN_RE = /(?:^|\s)(?:cancelled|canceled|interrupted|stopped by user|已取消|已中断|已停止)(?:\s|$)/i;
-  function isFinalPhaseNaturallyDone(items, turnEls) {
-    if (!items || items.length < 2) return false;
-    const lastIdx = items.length - 1;
-    if (items[lastIdx].status !== 'in_progress') return false;
-    for (let i = 0; i < lastIdx; i++) {
-      if (items[i].status !== 'completed') return false;
-    }
-    const list = Array.isArray(turnEls) ? turnEls : [turnEls];
-    let reachedFinal = false;
-    for (const t of list) {
-      const byTotal = t && turnProgressByTotal.get(t);
-      if (byTotal && (byTotal.get(items.length) || 0) >= items.length) {
-        reachedFinal = true;
-      }
-    }
-    if (!reachedFinal) return false;
-    const lastTurn = list[list.length - 1];
-    if (lastTurn && CANCELLED_TURN_RE.test((lastTurn.textContent || '').slice(-160))) return false;
-    return true;
-  }
-
-  const paneSliceActiveOrigins = new WeakMap();
-  const paneSliceLastLen = new WeakMap();
-
-  function sliceStepsFromBranch(f) {
-    const ts = f && f.memoizedProps && f.memoizedProps.trajectorySlice;
-    return ts && Array.isArray(ts.stepsInSlice) ? ts.stepsInSlice : null;
-  }
-
-  function harvestPaneSliceOrigins(pane) {
-    if (!pane || !pane.root) return;
-    const vp = pane.root.querySelector('[data-testid="autoscroll-viewport"]');
-    if (!vp) return;
-    const fk = Object.keys(vp).find((k) => k.startsWith('__reactFiber$'));
-    let f = fk ? vp[fk] : null;
-    let sliceSteps = null;
-    for (let i = 0; i < 12 && f; i++, f = f.return) {
-      const a = sliceStepsFromBranch(f);
-      const b = sliceStepsFromBranch(f.alternate);
-      const pick = (b ? b.length : 0) > (a ? a.length : 0) ? b : a;
-      if (pick && pick.length) {
-        sliceSteps = pick;
-        break;
-      }
-    }
-    if (!sliceSteps) return;
-    if (paneSliceLastLen.get(pane.root) === sliceSteps.length && paneSliceActiveOrigins.has(pane.root)) return;
-    paneSliceLastLen.set(pane.root, sliceSteps.length);
-
-    let origins = paneSliceActiveOrigins.get(pane.root);
-    if (!origins) {
-      origins = new Map();
-      paneSliceActiveOrigins.set(pane.root, origins);
-    }
-    const openMarkerTotals = new Set();
-    for (let i = 0; i < sliceSteps.length; i++) {
-      const s = sliceSteps[i];
-      const v = s && s.step && s.step.case === 'plannerResponse' ? s.step.value : null;
-      if (!v || typeof v !== 'object') continue;
-      const text = v.modifiedResponse || v.response || '';
-      if (!text) continue;
-
-      const cleanText = stripAllCode(text);
-      PROGRESS_RE.lastIndex = 0;
-      let m;
-      while ((m = PROGRESS_RE.exec(cleanText))) {
-        const total = Number(m[2] || m[4] || m[6]);
-        if (total >= 2) openMarkerTotals.add(total);
-      }
-
-      for (const items of extractTaskLists(text)) {
-        if (hasActiveTodo(items)) {
-          origins.set(todoSignature(items), items);
-        } else if (isAllTodoCompleted(items) && openMarkerTotals.has(items.length)) {
-          origins.set(todoSignature(items), items);
-          openMarkerTotals.delete(items.length);
-        }
-      }
-    }
-  }
-
-  function paneHasSliceActiveOrigin(pane, items) {
-    const origins = pane && paneSliceActiveOrigins.get(pane.root);
-    if (!origins || !items) return false;
-    for (const originItems of origins.values()) {
-      if (isChecklistEvolution(originItems, items)) return true;
-    }
-    return false;
-  }
-
-  function turnHasActiveTodoOrigin(turnEl, items) {
-    if (!turnEl || !items) return false;
-    const mem = turnTodoMemory.get(turnEl);
-    if (!mem) return false;
-    for (const rec of mem.values()) {
-      if (hasActiveTodo(rec.items) && isChecklistEvolution(rec.items, items)) return true;
-    }
-    return false;
-  }
-
-  function turnHasUnclaimedProgressMarker(turnEl, total) {
-    const byTotal = turnEl && turnProgressByTotal.get(turnEl);
-    if (!byTotal || !byTotal.has(total)) return false;
-    const mem = turnTodoMemory.get(turnEl);
-    if (!mem) return true;
-    for (const rec of mem.values()) {
-      if (rec.items.length === total && isAllTodoCompleted(rec.items)) return false;
-    }
-    return true;
-  }
-
-  /*
-   * When mid-turn planner steps are collapsed (`worked-for-collapsible` / `progress-updates-collapsible`) or
-   * earlier turns in a multi-turn task are virtual-scroll unmounted by `autoscroll-viewport` (`v2.33.0+`),
-   * only the final all-`[x]` `<ul>` may be mounted in the DOM. Check:
-   *  1) `turnTodoMemory` (`[/]` evolution) or own `<!-- todo:N/M -->` marker on `turnEl`;
-   *  2) preceding mounted `paneTurns` (`[/]` evolution, or an unclaimed `<!-- todo:N/M -->` sub-turn not yet closed);
-   *  3) unmounted `[/]` origins in `trajectorySlice.stepsInSlice` on `autoscroll-viewport`.
-   * Ordinary `[ ] / [x]` answer checklists (which never had an `[/]` step or `<!-- todo:N/M -->`) stay untouched.
-   */
-  function findStepActiveOriginTurns(pane, paneTurns, turnEl, items) {
-    if (!items) return { matched: false, turns: [] };
-    if (turnEl) {
-      const ownMarkers = turnProgressByTotal.get(turnEl);
-      if ((ownMarkers && ownMarkers.has(items.length)) || turnHasActiveTodoOrigin(turnEl, items)) {
-        return { matched: true, turns: [turnEl] };
-      }
-    }
-    if (paneTurns && paneTurns.length) {
-      const endIdx = turnEl ? paneTurns.indexOf(turnEl) : -1;
-      const upper = endIdx >= 0 ? endIdx : paneTurns.length;
-      let seenInterveningCompletedSameLen = false;
-      for (let i = upper - 1; i >= 0; i--) {
-        const prevTurn = paneTurns[i];
-        if (turnHasActiveTodoOrigin(prevTurn, items)) {
-          return { matched: true, turns: turnEl ? [prevTurn, turnEl] : [prevTurn] };
-        }
-        if (!seenInterveningCompletedSameLen && turnHasUnclaimedProgressMarker(prevTurn, items.length)) {
-          return { matched: true, turns: turnEl ? [prevTurn, turnEl] : [prevTurn] };
-        }
-        const prevMem = turnTodoMemory.get(prevTurn);
-        if (prevMem) {
-          for (const rec of prevMem.values()) {
-            if (rec.items.length === items.length && isAllTodoCompleted(rec.items)) {
-              seenInterveningCompletedSameLen = true;
-            }
-          }
-        }
-      }
-    }
-    if (pane && paneHasSliceActiveOrigin(pane, items)) {
-      return { matched: true, turns: turnEl ? [turnEl] : [] };
-    }
-    return { matched: false, turns: [] };
-  }
-
-  function bestRememberedInTurn(turnEl) {
-    const mem = turnEl && turnTodoMemory.get(turnEl);
-    if (!mem || mem.size === 0) return null;
-    let best = null;
-    for (const rec of mem.values()) {
-      if (!best || rec.progress > best.progress || (rec.progress === best.progress && rec.seq > best.seq)) {
-        best = rec;
-      }
-    }
-    return best;
-  }
-
-  /**
-   * Only *execution-progress* checklists are taken over:
-   *  - a cluster starts with a list containing an active `[/]` item (either mounted in DOM or recorded in
-   *    `container.steps` when Knowledge Work mode hides mid-turn steps);
-   *  - later lists join it when they evolve from it (same items) or, across turns, when they still look like
-   *    progress (`[/]` present or 100% done).
-   * Ordinary answer checklists (materials, review points: only `[ ]` / `[x]`, no `[/]` anywhere) stay native.
-   * A taken-over list is never hidden without a visible replacement card.
-   */
-  function syncTodoCards(panes) {
-    const touched = new Set();
-    const activeDocks = new Set();
-
-    if (FEAT.todoCard) {
-      hideLegacyProgressParagraphs();
-
-      const paneMeta = new Map();
-      for (const pane of panes) {
-        const paneLive = isPaneActivelyGenerating(pane);
-        const paneTurns = Array.from(pane.root.querySelectorAll('[data-testid="agent-response"]'));
-        const latestPaneTurn = paneTurns.length ? paneTurns[paneTurns.length - 1] : null;
-        harvestPaneSliceOrigins(pane);
-        for (const tEl of paneTurns) {
-          harvestStepChecklists(tEl, paneLive && tEl === latestPaneTurn);
-          harvestDomTodoComments(tEl);
-        }
-        paneMeta.set(pane, { paneLive, paneTurns, latestPaneTurn });
-      }
-
-      const byPane = new Map();
-      for (const ul of document.querySelectorAll('ul.contains-task-list')) {
-        const items = parseTodoUl(ul);
-        if (!items) continue;
-        const turnEl = ul.closest('[data-testid="agent-response"]');
-        const pane = turnEl ? paneFor(turnEl, panes) : null;
-        if (turnEl && !pane) harvestStepChecklists(turnEl, false);
-        const key = pane || ul; /* orphan lists form their own group */
-        let group = byPane.get(key);
-        if (!group) {
-          group = { pane, entries: [] };
-          byPane.set(key, group);
-        }
-        group.entries.push({ ul, items, turnEl });
-        rememberTurnTodo(turnEl, items);
-      }
-
-      const handledLiveTurns = new Set();
-
-      for (const group of byPane.values()) {
-        const meta = group.pane ? paneMeta.get(group.pane) : null;
-        const paneTurns = meta ? meta.paneTurns : null;
-        const paneLive = Boolean(meta && meta.paneLive);
-        const latestPaneTurn = meta ? meta.latestPaneTurn : null;
-
-        const clusters = [];
-        for (const entry of group.entries) {
-          const last = clusters[clusters.length - 1];
-          const active = hasActiveTodo(entry.items);
-          let join = false;
-          if (last) {
-            const evolved = isChecklistEvolution(last.items, entry.items);
-            const sameTurn = Boolean(entry.turnEl && last.lastTurnEl === entry.turnEl);
-            if (sameTurn) {
-              join = evolved;
-            } else {
-              const explicitContinuation = Boolean(entry.turnEl && turnContinuesChecklist(entry.turnEl, last.items));
-              const looksLikeProgress = active || (isAllTodoCompleted(entry.items) && explicitContinuation);
-              join = evolved || (!isAllTodoCompleted(last.items) && looksLikeProgress);
-            }
-          }
-          if (join) {
-            last.lists.push(entry.ul);
-            last.items = entry.items;
-            if (entry.turnEl) {
-              last.lastTurnEl = entry.turnEl;
-              if (!last.turnEls.includes(entry.turnEl)) last.turnEls.push(entry.turnEl);
-            }
-          } else {
-            const origin = active
-              ? { matched: true, turns: entry.turnEl ? [entry.turnEl] : [] }
-              : findStepActiveOriginTurns(group.pane, paneTurns, entry.turnEl, entry.items);
-            if (origin.matched) {
-              clusters.push({
-                lists: [entry.ul],
-                items: entry.items,
-                lastTurnEl: entry.turnEl || null,
-                turnEls: origin.turns.length ? origin.turns : entry.turnEl ? [entry.turnEl] : []
-              });
-            }
-          }
-          /* else: ordinary checklist, left untouched */
-        }
-
-        for (let i = 0; i < clusters.length; i++) {
-          const cluster = clusters[i];
-          for (const ul of cluster.lists) touched.add(ul);
-
-          /* Only relay a prior incomplete checklist into latestPaneTurn when latestPaneTurn itself signals
-             continuation (`<!-- todo:N/M -->` or an evolved checklist), preventing old cards from resurrecting on fresh prompts */
-          const isLastCluster = i === clusters.length - 1;
-          const relayedIntoLatest =
-            paneLive &&
-            isLastCluster &&
-            Boolean(latestPaneTurn) &&
-            cluster.lastTurnEl !== latestPaneTurn &&
-            !isAllTodoCompleted(cluster.items) &&
-            turnContinuesChecklist(latestPaneTurn, cluster.items);
-          const candidateTurns =
-            relayedIntoLatest && !cluster.turnEls.includes(latestPaneTurn)
-              ? [...cluster.turnEls, latestPaneTurn]
-              : cluster.turnEls;
-
-          /* Scan forward across mounted turns in case a later step / split turn recorded completion (`all-[x]` or `<!-- todo:done -->`) */
-          const firstTurnIdx = paneTurns && cluster.turnEls.length ? paneTurns.indexOf(cluster.turnEls[0]) : -1;
-          const memoryScanTurns = paneTurns && firstTurnIdx >= 0 ? paneTurns.slice(firstTurnIdx) : candidateTurns;
-          const nextClusterStartTurn = i + 1 < clusters.length ? clusters[i + 1].turnEls[0] : null;
-          const progressScanTurns = [];
-          for (const tEl of memoryScanTurns) {
-            if (nextClusterStartTurn && tEl === nextClusterStartTurn) break;
-            const remembered = latestRememberedTodo(tEl, cluster.items);
-            if (remembered) cluster.items = remembered;
-            if (
-              candidateTurns.includes(tEl) ||
-              turnTodoDone.has(tEl) ||
-              (turnProgressByTotal.get(tEl) && turnProgressByTotal.get(tEl).has(cluster.items.length))
-            ) {
-              progressScanTurns.push(tEl);
-            }
-          }
-          cluster.items = applyProgressMarker(progressScanTurns.length ? progressScanTurns : candidateTurns, cluster.items);
-          const completed =
-            isAllTodoCompleted(cluster.items) ||
-            (!paneLive && isFinalPhaseNaturallyDone(cluster.items, progressScanTurns.length ? progressScanTurns : candidateTurns));
-
-          const isDockedLiveCluster =
-            paneLive &&
-            !completed &&
-            isLastCluster &&
-            Boolean(latestPaneTurn) &&
-            (cluster.lastTurnEl === latestPaneTurn || relayedIntoLatest);
-          const mountedDock = isDockedLiveCluster ? renderLiveDockedTodoCard(latestPaneTurn, cluster.items) : null;
-
-          if (mountedDock) {
-            handledLiveTurns.add(latestPaneTurn);
-            activeDocks.add(mountedDock);
-            for (const ul of cluster.lists) markMergedUl(ul);
-          } else if (completed) {
-            /* Completed task: disappear cleanly (like Claude Desktop) and keep original checklist <ul> nodes hidden */
-            for (const ul of cluster.lists) markMergedUl(ul);
-          } else {
-            /* Interrupted / paused mid-way: keep a visible Paused card at the latest list */
-            const anchorUl = cluster.lists[cluster.lists.length - 1];
-            for (let j = 0; j < cluster.lists.length - 1; j++) markMergedUl(cluster.lists[j]);
-            renderInlineTodoCard(anchorUl, cluster.items, true);
-          }
-        }
-      }
-
-      /* Fallback when ALL <ul> nodes in the live turn were unmounted off-screen or hidden in Knowledge Work mode */
-      for (const pane of panes) {
-        const meta = paneMeta.get(pane);
-        if (!meta || !meta.paneLive || !meta.latestPaneTurn || handledLiveTurns.has(meta.latestPaneTurn)) continue;
-        const { paneTurns, latestPaneTurn } = meta;
-        let best = bestRememberedInTurn(latestPaneTurn);
-        let turnScope = [latestPaneTurn];
-        if (!best && paneTurns.length >= 2) {
-          const prevTurn = paneTurns[paneTurns.length - 2];
-          const prevBest = bestRememberedInTurn(prevTurn);
-          if (
-            prevBest &&
-            !isAllTodoCompleted(prevBest.items) &&
-            turnContinuesChecklist(latestPaneTurn, prevBest.items)
-          ) {
-            best = prevBest;
-            turnScope = [prevTurn, latestPaneTurn];
-          }
-        }
-        if (best && (hasActiveTodo(best.items) || turnScope.some((t) => turnHasActiveTodoOrigin(t, best.items)))) {
-          const items = applyProgressMarker(turnScope, best.items);
-          if (!isAllTodoCompleted(items)) {
-            const mountedDock = renderLiveDockedTodoCard(latestPaneTurn, items);
-            if (mountedDock) activeDocks.add(mountedDock);
-          }
-        }
-      }
-    }
-
-    /* release lists we no longer own (re-render, rule change, feature off) */
-    for (const ul of document.querySelectorAll('ul[data-ag-todo-merged], ul[data-ag-todo-primary]')) {
-      if (!touched.has(ul)) restoreNativeUl(ul);
-    }
-    if (!FEAT.todoCard) {
-      document.querySelectorAll('[data-ag-todo-empty-wrap]').forEach((el) => el.removeAttribute('data-ag-todo-empty-wrap'));
-      document.querySelectorAll('[data-ag-todo-marker-line]').forEach((el) => el.removeAttribute('data-ag-todo-marker-line'));
-    }
-    for (const card of document.querySelectorAll('[data-ag-todo-mount]')) {
-      if (card.parentElement && card.parentElement.hasAttribute('data-ag-todo-dock')) continue;
-      const prev = card.previousElementSibling;
-      if (!prev || !prev.hasAttribute('data-ag-todo-primary')) card.remove();
-    }
-    for (const dock of document.querySelectorAll('[data-ag-todo-dock="true"]')) {
-      if (!activeDocks.has(dock)) dock.remove();
-    }
   }
 
   function isActivelyRunningRow(el, isLastCandidate, turnGenerating) {
@@ -1166,11 +330,10 @@
       document.querySelectorAll('.ag-orbit-dots, .ag-elapsed-timer').forEach((n) => n.remove());
     }
 
-    const keepPolling = activeCount > 0 || (FEAT.todoCard && globalGenerating);
+    const keepPolling = activeCount > 0;
     if (keepPolling && !timerIntervalId) {
       timerIntervalId = setInterval(() => {
         const ps = collectPanes();
-        syncTodoCards(ps);
         syncRunningToolIndicators(ps);
       }, 450);
     } else if (!keepPolling && timerIntervalId) {
@@ -1201,7 +364,7 @@
         '.prose :is(:not(pre) > code, bdi.context-scope-mention)'
     );
     for (const pill of pills) {
-      if (pill.closest('[contenteditable="true"], [data-lexical-editor="true"], pre, ul.contains-task-list, .ag-claude-todo-card')) {
+      if (pill.closest('[contenteditable="true"], [data-lexical-editor="true"], pre, ul.contains-task-list')) {
         continue;
       }
 
@@ -1502,7 +665,6 @@
     }
     if (FEAT.collapseAnim) captureOpenToolPanels();
     const panes = collectPanes();
-    syncTodoCards(panes);
     syncRunningToolIndicators(panes);
     syncInlinePillBoundaries();
     syncCodeBlocks();
@@ -7594,14 +6756,6 @@
           'Shows context ring beside the model selector with live 5-hour / weekly quotas and one-click Compact'
         ],
         [
-          'claudeUxTodoCard',
-          'todoCard',
-          '流内 TodoWrite 实时进度卡片',
-          'Inline TodoWrite Progress Card',
-          '将多阶段任务清单渲染为圆角白卡，兼容虚拟滚动与知识工作模式',
-          'Renders multi-step checklists as reactive rounded cards across virtualized turns'
-        ],
-        [
           'claudeUxStepUnfold',
           'stepUnfold',
           '自动展开回合步骤折叠',
@@ -7827,12 +6981,6 @@
       }
     } else if (featKey === 'stepUnfold' && !on) {
       document.querySelectorAll('[data-ag-inline-stream]').forEach((el) => el.removeAttribute('data-ag-inline-stream'));
-    } else if (featKey === 'todoCard' && !on) {
-      document.querySelectorAll('[data-ag-todo-dock]').forEach((d) => d.remove());
-      document.querySelectorAll('[data-ag-todo-mount]').forEach((m) => m.remove());
-      document.querySelectorAll('ul[data-ag-todo-primary], ul[data-ag-todo-merged]').forEach((u) => restoreNativeUl(u));
-      document.querySelectorAll('[data-ag-todo-empty-wrap]').forEach((el) => el.removeAttribute('data-ag-todo-empty-wrap'));
-      document.querySelectorAll('[data-ag-todo-marker-line]').forEach((el) => el.removeAttribute('data-ag-todo-marker-line'));
     } else if (featKey === 'runningTimer' && !on) {
       document.querySelectorAll('.ag-orbit-dots, .ag-elapsed-timer').forEach((n) => n.remove());
     } else if (featKey === 'inlineUndo' && !on) {
@@ -14526,9 +13674,9 @@
   }
 
   const OWN_SEL =
-    '.ag-claude-todo-card, .ag-claude-todo-live-dock, .ag-collapse-ghost, .ag-orbit-dots, .ag-elapsed-timer, #ag-claude-ctx-ring, #ag-claude-quota-popover, #ag-claude-model-popover, #ag-claude-model-subpop, #ag-claude-model-tripop, .ag-claude-inline-editor, .ag-claude-folder-badges, #ag-claude-recent-section, #ag-recent-row-menu, #ag-project-action-menu, #ag-claude-ux-settings-nav, #ag-claude-ux-settings-panel, #ag-settings-stats-wrap, .ag-settings-subhdr-chev, #ag-claude-projects-nav-btn, #ag-claude-projects-view, #ag-claude-project-modal, .ag-code-fold-toggle, .ag-code-fold-bar, #ag-claude-ov-sections';
+    '.ag-collapse-ghost, .ag-orbit-dots, .ag-elapsed-timer, #ag-claude-ctx-ring, #ag-claude-quota-popover, #ag-claude-model-popover, #ag-claude-model-subpop, #ag-claude-model-tripop, .ag-claude-inline-editor, .ag-claude-folder-badges, #ag-claude-recent-section, #ag-recent-row-menu, #ag-project-action-menu, #ag-claude-ux-settings-nav, #ag-claude-ux-settings-panel, #ag-settings-stats-wrap, .ag-settings-subhdr-chev, #ag-claude-projects-nav-btn, #ag-claude-projects-view, #ag-claude-project-modal, .ag-code-fold-toggle, .ag-code-fold-bar, #ag-claude-ov-sections';
   const CLASS_WATCH_SEL =
-    'ul.contains-task-list, [id="antigravity.agentSidePanelInputBox"], [data-testid="tool-group-collapsible"], [data-testid="worked-for-collapsible"], [data-testid="progress-updates-collapsible"], [data-testid="ephemeral-tool-status"]';
+    '[id="antigravity.agentSidePanelInputBox"], [data-testid="tool-group-collapsible"], [data-testid="worked-for-collapsible"], [data-testid="progress-updates-collapsible"], [data-testid="ephemeral-tool-status"]';
 
   function isOwnNode(n) {
     const el = n && (n.nodeType === 1 ? n : n.parentElement);
@@ -14599,6 +13747,15 @@
     }
     const staleThemeToggle = document.getElementById('ag-claude-topbar-theme');
     if (staleThemeToggle) staleThemeToggle.remove();
+    document.querySelectorAll('[data-ag-todo-dock], [data-ag-todo-mount]').forEach((el) => el.remove());
+    document
+      .querySelectorAll('[data-ag-todo-primary], [data-ag-todo-merged], [data-ag-todo-empty-wrap], [data-ag-todo-marker-line]')
+      .forEach((el) => {
+        el.removeAttribute('data-ag-todo-primary');
+        el.removeAttribute('data-ag-todo-merged');
+        el.removeAttribute('data-ag-todo-empty-wrap');
+        el.removeAttribute('data-ag-todo-marker-line');
+      });
     applyUiI18nState(FEAT.i18n);
     if (needsInitialPrefsSync) {
       persistUiPrefsToDaemon(localOverrideTs || Date.now());
@@ -14744,18 +13901,14 @@
     }
     document
       .querySelectorAll(
-        '.ag-collapse-ghost, .ag-orbit-dots, .ag-elapsed-timer, [data-ag-todo-mount], [data-ag-todo-dock], #ag-claude-ctx-ring, #ag-claude-quota-popover, #ag-claude-model-popover, #ag-claude-model-subpop, #ag-claude-model-tripop'
+        '.ag-collapse-ghost, .ag-orbit-dots, .ag-elapsed-timer, #ag-claude-ctx-ring, #ag-claude-quota-popover, #ag-claude-model-popover, #ag-claude-model-subpop, #ag-claude-model-tripop'
       )
       .forEach((el) => el.remove());
     document
       .querySelectorAll(
-        '[data-ag-todo-primary], [data-ag-todo-merged], [data-ag-todo-empty-wrap], [data-ag-todo-marker-line], [data-ag-model-open], [data-ag-inline-stream]'
+        '[data-ag-model-open], [data-ag-inline-stream]'
       )
       .forEach((el) => {
-        el.removeAttribute('data-ag-todo-primary');
-        el.removeAttribute('data-ag-todo-merged');
-        el.removeAttribute('data-ag-todo-empty-wrap');
-        el.removeAttribute('data-ag-todo-marker-line');
         el.removeAttribute('data-ag-model-open');
         el.removeAttribute('data-ag-inline-stream');
       });

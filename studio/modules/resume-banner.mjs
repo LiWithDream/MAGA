@@ -107,6 +107,26 @@ export function createResumeBannerRuntime() {
     document.getElementById(PILL_ID)?.remove();
   }
 
+  function findSendButton(box) {
+    const direct = box.querySelector(
+      '.agy-composer-footer button[data-testid="input-send-button"]:not(:disabled), ' +
+      '.agy-composer-footer button[data-testid="send-button"]:not(:disabled), ' +
+      '.agy-composer-footer button[aria-label="Send"]:not(:disabled), ' +
+      '.agy-composer-footer button[aria-label="Send message"]:not(:disabled), ' +
+      '.agy-composer-footer button[aria-label*="发送"]:not(:disabled), ' +
+      '.agy-composer-footer button[data-tooltip-id*="send"]:not([data-tooltip-id*="record"]):not([data-tooltip-id*="cancel"]):not(:disabled)'
+    );
+    if (direct) return direct;
+    const rightBtns = Array.from(box.querySelectorAll('.agy-composer-footer > div:last-child button'));
+    const last = rightBtns[rightBtns.length - 1];
+    if (!last || last.disabled) return null;
+    const tid = last.getAttribute('data-testid') || '';
+    const aria = (last.getAttribute('aria-label') || '').toLowerCase();
+    if (tid === 'input-cancel-button' || tid === 'voice-start-button' || tid === 'permissions-selector-trigger') return null;
+    if (aria.includes('record') || aria.includes('voice') || aria.includes('cancel')) return null;
+    return last;
+  }
+
   function triggerResume(cid, lastIdx) {
     const box = getMainBox();
     const editor = box?.querySelector('[data-lexical-editor="true"]');
@@ -133,15 +153,32 @@ export function createResumeBannerRuntime() {
     } catch {}
 
     const clickSend = (attempt = 0) => {
-      if (disposed || attempt > 8) return;
-      const sendBtn = box.querySelector('.agy-composer-footer button[data-testid="input-send-button"]');
-      if (sendBtn && !sendBtn.disabled) {
+      if (disposed || isMainRunning() || isEditorEmpty()) return;
+      const sendBtn = findSendButton(box);
+      if (sendBtn) {
         sendBtn.click();
         return;
       }
-      setTimeout(() => clickSend(attempt + 1), 40);
+      if (attempt >= 12) {
+        // Final fallback: submit via Enter keydown on Lexical editor
+        try {
+          editor.focus();
+          editor.dispatchEvent(
+            new KeyboardEvent('keydown', {
+              key: 'Enter',
+              code: 'Enter',
+              keyCode: 13,
+              which: 13,
+              bubbles: true,
+              cancelable: true,
+            })
+          );
+        } catch {}
+        return;
+      }
+      setTimeout(() => clickSend(attempt + 1), 45);
     };
-    requestAnimationFrame(() => clickSend(0));
+    setTimeout(() => clickSend(0), 60);
   }
 
   function fetchResumeState(cid, { force = false } = {}) {

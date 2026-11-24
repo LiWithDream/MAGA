@@ -333,9 +333,10 @@
     const keepPolling = activeCount > 0;
     if (keepPolling && !timerIntervalId) {
       timerIntervalId = setInterval(() => {
+        if (document.hidden) return;
         const ps = collectPanes();
         syncRunningToolIndicators(ps);
-      }, 450);
+      }, 500);
     } else if (!keepPolling && timerIntervalId) {
       clearInterval(timerIntervalId);
       timerIntervalId = null;
@@ -349,6 +350,7 @@
    *    closing/middle punctuation (`、，。！？；：）》」』】`) or opening brackets (`（《「『【`) so punctuation never wraps to line start.
    * Mutates `Text.nodeValue` only (zero childList mutations, zero React Fiber interference) and restores on `dispose()`. */
   const pillSiblingEdits = new WeakMap();
+  const pillBoundaryState = new WeakMap();
   const WORD_JOINER = '\u2060';
   const CJK_OR_FULL_PUNCT_END_SPACE_RE = /([\u4e00-\u9fff\u3000-\u303f\uff01-\uff60“‘])([ \t]+)$/;
   const CJK_OR_FULL_PUNCT_LEAD_SPACE_RE = /^([ \t]+)([\u4e00-\u9fff\u3000-\u303f\uff01-\uff60”’])/;
@@ -364,13 +366,23 @@
         '.prose :is(:not(pre) > code, bdi.context-scope-mention)'
     );
     for (const pill of pills) {
-      if (pill.closest('[contenteditable="true"], [data-lexical-editor="true"], pre, ul.contains-task-list')) {
+      const prev = pill.previousSibling;
+      const fol = pill.nextSibling;
+      const prevCur = prev && prev.nodeType === 3 ? prev.nodeValue || '' : null;
+      const folCur = fol && fol.nodeType === 3 ? fol.nodeValue || '' : null;
+      const cached = pillBoundaryState.get(pill);
+      if (cached && cached.prev === prev && cached.prevTxt === prevCur && cached.fol === fol && cached.folTxt === folCur) {
         continue;
       }
 
-      const prev = pill.previousSibling;
+      if (pill.closest('[contenteditable="true"], [data-lexical-editor="true"], pre, ul.contains-task-list')) {
+        pillBoundaryState.set(pill, { prev, prevTxt: prevCur, fol, folTxt: folCur });
+        continue;
+      }
+
+      let nextPrevTxt = prevCur;
       if (prev && prev.nodeType === 3) {
-        const cur = prev.nodeValue || '';
+        const cur = prevCur || '';
         const spaceMatch = cur.match(CJK_OR_FULL_PUNCT_END_SPACE_RE);
         let next = spaceMatch ? cur.slice(0, cur.length - spaceMatch[2].length) : cur;
         let addedTrailWj = false;
@@ -385,11 +397,12 @@
           pillSiblingEdits.set(prev, rec);
           prev.nodeValue = next;
         }
+        nextPrevTxt = next;
       }
 
-      const fol = pill.nextSibling;
+      let nextFolTxt = folCur;
       if (fol && fol.nodeType === 3) {
-        const cur = fol.nodeValue || '';
+        const cur = folCur || '';
         const hadWj = cur.startsWith(WORD_JOINER);
         const withoutWj = hadWj ? cur.slice(1) : cur;
         const spaceMatch = withoutWj.match(CJK_OR_FULL_PUNCT_LEAD_SPACE_RE);
@@ -406,13 +419,17 @@
           pillSiblingEdits.set(fol, rec);
           fol.nodeValue = next;
         }
+        nextFolTxt = next;
       }
+
+      pillBoundaryState.set(pill, { prev, prevTxt: nextPrevTxt, fol, folTxt: nextFolTxt });
     }
   }
 
   function restoreInlinePillBoundaries() {
     const pills = document.querySelectorAll(':not(pre) > code, bdi.context-scope-mention');
     for (const pill of pills) {
+      pillBoundaryState.delete(pill);
       for (const node of [pill.previousSibling, pill.nextSibling]) {
         if (!node || node.nodeType !== 3 || !pillSiblingEdits.has(node)) continue;
         const rec = pillSiblingEdits.get(node);
@@ -2931,6 +2948,10 @@
         if (high) return high;
       }
     }
+    if (/\bneon\b/i.test(String(fam.title || fam.name || fam.base || fam.variants[0]?.opt?.label || ''))) {
+      const high = fam.variants.find((v) => v.effort === 'High');
+      if (high) return high;
+    }
     const med = fam.variants.find((v) => v.effort === 'Medium');
     return med || fam.variants[0];
   }
@@ -5221,7 +5242,10 @@
 
   /* Left sidebar & Recents rely on native CSS `text-autospace: normal` (1/8em optical boundary, matching right-pane prose
    * without mutating DOM text nodes or polluting copied conversation titles with extra ASCII spaces). */
-  function restoreLegacySidebarCjkNodes() {
+  let legacySidebarCjkRestored = false;
+  function restoreLegacySidebarCjkNodes(force = false) {
+    if (!force && legacySidebarCjkRestored) return;
+    legacySidebarCjkRestored = true;
     document.querySelectorAll('[data-ag-orig-cjk]').forEach((el) => {
       const orig = el.getAttribute('data-ag-orig-cjk');
       el.removeAttribute('data-ag-orig-cjk');
@@ -11846,12 +11870,15 @@
   let custActiveCat = 'skills';
   let custUserPickedCat = false;
   let custSearchInputRef = null;
+  let custEnhancementActive = false;
 
   function onCustSearchInput() {
     syncCustomizationsEnhancement();
   }
 
-  function teardownCustomizationsEnhancement() {
+  function teardownCustomizationsEnhancement(force = false) {
+    if (!force && !custEnhancementActive && !custSearchInputRef) return;
+    custEnhancementActive = false;
     if (custSearchInputRef) {
       custSearchInputRef.removeEventListener('input', onCustSearchInput);
       custSearchInputRef = null;
@@ -12506,6 +12533,7 @@
     const isBrowse = Boolean(browseTab && browseTab.getAttribute('aria-current') === 'page');
     const isInstalled = !isBrowse && (Boolean(instTab && instTab.getAttribute('aria-current') === 'page') || !browseTab);
 
+    custEnhancementActive = true;
     scrollRoot.setAttribute('data-ag-cust-page', '1');
     scrollRoot.setAttribute('data-ag-cust-tab', isInstalled ? 'installed' : 'browse');
     stickyHdr.setAttribute('data-ag-cust-sticky', '1');
@@ -12718,7 +12746,6 @@
       ensureProjectsSidebarObserver();
       positionProjectsOverlay();
     }
-    syncSidebarHideNativeProjects();
   }
 
   /* ==========================================================================
@@ -13674,7 +13701,7 @@
   }
 
   const OWN_SEL =
-    '.ag-collapse-ghost, .ag-orbit-dots, .ag-elapsed-timer, #ag-claude-ctx-ring, #ag-claude-quota-popover, #ag-claude-model-popover, #ag-claude-model-subpop, #ag-claude-model-tripop, .ag-claude-inline-editor, .ag-claude-folder-badges, #ag-claude-recent-section, #ag-recent-row-menu, #ag-project-action-menu, #ag-claude-ux-settings-nav, #ag-claude-ux-settings-panel, #ag-settings-stats-wrap, .ag-settings-subhdr-chev, #ag-claude-projects-nav-btn, #ag-claude-projects-view, #ag-claude-project-modal, .ag-code-fold-toggle, .ag-code-fold-bar, #ag-claude-ov-sections';
+    '.ag-collapse-ghost, .ag-orbit-dots, .ag-elapsed-timer, #ag-claude-ctx-ring, #ag-claude-quota-popover, #ag-claude-model-popover, #ag-claude-model-subpop, #ag-claude-model-tripop, .ag-claude-inline-editor, .ag-claude-folder-badges, #ag-claude-recent-section, #ag-recent-row-menu, #ag-project-action-menu, #ag-claude-ux-settings-nav, #ag-claude-ux-settings-panel, #ag-settings-stats-wrap, .ag-settings-subhdr-chev, #ag-claude-projects-nav-btn, #ag-claude-projects-view, #ag-claude-project-modal, .ag-code-fold-toggle, .ag-code-fold-bar, #ag-claude-ov-sections, [data-agy-picker-host="1"], #agy-capsule-picker-host, #agy-main-subagent-pill, #agy-subagent-menu, #agy-resume-pill, [data-agy-sub-pill], #agy-ov-usage-card, #agy-usage-tooltip';
   const CLASS_WATCH_SEL =
     '[id="antigravity.agentSidePanelInputBox"], [data-testid="tool-group-collapsible"], [data-testid="worked-for-collapsible"], [data-testid="progress-updates-collapsible"], [data-testid="ephemeral-tool-status"]';
 
@@ -13858,7 +13885,7 @@
     clearAllFolderBadges();
     removeRecentSection();
     clearSidebarHideNativeProjects();
-    teardownCustomizationsEnhancement();
+    teardownCustomizationsEnhancement(true);
     teardownOverviewPanel();
     if (prefStoreUnsub) {
       try {
@@ -13913,7 +13940,7 @@
         el.removeAttribute('data-ag-inline-stream');
       });
     restoreInlinePillBoundaries();
-    restoreLegacySidebarCjkNodes();
+    restoreLegacySidebarCjkNodes(true);
     clearSidebarHideNativeProjects();
     clearPinnedSidebarRowTooltips();
     if (docRoot && docRoot.getAttribute('lang') === 'zh-CN') {

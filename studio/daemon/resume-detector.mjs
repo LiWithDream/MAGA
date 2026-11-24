@@ -4,9 +4,10 @@
  * to determine whether the last turn was interrupted abnormally (app quit/restart/crash,
  * mid-tool abort, manual cancel, error, or unanswered prompt).
  */
-import { existsSync, statSync } from 'node:fs';
+import { statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 
 const CONV_DIR = path.join(homedir(), '.gemini', 'antigravity', 'conversations');
@@ -26,48 +27,53 @@ const STATUS_ERROR_B = 7;
 const cache = new Map(); // cascadeId -> { stamp, result }
 const MAX_CACHE = 48;
 
-function getFileStamp(dbPath) {
-  try {
-    const st = statSync(dbPath);
-    let walStamp = '';
-    const walPath = `${dbPath}-wal`;
-    if (existsSync(walPath)) {
-      const wst = statSync(walPath);
-      walStamp = `:${wst.size}:${Math.trunc(wst.mtimeMs)}`;
-    }
-    return `${st.size}:${Math.trunc(st.mtimeMs)}${walStamp}`;
-  } catch {
-    return '';
-  }
+function inspectDbFiles(dbPath) {
+  const st = statSync(dbPath, { throwIfNoEntry: false });
+  if (!st) return null;
+  const walSt = statSync(`${dbPath}-wal`, { throwIfNoEntry: false });
+  const hasActiveWal = Boolean(walSt && walSt.size > 0);
+  const walStamp = walSt ? `:${walSt.size}:${Math.trunc(walSt.mtimeMs)}` : '';
+  return {
+    stamp: `${st.size}:${Math.trunc(st.mtimeMs)}${walStamp}`,
+    hasActiveWal,
+  };
 }
 
-export function collectResumeState(payload) {
+export function collectResumeState(payload, { conversationsDir = CONV_DIR } = {}) {
   const cid = typeof payload?.cascadeId === 'string' ? payload.cascadeId.trim() : '';
   if (!cid || !SAFE_ID_RE.test(cid)) {
     return { ok: false, interrupted: false, error: 'invalid_cascade_id' };
   }
 
-  const dbPath = path.join(CONV_DIR, `${cid}.db`);
-  if (!existsSync(dbPath)) {
+  const dbPath = path.join(conversationsDir, `${cid}.db`);
+  const meta = inspectDbFiles(dbPath);
+  if (!meta) {
     return { ok: true, cascadeId: cid, interrupted: false, reason: 'no_db', lastIdx: -1 };
   }
 
-  const stamp = getFileStamp(dbPath);
-  const hit = cache.get(cid);
+  const { stamp, hasActiveWal } = meta;
+  const cacheKey = `${conversationsDir}:${cid}`;
+  const hit = cache.get(cacheKey);
   if (hit && hit.stamp === stamp) {
     return hit.result;
   }
 
   let db = null;
   try {
-    db = new DatabaseSync(dbPath, { readOnly: true });
+    let location = dbPath;
+    if (!hasActiveWal) {
+      location = pathToFileURL(dbPath);
+      location.searchParams.set('immutable', '1');
+    }
+    db = new DatabaseSync(location, { readOnly: true, timeout: 150 });
+    if (hasActiveWal) db.exec('PRAGMA busy_timeout = 150');
     const last = db
       .prepare('SELECT idx, step_type, status, length(error_details) AS err_len FROM steps ORDER BY idx DESC LIMIT 1')
       .get();
 
     if (!last) {
       const emptyRes = { ok: true, cascadeId: cid, interrupted: false, reason: 'empty', lastIdx: -1 };
-      cache.set(cid, { stamp, result: emptyRes });
+      cache.set(cacheKey, { stamp, result: emptyRes });
       return emptyRes;
     }
 
@@ -113,7 +119,7 @@ export function collectResumeState(payload) {
       const firstKey = cache.keys().next().value;
       if (firstKey) cache.delete(firstKey);
     }
-    cache.set(cid, { stamp, result });
+    cache.set(cacheKey, { stamp, result });
     return result;
   } catch (err) {
     return { ok: false, cascadeId: cid, interrupted: false, error: err?.message || 'read_failed' };

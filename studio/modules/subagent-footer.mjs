@@ -35,6 +35,77 @@ export function createSubagentFooterRuntime({ motionThemes, shortenModelName, sh
   let prevOvOpen = null;
   let prevMainRunning = null;
   let mutualGuardUntil = 0;
+  let restoreOverviewForCid = '';
+  const autoOpenedOverviewCids = new Set();
+
+  const activeTimers = new Set();
+  const handoffTimers = new Set();
+  const activeRafs = new Set();
+  let replayingPanelClick = false;
+  let bootedPreArm = false;
+  let preArmCloseTimer = 0;
+  let subSwitchTimer = 0;
+
+  function prefersReducedMotion() {
+    try {
+      return Boolean(
+        typeof window !== 'undefined' &&
+        typeof window.matchMedia === 'function' &&
+        window.matchMedia('(prefers-reduced-motion: reduce)')?.matches
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  function trackTimeout(fn, ms, pool = activeTimers) {
+    const id = setTimeout(() => {
+      pool.delete(id);
+      if (!disposed) fn();
+    }, ms);
+    pool.add(id);
+    return id;
+  }
+
+  function trackRaf(fn) {
+    const id = requestAnimationFrame(() => {
+      activeRafs.delete(id);
+      if (!disposed) fn();
+    });
+    activeRafs.add(id);
+    return id;
+  }
+
+  function clearHandoffTimers() {
+    for (const id of handoffTimers) clearTimeout(id);
+    handoffTimers.clear();
+  }
+
+  function clearHandoffState() {
+    clearHandoffTimers();
+    const root = document.documentElement;
+    if (!root) return;
+    root.removeAttribute?.('data-agy-panel-handoff');
+    try {
+      if (typeof root.style?.removeProperty === 'function') {
+        root.style.removeProperty('--agy-hold-ov-reserve');
+        root.style.removeProperty('--agy-hold-ov-gutter');
+      } else {
+        root.style?.setProperty?.('--agy-hold-ov-reserve', '');
+        root.style?.setProperty?.('--agy-hold-ov-gutter', '');
+      }
+    } catch {}
+  }
+
+  function safeNativeClick(el) {
+    if (!el || typeof el.click !== 'function') return;
+    replayingPanelClick = true;
+    try {
+      el.click();
+    } finally {
+      replayingPanelClick = false;
+    }
+  }
 
   /* ---- Persistent Watermark Store (id -> "calls:outTok") ---- */
   const seenMap = new Map();
@@ -152,23 +223,233 @@ export function createSubagentFooterRuntime({ motionThemes, shortenModelName, sh
     return Boolean(btn && btn.getAttribute('aria-pressed') === 'true');
   }
 
-  function setAuxSplitToEqualWidth() {
+  function currentRouteKey() {
+    return getActiveRouteCid() || '__current__';
+  }
+
+  function getOverviewContextInfo() {
+    const host = document.querySelector('[data-testid="overview-panel-host"]');
+    if (!host) return null;
+    const fk = Object.keys(host).find((k) => k.startsWith('__reactFiber$'));
+    let fiber = fk ? host[fk] : null;
+    for (let i = 0; i < 14 && fiber; i++, fiber = fiber.return) {
+      const v = fiber.memoizedProps?.value;
+      if (v && typeof v === 'object' && 'breakpoint' in v && 'presentation' in v) {
+        return {
+          breakpoint: v.breakpoint,
+          presentation: v.presentation,
+          cascadeId: v.cascadeId,
+          hydrated: v.hydrated !== false,
+          isOpen: Boolean(v.isOpen),
+          isPanelVisible: Boolean(v.isPanelVisible),
+        };
+      }
+    }
+    return null;
+  }
+
+  function getAuxSplitFiberInfo() {
     const split = document.querySelector('[data-testid="aux-pane-split"]');
-    if (!split) return false;
+    if (!split) return null;
     const fk = Object.keys(split).find((k) => k.startsWith('__reactFiber$'));
     let fiber = fk ? split[fk] : null;
-    for (let i = 0; i < 6 && fiber; i++) {
+    let onResize = null;
+    let unit = '%';
+    let hasExplicitUnit = false;
+    let explicitSidePanelWidth = null;
+    let fallbackSizingWidth = null;
+
+    for (let i = 0; i < 16 && fiber; i++, fiber = fiber.return) {
       const props = fiber.memoizedProps;
-      if (props && (typeof props.onResize === 'function' || typeof props.onDragEnd === 'function')) {
-        try {
-          if (typeof props.onResize === 'function') props.onResize(50);
-          if (typeof props.onDragEnd === 'function') props.onDragEnd(50);
-          return true;
-        } catch {}
+      if (!props || typeof props !== 'object') continue;
+      if (!onResize && typeof props.onResize === 'function') {
+        onResize = props.onResize;
       }
-      fiber = fiber.return;
+      if (!hasExplicitUnit && typeof props.auxPaneWidthUnit === 'string' && props.auxPaneWidthUnit) {
+        unit = props.auxPaneWidthUnit;
+        hasExplicitUnit = true;
+      } else if (!hasExplicitUnit && typeof props.baseSizing?.unit === 'string' && props.baseSizing.unit) {
+        unit = props.baseSizing.unit;
+      }
+      if (
+        explicitSidePanelWidth === null &&
+        typeof props.sidePanelWidth === 'number' &&
+        Number.isFinite(props.sidePanelWidth)
+      ) {
+        explicitSidePanelWidth = props.sidePanelWidth;
+      }
+      if (
+        fallbackSizingWidth === null &&
+        typeof props.baseSizing?.size === 'number' &&
+        Number.isFinite(props.baseSizing.size) &&
+        props.baseSizing.size > 0
+      ) {
+        fallbackSizingWidth = props.baseSizing.size;
+      }
     }
-    return false;
+
+    const currentWidth = explicitSidePanelWidth !== null ? explicitSidePanelWidth : fallbackSizingWidth;
+    const targetWidth = unit === '%'
+      ? 50
+      : (Math.round((split.getBoundingClientRect?.().width || 0) / 2) || 480);
+    const needsResize = typeof onResize === 'function' && (currentWidth === null || Math.abs(currentWidth - targetWidth) >= 0.5);
+    return { split, onResize, unit, currentWidth, targetWidth, needsResize };
+  }
+
+  function preArmAuxEqualWidth() {
+    const info = getAuxSplitFiberInfo();
+    if (!info || !info.needsResize || isAuxPanelOpen() || info.split.hasAttribute('data-split-transition')) {
+      return false;
+    }
+    try {
+      info.onResize(info.targetWidth);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function schedulePreArmAfterClose() {
+    if (preArmCloseTimer) {
+      clearTimeout(preArmCloseTimer);
+      activeTimers.delete(preArmCloseTimer);
+      preArmCloseTimer = 0;
+    }
+    preArmCloseTimer = trackTimeout(() => {
+      preArmCloseTimer = 0;
+      const split = document.querySelector('[data-testid="aux-pane-split"]');
+      if (!isAuxPanelOpen() && !split?.hasAttribute('data-split-transition')) {
+        preArmAuxEqualWidth();
+      }
+    }, 560);
+  }
+
+  function runOverviewToAuxHandoff(openAction) {
+    clearHandoffTimers();
+    const root = document.documentElement;
+    const host = document.querySelector('[data-testid="overview-panel-host"]');
+    let reserve = '0px';
+    let gutter = '0px';
+    if (host) {
+      let hostCs = null;
+      try {
+        hostCs = typeof getComputedStyle === 'function' ? getComputedStyle(host) : null;
+      } catch {}
+      reserve = (host.style?.getPropertyValue?.('--overview-panel-reserve')
+        || hostCs?.getPropertyValue?.('--overview-panel-reserve')
+        || '').trim() || '0px';
+      gutter = (host.style?.getPropertyValue?.('--overview-panel-gutter-reserve')
+        || hostCs?.getPropertyValue?.('--overview-panel-gutter-reserve')
+        || '').trim() || '0px';
+    }
+
+    if (root) {
+      try {
+        root.style?.setProperty?.('--agy-hold-ov-reserve', reserve);
+        root.style?.setProperty?.('--agy-hold-ov-gutter', gutter);
+      } catch {}
+      root.setAttribute?.('data-agy-panel-handoff', 'ov-to-aux-closing');
+    }
+
+    mutualGuardUntil = Date.now() + 750;
+    const ovBtn = getOverviewToggleBtn();
+    if (ovBtn && isOverviewOpen()) {
+      restoreOverviewForCid = currentRouteKey();
+      safeNativeClick(ovBtn);
+      prevOvOpen = false;
+    }
+
+    // Pre-arm 50/50 split while aux is still closed so React transition flag settles before phase 2 opens
+    preArmAuxEqualWidth();
+
+    const reduced = prefersReducedMotion();
+    const phase2Delay = reduced ? 0 : 120;
+    const cleanupDelay = reduced ? 60 : 640;
+
+    trackTimeout(() => {
+      if (root) {
+        root.setAttribute?.('data-agy-panel-handoff', 'ov-to-aux-opening');
+      }
+      if (typeof openAction === 'function') openAction();
+    }, phase2Delay, handoffTimers);
+
+    trackTimeout(() => {
+      clearHandoffState();
+    }, cleanupDelay, handoffTimers);
+  }
+
+  function scheduleOverviewRestoreIfNeeded() {
+    const routeKey = currentRouteKey();
+    if (!restoreOverviewForCid) return false;
+    if (restoreOverviewForCid !== routeKey) {
+      restoreOverviewForCid = '';
+      return false;
+    }
+    if (isOverviewOpen()) {
+      restoreOverviewForCid = '';
+      return false;
+    }
+
+    mutualGuardUntil = Date.now() + 750;
+    clearHandoffTimers();
+    const replayDelay = prefersReducedMotion() ? 0 : 240;
+
+    trackTimeout(() => {
+      if (!isAuxPanelOpen() && currentRouteKey() === routeKey) {
+        if (!isOverviewOpen()) {
+          const ovBtn = getOverviewToggleBtn();
+          if (ovBtn && !ovBtn.disabled) {
+            safeNativeClick(ovBtn);
+            prevOvOpen = isOverviewOpen();
+          }
+        }
+        if (isOverviewOpen()) {
+          restoreOverviewForCid = '';
+        }
+      }
+    }, replayDelay, handoffTimers);
+
+    trackTimeout(() => {
+      if (!isAuxPanelOpen() && currentRouteKey() === routeKey && !isOverviewOpen()) {
+        const ovBtn = getOverviewToggleBtn();
+        if (ovBtn && !ovBtn.disabled) {
+          safeNativeClick(ovBtn);
+          prevOvOpen = isOverviewOpen();
+        }
+      }
+      restoreOverviewForCid = '';
+    }, 540, handoffTimers);
+
+    return true;
+  }
+
+  function ensureDefaultOverviewOpen({ ignoreGuard = false } = {}) {
+    const cid = getActiveRouteCid();
+    if (!cid || autoOpenedOverviewCids.has(cid)) return;
+    if (isAuxPanelOpen()) return;
+    if (!ignoreGuard && Date.now() < mutualGuardUntil) return;
+    if (handoffTimers.size > 0) return;
+    if (document.documentElement?.hasAttribute?.('data-agy-panel-handoff')) return;
+    if (document.querySelector('[data-testid="aux-pane-split"][data-split-transition]')) return;
+
+    const ovBtn = getOverviewToggleBtn();
+    if (!ovBtn || ovBtn.disabled) return;
+
+    const ctx = getOverviewContextInfo();
+    if (ctx) {
+      if (ctx.cascadeId && ctx.cascadeId !== cid) return;
+      if (!ctx.hydrated) return;
+      if (ctx.presentation === 'dropdown' || ctx.breakpoint === 'small') return;
+    }
+
+    if (isOverviewOpen()) {
+      autoOpenedOverviewCids.add(cid);
+      return;
+    }
+
+    autoOpenedOverviewCids.add(cid);
+    safeNativeClick(ovBtn);
+    prevOvOpen = isOverviewOpen();
   }
 
   function enforcePanelMutualExclusion() {
@@ -179,40 +460,60 @@ export function createSubagentFooterRuntime({ motionThemes, shortenModelName, sh
     if (prevAuxOpen === null || prevOvOpen === null) {
       prevAuxOpen = auxOpen;
       prevOvOpen = ovOpen;
+      if (!auxOpen && !bootedPreArm) {
+        bootedPreArm = true;
+        preArmAuxEqualWidth();
+      }
       return;
     }
 
     const auxJustOpened = !prevAuxOpen && auxOpen;
+    const auxJustClosed = prevAuxOpen && !auxOpen;
     const ovJustOpened = !prevOvOpen && ovOpen;
+    const ovJustClosed = prevOvOpen && !ovOpen;
     prevAuxOpen = auxOpen;
     prevOvOpen = ovOpen;
 
-    if (now < mutualGuardUntil) {
-      if (auxJustOpened) {
-        setAuxSplitToEqualWidth();
-        requestAnimationFrame(() => !disposed && isAuxPanelOpen() && setAuxSplitToEqualWidth());
+    if (ovJustClosed && now >= mutualGuardUntil && !restoreOverviewForCid) {
+      const cid = getActiveRouteCid();
+      if (cid) autoOpenedOverviewCids.add(cid);
+    }
+
+    if (auxJustClosed) {
+      schedulePreArmAfterClose();
+      const restored = scheduleOverviewRestoreIfNeeded();
+      if (!restored) {
+        const cid = getActiveRouteCid();
+        if (cid && !autoOpenedOverviewCids.has(cid)) {
+          const reduced = prefersReducedMotion();
+          mutualGuardUntil = Math.max(mutualGuardUntil, now + (reduced ? 0 : 280));
+          trackTimeout(() => {
+            ensureDefaultOverviewOpen({ ignoreGuard: true });
+          }, reduced ? 0 : 280);
+        }
       }
+    }
+
+    if (now < mutualGuardUntil) {
       return;
     }
 
     if (auxJustOpened) {
       if (ovOpen) {
-        mutualGuardUntil = now + 350;
+        mutualGuardUntil = now + 500;
         const ovBtn = getOverviewToggleBtn();
         if (ovBtn) {
-          ovBtn.click();
+          restoreOverviewForCid = currentRouteKey();
+          safeNativeClick(ovBtn);
           prevOvOpen = false;
         }
       }
-      // Reset aux split to 50/50 equal width when opening
-      setAuxSplitToEqualWidth();
-      requestAnimationFrame(() => !disposed && isAuxPanelOpen() && setAuxSplitToEqualWidth());
     } else if (ovJustOpened) {
       if (auxOpen) {
-        mutualGuardUntil = now + 350;
+        mutualGuardUntil = now + 500;
         const auxBtn = getAuxToggleBtn();
         if (auxBtn) {
-          auxBtn.click();
+          safeNativeClick(auxBtn);
           prevAuxOpen = false;
         }
       }
@@ -252,6 +553,57 @@ export function createSubagentFooterRuntime({ motionThemes, shortenModelName, sh
     return null;
   }
 
+  function pushSubagentTab(subagentId) {
+    try {
+      const url = new URL(location.href);
+      url.searchParams.set('tab', `subagent_convo__${subagentId}`);
+      history.pushState(history.state, '', url.pathname + url.search + url.hash);
+      window.dispatchEvent(new PopStateEvent('popstate', { state: history.state }));
+    } catch {}
+  }
+
+  function pulseSubagentSwitch() {
+    const conv = document.querySelector('[data-testid="subagent-tab-conversation"]');
+    if (!conv) return;
+    conv.removeAttribute('data-agy-sub-switching');
+    try { void conv.offsetWidth; } catch {}
+    conv.setAttribute('data-agy-sub-switching', '1');
+    if (subSwitchTimer) {
+      clearTimeout(subSwitchTimer);
+      activeTimers.delete(subSwitchTimer);
+      subSwitchTimer = 0;
+    }
+    subSwitchTimer = trackTimeout(() => {
+      subSwitchTimer = 0;
+      conv.removeAttribute?.('data-agy-sub-switching');
+    }, 200);
+  }
+
+  function performOpenSubagent(subagentId, label = '') {
+    const nativeNode = findNativeSubagentNode(subagentId, label);
+    if (nativeNode) {
+      safeNativeClick(nativeNode);
+    } else {
+      pushSubagentTab(subagentId);
+      if (!isAuxPanelOpen()) {
+        const auxBtn = getAuxToggleBtn();
+        if (auxBtn) safeNativeClick(auxBtn);
+      }
+    }
+
+    trackRaf(() => {
+      if (!isAuxPanelOpen()) {
+        const auxBtn = getAuxToggleBtn();
+        if (auxBtn) safeNativeClick(auxBtn);
+      }
+      if (getActiveSubagentTabId() !== subagentId) {
+        pushSubagentTab(subagentId);
+      }
+      prevAuxOpen = isAuxPanelOpen();
+      syncMainSubagentEntry();
+    });
+  }
+
   function openOrToggleSubagentSidePanel(subagentId, { label = '', allowToggleClose = true } = {}) {
     if (!subagentId) return;
     const auxOpen = isAuxPanelOpen();
@@ -259,60 +611,53 @@ export function createSubagentFooterRuntime({ motionThemes, shortenModelName, sh
 
     // Case 1: Side panel is already open on this exact subagent -> toggle it closed
     if (allowToggleClose && auxOpen && activeTabId === subagentId) {
+      clearHandoffState();
       const auxBtn = getAuxToggleBtn();
-      if (auxBtn) auxBtn.click();
+      if (auxBtn) {
+        safeNativeClick(auxBtn);
+        trackRaf(() => {
+          enforcePanelMutualExclusion();
+          syncMainSubagentEntry();
+        });
+      }
       return;
     }
 
-    // Case 2: Open / switch to target subagent & close Overview (mutual exclusion)
+    // Case 2: Side panel already open on another subagent -> switch smoothly without re-animating split
+    if (auxOpen) {
+      const nativeNode = findNativeSubagentNode(subagentId, label);
+      if (nativeNode) {
+        safeNativeClick(nativeNode);
+      } else {
+        pushSubagentTab(subagentId);
+      }
+      pulseSubagentSwitch();
+      trackRaf(() => {
+        if (getActiveSubagentTabId() !== subagentId) {
+          pushSubagentTab(subagentId);
+        }
+        syncMainSubagentEntry();
+      });
+      return;
+    }
+
+    // Case 3: Overview is open -> choreographed handoff prevents 3-pane collision & sliding card jump
     if (isOverviewOpen()) {
-      mutualGuardUntil = Date.now() + 400;
-      const ovBtn = getOverviewToggleBtn();
-      if (ovBtn) {
-        ovBtn.click();
-        prevOvOpen = false;
-      }
+      runOverviewToAuxHandoff(() => performOpenSubagent(subagentId, label));
+      return;
     }
 
-    // Prefer native sidebar subagent node (opens aux panel + initializes tab cleanly in React store)
-    const nativeNode = findNativeSubagentNode(subagentId, label);
-    if (nativeNode) {
-      nativeNode.click();
+    // Case 4: Both closed -> pre-arm 50/50 split only if needed, then open smoothly
+    clearHandoffState();
+    if (preArmAuxEqualWidth()) {
+      trackRaf(() => {
+        trackRaf(() => {
+          performOpenSubagent(subagentId, label);
+        });
+      });
     } else {
-      // Fallback when left sidebar is collapsed or node isn't mounted: update URL tab + open aux panel
-      try {
-        const url = new URL(location.href);
-        url.searchParams.set('tab', `subagent_convo__${subagentId}`);
-        history.pushState(history.state, '', url.pathname + url.search + url.hash);
-        window.dispatchEvent(new PopStateEvent('popstate', { state: history.state }));
-      } catch {}
+      performOpenSubagent(subagentId, label);
     }
-
-    // Guarantee the auxiliary side panel is expanded AND set to 50/50 equal width
-    const ensureOpenAndEqual = () => {
-      if (disposed) return;
-      if (!isAuxPanelOpen()) {
-        const auxBtn = getAuxToggleBtn();
-        if (auxBtn) auxBtn.click();
-      }
-      // Also make sure URL tab points to target subagent if native node didn't switch it
-      if (getActiveSubagentTabId() !== subagentId) {
-        try {
-          const url = new URL(location.href);
-          url.searchParams.set('tab', `subagent_convo__${subagentId}`);
-          history.pushState(history.state, '', url.pathname + url.search + url.hash);
-          window.dispatchEvent(new PopStateEvent('popstate', { state: history.state }));
-        } catch {}
-      }
-      setAuxSplitToEqualWidth();
-      prevAuxOpen = isAuxPanelOpen();
-      syncMainSubagentEntry();
-    };
-
-    requestAnimationFrame(() => {
-      ensureOpenAndEqual();
-      setTimeout(() => !disposed && isAuxPanelOpen() && setAuxSplitToEqualWidth(), 80);
-    });
   }
 
   function getSubagentLabel(ch) {
@@ -451,31 +796,60 @@ export function createSubagentFooterRuntime({ motionThemes, shortenModelName, sh
   }
 
   const onDocClick = (e) => {
-    // Immediate mutual exclusion reaction when user clicks native top-bar panel toggles
+    if (replayingPanelClick) return;
+
+    // Immediate mutual exclusion & choreographed handoff when user clicks native top-bar toggles
     const auxBtn = e.target?.closest?.('button[data-testid="toggle-aux-sidebar"]');
     const ovBtn = e.target?.closest?.('button[data-testid="toggle-overview-panel"]');
     const subNode = e.target?.closest?.('button[data-testid="subagent-node"]');
+
     if (ovBtn && isAuxPanelOpen() && !isOverviewOpen()) {
-      // Close Aux immediately when opening Overview; if main pane was temporarily narrow during
-      // the 500ms slide-out transition and Antigravity ignored the first click, finish opening Overview.
-      mutualGuardUntil = Date.now() + 700;
+      // Aux open -> Overview requested: collapse Aux cleanly first so Overview never mounts inside narrow split
+      e.preventDefault?.();
+      e.stopPropagation?.();
+      if (menuOpen) closeMenu();
+      restoreOverviewForCid = '';
+      clearHandoffState();
+      mutualGuardUntil = Date.now() + 750;
       const a = getAuxToggleBtn();
       if (a) {
-        a.click();
+        safeNativeClick(a);
         prevAuxOpen = false;
       }
-      setTimeout(() => {
-        if (!disposed && !isAuxPanelOpen() && !isOverviewOpen()) {
-          getOverviewToggleBtn()?.click();
+      const replayDelay = prefersReducedMotion() ? 0 : 240;
+      trackTimeout(() => {
+        if (!isOverviewOpen()) {
+          safeNativeClick(getOverviewToggleBtn());
         }
-      }, 540);
+      }, replayDelay, handoffTimers);
+      trackTimeout(() => {
+        if (!isAuxPanelOpen() && !isOverviewOpen()) {
+          safeNativeClick(getOverviewToggleBtn());
+        }
+      }, 540, handoffTimers);
+      return;
     }
+
+    if (ovBtn && isOverviewOpen()) {
+      const cid = getActiveRouteCid();
+      if (cid) autoOpenedOverviewCids.add(cid);
+      restoreOverviewForCid = '';
+      clearHandoffTimers();
+    }
+
+    if ((auxBtn || subNode) && isOverviewOpen() && !isAuxPanelOpen()) {
+      const targetBtn = auxBtn || subNode;
+      e.preventDefault?.();
+      e.stopPropagation?.();
+      if (menuOpen) closeMenu();
+      runOverviewToAuxHandoff(() => safeNativeClick(targetBtn));
+      return;
+    }
+
     if (auxBtn || ovBtn || subNode) {
-      requestAnimationFrame(() => {
-        if (!disposed) {
-          enforcePanelMutualExclusion();
-          syncMainSubagentEntry();
-        }
+      trackRaf(() => {
+        enforcePanelMutualExclusion();
+        syncMainSubagentEntry();
       });
     }
 
@@ -497,12 +871,14 @@ export function createSubagentFooterRuntime({ motionThemes, shortenModelName, sh
     const leftGroup = footer?.children?.[0];
     if (!footer || !leftGroup) return;
 
+    const addCtxBtn = leftGroup.querySelector(':scope > button:first-of-type');
     const hasNativeSubChip = Array.from(leftGroup.children).some((ch) => {
+      if (ch === addCtxBtn) return false;
       if (ch.id === MAIN_PILL_ID || ch.id === 'agy-resume-pill') return false;
       if (ch.id === 'agy-capsule-picker-host' || ch.hasAttribute('data-agy-picker-host')) return false;
+      if (ch.getAttribute?.('data-agy-model-wrap') === '1') return false;
       if (ch.id === 'ag-claude-ctx-ring' || ch.id === 'ag-live-metrics-pill') return false;
       if (ch.tagName === 'INPUT' || ch.querySelector?.('button[data-deck-model-bubble="hidden"]')) return false;
-      if (ch === leftGroup.querySelector(':scope > button:first-of-type')) return false;
       return ch.getBoundingClientRect().width > 1;
     });
 
@@ -741,6 +1117,7 @@ export function createSubagentFooterRuntime({ motionThemes, shortenModelName, sh
   function sync() {
     if (disposed) return;
     enforcePanelMutualExclusion();
+    ensureDefaultOverviewOpen();
     syncTurnAdvanceRetirement();
     syncMainSubagentEntry();
     syncSidePanelSubagentFooter();
@@ -749,6 +1126,15 @@ export function createSubagentFooterRuntime({ motionThemes, shortenModelName, sh
   function dispose() {
     if (disposed) return;
     disposed = true;
+    restoreOverviewForCid = '';
+    autoOpenedOverviewCids.clear();
+    clearHandoffState();
+    for (const id of activeTimers) clearTimeout(id);
+    activeTimers.clear();
+    for (const id of activeRafs) cancelAnimationFrame(id);
+    activeRafs.clear();
+    preArmCloseTimer = 0;
+    subSwitchTimer = 0;
     document.removeEventListener('click', onDocClick, true);
     document.removeEventListener('keydown', onDocKey, true);
     closeMenu();

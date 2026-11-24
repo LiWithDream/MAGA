@@ -14,7 +14,10 @@
 export function createFooterUnifiedRuntime({ onTierChange } = {}) {
   let disposed = false;
   let footerResizeObs = null;
+  let resizeRafId = 0;
+  let transitionSettleTimer = 0;
   const observedFooters = new Set();
+  const observedWidths = new WeakMap();
   const layoutSigCache = new WeakMap();
   let popObs = null;
   let observedPop = null;
@@ -87,10 +90,29 @@ export function createFooterUnifiedRuntime({ onTierChange } = {}) {
   function watchFooters(footers) {
     if (typeof ResizeObserver !== 'function') return;
     if (!footerResizeObs) {
-      footerResizeObs = new ResizeObserver(() => {
+      footerResizeObs = new ResizeObserver((entries) => {
         if (disposed) return;
-        sync();
-        repositionOpenQuotaPopover();
+        for (const entry of entries || []) {
+          const w = Math.round(entry?.contentRect?.width || 0);
+          if (w > 0 && entry.target) observedWidths.set(entry.target, w);
+        }
+        if (resizeRafId) return;
+        resizeRafId = requestAnimationFrame(() => {
+          resizeRafId = 0;
+          if (disposed) return;
+          sync();
+          repositionOpenQuotaPopover();
+          if (document.querySelector('[data-testid="aux-pane-split"][data-split-transition]')) {
+            if (transitionSettleTimer) clearTimeout(transitionSettleTimer);
+            transitionSettleTimer = setTimeout(() => {
+              transitionSettleTimer = 0;
+              if (!disposed) {
+                sync();
+                repositionOpenQuotaPopover();
+              }
+            }, 160);
+          }
+        });
       });
     }
     for (const f of footers) {
@@ -127,16 +149,17 @@ export function createFooterUnifiedRuntime({ onTierChange } = {}) {
     popObs.observe(pop, { childList: true, subtree: true, characterData: true });
   }
 
-  function hasExtraVisibleChip(leftGroup) {
+  function hasExtraVisibleChip(leftGroup, addCtxBtnArg) {
     if (!leftGroup) return false;
+    const addCtxBtn = addCtxBtnArg !== undefined ? addCtxBtnArg : leftGroup.querySelector(':scope > button:first-of-type');
     for (const ch of leftGroup.children) {
       if (ch.id === 'agy-capsule-picker-host' || ch.hasAttribute('data-agy-picker-host')) continue;
+      if (ch.getAttribute?.('data-agy-model-wrap') === '1') continue;
       if (ch.id === 'ag-claude-ctx-ring' || ch.id === 'ag-live-metrics-pill' || ch.id === 'agy-resume-pill') continue;
       if (ch.hasAttribute('data-agy-sub-pill')) continue;
       if (ch.tagName === 'INPUT') continue;
-      if (ch.tagName === 'BUTTON' && ch === leftGroup.querySelector(':scope > button:first-of-type')) continue;
-      if (ch.querySelector?.('button[data-deck-model-bubble="hidden"]')) continue;
-      if (ch.getAttribute?.('data-deck-model-bubble') === 'hidden') continue;
+      if (ch === addCtxBtn) continue;
+      if (ch.getAttribute?.('data-deck-model-bubble') === 'hidden' || ch.querySelector?.('button[data-deck-model-bubble="hidden"]')) continue;
       const r = ch.getBoundingClientRect();
       if (r.width > 1 && r.height > 1) return true;
     }
@@ -177,9 +200,9 @@ export function createFooterUnifiedRuntime({ onTierChange } = {}) {
     }
   }
 
-  function isRow2Overflowing(footer, leftGroup, footerW) {
+  function isRow2Overflowing(footer, leftGroup, footerW, addCtxBtnArg) {
     if (!leftGroup) return false;
-    const addCtxBtn = leftGroup.querySelector(':scope > button:first-of-type');
+    const addCtxBtn = addCtxBtnArg !== undefined ? addCtxBtnArg : leftGroup.querySelector(':scope > button:first-of-type');
     const rects = [];
 
     const pickerHost = leftGroup.querySelector(':scope > [data-agy-picker-host="1"]');
@@ -191,7 +214,7 @@ export function createFooterUnifiedRuntime({ onTierChange } = {}) {
 
     for (const ch of leftGroup.children) {
       if (ch === addCtxBtn || ch.id === 'agy-resume-pill') continue;
-      if (ch.tagName === 'INPUT' || ch.hasAttribute('data-agy-picker-host')) continue;
+      if (ch.tagName === 'INPUT' || ch.hasAttribute('data-agy-picker-host') || ch.getAttribute?.('data-agy-model-wrap') === '1') continue;
       if (ch.getAttribute?.('data-deck-model-bubble') === 'hidden' || ch.querySelector?.('button[data-deck-model-bubble="hidden"]')) continue;
       const r = ch.getBoundingClientRect();
       if (r.width > 1 && r.height > 1) rects.push(r);
@@ -204,7 +227,7 @@ export function createFooterUnifiedRuntime({ onTierChange } = {}) {
     return totalW > footerW - 2;
   }
 
-  function buildFooterLayoutSig(footer, leftGroup, footerW, hasSubChip, addCtxBtn, speedPill) {
+  function buildFooterLayoutSig(footer, leftGroup, footerW, hasSubChip, addCtxBtn, speedPill, targetTier = '') {
     const pickerHost = leftGroup?.querySelector(':scope > [data-agy-picker-host="1"]');
     const strip = pickerHost?.shadowRoot?.getElementById('deck-metrics-strip');
     const modelBtn = strip?.querySelector('button.dk-pill[data-el="modelPicker"]');
@@ -266,6 +289,7 @@ export function createFooterUnifiedRuntime({ onTierChange } = {}) {
       curTier,
       stripTier,
       hasRow2,
+      targetTier,
     ].join('|');
   }
 
@@ -275,9 +299,11 @@ export function createFooterUnifiedRuntime({ onTierChange } = {}) {
       (f) => !f.closest(excluded)
     );
     watchFooters(footers);
+    const splitAnimating = Boolean(document.querySelector('[data-testid="aux-pane-split"][data-split-transition]'));
 
     for (const footer of footers) {
-      const footerW = Math.round(footer.getBoundingClientRect().width);
+      const cachedW = observedWidths.get(footer);
+      const footerW = cachedW > 0 ? cachedW : Math.round(footer.getBoundingClientRect().width);
       if (footerW <= 0) continue;
 
       const leftGroup = footer.children[0];
@@ -301,29 +327,35 @@ export function createFooterUnifiedRuntime({ onTierChange } = {}) {
 
       if (leftGroup && speedPill && speedPill.parentElement !== leftGroup) {
         leftGroup.appendChild(speedPill);
-        speedPill.setAttribute('data-ag-row-mode', 'middle');
-        footer.setAttribute('data-ag-row-mode', 'middle');
+        if (speedPill.getAttribute('data-ag-row-mode') !== 'middle') {
+          speedPill.setAttribute('data-ag-row-mode', 'middle');
+        }
+        if (footer.getAttribute('data-ag-row-mode') !== 'middle') {
+          footer.setAttribute('data-ag-row-mode', 'middle');
+        }
       }
 
-      const hasSubChip = hasExtraVisibleChip(leftGroup);
-      const prevSig = buildFooterLayoutSig(footer, leftGroup, footerW, hasSubChip, addCtxBtn, speedPill);
+      const hasSubChip = hasExtraVisibleChip(leftGroup, addCtxBtn);
+      const targetTier = computeDockTier(footerW, hasSubChip);
+      const sigW = splitAnimating ? Math.floor(footerW / 24) * 24 : footerW;
+      const prevSig = buildFooterLayoutSig(footer, leftGroup, sigW, hasSubChip, addCtxBtn, speedPill, targetTier);
       if (layoutSigCache.get(footer) === prevSig) {
         continue;
       }
 
       const prevTier = footer.getAttribute('data-agy-dock-tier') || '';
-      let tierIdx = DOCK_TIERS.indexOf(computeDockTier(footerW, hasSubChip));
+      let tierIdx = DOCK_TIERS.indexOf(targetTier);
       if (tierIdx < 0) tierIdx = 0;
 
       applyDockTier(footer, leftGroup, DOCK_TIERS[tierIdx]);
-      while (tierIdx < DOCK_TIERS.length - 1 && isRow2Overflowing(footer, leftGroup, footerW)) {
+      while (tierIdx < DOCK_TIERS.length - 1 && isRow2Overflowing(footer, leftGroup, footerW, addCtxBtn)) {
         tierIdx += 1;
         applyDockTier(footer, leftGroup, DOCK_TIERS[tierIdx]);
       }
 
       layoutSigCache.set(
         footer,
-        buildFooterLayoutSig(footer, leftGroup, footerW, hasSubChip, addCtxBtn, speedPill)
+        buildFooterLayoutSig(footer, leftGroup, sigW, hasSubChip, addCtxBtn, speedPill, targetTier)
       );
 
       if (DOCK_TIERS[tierIdx] !== prevTier && typeof onTierChange === 'function') {
@@ -513,10 +545,14 @@ export function createFooterUnifiedRuntime({ onTierChange } = {}) {
       } else if (existingPlaceholder.textContent !== label) {
         existingPlaceholder.textContent = label;
       }
-      pill.setAttribute('data-agy-working-placeholder', 'true');
+      if (pill.getAttribute('data-agy-working-placeholder') !== 'true') {
+        pill.setAttribute('data-agy-working-placeholder', 'true');
+      }
     } else {
       if (existingPlaceholder) existingPlaceholder.remove();
-      pill.removeAttribute('data-agy-working-placeholder');
+      if (pill.hasAttribute('data-agy-working-placeholder')) {
+        pill.removeAttribute('data-agy-working-placeholder');
+      }
     }
 
     let tps = NaN;
@@ -535,7 +571,9 @@ export function createFooterUnifiedRuntime({ onTierChange } = {}) {
           if (child.getAttribute('data-agy-speed-num') !== '1') {
             child.setAttribute('data-agy-speed-num', '1');
           }
-          child.removeAttribute('data-agy-speed-extra');
+          if (child.hasAttribute('data-agy-speed-extra')) {
+            child.removeAttribute('data-agy-speed-extra');
+          }
         } else {
           if (child.getAttribute('data-agy-speed-num') === '1') {
             child.removeAttribute('data-agy-speed-num');
@@ -608,6 +646,14 @@ export function createFooterUnifiedRuntime({ onTierChange } = {}) {
       window.__ag_ensure_metrics_pill_fn = wrappedEnsureMetricsPill.__agyOrigEnsure;
     }
     wrappedEnsureMetricsPill = null;
+    if (resizeRafId) {
+      cancelAnimationFrame(resizeRafId);
+      resizeRafId = 0;
+    }
+    if (transitionSettleTimer) {
+      clearTimeout(transitionSettleTimer);
+      transitionSettleTimer = 0;
+    }
     if (footerResizeObs) {
       footerResizeObs.disconnect();
       footerResizeObs = null;

@@ -200,6 +200,44 @@ ${moduleFns}
 
   let disposed = false;
   let rafId = 0;
+  let throttleTimer = 0;
+  let lastSyncTs = 0;
+  const MIN_STREAM_SYNC_GAP_MS = 120;
+  const STUDIO_OWN_SEL =
+    '[data-agy-picker-host="1"], #agy-capsule-picker-host, #agy-main-subagent-pill, #agy-subagent-menu, #agy-resume-pill, [data-agy-sub-pill], #agy-ov-usage-card, #agy-usage-tooltip';
+  const URGENT_MUT_SEL =
+    '.agy-composer-footer, [data-testid="overview-panel"], [data-testid="aux-pane-split"], [data-testid="subagent-tab-composer"], [data-testid="toggle-aux-sidebar"], [data-testid="toggle-overview-panel"]';
+
+  function isStudioOwnNode(node) {
+    const el = node && (node.nodeType === 1 ? node : node.parentElement);
+    return Boolean(el && el.closest && el.closest(STUDIO_OWN_SEL));
+  }
+
+  function isStudioOwnMutation(m) {
+    if (isStudioOwnNode(m.target)) return true;
+    const added = m.addedNodes || [];
+    const removed = m.removedNodes || [];
+    if (!added.length && !removed.length) return true;
+    for (const n of added) if (!isStudioOwnNode(n)) return false;
+    for (const n of removed) if (!isStudioOwnNode(n)) return false;
+    return true;
+  }
+
+  function isUrgentMutation(m) {
+    const t = m.target && (m.target.nodeType === 1 ? m.target : m.target.parentElement);
+    if (t && ((t.matches && t.matches(URGENT_MUT_SEL)) || (t.closest && t.closest(URGENT_MUT_SEL)))) {
+      return true;
+    }
+    for (const list of [m.addedNodes, m.removedNodes]) {
+      if (!list) continue;
+      for (const n of list) {
+        if (n && n.nodeType === 1 && ((n.matches && n.matches(URGENT_MUT_SEL)) || (n.querySelector && n.querySelector(URGENT_MUT_SEL)))) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
 
   const picker = createCapsulePickerRuntime({
     prefs: STUDIO_PREFS,
@@ -212,17 +250,18 @@ ${moduleFns}
     shortenModelName,
     shortenEffortBadge,
   });
-  const footer = createFooterUnifiedRuntime({ onTierChange: () => scheduleSync() });
+  const footer = createFooterUnifiedRuntime({ onTierChange: () => scheduleSync(true) });
   const usage = createOverviewUsageRuntime({ motionThemes });
   const resumeBanner = createResumeBannerRuntime();
   const subagentFooter = createSubagentFooterRuntime({ motionThemes, shortenModelName, shortenEffortBadge });
 
   function syncAll() {
     if (disposed) return;
+    lastSyncTs = Date.now();
     try {
       subagentFooter.sync();
       resumeBanner.sync();
-      picker.sync(scheduleSync);
+      picker.sync(() => scheduleSync(true));
       footer.sync();
       usage.sync();
     } finally {
@@ -230,32 +269,87 @@ ${moduleFns}
     }
   }
 
-  function scheduleSync() {
-    if (disposed || rafId) return;
+  function scheduleSync(immediate = false) {
+    if (disposed) return;
+    if (immediate) {
+      if (throttleTimer) {
+        clearTimeout(throttleTimer);
+        throttleTimer = 0;
+      }
+      if (!rafId) {
+        rafId = requestAnimationFrame(() => {
+          rafId = 0;
+          syncAll();
+        });
+      }
+      return;
+    }
+    if (rafId || throttleTimer) return;
+    const wait = MIN_STREAM_SYNC_GAP_MS - (Date.now() - lastSyncTs);
+    if (wait > 0) {
+      throttleTimer = setTimeout(() => {
+        throttleTimer = 0;
+        if (!disposed && !rafId) {
+          rafId = requestAnimationFrame(() => {
+            rafId = 0;
+            syncAll();
+          });
+        }
+      }, wait);
+      return;
+    }
     rafId = requestAnimationFrame(() => {
       rafId = 0;
       syncAll();
     });
   }
 
-  const docObs = new MutationObserver(() => scheduleSync());
+  const docObs = new MutationObserver((mutations) => {
+    if (disposed) return;
+    let needSync = false;
+    let urgent = false;
+    for (const m of mutations) {
+      if (isStudioOwnMutation(m)) continue;
+      needSync = true;
+      if (isUrgentMutation(m)) {
+        urgent = true;
+        break;
+      }
+    }
+    if (needSync) scheduleSync(urgent);
+  });
   if (document.body) {
     docObs.observe(document.body, { childList: true, subtree: true });
   }
-  const pollTimer = setInterval(syncAll, 900);
-  window.addEventListener('storage', scheduleSync);
+  const pollTimer = setInterval(() => {
+    if (disposed || document.hidden) return;
+    syncAll();
+  }, 2500);
+  const onVisibleSync = () => {
+    if (!document.hidden) scheduleSync(true);
+  };
+  const onNavSync = () => scheduleSync(true);
+  window.addEventListener('storage', onNavSync);
+  window.addEventListener('popstate', onNavSync);
+  document.addEventListener('visibilitychange', onVisibleSync);
 
   syncAll();
 
   function dispose() {
     if (disposed) return;
     disposed = true;
+    if (throttleTimer) {
+      clearTimeout(throttleTimer);
+      throttleTimer = 0;
+    }
     if (rafId) {
       cancelAnimationFrame(rafId);
       rafId = 0;
     }
     clearInterval(pollTimer);
-    window.removeEventListener('storage', scheduleSync);
+    window.removeEventListener('storage', onNavSync);
+    window.removeEventListener('popstate', onNavSync);
+    document.removeEventListener('visibilitychange', onVisibleSync);
     docObs.disconnect();
     picker.dispose();
     footer.dispose();

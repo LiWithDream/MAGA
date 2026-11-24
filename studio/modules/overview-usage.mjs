@@ -398,8 +398,8 @@ export function createOverviewUsageRuntime({ motionThemes }) {
       top = Math.min(window.innerHeight - ttH - margin, Math.round(r.bottom + 8));
     }
 
-    tt.style.left = `${left}px`;
-    tt.style.top = `${top}px`;
+    tt.style.setProperty('--agy-tt-x', `${left}px`);
+    tt.style.setProperty('--agy-tt-y', `${top}px`);
     tt.setAttribute('data-visible', '1');
   }
 
@@ -570,7 +570,7 @@ export function createOverviewUsageRuntime({ motionThemes }) {
     });
 
     let activeTipTarget = null;
-    cardEl.addEventListener('pointermove', (e) => {
+    cardEl.addEventListener('pointerover', (e) => {
       const target = e.target?.closest?.('[data-agy-tip-bar], [data-agy-tip-kpi], [data-agy-tip-model]');
       if (!target || !cardEl.contains(target)) {
         if (activeTipTarget) {

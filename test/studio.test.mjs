@@ -1,7 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 
 import { buildStudioBundle, CSS_BEGIN, CSS_END, JS_BEGIN, JS_END } from '../studio/build.mjs';
@@ -12,7 +14,9 @@ import {
   shortenModelName,
 } from '../studio/modules/capsule-picker.mjs';
 import { createFooterUnifiedRuntime } from '../studio/modules/footer-unified.mjs';
+import { createResumeBannerRuntime } from '../studio/modules/resume-banner.mjs';
 import { createSubagentFooterRuntime } from '../studio/modules/subagent-footer.mjs';
+import { collectResumeState } from '../studio/daemon/resume-detector.mjs';
 import { syncModelPicker } from '../vendor/agy-capsule/model_picker.mjs';
 import { motionThemes } from '../vendor/agy-capsule/motion_themes.mjs';
 
@@ -405,8 +409,10 @@ test('buildStudioBundle compiles clean JS and complete CSS bundle', async () => 
   // Verify JS syntax compiles cleanly
   assert.doesNotThrow(() => new Function('ctx', jsBlock));
 
-  // Verify MutationObserver self-trigger draining & shortenEffortBadge wiring
+  // Verify MutationObserver self-trigger draining, studio filter & hidden poll guard
   assert.match(jsBlock, /finally\s*\{\s*docObs\.takeRecords\(\);\s*\}/);
+  assert.match(jsBlock, /STUDIO_OWN_SEL/);
+  assert.match(jsBlock, /document\.hidden/);
   assert.match(jsBlock, /createSubagentFooterRuntime\(\{\s*motionThemes,\s*shortenModelName,\s*shortenEffortBadge\s*\}\)/);
 
   // Verify all 4 style files are bundled
@@ -709,4 +715,669 @@ test('model_picker and decorateModelCapsule preserve clean aria-label and wrap p
 
   // Ensure syncModelPicker import stays used/valid
   assert.equal(typeof syncModelPicker, 'function');
+});
+
+test('capsule-picker avoids redundant style writes, marks data-agy-model-wrap, and skips idle sync', async () => {
+  const env = makeMockDomEnv({ pathname: '/c/conv-opt', lang: 'en', width: 620 });
+  await withGlobals(env, () => {
+    const convView = env.createEl('div');
+    convView.setAttribute('data-testid', 'conversation-view');
+    const footer = env.createEl('div');
+    footer.className = 'agy-composer-footer';
+    footer.setAttribute('data-agy-has-row2', 'true');
+    const leftGroup = env.createEl('div');
+    const triggerWrap = env.createEl('div');
+    const trigger = env.createEl('button');
+    trigger.setAttribute('data-testid', 'model-selector-trigger');
+    trigger.textContent = 'Gemini 4 Neon High';
+    triggerWrap.append(trigger);
+    leftGroup.append(triggerWrap);
+    footer.append(leftGroup);
+    convView.append(footer);
+    env.doc.body.append(convView);
+
+    leftGroup.checkVisibility = () => true;
+    footer.checkVisibility = () => true;
+
+    let styleSetCount = 0;
+    let pickerSyncCalls = 0;
+    const origCreate = env.doc.createElement;
+    env.doc.createElement = (tag) => {
+      const el = origCreate(tag);
+      if (tag === 'style') {
+        let cssVal = '';
+        Object.defineProperty(el, 'textContent', {
+          get() { return cssVal; },
+          set(v) {
+            styleSetCount += 1;
+            cssVal = String(v ?? '');
+          },
+          configurable: true,
+        });
+      }
+      el.attachShadow = () => {
+        const sr = origCreate('shadow-root');
+        sr.getElementById = (id) => sr.querySelector(`#${id}`);
+        el.shadowRoot = sr;
+        return sr;
+      };
+      return el;
+    };
+
+    const picker = createCapsulePickerRuntime({
+      prefs: { modelEffortPicker: true },
+      labelsByLang: {
+        en: { modelEffortPicker: 'Enhanced model capsule' },
+        'zh-CN': { modelEffortPicker: '优化模型胶囊' },
+      },
+      shadowCss: '',
+      cfgMods: { claudeUxModelMenu: false },
+      syncModelPicker: (root) => {
+        pickerSyncCalls += 1;
+        root._modelPicker = {
+          setBubble() {},
+          dispose() { delete root._modelPicker; },
+        };
+        if (!root.querySelector('button.dk-pill[data-el="modelPicker"]')) {
+          const btn = origCreate('button');
+          btn.className = 'dk-pill';
+          btn.setAttribute('data-el', 'modelPicker');
+          const tw = origCreate('span');
+          tw.className = 'dk-mp-text';
+          tw.textContent = trigger.textContent;
+          btn.append(tw);
+          root.append(btn);
+        }
+      },
+      effortEffects: () => ({ applySidecarPrefs() {} }),
+      motionThemes,
+      shortenModelName,
+      shortenEffortBadge,
+    });
+
+    picker.sync(() => {});
+    assert.equal(styleSetCount, 2, 'Expected 1 native layout style + 1 shadow style write');
+    assert.equal(pickerSyncCalls, 1);
+    assert.equal(triggerWrap.getAttribute('data-agy-model-wrap'), '1');
+
+    // Repeated idle syncs skip rewriting native <style> and skip calling syncModelPicker
+    picker.sync(() => {});
+    picker.sync(() => {});
+    assert.equal(styleSetCount, 2);
+    assert.equal(pickerSyncCalls, 1);
+
+    // Label change invalidates dirty cache immediately
+    trigger.textContent = 'Claude 4.5 Sonnet Medium';
+    picker.sync(() => {});
+    assert.equal(pickerSyncCalls, 2);
+
+    picker.dispose();
+    assert.equal(triggerWrap.getAttribute('data-agy-model-wrap'), null);
+  });
+});
+
+test('footer-capsules.css uses pure GPU composited animations and eliminates footer :has() wrap probe', () => {
+  const css = readFileSync(FOOTER_CSS_PATH, 'utf8');
+  assert.equal(css.includes(':has(button[data-deck-model-bubble="hidden"])'), false);
+  assert.ok(css.includes('[data-agy-model-wrap="1"]'));
+
+  const speedBlock = css.match(/@keyframes\s+agySpeedBreathe\s*\{[\s\S]*?\n\}/)?.[0] || '';
+  assert.ok(speedBlock.length > 0, 'Missing @keyframes agySpeedBreathe');
+  assert.equal(speedBlock.includes('box-shadow'), false, 'agySpeedBreathe must not animate box-shadow');
+
+  const critBlock = css.match(/@keyframes\s+agyCtxCritRing\s*\{[\s\S]*?\n\}/)?.[0] || '';
+  assert.ok(critBlock.length > 0, 'Missing @keyframes agyCtxCritRing');
+  assert.equal(critBlock.includes('box-shadow'), false, 'agyCtxCritRing must stay GPU transform/opacity only');
+});
+
+test('resume-banner marks resumed steps and caches plain messages across syncs', async () => {
+  const env = makeMockDomEnv({ pathname: '/c/conv-res', lang: 'en', width: 520 });
+  await withGlobals(env, () => {
+    const view = env.createEl('div');
+    view.setAttribute('data-testid', 'conversation-view');
+
+    const normalStep = env.createEl('div');
+    normalStep.setAttribute('data-testid', 'user-input-step');
+    const normalContent = env.createEl('div');
+    normalContent.setAttribute('data-testid', 'user-message-content');
+    let normalReads = 0;
+    Object.defineProperty(normalContent, 'textContent', {
+      get() {
+        normalReads += 1;
+        return 'Optimize performance smoothly';
+      },
+    });
+    normalStep.append(normalContent);
+
+    const resumedStep = env.createEl('div');
+    resumedStep.setAttribute('data-testid', 'user-input-step');
+    const resumedContent = env.createEl('div');
+    resumedContent.setAttribute('data-testid', 'user-message-content');
+    resumedContent.textContent = '\u2063\u200B\u2063Please resume from where the task was interrupted';
+    resumedStep.append(resumedContent);
+
+    view.append(normalStep, resumedStep);
+    env.doc.body.append(view);
+
+    const rt = createResumeBannerRuntime();
+    rt.sync();
+    assert.equal(normalReads, 1);
+    assert.equal(resumedStep.getAttribute('data-agy-resumed-step'), '1');
+
+    rt.sync();
+    rt.sync();
+    assert.equal(normalReads, 1, 'Plain user steps should not be re-scanned on subsequent syncs');
+    rt.dispose();
+  });
+});
+
+test('resume-detector reads idle SQLite DB with immutable=1 and leaves zero WAL/SHM sidecars', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'agy-resume-det-'));
+  const cid = 'conv_immutable_test_01';
+  const dbPath = path.join(dir, `${cid}.db`);
+  try {
+    const db = new DatabaseSync(dbPath);
+    db.exec('CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER, status INTEGER, error_details BLOB);');
+    db.exec("INSERT INTO steps (idx, step_type, status, error_details) VALUES (1, 132, 3, X'');");
+    db.close();
+
+    const res = collectResumeState({ cascadeId: cid }, { conversationsDir: dir });
+    assert.equal(res.ok, true);
+    assert.equal(res.interrupted, true);
+    assert.equal(res.reason, 'mid_tool');
+    assert.equal(existsSync(`${dbPath}-wal`), false, 'Idle DB read must not create -wal');
+    assert.equal(existsSync(`${dbPath}-shm`), false, 'Idle DB read must not create -shm');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('footer-capsules.css scopes aux min-width outside active split transitions and styles panel handoff', () => {
+  const css = readFileSync(FOOTER_CSS_PATH, 'utf8');
+  assert.equal(hasNestedHasSelector(css), false, 'Nested :has() is invalid CSS');
+
+  assert.ok(css.includes('[data-testid="aux-pane-split"]:not([data-split-transition]) > div:last-child:not([style*="width: 0px"])'));
+  assert.ok(css.includes('[data-testid="aux-pane-split"][data-split-transition="closing"] > div:last-child > div:first-child'));
+  assert.ok(css.includes('@keyframes agyAuxReveal'));
+  assert.ok(css.includes('@keyframes agySubSwapIn'));
+  assert.ok(css.includes('html[data-agy-panel-handoff="ov-to-aux-closing"] .animate-overview-panel'));
+  assert.ok(css.includes('html[data-agy-panel-handoff="ov-to-aux-opening"] .animate-overview-panel'));
+  assert.ok(css.includes('--agy-hold-ov-reserve'));
+  assert.ok(css.includes('@media (prefers-reduced-motion: reduce)'));
+});
+
+test('subagent-footer choreographs Overview <-> Aux transitions and pre-arms 50/50 split cleanly', async () => {
+  const env = makeMockDomEnv({ pathname: '/c/conv-handoff', lang: 'en', width: 620 });
+
+  // Local capture-phase click dispatch wrapper so we can verify e.stopPropagation() cleanly
+  const docClickHandlers = [];
+  const origDocAdd = env.doc.addEventListener;
+  env.doc.addEventListener = (t, fn, opts) => {
+    if (t === 'click') docClickHandlers.push({ fn, capture: Boolean(opts === true || opts?.capture) });
+    origDocAdd(t, fn, opts);
+  };
+  env.doc.removeEventListener = (t, fn) => {
+    if (t === 'click') {
+      const idx = docClickHandlers.findIndex((h) => h.fn === fn);
+      if (idx >= 0) docClickHandlers.splice(idx, 1);
+    }
+  };
+  const dispatchUserClick = (target) => {
+    let stopped = false;
+    const ev = {
+      target,
+      preventDefault() {},
+      stopPropagation() { stopped = true; },
+    };
+    for (const h of docClickHandlers) {
+      if (h.capture) h.fn(ev);
+    }
+    if (!stopped) target.click();
+  };
+
+  await withGlobals(env, async () => {
+    const extraKeys = ['history', 'PopStateEvent', 'requestAnimationFrame', 'cancelAnimationFrame'];
+    const prevExtra = new Map(extraKeys.map((k) => [k, Object.getOwnPropertyDescriptor(globalThis, k)]));
+    globalThis.requestAnimationFrame = (cb) => setTimeout(cb, 0);
+    globalThis.cancelAnimationFrame = (id) => clearTimeout(id);
+    globalThis.PopStateEvent = class { constructor(type, init) { this.type = type; this.state = init?.state; } };
+    globalThis.history = {
+      state: null,
+      pushState(_st, _t, urlStr) {
+        const u = new URL(urlStr, 'http://127.0.0.1');
+        env.loc.pathname = u.pathname;
+        env.loc.search = u.search;
+        env.loc.href = u.href;
+      },
+    };
+
+    try {
+      const convView = env.createEl('div');
+      convView.setAttribute('data-testid', 'conversation-view');
+      const mainBox = env.createEl('div');
+      mainBox.id = 'antigravity.agentSidePanelInputBox';
+      const mainFooter = env.createEl('div');
+      mainFooter.className = 'agy-composer-footer';
+      const mainLeft = env.createEl('div');
+      mainLeft.append(env.createEl('button'));
+      mainFooter.append(mainLeft);
+      mainBox.append(mainFooter);
+      convView.append(mainBox);
+
+      const ovHost = env.createEl('div');
+      ovHost.setAttribute('data-testid', 'overview-panel-host');
+      ovHost.style.setProperty('--overview-panel-reserve', '336px');
+      ovHost.style.setProperty('--overview-panel-gutter-reserve', '0px');
+
+      const split = env.createEl('div');
+      split.setAttribute('data-testid', 'aux-pane-split');
+      let resizeCalls = [];
+      let dragEndCalls = 0;
+      const fiberProps = {
+        sidePanelWidth: 50,
+        auxPaneWidthUnit: '%',
+        onResize: (w) => {
+          resizeCalls.push(w);
+          fiberProps.sidePanelWidth = w;
+        },
+        onDragEnd: () => { dragEndCalls += 1; },
+      };
+      split['__reactFiber$mock'] = { memoizedProps: fiberProps, return: null };
+
+      const auxBtn = env.createEl('button');
+      auxBtn.setAttribute('data-testid', 'toggle-aux-sidebar');
+      auxBtn.setAttribute('aria-expanded', 'false');
+      let auxClicks = 0;
+      auxBtn.addEventListener('click', () => {
+        auxClicks += 1;
+        const open = auxBtn.getAttribute('aria-expanded') === 'true';
+        auxBtn.setAttribute('aria-expanded', open ? 'false' : 'true');
+      });
+
+      const ovBtn = env.createEl('button');
+      ovBtn.setAttribute('data-testid', 'toggle-overview-panel');
+      ovBtn.setAttribute('aria-pressed', 'true');
+      let ovClicks = 0;
+      ovBtn.addEventListener('click', () => {
+        ovClicks += 1;
+        const open = ovBtn.getAttribute('aria-pressed') === 'true';
+        ovBtn.setAttribute('aria-pressed', open ? 'false' : 'true');
+      });
+
+      env.doc.body.append(convView, ovHost, split, auxBtn, ovBtn);
+      env.win.__ag_last_metrics = {
+        cascadeId: 'conv-handoff',
+        stats: { children: [{ id: 'sub-1', agentName: 'Explorer', running: true }] },
+      };
+
+      const rt = createSubagentFooterRuntime({ motionThemes, shortenModelName, shortenEffortBadge });
+      rt.sync();
+
+      // Side panel already 50% -> initial pre-arm skips redundant onResize and never touches onDragEnd
+      assert.equal(resizeCalls.length, 0);
+      assert.equal(dragEndCalls, 0);
+
+      // Scenario A: Open subagent from footer pill while Overview is open -> staggered 2-phase handoff
+      const pill = env.doc.getElementById('agy-main-subagent-pill');
+      assert.ok(pill);
+      pill.click();
+
+      assert.equal(env.doc.documentElement.getAttribute('data-agy-panel-handoff'), 'ov-to-aux-closing');
+      assert.equal(env.doc.documentElement.style.getPropertyValue('--agy-hold-ov-reserve'), '336px');
+      assert.equal(ovClicks, 1, 'Overview should start closing immediately in phase 1');
+      assert.equal(ovBtn.getAttribute('aria-pressed'), 'false');
+      assert.equal(auxClicks, 0, 'Aux panel must wait until phase 2 (~120ms) before opening');
+      assert.equal(dragEndCalls, 0);
+      assert.equal(resizeCalls.length, 0);
+
+      await new Promise((r) => setTimeout(r, 150));
+      assert.equal(env.doc.documentElement.getAttribute('data-agy-panel-handoff'), 'ov-to-aux-opening');
+      assert.equal(env.loc.search, '?tab=subagent_convo__sub-1');
+      assert.equal(auxClicks, 1);
+      assert.equal(auxBtn.getAttribute('aria-expanded'), 'true');
+      assert.equal(dragEndCalls, 0);
+      assert.equal(resizeCalls.length, 0);
+
+      // Wait for phase 2 handoff state cleanup (~640ms total -> wait another 530ms)
+      await new Promise((r) => setTimeout(r, 530));
+      assert.equal(env.doc.documentElement.getAttribute('data-agy-panel-handoff'), null);
+
+      // Scenario B: Aux is open -> user clicks Overview toggle -> capture intercepts and closes Aux first
+      const ovClicksBefore = ovClicks;
+      const auxClicksBefore = auxClicks;
+      dispatchUserClick(ovBtn);
+      assert.equal(ovClicks, ovClicksBefore, 'Overview click must be intercepted while Aux is open');
+      assert.equal(auxClicks, auxClicksBefore + 1, 'Aux must start closing immediately');
+      assert.equal(auxBtn.getAttribute('aria-expanded'), 'false');
+
+      await new Promise((r) => setTimeout(r, 270));
+      assert.equal(ovClicks, ovClicksBefore + 1, 'Overview click replays smoothly after Aux exits');
+      assert.equal(ovBtn.getAttribute('aria-pressed'), 'true');
+
+      rt.dispose();
+
+      // Scenario C: Non-50% sidePanelWidth pre-arms cleanly when both panels are closed
+      fiberProps.sidePanelWidth = 34;
+      ovBtn.setAttribute('aria-pressed', 'false');
+      auxBtn.setAttribute('aria-expanded', 'false');
+      const rt2 = createSubagentFooterRuntime({ motionThemes, shortenModelName, shortenEffortBadge });
+      rt2.sync();
+      assert.deepEqual(resizeCalls, [50]);
+      assert.equal(dragEndCalls, 0);
+      rt2.dispose();
+    } finally {
+      for (const k of extraKeys) {
+        const desc = prevExtra.get(k);
+        if (desc) Object.defineProperty(globalThis, k, desc);
+        else delete globalThis[k];
+      }
+    }
+  });
+});
+
+test('subagent-footer opens Overview by default and restores previous Overview state on side-panel close', async () => {
+  const env = makeMockDomEnv({ pathname: '/c/conv-default', lang: 'en', width: 620 });
+
+  const docClickHandlers = [];
+  const origDocAdd = env.doc.addEventListener;
+  env.doc.addEventListener = (t, fn, opts) => {
+    if (t === 'click') docClickHandlers.push({ fn, capture: Boolean(opts === true || opts?.capture) });
+    origDocAdd(t, fn, opts);
+  };
+  env.doc.removeEventListener = (t, fn) => {
+    if (t === 'click') {
+      const idx = docClickHandlers.findIndex((h) => h.fn === fn);
+      if (idx >= 0) docClickHandlers.splice(idx, 1);
+    }
+  };
+  const dispatchUserClick = (target) => {
+    let stopped = false;
+    const ev = {
+      target,
+      preventDefault() {},
+      stopPropagation() { stopped = true; },
+    };
+    for (const h of docClickHandlers) {
+      if (h.capture) h.fn(ev);
+    }
+    if (!stopped) target.click();
+  };
+
+  await withGlobals(env, async () => {
+    const extraKeys = ['history', 'PopStateEvent', 'requestAnimationFrame', 'cancelAnimationFrame'];
+    const prevExtra = new Map(extraKeys.map((k) => [k, Object.getOwnPropertyDescriptor(globalThis, k)]));
+    globalThis.requestAnimationFrame = (cb) => setTimeout(cb, 0);
+    globalThis.cancelAnimationFrame = (id) => clearTimeout(id);
+    globalThis.PopStateEvent = class { constructor(type, init) { this.type = type; this.state = init?.state; } };
+    globalThis.history = {
+      state: null,
+      pushState(_st, _t, urlStr) {
+        const u = new URL(urlStr, 'http://127.0.0.1');
+        env.loc.pathname = u.pathname;
+        env.loc.search = u.search;
+        env.loc.href = u.href;
+      },
+    };
+
+    try {
+      const convView = env.createEl('div');
+      convView.setAttribute('data-testid', 'conversation-view');
+      const mainBox = env.createEl('div');
+      mainBox.id = 'antigravity.agentSidePanelInputBox';
+      const mainFooter = env.createEl('div');
+      mainFooter.className = 'agy-composer-footer';
+      const mainLeft = env.createEl('div');
+      mainLeft.append(env.createEl('button'));
+      mainFooter.append(mainLeft);
+      mainBox.append(mainFooter);
+      convView.append(mainBox);
+
+      const s2Value = {
+        breakpoint: 'medium',
+        presentation: 'inline',
+        cascadeId: 'conv-default',
+        hydrated: true,
+        isOpen: false,
+        isPanelVisible: false,
+      };
+      const ovHost = env.createEl('div');
+      ovHost.setAttribute('data-testid', 'overview-panel-host');
+      ovHost['__reactFiber$ov'] = { memoizedProps: { value: s2Value }, return: null };
+
+      const split = env.createEl('div');
+      split.setAttribute('data-testid', 'aux-pane-split');
+      split['__reactFiber$split'] = {
+        memoizedProps: { sidePanelWidth: 50, auxPaneWidthUnit: '%', onResize() {} },
+        return: null,
+      };
+
+      const auxBtn = env.createEl('button');
+      auxBtn.setAttribute('data-testid', 'toggle-aux-sidebar');
+      auxBtn.setAttribute('aria-expanded', 'false');
+      auxBtn.addEventListener('click', () => {
+        const open = auxBtn.getAttribute('aria-expanded') === 'true';
+        auxBtn.setAttribute('aria-expanded', open ? 'false' : 'true');
+      });
+
+      const ovBtn = env.createEl('button');
+      ovBtn.setAttribute('data-testid', 'toggle-overview-panel');
+      ovBtn.setAttribute('aria-pressed', 'false');
+      ovBtn.addEventListener('click', () => {
+        const open = ovBtn.getAttribute('aria-pressed') === 'true';
+        ovBtn.setAttribute('aria-pressed', open ? 'false' : 'true');
+      });
+
+      env.doc.body.append(convView, ovHost, split, auxBtn, ovBtn);
+      env.win.__ag_last_metrics = {
+        cascadeId: 'conv-default',
+        stats: { children: [{ id: 'sub-1', agentName: 'Explorer', running: true }] },
+      };
+
+      const rt = createSubagentFooterRuntime({ motionThemes, shortenModelName, shortenEffortBadge });
+
+      // 1. Default-open Overview on entering a conversation when both panels are closed
+      rt.sync();
+      assert.equal(ovBtn.getAttribute('aria-pressed'), 'true', 'Overview should default open');
+
+      // Manual close must be respected across subsequent syncs
+      dispatchUserClick(ovBtn);
+      await new Promise((r) => setTimeout(r, 20));
+      rt.sync();
+      rt.sync();
+      assert.equal(ovBtn.getAttribute('aria-pressed'), 'false', 'Manual Overview close must stick');
+
+      // 2. Re-open Overview -> enter subagent -> exit subagent => Overview automatically restores
+      dispatchUserClick(ovBtn);
+      await new Promise((r) => setTimeout(r, 20));
+      assert.equal(ovBtn.getAttribute('aria-pressed'), 'true');
+
+      const pill = env.doc.getElementById('agy-main-subagent-pill');
+      assert.ok(pill);
+      pill.click();
+      await new Promise((r) => setTimeout(r, 150));
+      assert.equal(auxBtn.getAttribute('aria-expanded'), 'true');
+      assert.equal(ovBtn.getAttribute('aria-pressed'), 'false');
+
+      // Clear full handoff timer window before toggling closed
+      await new Promise((r) => setTimeout(r, 520));
+      pill.click(); // Toggle closed
+      assert.equal(auxBtn.getAttribute('aria-expanded'), 'false');
+      await new Promise((r) => setTimeout(r, 290));
+      assert.equal(ovBtn.getAttribute('aria-pressed'), 'true', 'Closing Aux should restore previously open Overview');
+
+      // 3. Overview closed before entering subagent -> exit subagent keeps Overview closed
+      await new Promise((r) => setTimeout(r, 320));
+      dispatchUserClick(ovBtn);
+      await new Promise((r) => setTimeout(r, 20));
+      assert.equal(ovBtn.getAttribute('aria-pressed'), 'false');
+
+      pill.click();
+      await new Promise((r) => setTimeout(r, 40));
+      assert.equal(auxBtn.getAttribute('aria-expanded'), 'true');
+      pill.click();
+      await new Promise((r) => setTimeout(r, 320));
+      assert.equal(ovBtn.getAttribute('aria-pressed'), 'false', 'Closing Aux must not re-open previously closed Overview');
+
+      // 4. Narrow "small" breakpoint skips default-open; medium/large opens on new conversation route
+      s2Value.breakpoint = 'small';
+      s2Value.cascadeId = 'conv-small';
+      env.loc.pathname = '/c/conv-small';
+      env.loc.href = 'http://127.0.0.1/c/conv-small';
+      env.win.__ag_last_metrics = {
+        cascadeId: 'conv-small',
+        stats: { children: [{ id: 'sub-2', agentName: 'Planner', running: false }] },
+      };
+      rt.sync();
+      assert.equal(ovBtn.getAttribute('aria-pressed'), 'false', 'Must not auto-open overlay on small breakpoint');
+
+      s2Value.breakpoint = 'medium';
+      s2Value.cascadeId = 'conv-default-2';
+      env.loc.pathname = '/c/conv-default-2';
+      env.loc.href = 'http://127.0.0.1/c/conv-default-2';
+      env.win.__ag_last_metrics = {
+        cascadeId: 'conv-default-2',
+        stats: { children: [{ id: 'sub-3', agentName: 'Verifier', running: false }] },
+      };
+      rt.sync();
+      assert.equal(ovBtn.getAttribute('aria-pressed'), 'true', 'New conversation with medium/large breakpoint opens Overview by default');
+
+      rt.dispose();
+    } finally {
+      for (const k of extraKeys) {
+        const desc = prevExtra.get(k);
+        if (desc) Object.defineProperty(globalThis, k, desc);
+        else delete globalThis[k];
+      }
+    }
+  });
+});
+
+test('Gemini 4 Neon defaults to High thinking effort across picker rows and fallback selector', async () => {
+  const modelPickerSrc = readFileSync(path.join(REPO, 'vendor', 'agy-capsule', 'model_picker.mjs'), 'utf8');
+  const customJsSrc = readFileSync(path.join(REPO, 'user', 'custom.js'), 'utf8');
+
+  assert.match(modelPickerSrc, /const defaultTierFor = name => \/\\bneon\\b\/i\.test\(String\(name \|\| ''\)\) \? 'high' : 'medium';/);
+  assert.match(modelPickerSrc, /showSubFor[\s\S]*?const defTier = defaultTierFor\(planner\.name\);/);
+  assert.match(modelPickerSrc, /renderedGroups[\s\S]*?const defTier = defaultTierFor\(group\.name\);/);
+  assert.match(customJsSrc, /function pickVariantForFamily[\s\S]*?\/\\bneon\\b\/i[\s\S]*?v\.effort === 'High'/);
+
+  const env = makeMockDomEnv({ pathname: '/c/conv-neon', lang: 'en', width: 620 });
+  const enhanceEl = (el, rootRef) => {
+    Object.defineProperty(el, 'firstElementChild', { get: () => el.children[0] || null, configurable: true });
+    Object.defineProperty(el, 'lastElementChild', { get: () => el.children[el.children.length - 1] || null, configurable: true });
+    el.after = (...nodes) => {
+      if (!el.parentElement) return;
+      const sibs = el.parentElement.children;
+      let idx = sibs.indexOf(el);
+      for (const n of nodes) {
+        n.parentElement = el.parentElement;
+        if (idx >= 0) sibs.splice(++idx, 0, n);
+        else sibs.push(n);
+      }
+    };
+    const origClassList = el.classList;
+    Object.defineProperty(el, 'classList', {
+      get: () => ({
+        add: origClassList.add,
+        contains: origClassList.contains,
+        remove: (...cls) => {
+          const rm = new Set(cls);
+          el.className = (el.className || '').split(/\s+/).filter((c) => c && !rm.has(c)).join(' ');
+        },
+        toggle: (c, force) => {
+          const has = origClassList.contains(c);
+          const want = force === undefined ? !has : Boolean(force);
+          if (want) origClassList.add(c);
+          else {
+            const next = (el.className || '').split(/\s+/).filter((x) => x && x !== c);
+            el.className = next.join(' ');
+          }
+          return want;
+        },
+      }),
+      configurable: true,
+    });
+    el.getRootNode = () => rootRef;
+    el.focus = () => {};
+    el.hidePopover = () => {};
+    el.observe = () => {};
+    return el;
+  };
+
+  await withGlobals(env, () => {
+    const prevMatchMedia = globalThis.matchMedia;
+    env.win.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
+    globalThis.matchMedia = env.win.matchMedia;
+
+    const footer = env.createEl('div');
+    const leftGroup = env.createEl('div');
+    const root = enhanceEl(env.createEl('div'), null);
+    root.getRootNode = () => root;
+    const origCreate = env.doc.createElement;
+    env.doc.createElement = (tag) => {
+      const el = enhanceEl(origCreate(tag), root);
+      const desc = Object.getOwnPropertyDescriptor(el, 'innerHTML') || Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'innerHTML');
+      Object.defineProperty(el, 'innerHTML', {
+        get: () => el._html,
+        set: (v) => {
+          const html = String(v ?? '');
+          el._html = html;
+          el.children.length = 0;
+          if (html.includes('ces-ag-effort-row')) {
+            const row = enhanceEl(origCreate('div'), root);
+            row.className = 'ces-ag-effort-row';
+            const head = enhanceEl(origCreate('div'), root);
+            head.className = 'ces-ag-effort-head';
+            head.append(enhanceEl(origCreate('span'), root), enhanceEl(origCreate('span'), root));
+            const inline = enhanceEl(origCreate('div'), root);
+            inline.className = 'ces-inline';
+            row.append(head, inline);
+            el.append(row);
+          }
+        },
+        configurable: true,
+      });
+      return el;
+    };
+
+    try {
+      const trigger = env.createEl('button');
+      trigger.setAttribute('data-testid', 'model-selector-trigger');
+      const modelOptions = [
+        { label: 'Claude 4.5 Sonnet (Medium)', modelId: 'claude-4-5-sonnet-med', value: 1 },
+        { label: 'Gemini 4 Neon (Low)', modelId: 'gemini-4-neon-low', value: 2 },
+        { label: 'Gemini 4 Neon (Medium)', modelId: 'gemini-4-neon-med', value: 3 },
+        { label: 'Gemini 4 Neon (High)', modelId: 'gemini-4-neon-high', value: 4 },
+        { label: 'Gemini 4 Neon (XHigh)', modelId: 'gemini-4-neon-xhigh', value: 5 },
+        { label: 'GPT-5 (Low)', modelId: 'gpt-5-low', value: 6 },
+        { label: 'GPT-5 (Medium)', modelId: 'gpt-5-med', value: 7 },
+        { label: 'GPT-5 (High)', modelId: 'gpt-5-high', value: 8 },
+      ];
+      trigger['__reactFiber$m'] = {
+        memoizedProps: {
+          placement: 'footer',
+          conversationId: 'conv-neon',
+          selectedModel: modelOptions[0],
+          modelOptions,
+          setSelectedModel() {},
+        },
+        return: null,
+      };
+      footer.append(leftGroup, trigger);
+      leftGroup.append(root);
+      env.doc.body.append(footer);
+
+      syncModelPicker(root, footer, { modelEffortPicker: true, showEffortBar: true }, {}, () => leftGroup);
+
+      const rows = root.querySelectorAll('button.dk-model-row');
+      const neonRow = rows.find((r) => r.dataset.family === 'Gemini 4 Neon');
+      const gptRow = rows.find((r) => r.dataset.family === 'GPT-5');
+      assert.equal(neonRow?.dataset.label, 'Gemini 4 Neon (High)');
+      assert.equal(gptRow?.dataset.label, 'GPT-5 (Medium)');
+      root._modelPicker?.dispose?.();
+    } finally {
+      if (prevMatchMedia === undefined) delete globalThis.matchMedia;
+      else globalThis.matchMedia = prevMatchMedia;
+    }
+  });
 });

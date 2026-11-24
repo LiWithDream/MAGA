@@ -295,6 +295,7 @@ export function syncModelPicker(root, footer, prefsOrEnabled, labels, findFooter
   const tierOrder = { off: 0, minimal: 1, low: 2, medium: 3, high: 4, xhigh: 5, extra: 6, max: 7 };
   const tierRe = /^(.*?)\s*\((off|low|medium|high|extra|xhigh|max|minimal)(?:\s+thinking)?\)$/i;
   const displayTier = tier => tier?.toLowerCase() === 'xhigh' ? 'Extra High' : tier;
+  const defaultTierFor = name => /\bneon\b/i.test(String(name || '')) ? 'high' : 'medium';
   const plannerText = (label, showEffort = true) => {
     const name = label?.replace(/^Orchestrator → /, '') ?? '';
     const match = tierRe.exec(name);
@@ -503,8 +504,11 @@ export function syncModelPicker(root, footer, prefsOrEnabled, labels, findFooter
       sub.replaceChildren();
       sub.setAttribute('aria-label', group.name);
       for (const planner of group.planners) {
+        const defTier = defaultTierFor(planner.name);
         const target = planner.items.find(item => item.label === currentSelected)
-          ?? planner.items.find(item => item.tier?.toLowerCase() === 'medium') ?? planner.items[0];
+          ?? planner.items.find(item => item.tier?.toLowerCase() === defTier)
+          ?? planner.items.find(item => item.tier?.toLowerCase() === 'medium')
+          ?? planner.items[0];
         const choice = document.createElement('button');
         choice.type = 'button';
         choice.className = 'dk-model-sub-item';
@@ -823,11 +827,14 @@ export function syncModelPicker(root, footer, prefsOrEnabled, labels, findFooter
         row.className = 'dk-model-row';
         row.setAttribute('role', 'menuitem');
         const isActiveGroup = group.planners ? next.orchestrator.active : group.items.some(item => item.label === selectedInList);
+        const defTier = defaultTierFor(group.name);
         const targetLabel = !group.isMultiTier ? group.items[0].label : !currentEffortCaption
           ? resolveInheritedLabel(group.items, next.orchestrator?.active ? 'Orchestrator' : next.selected)
           : (group.items.find(item => item.label === selectedInList)
             || group.items.find(item => item.label === rememberedEffort.get(group.name))
-            || group.items.find(item => item.tier.toLowerCase() === 'medium') || group.items[0]).label;
+            || group.items.find(item => item.tier.toLowerCase() === defTier)
+            || group.items.find(item => item.tier.toLowerCase() === 'medium')
+            || group.items[0]).label;
         row.dataset.label = targetLabel;
         row.dataset.family = group.familyName;
         row.setAttribute('aria-label', group.planner ? group.name + ' ' + plannerText(group.planner) : targetLabel);

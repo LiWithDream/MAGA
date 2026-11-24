@@ -34,19 +34,97 @@
 }
 
 /* ==========================================================================
- * Symmetrical 420px Minimum Width Floor for BOTH Main Pane & Aux Side Panel
- * Keeps both composers governed by the exact same width floor & compression
- * ladder while guaranteeing aux inner wrapper stays 100% aligned & centered.
+ * Symmetrical 420px Minimum Width Floor & Smooth Panel Transitions
+ * Outer width floor only applies at rest (never during data-split-transition)
+ * so [data-testid="aux-pane-split"] slides 0px <-> 50% smoothly via native
+ * 500ms var(--ease-expo-out), while inner wrapper preserves full target width.
  * ========================================================================== */
 
-[data-testid="aux-pane-split"] > div:first-child {
+[data-testid="aux-pane-split"]:not([data-split-transition="maximizing"]) > div:first-child {
   min-width: min(420px, 50%) !important;
 }
 
-[data-testid="aux-pane-split"] > div:last-child:not([style*="width: 0px"]),
-[data-testid="aux-pane-split"] > div:last-child:not([style*="width: 0px"]) > div:first-child {
+[data-testid="aux-pane-split"]:not([data-split-transition]) > div:last-child:not([style*="width: 0px"]) {
   min-width: min(420px, calc(var(--split-root-size, 100%) * 0.5)) !important;
   max-width: max(min(420px, calc(var(--split-root-size, 100%) * 0.5)), calc(var(--split-root-size, 100%) - 420px - 1px)) !important;
+}
+
+[data-testid="aux-pane-split"] > div:last-child:not([style*="width: 0px"]) > div:first-child,
+[data-testid="aux-pane-split"][data-split-transition="closing"] > div:last-child > div:first-child {
+  min-width: min(420px, calc(var(--split-root-size, 100%) * 0.5)) !important;
+  max-width: max(min(420px, calc(var(--split-root-size, 100%) * 0.5)), calc(var(--split-root-size, 100%) - 420px - 1px)) !important;
+}
+
+@keyframes agyAuxReveal {
+  from {
+    opacity: 0;
+    transform: translate3d(14px, 0, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes agySubSwapIn {
+  from {
+    opacity: 0.45;
+    transform: translate3d(8px, 0, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+[data-testid="aux-pane-split"][data-split-transition="opening"] > div:last-child > div:first-child {
+  animation: agyAuxReveal 280ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+[data-testid="aux-pane-split"][data-split-transition="closing"] > div:last-child > div:first-child {
+  opacity: 0.45 !important;
+  transition: opacity 200ms cubic-bezier(0.4, 0, 1, 1) !important;
+}
+
+[data-testid="subagent-tab-conversation"][data-agy-sub-switching="1"] {
+  animation: agySubSwapIn 180ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Phase 1 (0..120ms): swiftly tuck Overview away while holding chat reserve so chat doesn't bounce right */
+html[data-agy-panel-handoff="ov-to-aux-closing"] .animate-overview-panel {
+  opacity: 0 !important;
+  transform: translate3d(16px, 0, 0) scale(0.97) !important;
+  transition: opacity 110ms cubic-bezier(0.4, 0, 1, 1), transform 110ms cubic-bezier(0.4, 0, 1, 1) !important;
+  pointer-events: none !important;
+}
+
+html[data-agy-panel-handoff="ov-to-aux-closing"] [data-testid="overview-panel-host"] {
+  --overview-panel-reserve: var(--agy-hold-ov-reserve, 0px) !important;
+  --overview-panel-gutter-reserve: var(--agy-hold-ov-gutter, 0px) !important;
+}
+
+/* Phase 2 (120..640ms): keep unmounting Overview invisible while reserve releases in lockstep with Aux opening */
+html[data-agy-panel-handoff="ov-to-aux-opening"] .animate-overview-panel {
+  opacity: 0 !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+  transition: none !important;
+}
+
+html[data-agy-panel-handoff^="ov-to-aux"] [data-testid="overview-panel-overlay-backdrop"] {
+  display: none !important;
+  pointer-events: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-testid="aux-pane-split"][data-split-transition="opening"] > div:last-child > div:first-child,
+  [data-testid="subagent-tab-conversation"][data-agy-sub-switching="1"] {
+    animation: none !important;
+  }
+  [data-testid="aux-pane-split"][data-split-transition="closing"] > div:last-child > div:first-child,
+  html[data-agy-panel-handoff="ov-to-aux-closing"] .animate-overview-panel {
+    transition: none !important;
+  }
 }
 
 /* Remove redundant inner subagent list sidebar + divider + header toggle inside aux split pane
@@ -135,7 +213,12 @@ button[data-testid="subagent-tab-open-full-view"] + button[data-testid="sidebar-
   color: var(--secondary-foreground, #4B4B47) !important;
   background-color: var(--agy-pill-bg) !important;
   box-shadow: inset 0 0 0 1px var(--agy-pill-border) !important;
-  transition: background-color 140ms ease, box-shadow 140ms ease, color 140ms ease !important;
+  transition: background-color 140ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 140ms cubic-bezier(0.22, 1, 0.36, 1), color 140ms ease, transform 110ms cubic-bezier(0.22, 1, 0.36, 1) !important;
+}
+
+.agy-composer-footer > div:first-child > button:first-of-type:active,
+#antigravity\.agentSidePanelInputBox .agy-composer-footer > div:first-child > button:first-of-type:active {
+  transform: scale(0.97) !important;
 }
 
 .agy-composer-footer > div:first-child > button:first-of-type:hover,
@@ -249,7 +332,7 @@ button[data-testid="subagent-tab-open-full-view"] + button[data-testid="sidebar-
 }
 
 /* Order 7: Any unknown extra native chip (excludes our styled subagent & resume capsules) */
-.agy-composer-footer > div:first-child > *:not(button:first-of-type):not(input):not([data-agy-picker-host]):not([data-agy-sub-pill]):not(#ag-claude-ctx-ring):not(#ag-live-metrics-pill):not(#agy-main-subagent-pill):not(#agy-resume-pill):not([data-agy-native-sub-chip="1"]):not(:has(button[data-deck-model-bubble="hidden"])) {
+.agy-composer-footer > div:first-child > *:not(button:first-of-type):not(input):not([data-agy-picker-host]):not([data-agy-sub-pill]):not(#ag-claude-ctx-ring):not(#ag-live-metrics-pill):not(#agy-main-subagent-pill):not(#agy-resume-pill):not([data-agy-native-sub-chip="1"]):not([data-agy-model-wrap="1"]):not([data-deck-model-bubble="hidden"]) {
   order: 7 !important;
   display: inline-flex !important;
   align-items: center !important;
@@ -267,17 +350,16 @@ button[data-testid="subagent-tab-open-full-view"] + button[data-testid="sidebar-
   overflow: hidden !important;
   text-overflow: ellipsis !important;
   white-space: nowrap !important;
-  transition: background-color 140ms ease, box-shadow 140ms ease, color 140ms ease !important;
+  transition: background-color 140ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 140ms cubic-bezier(0.22, 1, 0.36, 1), color 140ms ease !important;
 }
-.agy-composer-footer > div:first-child > *:not(button:first-of-type):not(input):not([data-agy-picker-host]):not([data-agy-sub-pill]):not(#ag-claude-ctx-ring):not(#ag-live-metrics-pill):not(#agy-main-subagent-pill):not(#agy-resume-pill):not([data-agy-native-sub-chip="1"]):not(:has(button[data-deck-model-bubble="hidden"])):hover {
+.agy-composer-footer > div:first-child > *:not(button:first-of-type):not(input):not([data-agy-picker-host]):not([data-agy-sub-pill]):not(#ag-claude-ctx-ring):not(#ag-live-metrics-pill):not(#agy-main-subagent-pill):not(#agy-resume-pill):not([data-agy-native-sub-chip="1"]):not([data-agy-model-wrap="1"]):not([data-deck-model-bubble="hidden"]):hover {
   background-color: var(--agy-pill-bg-hover) !important;
   box-shadow: inset 0 0 0 1px var(--agy-pill-border-hover) !important;
 }
 
 /* Remove zero-width hidden file input & hidden native model wrapper from flex gap & styling */
 .agy-composer-footer > div:first-child > input[type="file"],
-.agy-composer-footer > div:first-child > div:has(> button[data-deck-model-bubble="hidden"]),
-.agy-composer-footer > div:first-child > div:has(button[data-deck-model-bubble="hidden"]) {
+.agy-composer-footer > div:first-child > [data-agy-model-wrap="1"] {
   position: absolute !important;
   width: 0 !important;
   height: 0 !important;
@@ -308,13 +390,18 @@ button[data-testid="subagent-tab-open-full-view"] + button[data-testid="sidebar-
   justify-content: center !important;
   background-color: var(--agy-pill-bg) !important;
   box-shadow: inset 0 0 0 1px var(--agy-pill-border) !important;
-  transition: background-color 140ms ease, box-shadow 140ms ease, color 140ms ease !important;
+  transition: background-color 140ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 140ms cubic-bezier(0.22, 1, 0.36, 1), color 140ms ease, transform 110ms cubic-bezier(0.22, 1, 0.36, 1) !important;
 }
 
 #antigravity\.agentSidePanelInputBox #ag-claude-ctx-ring#ag-claude-ctx-ring:hover,
 .agy-composer-footer #ag-claude-ctx-ring#ag-claude-ctx-ring:hover {
   background-color: var(--agy-pill-bg-hover) !important;
   box-shadow: inset 0 0 0 1px var(--agy-pill-border-hover) !important;
+}
+
+#antigravity\.agentSidePanelInputBox #ag-claude-ctx-ring#ag-claude-ctx-ring:active,
+.agy-composer-footer #ag-claude-ctx-ring#ag-claude-ctx-ring:active {
+  transform: scale(0.97) !important;
 }
 
 #antigravity\.agentSidePanelInputBox #ag-claude-ctx-ring#ag-claude-ctx-ring[data-agy-has-ratio="true"],
@@ -371,9 +458,15 @@ button[data-testid="subagent-tab-open-full-view"] + button[data-testid="sidebar-
   display: none !important;
 }
 
-@keyframes agyCtxCritPulse {
-  0%, 100% { box-shadow: inset 0 0 0 1px rgba(239, 68, 68, 0.55), 0 0 0 0 rgba(239, 68, 68, 0.32); }
-  50% { box-shadow: inset 0 0 0 1px rgba(239, 68, 68, 0.72), 0 0 0 3px rgba(239, 68, 68, 0.12); }
+@keyframes agyCtxCritRing {
+  0%, 100% {
+    opacity: 0.72;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0;
+    transform: scale(1.09, 1.24);
+  }
 }
 
 /* Context Warn tier: 60% - 74% (amber-orange) */
@@ -425,10 +518,12 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) :is(#ag-claude-quota-popov
   color: #FCD34D !important;
 }
 
-/* Context Crit tier: >= 75% (vivid red + gentle breathing pulse) */
+/* Context Crit tier: >= 75% (vivid red + pure GPU composited ring pulse) */
 html:not([data-ag-theme-mode="dark"]) body:not(.dark) #antigravity\.agentSidePanelInputBox #ag-claude-ctx-ring#ag-claude-ctx-ring[data-agy-ctx-tier="crit"] {
+  position: relative !important;
+  overflow: visible !important;
   background-color: rgba(220, 38, 38, 0.14) !important;
-  animation: agyCtxCritPulse 2.0s ease-in-out infinite !important;
+  box-shadow: inset 0 0 0 1px rgba(220, 38, 38, 0.55) !important;
 }
 html:not([data-ag-theme-mode="dark"]) body:not(.dark) #antigravity\.agentSidePanelInputBox #ag-claude-ctx-ring#ag-claude-ctx-ring[data-agy-ctx-tier="crit"] .ag-ctx-ring-arc {
   stroke: #DC2626 !important;
@@ -439,8 +534,21 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) #antigravity\.agentSidePan
 }
 
 :is(html[data-ag-theme-mode="dark"] body, body.dark) #antigravity\.agentSidePanelInputBox #ag-claude-ctx-ring#ag-claude-ctx-ring[data-agy-ctx-tier="crit"] {
+  position: relative !important;
+  overflow: visible !important;
   background-color: rgba(239, 68, 68, 0.20) !important;
-  animation: agyCtxCritPulse 2.0s ease-in-out infinite !important;
+  box-shadow: inset 0 0 0 1px rgba(239, 68, 68, 0.62) !important;
+}
+#antigravity\.agentSidePanelInputBox #ag-claude-ctx-ring#ag-claude-ctx-ring[data-agy-ctx-tier="crit"]::after,
+.agy-composer-footer #ag-claude-ctx-ring#ag-claude-ctx-ring[data-agy-ctx-tier="crit"]::after {
+  content: "" !important;
+  position: absolute !important;
+  inset: -1px !important;
+  border-radius: inherit !important;
+  border: 1.5px solid rgba(239, 68, 68, 0.55) !important;
+  pointer-events: none !important;
+  will-change: transform, opacity !important;
+  animation: agyCtxCritRing 2.0s cubic-bezier(0.4, 0, 0.2, 1) infinite !important;
 }
 :is(html[data-ag-theme-mode="dark"] body, body.dark) #antigravity\.agentSidePanelInputBox #ag-claude-ctx-ring#ag-claude-ctx-ring[data-agy-ctx-tier="crit"] .ag-ctx-ring-arc {
   stroke: #F87171 !important;
@@ -477,12 +585,21 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) :is(#ag-claude-quota-popov
   0%, 100% {
     opacity: 1;
     transform: scale(1);
-    box-shadow: 0 0 0 2.5px color-mix(in srgb, currentColor 24%, transparent);
   }
   50% {
-    opacity: 0.42;
-    transform: scale(0.76);
-    box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 8%, transparent);
+    opacity: 0.45;
+    transform: scale(0.8);
+  }
+}
+
+@keyframes agyDotHalo {
+  0% {
+    opacity: 0.45;
+    transform: scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.9);
   }
 }
 
@@ -510,7 +627,12 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) :is(#ag-claude-quota-popov
   cursor: pointer !important;
   background-color: var(--agy-pill-bg) !important;
   box-shadow: inset 0 0 0 1px var(--agy-pill-border) !important;
-  transition: background-color 180ms ease, box-shadow 180ms ease, color 220ms ease !important;
+  transition: background-color 180ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 180ms cubic-bezier(0.22, 1, 0.36, 1), color 220ms ease, transform 110ms cubic-bezier(0.22, 1, 0.36, 1) !important;
+}
+
+#antigravity\.agentSidePanelInputBox #ag-live-metrics-pill#ag-live-metrics-pill:not([data-agy-working-placeholder="true"]):active,
+.agy-composer-footer #ag-live-metrics-pill#ag-live-metrics-pill:not([data-agy-working-placeholder="true"]):active {
+  transform: scale(0.97) !important;
 }
 
 #antigravity\.agentSidePanelInputBox #ag-live-metrics-pill#ag-live-metrics-pill[data-agy-working-placeholder="true"],
@@ -568,6 +690,7 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) :is(#ag-claude-quota-popov
 /* Live activity indicator dot inside speed capsule */
 #antigravity\.agentSidePanelInputBox #ag-live-metrics-pill#ag-live-metrics-pill .agy-speed-dot,
 .agy-composer-footer #ag-live-metrics-pill#ag-live-metrics-pill .agy-speed-dot {
+  position: relative !important;
   display: inline-block !important;
   width: 6px !important;
   height: 6px !important;
@@ -576,12 +699,26 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) :is(#ag-claude-quota-popov
   background-color: var(--agy-spd-color) !important;
   color: var(--agy-spd-color) !important;
   opacity: 0.78 !important;
+  will-change: transform, opacity !important;
   transition: background-color 220ms ease, opacity 220ms ease, transform 220ms ease !important;
 }
 
 #ag-live-metrics-pill#ag-live-metrics-pill[data-agy-motion="active"] .agy-speed-dot {
   opacity: 1 !important;
   animation: agySpeedBreathe 1.2s ease-in-out infinite !important;
+}
+
+#ag-live-metrics-pill#ag-live-metrics-pill[data-agy-motion="active"] .agy-speed-dot::after,
+.agy-sub-pill.agy-sub-speed[data-agy-motion="active"] .agy-sub-sdot::after,
+#agy-main-subagent-pill .agy-sub-live-dot::after {
+  content: "" !important;
+  position: absolute !important;
+  inset: 0 !important;
+  border-radius: 50% !important;
+  background-color: currentColor !important;
+  pointer-events: none !important;
+  will-change: transform, opacity !important;
+  animation: agyDotHalo 1.2s cubic-bezier(0.22, 1, 0.36, 1) infinite !important;
 }
 
 #ag-live-metrics-pill#ag-live-metrics-pill[data-agy-motion="recent"] .agy-speed-dot {
@@ -670,7 +807,12 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) :is(#ag-claude-quota-popov
   gap: 4px !important;
   background-color: var(--agy-pill-bg) !important;
   box-shadow: inset 0 0 0 1px var(--agy-pill-border) !important;
-  transition: background-color 140ms ease, box-shadow 140ms ease, color 140ms ease !important;
+  transition: background-color 140ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 140ms cubic-bezier(0.22, 1, 0.36, 1), color 140ms ease, transform 110ms cubic-bezier(0.22, 1, 0.36, 1) !important;
+}
+
+.agy-composer-footer button[data-testid="permissions-selector-trigger"]:active,
+#antigravity\.agentSidePanelInputBox button[data-testid="permissions-selector-trigger"]:active {
+  transform: scale(0.97) !important;
 }
 
 .agy-composer-footer button[data-testid="permissions-selector-trigger"]:hover,
@@ -690,8 +832,27 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) :is(#ag-claude-quota-popov
   #ag-live-metrics-pill#ag-live-metrics-pill[data-agy-motion="active"] .agy-speed-dot,
   [data-agy-sub-pill="speed"][data-agy-motion="active"] .agy-sub-sdot,
   #agy-main-subagent-pill .agy-sub-live-dot,
-  #antigravity\.agentSidePanelInputBox #ag-claude-ctx-ring#ag-claude-ctx-ring[data-agy-ctx-tier="crit"] {
+  #agy-subagent-menu#agy-subagent-menu[data-open="1"] {
     animation: none !important;
+  }
+  #ag-live-metrics-pill#ag-live-metrics-pill[data-agy-motion="active"] .agy-speed-dot::after,
+  .agy-sub-pill.agy-sub-speed[data-agy-motion="active"] .agy-sub-sdot::after,
+  #agy-main-subagent-pill .agy-sub-live-dot::after,
+  #antigravity\.agentSidePanelInputBox #ag-claude-ctx-ring#ag-claude-ctx-ring[data-agy-ctx-tier="crit"]::after,
+  .agy-composer-footer #ag-claude-ctx-ring#ag-claude-ctx-ring[data-agy-ctx-tier="crit"]::after {
+    animation: none !important;
+    opacity: 0 !important;
+  }
+  .agy-composer-footer > div:first-child > button:first-of-type,
+  .agy-composer-footer button[data-testid="permissions-selector-trigger"],
+  #antigravity\.agentSidePanelInputBox button[data-testid="permissions-selector-trigger"],
+  #antigravity\.agentSidePanelInputBox #ag-claude-ctx-ring#ag-claude-ctx-ring,
+  .agy-composer-footer #ag-claude-ctx-ring#ag-claude-ctx-ring,
+  #antigravity\.agentSidePanelInputBox #ag-live-metrics-pill#ag-live-metrics-pill,
+  .agy-composer-footer #ag-live-metrics-pill#ag-live-metrics-pill,
+  .agy-composer-footer > div:first-child > #agy-main-subagent-pill,
+  #agy-resume-pill .agy-resume-go {
+    transition: none !important;
   }
 }
 
@@ -816,12 +977,14 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) :is(#ag-claude-quota-popov
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--agy-spd-color) 32%, var(--agy-pill-border)) !important;
 }
 .agy-sub-pill.agy-sub-speed .agy-sub-sdot {
+  position: relative !important;
   width: 6px !important;
   height: 6px !important;
   border-radius: 50% !important;
   background-color: var(--agy-spd-color) !important;
   color: var(--agy-spd-color) !important;
   flex-shrink: 0 !important;
+  will-change: transform, opacity !important;
 }
 .agy-sub-pill.agy-sub-speed[data-agy-motion="active"] .agy-sub-sdot {
   animation: agySpeedBreathe 1.2s ease-in-out infinite !important;
@@ -997,7 +1160,11 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) :is(#ag-claude-quota-popov
   color: color-mix(in srgb, var(--agy-sub-color) 76%, var(--foreground)) !important;
   background-color: color-mix(in srgb, var(--agy-sub-color) 7.5%, var(--agy-pill-bg)) !important;
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--agy-sub-color) 22%, var(--agy-pill-border)) !important;
-  transition: background-color 140ms ease, box-shadow 140ms ease, color 140ms ease !important;
+  transition: background-color 140ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 140ms cubic-bezier(0.22, 1, 0.36, 1), color 140ms ease, transform 110ms cubic-bezier(0.22, 1, 0.36, 1) !important;
+}
+.agy-composer-footer > div:first-child > #agy-main-subagent-pill:active,
+.agy-composer-footer > div:first-child > [data-agy-native-sub-chip="1"]:active {
+  transform: scale(0.97) !important;
 }
 .agy-composer-footer > div:first-child > [data-agy-native-sub-chip="1"] {
   justify-content: center !important;
@@ -1067,12 +1234,14 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) :is(#ag-claude-quota-popov
   color: var(--agy-sub-color) !important;
 }
 #agy-main-subagent-pill .agy-sub-live-dot {
+  position: relative !important;
   width: 6px !important;
   height: 6px !important;
   border-radius: 50% !important;
   flex-shrink: 0 !important;
   background-color: var(--agy-sub-run) !important;
   color: var(--agy-sub-run) !important;
+  will-change: transform, opacity !important;
   animation: agySpeedBreathe 1.2s ease-in-out infinite !important;
 }
 
@@ -1121,10 +1290,22 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) :is(#ag-claude-quota-popov
   display: none !important;
 }
 
+@keyframes agyMenuIn {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 5px, 0) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
 /* Compact Floating Subagent Selector Menu (#agy-subagent-menu) */
 #agy-subagent-menu#agy-subagent-menu {
   position: fixed !important;
   z-index: 2147483646 !important;
+  contain: layout style !important;
   min-width: 216px !important;
   max-width: 280px !important;
   padding: 6px !important;
@@ -1144,6 +1325,7 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) :is(#ag-claude-quota-popov
 }
 #agy-subagent-menu#agy-subagent-menu[data-open="1"] {
   display: block !important;
+  animation: agyMenuIn 135ms cubic-bezier(0.22, 1, 0.36, 1) both !important;
 }
 #agy-subagent-menu .agy-sub-menu-hdr {
   padding: 4px 8px 6px !important;
@@ -1264,6 +1446,10 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) :is(#ag-claude-quota-popov
   line-height: 16px !important;
   white-space: nowrap !important;
   cursor: pointer !important;
+  transition: transform 110ms cubic-bezier(0.22, 1, 0.36, 1) !important;
+}
+#agy-resume-pill .agy-resume-go:active {
+  transform: scale(0.97) !important;
 }
 #agy-resume-pill .agy-resume-ico {
   color: var(--agy-res-color) !important;

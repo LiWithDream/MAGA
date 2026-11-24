@@ -70,7 +70,10 @@ export function buildPickerShadowCss({ effortBarCss, agentEntryCss }) {
   color: var(--foreground, #1C1C1A);
   background: color-mix(in srgb, var(--agy-model-accent) 7%, var(--agy-pill-bg, rgba(128, 128, 128, 0.06)));
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--agy-model-accent) 20%, var(--agy-pill-border, rgba(128, 128, 128, 0.12)));
-  transition: background-color 140ms ease, box-shadow 140ms ease, color 140ms ease;
+  transition: background-color 140ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 140ms cubic-bezier(0.22, 1, 0.36, 1), color 140ms ease, transform 110ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+#deck-metrics-strip button.dk-pill[data-el="modelPicker"]:active {
+  transform: scale(0.97);
 }
 #deck-metrics-strip button.dk-pill[data-el="modelPicker"]:hover,
 #deck-metrics-strip button.dk-pill[data-el="modelPicker"]:focus-visible {
@@ -230,9 +233,25 @@ export function buildPickerShadowCss({ effortBarCss, agentEntryCss }) {
   border-radius: 14px;
   border: 1px solid color-mix(in srgb, var(--foreground, #141413) 10%, transparent);
   background: var(--card, var(--background, rgb(255, 255, 255)));
-  backdrop-filter: blur(22px);
+  backdrop-filter: blur(12px) saturate(160%);
+  contain: layout style;
   box-shadow: 0 1px 0 color-mix(in srgb, var(--foreground, #fff) 8%, transparent) inset, 0 18px 40px -10px rgba(0, 0, 0, 0.20), 0 4px 12px -2px rgba(0, 0, 0, 0.10);
   color: var(--foreground, CanvasText);
+}
+@keyframes dkPopIn {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 4px, 0) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+.dk-model-options:popover-open,
+.dk-model-sub:popover-open,
+.dk-model-tiers:popover-open {
+  animation: dkPopIn 130ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 .dk-model-options {
   min-width: 172px;
@@ -268,7 +287,11 @@ ${agentEntryCss}
   text-align: left;
   cursor: pointer;
   outline: none;
-  transition: background 0.12s ease, color 0.12s ease;
+  transition: background 0.12s ease, color 0.12s ease, transform 0.1s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.dk-model-row:not(.dk-model-disabled):active:not(:disabled),
+.dk-model-sub-item:active:not(:disabled) {
+  transform: scale(0.985);
 }
 .dk-model-row.dk-model-disabled { opacity: 0.5; cursor: not-allowed; }
 .dk-model-sub-item { font-size: 13px; line-height: 18.57px; }
@@ -425,6 +448,18 @@ ${agentEntryCss}
 .ces-knob-notch {
   height: 7px !important;
 }
+@media (prefers-reduced-motion: reduce) {
+  #deck-metrics-strip button.dk-pill[data-el="modelPicker"],
+  .dk-model-row,
+  .dk-model-sub-item {
+    transition: none !important;
+  }
+  .dk-model-options:popover-open,
+  .dk-model-sub:popover-open,
+  .dk-model-tiers:popover-open {
+    animation: none !important;
+  }
+}
 `;
 }
 
@@ -472,13 +507,24 @@ export function createCapsulePickerRuntime({
 }) {
   const HOST_ID = 'agy-capsule-picker-host';
   const HOST_ATTR = 'data-agy-picker-host';
+  const MODEL_WRAP_ATTR = 'data-agy-model-wrap';
   const NATIVE_STYLE_ID = 'agy-capsule-picker-native-layout';
   const EFFORT_STORAGE_KEY = 'agy-capsule.effort-bar.v1';
   const MODS_STORAGE_KEY = 'ag_claude_ux_modules_v1';
+  const NATIVE_STYLE_CSS = [
+    '.agy-composer-footer button[data-deck-model-bubble="hidden"],',
+    '#antigravity\\.agentSidePanelInputBox button[data-deck-model-bubble="hidden"],',
+    `.agy-composer-footer > div:first-child > [${MODEL_WRAP_ATTR}="1"] {`,
+    '  position: absolute !important; width: 0 !important; min-width: 0 !important; max-width: 0 !important;',
+    '  height: 0 !important; overflow: hidden !important; padding: 0 !important; margin: 0 !important;',
+    '  border: 0 !important; opacity: 0 !important; pointer-events: none !important;',
+    '}',
+    '[data-deck-agent-tag="on"] [data-testid="selected-agent-chip"] { display: none !important; }',
+  ].join('\n');
 
   let disposed = false;
   let seededPrefs = false;
-  const instances = new Map(); // footerLeft -> { hostEl, rootEl, footerObs }
+  const instances = new Map(); // footerLeft -> { hostEl, rootEl, footerObs, modelWrap, ... }
 
   // Synchronize stale pre-studio localStorage override once on boot if config disables claudeUxModelMenu
   if (cfgMods.claudeUxModelMenu === false) {
@@ -510,7 +556,8 @@ export function createCapsulePickerRuntime({
   function isFooterLeftVisible(el) {
     if (!el || !el.isConnected) return false;
     // Narrow 2-row mode sets `display: contents` on div:first-child; measure its visible footer parent instead.
-    const boxEl = getComputedStyle(el).display === 'contents' ? el.parentElement : el;
+    const parentHasRow2 = el.parentElement?.getAttribute?.('data-agy-has-row2') === 'true';
+    const boxEl = parentHasRow2 || getComputedStyle(el).display === 'contents' ? el.parentElement : el;
     if (!boxEl || !boxEl.checkVisibility({ opacityProperty: true, visibilityProperty: true })) return false;
     const r = boxEl.getBoundingClientRect();
     return !(
@@ -541,15 +588,9 @@ export function createCapsulePickerRuntime({
       style.id = NATIVE_STYLE_ID;
       document.head.appendChild(style);
     }
-    style.textContent = [
-      '.agy-composer-footer button[data-deck-model-bubble="hidden"],',
-      '#antigravity\\.agentSidePanelInputBox button[data-deck-model-bubble="hidden"] {',
-      '  position: absolute !important; width: 0 !important; min-width: 0 !important; max-width: 0 !important;',
-      '  height: 0 !important; overflow: hidden !important; padding: 0 !important; margin: 0 !important;',
-      '  border: 0 !important; opacity: 0 !important; pointer-events: none !important;',
-      '}',
-      '[data-deck-agent-tag="on"] [data-testid="selected-agent-chip"] { display: none !important; }',
-    ].join('\n');
+    if (style.textContent !== NATIVE_STYLE_CSS) {
+      style.textContent = NATIVE_STYLE_CSS;
+    }
   }
 
   function teardownInstance(footerLeft) {
@@ -565,9 +606,15 @@ export function createCapsulePickerRuntime({
     if (inst.hostEl) {
       try { inst.hostEl.remove(); } catch {}
     }
+    if (inst.modelWrap && inst.modelWrap.removeAttribute) {
+      try { inst.modelWrap.removeAttribute(MODEL_WRAP_ATTR); } catch {}
+    }
     if (footerLeft && footerLeft.isConnected) {
       footerLeft.querySelectorAll('button[data-deck-model-bubble]').forEach((b) => {
         b.removeAttribute('data-deck-model-bubble');
+      });
+      footerLeft.querySelectorAll(`[${MODEL_WRAP_ATTR}]`).forEach((w) => {
+        w.removeAttribute(MODEL_WRAP_ATTR);
       });
     }
   }
@@ -581,6 +628,9 @@ export function createCapsulePickerRuntime({
     });
     document.querySelectorAll('button[data-deck-model-bubble]').forEach((b) => {
       b.removeAttribute('data-deck-model-bubble');
+    });
+    document.querySelectorAll(`[${MODEL_WRAP_ATTR}]`).forEach((w) => {
+      w.removeAttribute(MODEL_WRAP_ATTR);
     });
   }
 
@@ -606,6 +656,12 @@ export function createCapsulePickerRuntime({
         hostEl.setAttribute('data-ag-i18n-ignore', '1');
         hostEl.setAttribute('data-no-drag', '');
         hostEl.style.display = 'contents';
+        const markDirty = () => {
+          const cur = instances.get(hostEl.parentElement);
+          if (cur) cur.dirty = true;
+        };
+        hostEl.addEventListener('pointerdown', markDirty, true);
+        hostEl.addEventListener('focusin', markDirty, true);
         const shadow = hostEl.attachShadow({ mode: 'open' });
         const style = document.createElement('style');
         style.textContent = shadowCss;
@@ -613,11 +669,26 @@ export function createCapsulePickerRuntime({
         rootEl.id = 'deck-metrics-strip';
         shadow.append(style, rootEl);
       }
-      inst = { hostEl, rootEl, footerObs: inst?.footerObs || null };
+      inst = {
+        hostEl,
+        rootEl,
+        footerObs: inst?.footerObs || null,
+        modelWrap: null,
+        dirty: true,
+        lastTrigger: null,
+        lastTriggerText: '',
+        lastRoute: '',
+        lastLang: '',
+        lastPickerSyncTs: 0,
+      };
       instances.set(footerLeft, inst);
     }
 
     if (modelWrap) {
+      if (modelWrap.getAttribute(MODEL_WRAP_ATTR) !== '1') {
+        modelWrap.setAttribute(MODEL_WRAP_ATTR, '1');
+      }
+      inst.modelWrap = modelWrap;
       if (inst.hostEl.parentElement !== footerLeft || inst.hostEl.nextElementSibling !== modelWrap) {
         modelWrap.insertAdjacentElement('beforebegin', inst.hostEl);
       }
@@ -762,22 +833,58 @@ export function createCapsulePickerRuntime({
     }
 
     const { labels, settingsLabels } = getActiveLabels();
+    const curRoute = typeof location !== 'undefined' ? String(location.pathname || '') : '';
+    const curLang = document.documentElement.getAttribute('data-ag-ux-lang') || '';
+    const now = Date.now();
+
     for (const { el: footerLeft, isSide } of eligible) {
       const inst = ensureHostFor(footerLeft, isSide);
       if (!inst || !inst.rootEl) continue;
 
-      const scopedFind = () => (isFooterLeftVisible(footerLeft) ? footerLeft : null);
+      const trigger = footerLeft.querySelector('button[data-testid="model-selector-trigger"]');
+      const triggerText = trigger ? (trigger.textContent || '').trim() : '';
+      let panelOpen = false;
       try {
-        syncModelPicker(inst.rootEl, footerLeft, prefs, labels, scopedFind, settingsLabels);
-        if (inst.rootEl._modelPicker) inst.rootEl._modelPicker.setBubble(true);
-        decorateModelCapsule(inst.rootEl, footerLeft);
-      } catch (err) {
-        console.warn('[agy-studio/picker] sync failed:', err);
+        panelOpen = Boolean(inst.rootEl.querySelector?.('.dk-model-options')?.matches?.(':popover-open'));
+      } catch {}
+
+      const needsPickerSync =
+        !inst.rootEl._modelPicker ||
+        inst.dirty ||
+        inst.lastTrigger !== trigger ||
+        inst.lastTriggerText !== triggerText ||
+        inst.lastRoute !== curRoute ||
+        inst.lastLang !== curLang ||
+        panelOpen ||
+        now - inst.lastPickerSyncTs >= 2500;
+
+      if (needsPickerSync) {
+        const scopedFind = () => (isFooterLeftVisible(footerLeft) ? footerLeft : null);
+        try {
+          syncModelPicker(inst.rootEl, footerLeft, prefs, labels, scopedFind, settingsLabels);
+          if (inst.rootEl._modelPicker) inst.rootEl._modelPicker.setBubble(true);
+          decorateModelCapsule(inst.rootEl, footerLeft);
+        } catch (err) {
+          console.warn('[agy-studio/picker] sync failed:', err);
+        }
+        inst.dirty = false;
+        inst.lastTrigger = trigger;
+        inst.lastTriggerText = triggerText;
+        inst.lastRoute = curRoute;
+        inst.lastLang = curLang;
+        inst.lastPickerSyncTs = now;
+      } else {
+        const footer = footerLeft?.closest?.('.agy-composer-footer');
+        const dockTier = footer?.getAttribute?.('data-agy-dock-tier') || 'full';
+        if (inst.rootEl.getAttribute('data-dock-tier') !== dockTier) {
+          inst.rootEl.setAttribute('data-dock-tier', dockTier);
+        }
       }
 
       if (!inst.footerObs) {
         inst.footerObs = new MutationObserver((mutations) => {
-          if (mutations.every((m) => inst.hostEl && inst.hostEl.contains(m.target))) return;
+          if (mutations.every((m) => inst.hostEl && (inst.hostEl === m.target || inst.hostEl.contains(m.target)))) return;
+          inst.dirty = true;
           scheduleParent();
         });
         inst.footerObs.observe(footerLeft, { subtree: true, characterData: true, childList: true });

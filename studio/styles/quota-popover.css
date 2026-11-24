@@ -3,6 +3,7 @@
   width: 296px !important;
   padding: 13px 14px 14px !important;
   border-radius: 14px !important;
+  contain: layout style !important;
 }
 
 #ag-claude-quota-popover .ag-qp-hdr {
@@ -37,6 +38,7 @@
   font-size: 12px !important;
   line-height: 16px !important;
   border-radius: 6px !important;
+  transition: background-color 120ms ease, color 120ms ease, box-shadow 120ms ease !important;
 }
 
 #ag-claude-quota-popover .ag-qp-group-list {

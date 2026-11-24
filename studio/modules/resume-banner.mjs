@@ -21,6 +21,18 @@ export function createResumeBannerRuntime() {
   let prevRunning = null;
   let settleTimer = 0;
   let stateCache = { cid: '', ts: 0, inFlight: false, data: null };
+  const scannedSteps = new WeakSet();
+  const fallbackTimers = new Set();
+
+  function trackTimer(fn, ms) {
+    if (disposed) return 0;
+    const id = setTimeout(() => {
+      fallbackTimers.delete(id);
+      if (!disposed) fn();
+    }, ms);
+    fallbackTimers.add(id);
+    return id;
+  }
 
   const dismissedSet = new Set();
   try {
@@ -180,9 +192,9 @@ export function createResumeBannerRuntime() {
         } catch {}
         return;
       }
-      setTimeout(() => clickSend(attempt + 1), 45);
+      trackTimer(() => clickSend(attempt + 1), 45);
     };
-    setTimeout(() => clickSend(0), 60);
+    trackTimer(() => clickSend(0), 60);
   }
 
   function triggerResume(cid, lastIdx) {
@@ -207,7 +219,7 @@ export function createResumeBannerRuntime() {
         );
         // Verify within 450ms that the run actually started; otherwise fall back cleanly to editor submit
         Promise.resolve(res).catch(() => {});
-        setTimeout(() => {
+        trackTimer(() => {
           if (!disposed && !isMainRunning() && getActiveCid() === cid) {
             submitViaEditorFallback(box, prompt);
           }
@@ -223,6 +235,7 @@ export function createResumeBannerRuntime() {
     const steps = document.querySelectorAll('[data-testid="conversation-view"] [data-testid="user-input-step"]');
     const dividerLabel = L('已从中断处继续', 'Resumed');
     for (const step of steps) {
+      if (scannedSteps.has(step)) continue;
       if (step.getAttribute('data-agy-resumed-step') === '1') {
         if (step.getAttribute('data-agy-resumed-label') !== dividerLabel) {
           step.setAttribute('data-agy-resumed-label', dividerLabel);
@@ -235,6 +248,8 @@ export function createResumeBannerRuntime() {
       if (txt.startsWith(RESUME_SENTINEL) || LEGACY_RESUME_RE.test(txt.trim())) {
         step.setAttribute('data-agy-resumed-step', '1');
         step.setAttribute('data-agy-resumed-label', dividerLabel);
+      } else if (txt.trim()) {
+        scannedSteps.add(step);
       }
     }
   }
@@ -379,6 +394,8 @@ export function createResumeBannerRuntime() {
       clearTimeout(settleTimer);
       settleTimer = 0;
     }
+    for (const id of fallbackTimers) clearTimeout(id);
+    fallbackTimers.clear();
     removePill();
     document.querySelectorAll('[data-agy-resumed-step="1"]').forEach((el) => {
       el.removeAttribute('data-agy-resumed-step');

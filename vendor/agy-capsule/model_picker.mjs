@@ -315,7 +315,10 @@ export function syncModelPicker(root, footer, prefsOrEnabled, labels, findFooter
       effortEl.textContent = ' ' + plannerText(orchestrator.current);
       textWrap.append(nameEl, effortEl);
     } else if (!match) {
-      textWrap.textContent = label;
+      const nameEl = document.createElement('span');
+      nameEl.className = 'dk-mp-name';
+      nameEl.textContent = label;
+      textWrap.append(nameEl);
     } else {
       const nameEl = document.createElement('span');
       nameEl.className = 'dk-mp-name';
@@ -646,7 +649,9 @@ export function syncModelPicker(root, footer, prefsOrEnabled, labels, findFooter
       }
       button.removeAttribute('title');
       button.setAttribute('aria-label', currentCaption + ': ' +
-        (next.orchestrator?.active ? button.querySelector('.dk-mp-text').textContent : next.selected));
+        (next.orchestrator?.active
+          ? (next.orchestrator.current ? 'Orchestrator ' + plannerText(next.orchestrator.current) : 'Orchestrator')
+          : next.selected));
       panel.setAttribute('aria-label', currentCaption);
       if (pending && (next.selected === pending || (pending === 'Orchestrator' && next.orchestrator?.active))) {
         clearTimeout(expiry);

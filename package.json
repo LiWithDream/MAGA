@@ -11,7 +11,7 @@
     "sync-rules": "node studio/cli.mjs sync-rules",
     "sync-capsule": "node studio/cli.mjs sync-capsule",
     "rollback": "node studio/cli.mjs rollback",
-    "test": "node --test test/"
+    "test": "node --test 'test/*.test.mjs'"
   },
   "devDependencies": { "jsdom": "^31.0.1" }
 }

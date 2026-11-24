@@ -60,7 +60,7 @@ export function buildPickerShadowCss({ effortBarCss, agentEntryCss }) {
   gap: 5px;
   height: 26px;
   min-width: 0;
-  max-width: min(22em, 100%);
+  max-width: min(20em, 100%);
   padding: 0 6.5px 0 7.5px;
   margin-right: 0;
   border-radius: 7px;
@@ -109,10 +109,16 @@ export function buildPickerShadowCss({ effortBarCss, agentEntryCss }) {
 #deck-metrics-strip button.dk-pill[data-el="modelPicker"] .agy-mp-short {
   display: none;
 }
-#deck-metrics-strip button.dk-pill[data-el="modelPicker"] .dk-mp-effort {
-  display: inline-flex;
-  align-items: center;
-  flex-shrink: 0;
+#deck-metrics-strip button.dk-pill[data-el="modelPicker"] .dk-mp-effort,
+#deck-metrics-strip button.dk-pill[data-el="modelPicker"] .agy-mp-effort-short {
+  display: inline-block;
+  vertical-align: middle;
+  min-width: 0;
+  max-width: 11.5em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex-shrink: 1;
   height: 17px;
   padding: 0 5.5px;
   margin-left: 5px;
@@ -125,7 +131,11 @@ export function buildPickerShadowCss({ effortBarCss, agentEntryCss }) {
   line-height: 17px;
   letter-spacing: 0.01em;
 }
-#deck-metrics-strip button.dk-pill[data-el="modelPicker"] .dk-mp-effort:empty {
+#deck-metrics-strip button.dk-pill[data-el="modelPicker"] .agy-mp-effort-short {
+  display: none;
+}
+#deck-metrics-strip button.dk-pill[data-el="modelPicker"] .dk-mp-effort:empty,
+#deck-metrics-strip button.dk-pill[data-el="modelPicker"] .agy-mp-effort-short:empty {
   display: none !important;
 }
 #deck-metrics-strip button.dk-pill[data-el="modelPicker"] .dk-mp-down {
@@ -138,12 +148,27 @@ export function buildPickerShadowCss({ effortBarCss, agentEntryCss }) {
   margin-left: -1px;
 }
 
+/* Always keep Orchestrator planner badge compact even in full tier */
+#deck-metrics-strip button.dk-pill[data-el="modelPicker"][data-is-orch="1"] .dk-mp-effort {
+  display: none;
+}
+#deck-metrics-strip button.dk-pill[data-el="modelPicker"][data-is-orch="1"] .agy-mp-effort-short {
+  display: inline-block;
+}
+
 /* 4-Tier Progressive Compression for Model Capsule */
-#deck-metrics-strip[data-dock-tier="compact"] button.dk-pill[data-el="modelPicker"] .dk-mp-name {
+#deck-metrics-strip[data-dock-tier="compact"] button.dk-pill[data-el="modelPicker"] {
+  max-width: min(16em, 100%);
+}
+#deck-metrics-strip[data-dock-tier="compact"] button.dk-pill[data-el="modelPicker"] .dk-mp-name,
+#deck-metrics-strip[data-dock-tier="compact"] button.dk-pill[data-el="modelPicker"] .dk-mp-effort {
   display: none;
 }
 #deck-metrics-strip[data-dock-tier="compact"] button.dk-pill[data-el="modelPicker"] .agy-mp-short {
   display: inline;
+}
+#deck-metrics-strip[data-dock-tier="compact"] button.dk-pill[data-el="modelPicker"] .agy-mp-effort-short {
+  display: inline-block;
 }
 
 #deck-metrics-strip[data-dock-tier="tight"] button.dk-pill[data-el="modelPicker"],
@@ -151,16 +176,36 @@ export function buildPickerShadowCss({ effortBarCss, agentEntryCss }) {
   padding: 0 5.5px 0 6.5px;
   gap: 4.5px;
 }
+#deck-metrics-strip[data-dock-tier="tight"] button.dk-pill[data-el="modelPicker"] {
+  max-width: min(11.5em, 100%);
+}
+#deck-metrics-strip[data-dock-tier="icon"] button.dk-pill[data-el="modelPicker"] {
+  max-width: min(8.5em, 100%);
+}
 #deck-metrics-strip[data-dock-tier="tight"] button.dk-pill[data-el="modelPicker"] .dk-mp-name,
-#deck-metrics-strip[data-dock-tier="icon"] button.dk-pill[data-el="modelPicker"] .dk-mp-name {
+#deck-metrics-strip[data-dock-tier="icon"] button.dk-pill[data-el="modelPicker"] .dk-mp-name,
+#deck-metrics-strip[data-dock-tier="tight"] button.dk-pill[data-el="modelPicker"] .dk-mp-effort,
+#deck-metrics-strip[data-dock-tier="icon"] button.dk-pill[data-el="modelPicker"] .dk-mp-effort {
   display: none;
+}
+#deck-metrics-strip[data-dock-tier="tight"] button.dk-pill[data-el="modelPicker"] .agy-mp-effort-short,
+#deck-metrics-strip[data-dock-tier="icon"] button.dk-pill[data-el="modelPicker"] .agy-mp-effort-short {
+  display: inline-block;
+}
+#deck-metrics-strip[data-dock-tier="tight"] button.dk-pill[data-el="modelPicker"] .agy-mp-effort-short {
+  max-width: 8.5em;
+}
+#deck-metrics-strip[data-dock-tier="icon"] button.dk-pill[data-el="modelPicker"] .agy-mp-effort-short {
+  max-width: 6.2em;
 }
 #deck-metrics-strip[data-dock-tier="tight"] button.dk-pill[data-el="modelPicker"][data-has-effort="1"] .agy-mp-short,
 #deck-metrics-strip[data-dock-tier="icon"] button.dk-pill[data-el="modelPicker"][data-has-effort="1"] .agy-mp-short {
   display: none;
 }
 #deck-metrics-strip[data-dock-tier="tight"] button.dk-pill[data-el="modelPicker"][data-has-effort="1"] .dk-mp-effort,
-#deck-metrics-strip[data-dock-tier="icon"] button.dk-pill[data-el="modelPicker"][data-has-effort="1"] .dk-mp-effort {
+#deck-metrics-strip[data-dock-tier="icon"] button.dk-pill[data-el="modelPicker"][data-has-effort="1"] .dk-mp-effort,
+#deck-metrics-strip[data-dock-tier="tight"] button.dk-pill[data-el="modelPicker"][data-has-effort="1"] .agy-mp-effort-short,
+#deck-metrics-strip[data-dock-tier="icon"] button.dk-pill[data-el="modelPicker"][data-has-effort="1"] .agy-mp-effort-short {
   margin-left: 0;
 }
 /* Fallback for models without effort tiers: display short model name instead of empty button */
@@ -383,6 +428,33 @@ ${agentEntryCss}
 `;
 }
 
+export function shortenModelName(name, isZh = false) {
+  const raw = String(name || '').trim();
+  if (!raw) return 'Model';
+  if (/^orchestrator$/i.test(raw)) return isZh ? '路由' : 'Orch';
+  const stripped = raw
+    .replace(/^(?:Google\s+)?Gemini\s+\d+(?:\.\d+)?\s+/i, '')
+    .replace(/^Claude\s+(?:\d+(?:\.\d+)?\s+)?/i, '')
+    .replace(/^OpenAI\s+/i, '')
+    .trim();
+  if (stripped && stripped.length >= 2 && stripped.length < raw.length) return stripped;
+  return raw;
+}
+
+export function shortenEffortBadge(effortText) {
+  const raw = String(effortText || '').trim();
+  if (!raw) return '';
+  return raw
+    .replace(/^(?:Google\s+)?Gemini\s+(?:v?\d+(?:\.\d+)?\s+)?/i, '')
+    .replace(/^Claude\s+(?:v?\d+(?:\.\d+)?\s+)?/i, '')
+    .replace(/(\b(?:Opus|Sonnet|Haiku))\s+v?\d+(?:\.\d+)?(?=\s|$)/i, '$1')
+    .replace(/^OpenAI\s+/i, '')
+    .replace(/\bExtra\s+High\b/i, 'XHigh')
+    .replace(/\bMedium\b/i, 'Med')
+    .replace(/\bMinimal\b/i, 'Min')
+    .trim();
+}
+
 /**
  * Self-contained browser runtime factory serialized cleanly by studio/build.mjs.
  * Relies on vendored agy-capsule helpers already in scope inside the bundle.
@@ -395,6 +467,8 @@ export function createCapsulePickerRuntime({
   syncModelPicker,
   effortEffects,
   motionThemes,
+  shortenModelName,
+  shortenEffortBadge,
 }) {
   const HOST_ID = 'agy-capsule-picker-host';
   const HOST_ATTR = 'data-agy-picker-host';
@@ -553,18 +627,6 @@ export function createCapsulePickerRuntime({
     return inst;
   }
 
-  function shortenModelName(name) {
-    const raw = String(name || '').trim();
-    if (!raw) return 'Model';
-    const stripped = raw
-      .replace(/^(?:Google\s+)?Gemini\s+\d+(?:\.\d+)?\s+/i, '')
-      .replace(/^Claude\s+(?:\d+(?:\.\d+)?\s+)?/i, '')
-      .replace(/^OpenAI\s+/i, '')
-      .trim();
-    if (stripped && stripped.length >= 2 && stripped.length < raw.length) return stripped;
-    return raw.length > 10 ? raw.slice(0, 10) : raw;
-  }
-
   function decorateModelCapsule(root, footerLeft) {
     const btn = root?.querySelector('button.dk-pill[data-el="modelPicker"]');
     if (!btn) return;
@@ -584,24 +646,57 @@ export function createCapsulePickerRuntime({
     }
 
     const textWrap = btn.querySelector('.dk-mp-text');
-    const nameEl = btn.querySelector('.dk-mp-name');
+    let nameEl = btn.querySelector('.dk-mp-name');
     const effortEl = btn.querySelector('.dk-mp-effort');
+    if (textWrap && !nameEl && !effortEl) {
+      const rawLabel = (textWrap.textContent || '').trim();
+      nameEl = document.createElement('span');
+      nameEl.className = 'dk-mp-name';
+      nameEl.textContent = rawLabel;
+      textWrap.replaceChildren(nameEl);
+    }
     let effortText = '';
     if (effortEl) {
       effortText = (effortEl.textContent || '').trim();
       if (effortEl.textContent !== effortText) effortEl.textContent = effortText;
     }
 
+    const isZh = document.documentElement.getAttribute('data-ag-ux-lang') === 'zh-CN';
     const modelName = (nameEl?.textContent || '').trim();
-    const shortName = shortenModelName(modelName);
+    const isOrch = /^orchestrator$/i.test(modelName);
+    const shortName = shortenModelName(modelName, isZh);
     if (textWrap && nameEl) {
       let shortEl = textWrap.querySelector('.agy-mp-short');
       if (!shortEl) {
         shortEl = document.createElement('span');
         shortEl.className = 'agy-mp-short';
+        shortEl.setAttribute('aria-hidden', 'true');
         nameEl.insertAdjacentElement('afterend', shortEl);
+      } else if (shortEl.getAttribute('aria-hidden') !== 'true') {
+        shortEl.setAttribute('aria-hidden', 'true');
       }
       if (shortEl.textContent !== shortName) shortEl.textContent = shortName;
+    }
+
+    const effortShort = shortenEffortBadge(effortText);
+    let effortShortEl = textWrap?.querySelector('.agy-mp-effort-short');
+    if (textWrap && effortEl) {
+      if (!effortShortEl) {
+        effortShortEl = document.createElement('span');
+        effortShortEl.className = 'agy-mp-effort-short';
+        effortShortEl.setAttribute('aria-hidden', 'true');
+        effortEl.insertAdjacentElement('afterend', effortShortEl);
+      } else if (effortShortEl.getAttribute('aria-hidden') !== 'true') {
+        effortShortEl.setAttribute('aria-hidden', 'true');
+      }
+      if (effortShortEl.textContent !== effortShort) effortShortEl.textContent = effortShort;
+    } else if (effortShortEl) {
+      effortShortEl.textContent = '';
+    }
+
+    const orchAttr = isOrch ? '1' : '0';
+    if (btn.getAttribute('data-is-orch') !== orchAttr) {
+      btn.setAttribute('data-is-orch', orchAttr);
     }
 
     const hasEffort = effortText.length > 0 ? '1' : '0';
@@ -611,6 +706,13 @@ export function createCapsulePickerRuntime({
     const fullTitle = `${modelName}${effortText ? ` · ${effortText}` : ''}`.trim();
     if (fullTitle && btn.title !== fullTitle) {
       btn.title = fullTitle;
+    }
+    const { labels } = getActiveLabels();
+    const caption = (typeof labels === 'string' ? labels : labels?.modelEffortPicker) || 'Enhanced model capsule';
+    const cleanText = `${modelName}${effortText ? ` ${effortText}` : ''}`.trim();
+    const nextAria = cleanText ? `${caption}: ${cleanText}` : caption;
+    if (btn.getAttribute('aria-label') !== nextAria) {
+      btn.setAttribute('aria-label', nextAria);
     }
 
     let accent = '#7c5ce6';

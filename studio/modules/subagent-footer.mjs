@@ -18,7 +18,7 @@
  *      4-tier progressive compression (full / compact / tight / icon).
  */
 
-export function createSubagentFooterRuntime({ motionThemes }) {
+export function createSubagentFooterRuntime({ motionThemes, shortenModelName, shortenEffortBadge }) {
   const MAIN_PILL_ID = 'agy-main-subagent-pill';
   const MENU_ID = 'agy-subagent-menu';
   const SUB_GROUP_ATTR = 'data-agy-sub-pill';
@@ -127,18 +127,6 @@ export function createSubagentFooterRuntime({ motionThemes }) {
     if (v >= 1e6) return `${(v / 1e6).toFixed(v >= 10e6 ? 0 : 1).replace(/\.0$/, '')}M`;
     if (v >= 1e3) return `${(v / 1e3).toFixed(1)}k`;
     return String(Math.round(v));
-  }
-
-  function shortenModelName(name) {
-    const raw = String(name || '').trim();
-    if (!raw) return 'Model';
-    const stripped = raw
-      .replace(/^(?:Google\s+)?Gemini\s+\d+(?:\.\d+)?\s+/i, '')
-      .replace(/^Claude\s+(?:\d+(?:\.\d+)?\s+)?/i, '')
-      .replace(/^OpenAI\s+/i, '')
-      .trim();
-    if (stripped && stripped.length >= 2 && stripped.length < raw.length) return stripped;
-    return raw.length > 10 ? raw.slice(0, 10) : raw;
   }
 
   /* ---- Auxiliary Side Panel & Overview Mutual Exclusion + 50/50 Split ---- */
@@ -331,8 +319,15 @@ export function createSubagentFooterRuntime({ motionThemes }) {
     return String(ch?.agentName || ch?.title || ch?.id?.slice(0, 8) || 'subagent').trim();
   }
 
+  function getActiveRouteCid() {
+    const m = String(location.pathname || '').match(/\/c\/([^/?#]+)/);
+    return m ? m[1] : '';
+  }
+
   function getSortedChildren() {
     const m = window.__ag_last_metrics;
+    const cid = getActiveRouteCid();
+    if (!cid || !m || (m.cascadeId && m.cascadeId !== cid)) return [];
     const raw = Array.isArray(m?.stats?.children) ? m.stats.children : [];
     const seen = new Set();
     const list = [];
@@ -410,30 +405,40 @@ export function createSubagentFooterRuntime({ motionThemes }) {
     return menuEl;
   }
 
-  function openMenuFor(pill, children) {
+  function openMenuFor(pill, allChildren, activeChildren = null) {
     const el = ensureMenuEl();
     const auxOpen = isAuxPanelOpen();
     const activeTabId = auxOpen ? getActiveSubagentTabId() : '';
-    const rowsHtml = children
-      .map((ch) => {
-        const name = getSubagentLabel(ch);
-        const isCurrent = auxOpen && ch.id === activeTabId;
-        const stateCls = ch.running ? 'is-run' : ch.killed ? 'is-killed' : 'is-ready';
-        const stateTxt = ch.running
-          ? L('工作中', 'Working')
-          : ch.killed
-            ? L('已完成', 'Done')
-            : L('待命', 'Standby');
-        return `<button type="button" class="agy-sub-menu-row${isCurrent ? ' is-active' : ''}" data-agy-open-sub="${esc(ch.id)}" data-agy-sub-label="${esc(name)}">
-          <span class="agy-sub-menu-left">
-            <span class="agy-sub-menu-dot ${stateCls}"></span>
-            <span class="agy-sub-menu-name">${esc(name)}</span>
-          </span>
-          <span class="agy-sub-menu-meta">${esc(stateTxt)}${isCurrent ? ' ✓' : ''}</span>
-        </button>`;
-      })
-      .join('');
-    el.innerHTML = `<div class="agy-sub-menu-hdr">${esc(L('子代理会话', 'Subagents'))} · ${children.length}</div><div class="agy-sub-menu-list">${rowsHtml}</div>`;
+    const activeList = Array.isArray(activeChildren) ? activeChildren : getVisibleMainChildren();
+    const activeIds = new Set(activeList.map((c) => c.id));
+    const activeItems = allChildren.filter((c) => activeIds.has(c.id));
+    const historyItems = allChildren.filter((c) => !activeIds.has(c.id));
+
+    const renderRow = (ch) => {
+      const name = getSubagentLabel(ch);
+      const isCurrent = auxOpen && ch.id === activeTabId;
+      const stateCls = ch.running ? 'is-run' : ch.killed ? 'is-killed' : 'is-ready';
+      const stateTxt = ch.running
+        ? L('工作中', 'Working')
+        : ch.killed
+          ? L('已完成', 'Done')
+          : L('待命', 'Standby');
+      return `<button type="button" class="agy-sub-menu-row${isCurrent ? ' is-active' : ''}" data-agy-open-sub="${esc(ch.id)}" data-agy-sub-label="${esc(name)}">
+        <span class="agy-sub-menu-left">
+          <span class="agy-sub-menu-dot ${stateCls}"></span>
+          <span class="agy-sub-menu-name">${esc(name)}</span>
+        </span>
+        <span class="agy-sub-menu-meta">${esc(stateTxt)}${isCurrent ? ' ✓' : ''}</span>
+      </button>`;
+    };
+
+    let rowsHtml = activeItems.map(renderRow).join('');
+    if (historyItems.length > 0) {
+      rowsHtml += `<div class="agy-sub-menu-sep">${esc(L('历史会话', 'History'))}</div>`;
+      rowsHtml += historyItems.map(renderRow).join('');
+    }
+
+    el.innerHTML = `<div class="agy-sub-menu-hdr">${esc(L('子代理会话', 'Subagents'))} · ${allChildren.length}</div><div class="agy-sub-menu-list">${rowsHtml}</div>`;
     el.setAttribute('data-open', '1');
     menuOpen = true;
 
@@ -501,10 +506,11 @@ export function createSubagentFooterRuntime({ motionThemes }) {
       return ch.getBoundingClientRect().width > 1;
     });
 
-    const children = getVisibleMainChildren();
+    const all = getSortedChildren();
+    const active = getVisibleMainChildren();
     let pill = document.getElementById(MAIN_PILL_ID);
 
-    if (hasNativeSubChip || children.length === 0) {
+    if (hasNativeSubChip || all.length === 0) {
       if (pill) pill.remove();
       closeMenu();
       return;
@@ -519,18 +525,18 @@ export function createSubagentFooterRuntime({ motionThemes }) {
       pill.addEventListener('click', (e) => {
         e.preventDefault();
         e.stopPropagation();
-        const latest = getVisibleMainChildren();
-        if (!latest.length) return;
-        if (latest.length === 1) {
+        const latestAll = getSortedChildren();
+        if (!latestAll.length) return;
+        if (latestAll.length === 1) {
           closeMenu();
-          openOrToggleSubagentSidePanel(latest[0].id, {
-            label: getSubagentLabel(latest[0]),
+          openOrToggleSubagentSidePanel(latestAll[0].id, {
+            label: getSubagentLabel(latestAll[0]),
             allowToggleClose: true,
           });
         } else if (menuOpen) {
           closeMenu();
         } else {
-          openMenuFor(pill, latest);
+          openMenuFor(pill, latestAll, getVisibleMainChildren());
         }
       });
     }
@@ -539,27 +545,30 @@ export function createSubagentFooterRuntime({ motionThemes }) {
       leftGroup.appendChild(pill);
     }
 
-    const isMultiple = children.length > 1;
-    const primary = children[0];
-    const anyRunning = children.some((c) => c.running);
+    const displayList = active.length > 0 ? active : all;
+    const isMultiple = all.length > 1;
+    const primary = displayList[0];
+    const anyRunning = active.some((c) => c.running);
     const auxOpen = isAuxPanelOpen();
     const activeTabId = auxOpen ? getActiveSubagentTabId() : '';
-    const isLinkedOpen = Boolean(auxOpen && activeTabId && children.some((c) => c.id === activeTabId));
-    const subState = anyRunning ? 'running' : 'done';
-    const label = isMultiple ? L('子代理', 'Subagents') : getSubagentLabel(primary);
-    const countBadge = isMultiple ? `<span class="agy-sub-count">${children.length}</span>` : '';
+    const isLinkedOpen = Boolean(auxOpen && activeTabId && all.some((c) => c.id === activeTabId));
+    const subState = active.length === 0 ? 'ended' : anyRunning ? 'running' : 'done';
+    const label = displayList.length > 1 ? L('子代理', 'Subagents') : getSubagentLabel(primary);
+    const countBadge = isMultiple ? `<span class="agy-sub-count">${all.length}</span>` : '';
     const dotHtml = anyRunning ? '<span class="agy-sub-live-dot" aria-hidden="true"></span>' : '';
     const botSvg = '<svg class="agy-sub-ico" width="12.5" height="12.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="10" height="8" rx="2"/><path d="M8 2.5V5M6.2 8.8h.01M9.8 8.8h.01M6.2 11h3.6"/></svg>';
 
-    const statusDesc = anyRunning
-      ? L('工作中', 'Working')
-      : L('已完成 / 待命', 'Done / Standby');
-    const namesSummary = children.map(getSubagentLabel).join(', ');
+    const statusDesc = active.length === 0
+      ? L('历史会话', 'Past sessions')
+      : anyRunning
+        ? L('工作中', 'Working')
+        : L('已完成 / 待命', 'Done / Standby');
+    const namesSummary = displayList.map(getSubagentLabel).join(', ');
     const tooltip = `${L('子代理', 'Subagent')}: ${namesSummary} · ${statusDesc} · ${
       isLinkedOpen ? L('点击收起侧栏', 'Click to close side panel') : L('点击联动打开侧栏', 'Click to open side panel')
     }`;
 
-    const sig = `${label}|${children.length}|${subState}|${isLinkedOpen ? 1 : 0}`;
+    const sig = `${label}|${active.length}|${all.length}|${subState}|${isLinkedOpen ? 1 : 0}`;
     if (pill.getAttribute('data-sig') !== sig) {
       pill.setAttribute('data-sig', sig);
       pill.setAttribute('data-agy-sub-state', subState);
@@ -594,52 +603,48 @@ export function createSubagentFooterRuntime({ motionThemes }) {
       });
   }
 
-  function renderSubModelPill(el, data, dockTier) {
+  function renderSubModelPill(el, data) {
     const fullName = data.modelName || 'Subagent';
-    const shortName = shortenModelName(fullName);
+    const shortName = typeof shortenModelName === 'function' ? shortenModelName(fullName, isZh()) : fullName;
     let accent = '#7c5ce6';
     try {
       const c = motionThemes().dotColorFor(fullName);
       if (c) accent = c;
     } catch {}
-    el.style.setProperty('--agy-model-accent', accent);
-    const hasEffort = Boolean(data.effort);
-    const effortHtml = hasEffort ? `<span class="agy-sub-effort">${esc(data.effort)}</span>` : '';
-    const displayName = dockTier === 'full'
-      ? fullName
-      : dockTier === 'compact'
-        ? shortName
-        : hasEffort
-          ? ''
-          : shortName;
-    const nameHtml = displayName ? `<span class="agy-sub-mname">${esc(displayName)}</span>` : '';
-    const sig = `${displayName}|${data.effort || ''}|${accent}|${dockTier}`;
+    if (el.style.getPropertyValue('--agy-model-accent') !== accent) {
+      el.style.setProperty('--agy-model-accent', accent);
+    }
+    const rawEffort = String(data.effort || '').trim();
+    const effortText = rawEffort
+      ? (typeof shortenEffortBadge === 'function' ? shortenEffortBadge(rawEffort) : rawEffort)
+      : '';
+    const hasEffort = Boolean(effortText);
+    const effortHtml = hasEffort ? `<span class="agy-sub-effort">${esc(effortText)}</span>` : '';
+    const sig = `${fullName}|${shortName}|${effortText}|${accent}`;
     if (el.getAttribute('data-sig') !== sig) {
       el.setAttribute('data-sig', sig);
       el.setAttribute('data-has-effort', hasEffort ? '1' : '0');
-      el.title = `${fullName}${data.effort ? ` · ${data.effort}` : ''}`;
-      el.innerHTML = `<span class="agy-sub-mdot" aria-hidden="true"></span>${nameHtml}${effortHtml}`;
+      el.title = `${fullName}${rawEffort ? ` · ${rawEffort}` : ''}`;
+      el.innerHTML = `<span class="agy-sub-mdot" aria-hidden="true"></span><span class="agy-sub-mname agy-sub-mname-full">${esc(fullName)}</span><span class="agy-sub-mname agy-sub-mname-short">${esc(shortName)}</span>${effortHtml}`;
     }
   }
 
-  function renderSubCtxPill(el, data, dockTier) {
-    const pct = Number.isFinite(data.pct) ? data.pct : 0;
+  function renderSubCtxPill(el, data) {
+    const pct = Number.isFinite(data.pct) ? Math.max(0, Math.min(100, Math.round(data.pct))) : 0;
     const tier = pct < 60 ? 'cool' : pct >= 75 ? 'crit' : 'warn';
     const ratio = `${fmtTok(data.contextTokens)} / ${fmtTok(data.maxContextTokens)}`;
-    const display = dockTier === 'icon' ? '' : dockTier === 'tight' ? `${pct}%` : ratio;
-    const dashOffset = Math.max(0, RING_CIRC * (1 - Math.max(0, Math.min(100, pct)) / 100));
-    const sig = `${display}|${tier}|${pct}|${dockTier}`;
+    const pctText = `${pct}%`;
+    const dashOffset = Math.max(0, RING_CIRC * (1 - pct / 100));
+    const sig = `${ratio}|${pctText}|${tier}`;
     if (el.getAttribute('data-sig') !== sig) {
       el.setAttribute('data-sig', sig);
       el.setAttribute('data-agy-ctx-tier', tier);
-      el.setAttribute('data-agy-icon-only', display ? 'false' : 'true');
       el.title = `${L('子代理上下文', 'Subagent context')} ${ratio} (${pct}%)`;
-      const txtHtml = display ? `<span class="agy-sub-ctx-txt">${esc(display)}</span>` : '';
-      el.innerHTML = `<svg width="14" height="14" viewBox="0 0 20 20" aria-hidden="true"><circle class="agy-sub-ring-track" cx="10" cy="10" r="7" fill="none" stroke-width="2.15"/><circle class="agy-sub-ring-arc" cx="10" cy="10" r="7" fill="none" stroke-width="2.15" stroke-linecap="round" stroke-dasharray="${RING_CIRC.toFixed(2)}" stroke-dashoffset="${dashOffset.toFixed(2)}"/></svg>${txtHtml}`;
+      el.innerHTML = `<svg width="14" height="14" viewBox="0 0 20 20" aria-hidden="true"><circle class="agy-sub-ring-track" cx="10" cy="10" r="7" fill="none" stroke-width="2.15"/><circle class="agy-sub-ring-arc" cx="10" cy="10" r="7" fill="none" stroke-width="2.15" stroke-linecap="round" stroke-dasharray="${RING_CIRC.toFixed(2)}" stroke-dashoffset="${dashOffset.toFixed(2)}"/></svg><span class="agy-sub-ctx-txt agy-sub-ctx-full">${esc(ratio)}</span><span class="agy-sub-ctx-txt agy-sub-ctx-pct">${esc(pctText)}</span>`;
     }
   }
 
-  function renderSubSpeedPill(el, data, dockTier) {
+  function renderSubSpeedPill(el, data) {
     const tps = Number(data.tps);
     const hasTps = Number.isFinite(tps) && tps > 0;
     const tier = !hasTps ? 'unknown' : tps >= 25 ? 'fast' : tps >= 10 ? 'mid' : 'slow';
@@ -656,29 +661,33 @@ export function createSubagentFooterRuntime({ motionThemes }) {
     }
     el.hidden = false;
 
+    const fullLabel = hasTps
+      ? `${Math.round(tps)} tok/s`
+      : data.running
+        ? L('生成中…', 'Working…')
+        : '';
+    const tightLabel = hasTps
+      ? `${Math.round(tps)}`
+      : data.running
+        ? '…'
+        : '';
+
     const parts = [];
-    if (dockTier === 'icon') {
-      // Dot only
-    } else if (dockTier === 'tight') {
-      if (hasTps) parts.push(`<span class="agy-sub-spd-num">${Math.round(tps)}</span>`);
-      else if (data.running) parts.push(`<span class="agy-sub-spd-num">…</span>`);
-    } else if (dockTier === 'compact') {
-      if (hasTps) parts.push(`<span class="agy-sub-spd-num">${Math.round(tps)} tok/s</span>`);
-      else if (data.running) parts.push(`<span class="agy-sub-spd-num">${esc(L('生成中…', 'Working…'))}</span>`);
-    } else {
-      if (hasTps) parts.push(`<span class="agy-sub-spd-num">${Math.round(tps)} tok/s</span>`);
-      if (ttftText) parts.push(`<span class="agy-sub-spd-sep">·</span><span class="agy-sub-spd-ttft">${esc(ttftText)}</span>`);
-      if (!parts.length && data.running) {
-        parts.push(`<span class="agy-sub-spd-num">${esc(L('生成中…', 'Working…'))}</span>`);
+    if (fullLabel) {
+      parts.push(`<span class="agy-sub-spd-num agy-sub-spd-full">${esc(fullLabel)}</span>`);
+      parts.push(`<span class="agy-sub-spd-num agy-sub-spd-tight">${esc(tightLabel)}</span>`);
+      if (ttftText) {
+        parts.push(`<span class="agy-sub-spd-sep">·</span><span class="agy-sub-spd-ttft">${esc(ttftText)}</span>`);
       }
+    } else if (ttftText) {
+      parts.push(`<span class="agy-sub-spd-ttft">${esc(ttftText)}</span>`);
     }
 
-    const sig = `${parts.join('')}|${tier}|${motion}|${dockTier}`;
+    const sig = `${fullLabel}|${tightLabel}|${ttftText}|${tier}|${motion}`;
     if (el.getAttribute('data-sig') !== sig) {
       el.setAttribute('data-sig', sig);
       el.setAttribute('data-agy-speed-tier', tier);
       el.setAttribute('data-agy-motion', motion);
-      el.setAttribute('data-agy-icon-only', parts.length === 0 ? 'true' : 'false');
       el.title = fullTip;
       const txtHtml = parts.length ? `<span class="agy-sub-stxt">${parts.join('')}</span>` : '';
       el.innerHTML = `<span class="agy-sub-sdot" aria-hidden="true"></span>${txtHtml}`;
@@ -698,15 +707,18 @@ export function createSubagentFooterRuntime({ motionThemes }) {
     const data = subCache.cid === cid ? subCache.data : null;
     if (!data || !data.hasData) return;
 
-    const dockTier = footer.getAttribute('data-agy-dock-tier') || 'compact';
-
+    const stateAttr = data.running ? 'running' : 'done';
     // Tag native subagent chip inside side panel composer with semantic running/done state
     for (const ch of leftGroup.children) {
       if (ch.hasAttribute(SUB_GROUP_ATTR) || ch.tagName === 'INPUT') continue;
       if (ch === leftGroup.querySelector(':scope > button:first-of-type')) continue;
       if (ch.querySelector?.('button[data-deck-model-bubble="hidden"]')) continue;
-      ch.setAttribute('data-agy-sub-state', data.running ? 'running' : 'done');
-      ch.setAttribute('data-agy-native-sub-chip', '1');
+      if (ch.getAttribute('data-agy-sub-state') !== stateAttr) {
+        ch.setAttribute('data-agy-sub-state', stateAttr);
+      }
+      if (ch.getAttribute('data-agy-native-sub-chip') !== '1') {
+        ch.setAttribute('data-agy-native-sub-chip', '1');
+      }
     }
 
     const ensurePill = (kind, cls) => {
@@ -721,9 +733,9 @@ export function createSubagentFooterRuntime({ motionThemes }) {
       return el;
     };
 
-    renderSubModelPill(ensurePill('model', 'agy-sub-model'), data, dockTier);
-    renderSubCtxPill(ensurePill('ctx', 'agy-sub-ctx'), data, dockTier);
-    renderSubSpeedPill(ensurePill('speed', 'agy-sub-speed'), data, dockTier);
+    renderSubModelPill(ensurePill('model', 'agy-sub-model'), data);
+    renderSubCtxPill(ensurePill('ctx', 'agy-sub-ctx'), data);
+    renderSubSpeedPill(ensurePill('speed', 'agy-sub-speed'), data);
   }
 
   function sync() {

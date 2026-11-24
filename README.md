@@ -4,8 +4,8 @@
 
 ### Make Antigravity Great Again
 
-**Gemini 4 is a monster. Google Antigravity Desktop 2.0… deserves a better cockpit.**  
-*A non-invasive workbench upgrade for Antigravity 2.0 on macOS — live telemetry, adaptive 4-capsule dock, 50/50 subagent split, one-click silent resume, and local token analytics.*
+**Frontier models deserve a frontier cockpit.**  
+*A non-invasive workbench upgrade for Google Antigravity Desktop 2.0 on macOS — crafted visual polish and an adaptive 2-row 4-capsule dock, live quota popovers & local token analytics, lean phase-sync & execution rules, plus quick-access subagent splits and silent one-click resume.*
 
 **English** · [简体中文](./README.zh-CN.md)
 
@@ -26,33 +26,30 @@
 
 ## Why MAGA?
 
-Let's be honest: **Gemini 4 (and Claude Opus) inside Antigravity are ridiculously good.**  
-The desktop client wrapped around them? Still feels like flying a fighter jet with half the dashboard taped over.
+Let's be honest: **Gemini 4 (and Claude Opus) are phenomenal.**  
+Spend five minutes reading feedback across Reddit, Hacker News, V2EX, and X, and you'll notice developer complaints about **Google Antigravity Desktop 2.0** converge on the same macro gaps—not isolated nitpicks, but an overall client experience that still feels half-finished next to its models:
 
-You can't see how close your context window is to overflowing, quota hard-stops hit out of nowhere, split-screen toolbars collide, subagent panes wrestle with the rest of your workspace, and every time the app crashes or restarts mid-task you're stuck typing *"please continue"* like it's 2023.
-
-**That gap between a frontier model and a rough client is why MAGA exists.**  
-We stopped waiting for Google to polish the cockpit and built a lightweight runtime upgrade that transforms Antigravity into the desktop workbench Gemini 4 actually deserves—without ever modifying `/Applications/Antigravity.app`.
-
-| Daily Friction in Vanilla Antigravity 2.0 | What MAGA Delivers |
+| Top Community Pain Points | How MAGA Solves Them |
 | :--- | :--- |
-| **Flying blind on context & quota** — Hidden token burn and opaque rate limits lead to sudden mid-task hard-stops. | **Live telemetry everywhere** — Always-visible context pressure ring, one-click compact, 5h/weekly quota popover, and built-in local Token Usage charts. |
-| **Clunky model switching & cramped split footers** — Effort controls feel tucked away; narrow panes quickly turn into visual chaos. | **Permanent 2-row 4-capsule dock** — Actions on top, status telemetry below, family-tinted Model & Effort slider, and smooth multi-tier compression at any width. |
-| **Window wrestling with subagents** — Main chat lacks a live subagent pulse; opening panels turns your screen into a 3-column accordion. | **Seamless 50/50 subagent split** — One-click linked subagent pill, equal 50/50 split by default, automatic Overview mutual exclusion, and matching subagent docks. |
-| **No crash or restart recovery** — App restarts or aborted runs force you to manually type *"please continue"* and pollute chat history. | **One-click silent `Resume`** — Automatically detects interrupted tasks, wakes the agent with zero composer flash, and leaves only a whisper-quiet `▸ Resumed` hairline. |
-| **Flat desktop ergonomics & slow lookup loops** — Plain visual hierarchy and frequent tiny file lookups slow down daily coding flow. | **Crafted workbench feel + `fast-io` rules** — Refined dark/light visual system, balanced typography, host-language sync, and pruned efficiency rules—with zero app patching. |
+| **1. Rough 2.0 desktop UI & half-finished ergonomics** — Flat visual hierarchy, deeply nested model/effort toggles, actions mixed with status clutter, and bottom toolbars that crowd or wrap in narrow splits. | **Crafted visual overhaul + 2-row 4-capsule dock** — Claude-inspired dark/light typography with host-language sync, actions cleanly separated from telemetry, narrow/long-label overflow protection that never wraps, and bespoke animated effort sliders per model family. |
+| **2. Context & quota black box** — Multi-step planning and tool loops burn limits quickly, while context headroom, 5h/weekly quotas, and real token spend stay opaque or buried in nested settings until a sudden lockout hits. | **End-to-end telemetry loop** — Always-visible speed and context pressure ring with one-click `Compact`, a quick dual-pool 5h/weekly quota popover for Gemini & Claude / GPT, and built-in local Token Usage charts in Overview (*warn before, track during, audit after*). |
+| **3. Opaque long runs & fragile workflow momentum** — Complex tasks often run silently in a black box for minutes without milestone visibility, chatty lookup loops waste turns, and occasional interruptions break flow. | **Controlled execution rhythm + power-user flow upgrades** — Lean phase-sync & parallel execution rules eliminate silent black boxes without per-tool spam, complemented by a bottom-dock subagent shortcut split and silent `Resume`. |
+
+> [!NOTE]
+> **Clear product framing**: Beyond solving the three macro pain points above—without touching a single byte of `/Applications/Antigravity.app`—MAGA also packs two thoughtful daily power-user accelerators: a **bottom-dock subagent quick-split entry** and a **silent `Resume` safety net**.
 
 ---
 
 ## Features
 
-### 1. Redesigned Composer & Adaptive 4-Capsule Dock
+### 1. Crafted Visual Hierarchy & Adaptive 4-Capsule Dock
 
-No more cluttered bottom bar. Actions stay cleanly on Row 1 (`+ Add context`, permissions, voice, send), while live telemetry lives on Row 2 across four cohesive capsules: **Model & Effort**, **Context Window**, **Live Speed**, and **Subagents**.
+Start by refining the workspace surface and composer bar you stare at all day.
 
-- **Tactile Model & Effort Picker** — Each model family ships with its own color accent and animated effort slider track (Gemini 4 Neon, Carbon, Hydrogen, Claude Opus), quick Orchestrator toggle, and customizable hidden models.
-- **Context & Plan Quota Popover** — Instant visibility into context window usage, one-click compact, and rolling 5-hour / weekly limits across Gemini and Claude / GPT pools.
-- **Built for Any Width** — Resize from ultrawide down to a tight split pane; every capsule scales gracefully instead of wrapping or clipping.
+- **Restrained Workbench Polish & Host-Language Sync** — Balanced dark/light contrast inspired by Claude with crisp CJK/Latin typography built for long reading sessions; every capsule, tooltip, and divider automatically follows Antigravity's active UI language.
+- **Actions on Top, Telemetry Below** — The permanent 2-row dock keeps interactive controls on Row 1 (`+ Add context`, permissions, voice, send) and organizes live status across four crisp Row 2 capsules: **Model & Effort**, **Context Window**, **Live Speed**, and **Subagents**.
+- **Tactile Model & Effort Sliders** — No more digging through submenus to adjust reasoning depth: Gemini 4 Neon, Carbon, Hydrogen, and Claude Opus each feature signature color accents and bespoke animated effort tracks, alongside quick Orchestrator toggling and hidden-model filtering.
+- **Responsive Compression at Any Width** — Resize down to a tight split pane or toggle long Orchestrator routing labels; planner badges compact automatically and Row 2 overflow triggers graceful step-down tiers before anything ever wraps or clips.
 
 <p align="center">
   <img src="./docs/images/demo-composer.webp" alt="Interactive Multi-Model Family Effort Slider and Context/Quota Popover Demo" width="90%" />
@@ -62,49 +59,20 @@ No more cluttered bottom bar. Actions stay cleanly on Row 1 (`+ Add context`, pe
 
 ---
 
-### 2. Seamless 50/50 Subagent Split
+### 2. End-to-End Transparency: Live Quota Popover & Local Token Analytics
 
-Antigravity's parallel subagents shine when your workspace gets out of the way.
+Close the entire quota visibility loop—from real-time guardrails at the dock to detailed historical attribution in Overview.
 
-- **Live Birth-to-Retire Dock Pill** — Spawned subagents surface live in your main dock (blue while running, emerald when ready). Click the capsule to jump straight into that worker; click again to tuck the side panel away and retire it quietly.
-- **Equal 50/50 & Mutual Exclusion** — Clicking the dock capsule automatically closes Overview and splits your screen evenly down the middle, keeping manual resizing free while protecting both panes from ever collapsing too narrow.
-- **Matching Dock Everywhere** — Subagent panes inherit the same adaptive 4-capsule dock, automatically shifting into compact/icon tiers as needed.
-
-<p align="center">
-  <img src="./docs/images/demo-subagent-split.webp" alt="End-to-End Subagent Lifecycle and 50/50 Split Demo" width="100%" />
-  <br />
-  <sub><i>Spawned subagent appears live in the dock (blue → emerald) → click the dock capsule to open a 50/50 split and auto-close Overview → click again to tuck away.</i></sub>
-</p>
-
----
-
-### 3. One-Click Silent Resume
-
-*Stop typing "please continue from where you left off" like it's 2023.*
-
-Whenever Antigravity quits unexpectedly, restarts mid-refactor, hits an error, or gets stopped halfway through, MAGA detects the interrupted run and surfaces a calm amber **`Resume`** capsule on the left of Row 1.
-
-Click once to silently wake the agent back up: **zero awkward prompt flashing in your input box**, and **no noisy user chat bubble** cluttering your conversation—just a crisp, whisper-quiet **`▸ Resumed`** hairline in the timeline.
-
-<p align="center">
-  <img src="./docs/images/demo-silent-resume.webp" alt="One-Click Silent Resume Capsule and Timeline Divider Demo" width="90%" />
-  <br />
-  <sub><i>One click on the Row 1 Resume capsule silently continues the interrupted run with a clean <code>▸ Resumed</code> divider.</i></sub>
-</p>
-
----
-
-### 4. Built-In Local Token Usage & Overview
-
-Stop guessing where your weekly quota disappeared. MAGA embeds a native-feeling **Overview** panel and local **Token Usage** analytics right beside your conversation.
+- **Dock Speed & Context Warnings** — Continuous live `tok/s` and TTFT telemetry sits alongside a segmented color-coded context ring with one-click conversation compaction.
+- **Dual-Pool 5h / Weekly Quota Popover** — Click the context capsule to inspect rolling 5-hour and weekly quotas across both Gemini and Claude / GPT pools without leaving your prompt box.
 
 <table>
   <tr>
     <td width="56%" valign="middle">
       <ul>
-        <li><b>All-in-One Overview</b> — Live prompt-cache hit rate, turn/call counters, one-click compact, and rolling 5h / weekly plan quotas in one calm column.</li>
-        <li><b>Daily / Weekly / Monthly Trends</b> — Interactive stacked bar charts with effortless date navigation and instant hover breakdowns (non-cached, cache read/write, output).</li>
-        <li><b>Model Family Breakdown</b> — Clear consumption shares across Gemini and Claude models.</li>
+        <li><b>Built-In Overview Column</b> — Live prompt-cache hit rate, turn/call counters, one-click compact, and rolling 5h / weekly plan quotas cleanly integrated beside your conversation.</li>
+        <li><b>Daily / Weekly / Monthly Trends</b> — Interactive stacked bar charts with effortless date paging and instant hover breakdowns (non-cached, cache read/write, output).</li>
+        <li><b>Model Family Breakdown</b> — Clear consumption shares across Gemini and Claude model series.</li>
         <li><b>100% Local, Single Daemon</b> — Incrementally reads your local conversation store inside the existing runtime—zero extra sidecar processes, zero data sent anywhere.</li>
       </ul>
     </td>
@@ -116,12 +84,46 @@ Stop guessing where your weekly quota disappeared. MAGA embeds a native-feeling 
 
 ---
 
-### 5. Crafted Workbench Ergonomics & `fast-io`
+### 3. Long-Run Control & Power-User Workflow Upgrades
 
-- **Claude-Inspired Visual Polish** — Balanced contrast, refined dark/light palettes, and clean CJK/Latin typography built for long reading sessions.
-- **Automatic Host-Language Sync** — Every MAGA label, tooltip, and divider automatically matches Antigravity's active UI language.
-- **Pruned `fast-io` Workspace Rules** — Syncs a lean lookup & command-batching rule block to `~/.gemini/AGENTS.md` to cut down wasted round-trips—without ever capping answer depth or thoroughness.
-- **Live Hot-Reload** — Tweak anything under `studio/` and deploy live in seconds without restarting Antigravity.
+Once the core pain points are handled, round out heavy daily sessions with sharper execution feedback and frictionless workflow shortcuts.
+
+#### 3.1 Lean Phase-Sync & Execution Rules (Zero Black Box, Zero Spam)
+
+To replace both silent black-box runs and noisy tool-by-tool narration, MAGA combines `grep`-first parallel batching and whitelisted bare-command efficiency with milestone-only progress briefing inside `~/.gemini/AGENTS.md` (just `7` lines, with zero cap on answer depth):
+
+| Execution Style | Real-World Experience on Complex Tasks |
+| :--- | :--- |
+| **Stock Silent Execution** | Runs dozens of background steps with zero interim signal—like watching a black box |
+| **Per-Tool Chatty Updates** | Narrates 1–2 sentences before every single tool call, flooding chat with filler |
+| **MAGA Phase-Sync & Execution Rules** | **Direct answers on quick `1–4` turn tasks; on `5+` turn tasks, `grep`-first parallel reads & whitelisted bare commands cut waiting overhead while posting `1` concise milestone sentence at each phase switch—zero black box, zero spam, and zero cap on final answer depth** |
+
+#### 3.2 Bottom-Dock Subagent Shortcut & Clutter-Free Split
+
+Designed as a fast, zero-friction entry point for inspecting parallel subagents directly from your composer bar:
+
+- **Live Birth-to-Retire Dock Pill** — Spawned subagents surface live in your bottom dock (blue breathing pulse while running, emerald glow once done), so progress is visible at a glance without hunting through sidebars.
+- **One-Click Spacious Split** — Click the dock subagent pill to launch a clean split view that automatically tucks Overview away and removes the redundant inner subagent list sidebar (your dock subagent menu already handles status and switching), while preserving manual drag-resizing; click again to fold it away cleanly.
+- **Matching Dock Everywhere** — Subagent panes inherit the exact same adaptive 4-capsule dock, stepping down cleanly in narrower splits.
+
+<p align="center">
+  <img src="./docs/images/demo-subagent-split.webp" alt="End-to-End Subagent Lifecycle and Split View Demo" width="100%" />
+  <br />
+  <sub><i>Spawned subagent appears live in the dock (blue → emerald) → click the dock capsule to auto-close Overview, collapse the inner sidebar, and open a clean split → click again to tuck away.</i></sub>
+</p>
+
+#### 3.3 One-Click Silent `Resume` Safety Net
+
+When an occasional error, crash/restart, or manual stop interrupts a run mid-stream, MAGA gives you a calm, clutter-free recovery path:
+
+- **Contextual Row 1 `Resume` Capsule** — Automatically detects unfinished runs and surfaces a subtle amber capsule on the left of Row 1—no more manually typing *"please continue"*.
+- **Zero Flash, Zero Chat Noise** — Click once to silently wake the agent from where it left off with zero preset text flashing in your composer and no noisy user chat bubble, leaving only a whisper-quiet **`▸ Resumed`** timeline hairline.
+
+<p align="center">
+  <img src="./docs/images/demo-silent-resume.webp" alt="One-Click Silent Resume Capsule and Timeline Divider Demo" width="90%" />
+  <br />
+  <sub><i>One click on the Row 1 Resume capsule silently continues the interrupted run with a clean <code>▸ Resumed</code> divider.</i></sub>
+</p>
 
 ---
 
@@ -139,9 +141,10 @@ npm run install-all
 
 | Command | What it does |
 | :--- | :--- |
-| `npm run install-all` | Sets up the local LaunchAgent daemon, deploys the UI enhancement layer, and syncs `fast-io` rules |
+| `npm run install-all` | Sets up the local LaunchAgent daemon, deploys the UI enhancement layer, and syncs phase-sync & parallel execution rules |
 | `npm run deploy` | Hot-reloads any changes under `studio/` live—no Antigravity restart needed |
-| `npm run doctor` | Runs a full health check across daemon, live connection, UI injection, usage scanner, and settings |
+| `npm run sync-rules` | Syncs the latest phase-sync & parallel execution rules into `~/.gemini/AGENTS.md` |
+| `npm run doctor` | Runs a full health check across daemon, live connection, UI injection, usage scanner, and rule/settings state |
 | `npm run rollback` | Cleanly removes the `studio` enhancement layer and restores baseline state |
 
 ---
@@ -151,9 +154,9 @@ npm run install-all
 > [!TIP]
 > **Zero Binary Surgery.** MAGA **never** modifies `/Applications/Antigravity.app`—your macOS Apple code signature and official Antigravity updates remain 100% intact.
 
-- **Single Lightweight Daemon** — One local LaunchAgent powers UI injection, local token analytics, subagent metrics, and crash-resume detection. No extra sidecar servers.
+- **Single Lightweight Daemon** — One local LaunchAgent powers UI injection, local token analytics, subagent metrics, and resume detection. No extra sidecar servers.
 - **100% Private & Local** — Every token chart and state check runs locally on your Mac. Nothing is uploaded, tracked, or proxied.
-- **Instant Rollback** — Run `npm run rollback` at any time to step back cleanly.
+- **Live Hot-Reload & Instant Rollback** — Iterate under `studio/` with instant live deploys, or run `npm run rollback` at any time to restore baseline cleanly.
 
 <details>
 <summary><b>Under the Hood — Project Architecture</b></summary>
@@ -164,13 +167,14 @@ npm run install-all
 ├── user/                  # Base theme & interaction templates
 ├── vendor/agy-capsule/    # Internalized zero-dependency picker & metrics core
 ├── studio/
-│   ├── cli.mjs            # Unified CLI (install / deploy / doctor / rollback)
+│   ├── cli.mjs            # Unified CLI (install / deploy / sync-rules / doctor / rollback)
 │   ├── build.mjs          # Module bundler & live deploy pipeline
 │   ├── daemon/            # Local SQLite usage, subagent metrics & resume state
 │   ├── modules/           # Modular UI runtimes (dock, pickers, subagents, resume, usage)
 │   ├── styles/            # Scoped stylesheets (typography, capsules, popovers, usage card)
-│   └── rules/             # Pruned fast-io agent efficiency rules
-├── docs/images/           # Live screenshots & interactive GIF demos
+│   └── rules/fast-io.md   # 7-line lean phase-sync & parallel execution rules
+├── test/                  # Automated bundle, DOM & CSS regression tests
+├── docs/images/           # Live screenshots & interactive WebP demos
 └── install.mjs            # LaunchAgent & daemon installer
 ```
 
@@ -180,11 +184,12 @@ npm run install-all
 
 ## Acknowledgements
 
-MAGA is an independent workbench project whose design inspiration and foundational building blocks owe a lot to these awesome open-source projects:
+MAGA builds on and evolves several outstanding open-source projects. Sincere thanks to each upstream author and contributor for the foundations and mechanisms below:
 
-- [**hongqi7/Anti-Claude**](https://github.com/hongqi7/Anti-Claude) — Pioneered the zero-dependency Antigravity CDP daemon architecture, Claude-inspired interface aesthetics, and Overview panel foundation.
-- [**Lumidarin/agy-capsule**](https://github.com/Lumidarin/agy-capsule) — Inspired the tactile model & effort slider experience, live speed indicators, and local SQLite usage analytics.
-- [**oil-oil/agy-fast-io**](https://github.com/oil-oil/agy-fast-io) — Inspired the streamlined fast-lookup and command-batching workspace rules in `studio/rules/fast-io.md`.
+- [**hongqi7/Anti-Claude**](https://github.com/hongqi7/Anti-Claude) — Directly provided the zero-binary-patch Antigravity CDP local daemon architecture (`core/`), Claude-inspired dark/light typography and visual system, Overview panel scaffolding, context ring and 5h/weekly quota popover foundation, and early inspiration for phase-synced execution; on top of this, MAGA extracted and built the modular `studio/` hot-reload layer, adaptive 2-row 4-capsule dock, bottom-dock subagent quick-split, silent `Resume`, and native Overview Token Usage integration.
+- [**Lumidarin/agy-capsule**](https://github.com/Lumidarin/agy-capsule) (MIT License) — `vendor/agy-capsule/` directly vendors and integrates its zero-dependency enhanced model & effort picker, multi-model-family motion themes, live generation-speed telemetry, and local SQLite conversation usage parsing (with the usage analytics pipeline refactored into MAGA's single daemon and native Overview panel via `studio/daemon/usage-service.mjs` and `studio/modules/overview-usage.mjs`).
+- **`antigravity-Codex-Claude-effort-slider`** (Author: 月上寒 / `LLYSH-HANNARI`, MIT License) — Introduced via `agy-capsule`; pioneered the bespoke stardust/dot-matrix/capsule slider motion designs per model family, as well as reading model options from the host React tree and committing model + effort level in a single action.
+- [**oil-oil/agy-fast-io**](https://github.com/oil-oil/agy-fast-io) — Directly contributed the core efficiency principles of `grep`-first location before batched reads, preferring approval-free whitelisted bare commands, and minimizing redundant cloud approval waits; MAGA distilled these lookup and batching practices into `studio/rules/fast-io.md` (with zero restriction on answer depth) and unified them with phase-gated progress briefing into a `7`-line workspace sync rule.
 
 ---
 

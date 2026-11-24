@@ -15,6 +15,7 @@ export function createFooterUnifiedRuntime({ onTierChange } = {}) {
   let disposed = false;
   let footerResizeObs = null;
   const observedFooters = new Set();
+  const layoutSigCache = new WeakMap();
   let popObs = null;
   let observedPop = null;
   let wrappedEnsureMetricsPill = null;
@@ -142,6 +143,8 @@ export function createFooterUnifiedRuntime({ onTierChange } = {}) {
     return false;
   }
 
+  const DOCK_TIERS = ['full', 'compact', 'tight', 'icon'];
+
   function computeDockTier(footerW, hasSubChip) {
     if (hasSubChip) {
       if (footerW >= 575) return 'full';
@@ -153,6 +156,117 @@ export function createFooterUnifiedRuntime({ onTierChange } = {}) {
     if (footerW >= 355) return 'compact';
     if (footerW >= 255) return 'tight';
     return 'icon';
+  }
+
+  function applyDockTier(footer, leftGroup, dockTier) {
+    if (footer.getAttribute('data-agy-has-row2') !== 'true') {
+      footer.setAttribute('data-agy-has-row2', 'true');
+    }
+    if (footer.getAttribute('data-agy-dock-tier') !== dockTier) {
+      footer.setAttribute('data-agy-dock-tier', dockTier);
+    }
+    const pickerHost = leftGroup?.querySelector(':scope > [data-agy-picker-host="1"]');
+    if (pickerHost) {
+      if (pickerHost.getAttribute('data-agy-dock-tier') !== dockTier) {
+        pickerHost.setAttribute('data-agy-dock-tier', dockTier);
+      }
+      const strip = pickerHost.shadowRoot?.getElementById('deck-metrics-strip');
+      if (strip && strip.getAttribute('data-dock-tier') !== dockTier) {
+        strip.setAttribute('data-dock-tier', dockTier);
+      }
+    }
+  }
+
+  function isRow2Overflowing(footer, leftGroup, footerW) {
+    if (!leftGroup) return false;
+    const addCtxBtn = leftGroup.querySelector(':scope > button:first-of-type');
+    const rects = [];
+
+    const pickerHost = leftGroup.querySelector(':scope > [data-agy-picker-host="1"]');
+    const modelBtn = pickerHost?.shadowRoot?.querySelector('button.dk-pill[data-el="modelPicker"]');
+    if (modelBtn) {
+      const mr = modelBtn.getBoundingClientRect();
+      if (mr.width > 1 && mr.height > 1) rects.push(mr);
+    }
+
+    for (const ch of leftGroup.children) {
+      if (ch === addCtxBtn || ch.id === 'agy-resume-pill') continue;
+      if (ch.tagName === 'INPUT' || ch.hasAttribute('data-agy-picker-host')) continue;
+      if (ch.getAttribute?.('data-deck-model-bubble') === 'hidden' || ch.querySelector?.('button[data-deck-model-bubble="hidden"]')) continue;
+      const r = ch.getBoundingClientRect();
+      if (r.width > 1 && r.height > 1) rects.push(r);
+    }
+
+    if (rects.length <= 1) return false;
+    const minTop = Math.min(...rects.map((r) => r.top));
+    if (rects.some((r) => r.top - minTop > 10)) return true;
+    const totalW = rects.reduce((sum, r) => sum + r.width, 0) + (rects.length - 1) * 5;
+    return totalW > footerW - 2;
+  }
+
+  function buildFooterLayoutSig(footer, leftGroup, footerW, hasSubChip, addCtxBtn, speedPill) {
+    const pickerHost = leftGroup?.querySelector(':scope > [data-agy-picker-host="1"]');
+    const strip = pickerHost?.shadowRoot?.getElementById('deck-metrics-strip');
+    const modelBtn = strip?.querySelector('button.dk-pill[data-el="modelPicker"]');
+    const modelLabel = modelBtn?.dataset?.label || '';
+    const modelOrch = modelBtn?.getAttribute('data-is-orch') || '';
+    const modelEffort = modelBtn?.querySelector('.dk-mp-effort')?.textContent || '';
+
+    const ring = footer.querySelector('#ag-claude-ctx-ring');
+    const ringHasRatio = ring?.getAttribute('data-agy-has-ratio') || '';
+    const ringCompacting = ring?.getAttribute('data-agy-ctx-compacting') || '';
+    const ringFullText = ring?.querySelector('.agy-ctx-full')?.textContent || '';
+
+    const spd = speedPill || footer.querySelector('#ag-live-metrics-pill');
+    const spdHidden = spd ? (spd.hidden ? '1' : '0') : '';
+    const spdPlaceholder = spd?.getAttribute('data-agy-working-placeholder') || '';
+    const spdTextLen = spd ? (spd.querySelector('#ag-live-metrics-text')?.textContent?.length || 0) : 0;
+
+    const pillSigs = [];
+    if (leftGroup) {
+      for (const ch of leftGroup.children) {
+        if (ch.hasAttribute('data-agy-sub-pill') || ch.id === 'agy-main-subagent-pill' || ch.id === 'agy-resume-pill') {
+          pillSigs.push(`${ch.getAttribute('data-agy-sub-pill') || ch.id}:${ch.hidden ? '1' : '0'}:${ch.getAttribute('data-sig') || ''}`);
+        } else if (
+          ch.id !== 'agy-capsule-picker-host' &&
+          !ch.hasAttribute('data-agy-picker-host') &&
+          ch.id !== 'ag-claude-ctx-ring' &&
+          ch.id !== 'ag-live-metrics-pill' &&
+          ch.tagName !== 'INPUT' &&
+          ch !== addCtxBtn &&
+          ch.getAttribute?.('data-deck-model-bubble') !== 'hidden' &&
+          !ch.querySelector?.('button[data-deck-model-bubble="hidden"]')
+        ) {
+          pillSigs.push(`extra:${ch.getAttribute('data-sig') || ch.textContent?.trim() || ''}`);
+        }
+      }
+    }
+
+    const lang = document.documentElement.getAttribute('data-ag-ux-lang') || '';
+    const addLabel = addCtxBtn?.getAttribute('aria-label') || '';
+    const curTier = footer.getAttribute('data-agy-dock-tier') || '';
+    const stripTier = strip?.getAttribute('data-dock-tier') || '';
+    const hasRow2 = footer.getAttribute('data-agy-has-row2') || '';
+
+    return [
+      footerW,
+      hasSubChip ? 1 : 0,
+      modelLabel,
+      modelOrch,
+      modelEffort,
+      ringHasRatio,
+      ringCompacting,
+      ringFullText,
+      spdHidden,
+      spdPlaceholder,
+      spdTextLen,
+      pillSigs.join(';'),
+      lang,
+      addLabel,
+      curTier,
+      stripTier,
+      hasRow2,
+    ].join('|');
   }
 
   function syncFooterResponsiveLayout() {
@@ -192,28 +306,28 @@ export function createFooterUnifiedRuntime({ onTierChange } = {}) {
       }
 
       const hasSubChip = hasExtraVisibleChip(leftGroup);
-      const dockTier = computeDockTier(footerW, hasSubChip);
-
-      // Unified 2-row layout is ALWAYS active on main & subagent composers so the 4-capsule dock
-      // stays rock-solid in the same position at every width.
-      if (footer.getAttribute('data-agy-has-row2') !== 'true') {
-        footer.setAttribute('data-agy-has-row2', 'true');
-      }
-      if (footer.getAttribute('data-agy-dock-tier') !== dockTier) {
-        footer.setAttribute('data-agy-dock-tier', dockTier);
-        if (typeof onTierChange === 'function') onTierChange();
+      const prevSig = buildFooterLayoutSig(footer, leftGroup, footerW, hasSubChip, addCtxBtn, speedPill);
+      if (layoutSigCache.get(footer) === prevSig) {
+        continue;
       }
 
-      // Mirror dock tier onto Shadow DOM picker host + its root so Model capsule compresses synchronously
-      const pickerHost = leftGroup?.querySelector(':scope > [data-agy-picker-host="1"]');
-      if (pickerHost) {
-        if (pickerHost.getAttribute('data-agy-dock-tier') !== dockTier) {
-          pickerHost.setAttribute('data-agy-dock-tier', dockTier);
-        }
-        const strip = pickerHost.shadowRoot?.getElementById('deck-metrics-strip');
-        if (strip && strip.getAttribute('data-dock-tier') !== dockTier) {
-          strip.setAttribute('data-dock-tier', dockTier);
-        }
+      const prevTier = footer.getAttribute('data-agy-dock-tier') || '';
+      let tierIdx = DOCK_TIERS.indexOf(computeDockTier(footerW, hasSubChip));
+      if (tierIdx < 0) tierIdx = 0;
+
+      applyDockTier(footer, leftGroup, DOCK_TIERS[tierIdx]);
+      while (tierIdx < DOCK_TIERS.length - 1 && isRow2Overflowing(footer, leftGroup, footerW)) {
+        tierIdx += 1;
+        applyDockTier(footer, leftGroup, DOCK_TIERS[tierIdx]);
+      }
+
+      layoutSigCache.set(
+        footer,
+        buildFooterLayoutSig(footer, leftGroup, footerW, hasSubChip, addCtxBtn, speedPill)
+      );
+
+      if (DOCK_TIERS[tierIdx] !== prevTier && typeof onTierChange === 'function') {
+        onTierChange();
       }
     }
   }
@@ -226,8 +340,6 @@ export function createFooterUnifiedRuntime({ onTierChange } = {}) {
     const ovCtxCard = document.querySelector('#ag-claude-ov-sections [data-ov-card="context"]');
     if (!ring) return;
 
-    const footer = ring.closest('.agy-composer-footer');
-    const dockTier = footer?.getAttribute('data-agy-dock-tier') || 'full';
     const cState = ring.getAttribute('data-compact-state');
     const title = ring.getAttribute('title') || '';
 
@@ -241,17 +353,20 @@ export function createFooterUnifiedRuntime({ onTierChange } = {}) {
     let pct = NaN;
     const m = title.match(/\((\d+(?:\.\d+)?)%/);
     if (m) pct = parseFloat(m[1]);
+    let pm = null;
     if (!Number.isFinite(pct) && pop) {
       const pctEl = pop.querySelector('.ag-qp-item .ag-qp-pct');
-      const pm = (pctEl?.textContent || '').match(/(\d+(?:\.\d+)?)%/);
+      pm = (pctEl?.textContent || '').match(/(\d+(?:\.\d+)?)%/);
       if (pm) pct = parseFloat(pm[1]);
     }
+    const arc = ring.querySelector('.ag-ctx-ring-arc');
+    let hasArcPct = false;
     if (!Number.isFinite(pct)) {
-      const arc = ring.querySelector('.ag-ctx-ring-arc');
       const offset = parseFloat(arc?.style?.strokeDashoffset || '');
       if (Number.isFinite(offset)) {
         const circ = 2 * Math.PI * 7;
         pct = Math.max(0, Math.min(100, Math.round((1 - offset / circ) * 100)));
+        hasArcPct = arc?.style?.strokeOpacity !== '0';
       }
     }
 
@@ -261,50 +376,64 @@ export function createFooterUnifiedRuntime({ onTierChange } = {}) {
       ratioSpan.className = 'agy-ctx-ratio';
       ring.appendChild(ratioSpan);
     }
-
-    if (cState === 'compacting') {
-      const label = (dockTier === 'icon' || dockTier === 'tight') ? '' : (isZhUi() ? '压缩中…' : 'Compacting…');
-      if (ratioSpan.textContent !== label) ratioSpan.textContent = label;
-      ratioSpan.hidden = !label;
-      if (label) ring.setAttribute('data-agy-has-ratio', 'true');
-      else ring.removeAttribute('data-agy-has-ratio');
-      ring.removeAttribute('data-agy-ctx-tier');
-      if (pop) pop.removeAttribute('data-agy-ctx-tier');
-      if (ovCtxCard) ovCtxCard.removeAttribute('data-agy-ctx-tier');
-      return;
+    let fullSpan = ratioSpan.querySelector('.agy-ctx-full');
+    if (!fullSpan) {
+      fullSpan = document.createElement('span');
+      fullSpan.className = 'agy-ctx-full';
+      ratioSpan.appendChild(fullSpan);
+    }
+    let tightSpan = ratioSpan.querySelector('.agy-ctx-tight');
+    if (!tightSpan) {
+      tightSpan = document.createElement('span');
+      tightSpan.className = 'agy-ctx-tight';
+      ratioSpan.appendChild(tightSpan);
     }
 
-    // Progressive compression:
-    //   full / compact -> "4.8k / 512k"
-    //   tight          -> "12%"
-    //   icon           -> "" (pure progress ring, full ratio on hover tooltip)
-    let displayText = '';
-    if (dockTier === 'icon') {
-      displayText = '';
-    } else if (dockTier === 'tight') {
-      displayText = Number.isFinite(pct)
+    const isCompacting = cState === 'compacting';
+    const compactingAttr = isCompacting ? '1' : '0';
+    if (ring.getAttribute('data-agy-ctx-compacting') !== compactingAttr) {
+      ring.setAttribute('data-agy-ctx-compacting', compactingAttr);
+    }
+
+    let fullText = '';
+    let tightText = '';
+    if (isCompacting) {
+      fullText = isZhUi() ? '压缩中…' : 'Compacting…';
+      tightText = '';
+    } else {
+      fullText = ratioText;
+      const hasPctSource = Boolean(ratioText || m || pm || hasArcPct);
+      tightText = hasPctSource && Number.isFinite(pct)
         ? `${Math.round(pct)}%`
         : (ratioText ? ratioText.split('/')[0].trim() : '');
-    } else {
-      displayText = ratioText;
     }
 
-    if (displayText) {
-      if (ratioSpan.textContent !== displayText) ratioSpan.textContent = displayText;
-      ratioSpan.hidden = false;
-      ring.setAttribute('data-agy-has-ratio', 'true');
-    } else {
-      ratioSpan.textContent = '';
-      ratioSpan.hidden = true;
+    if (fullSpan.textContent !== fullText) fullSpan.textContent = fullText;
+    if (tightSpan.textContent !== tightText) tightSpan.textContent = tightText;
+
+    const hasRatio = Boolean(fullText || tightText);
+    if (ratioSpan.hidden !== !hasRatio) ratioSpan.hidden = !hasRatio;
+    if (hasRatio) {
+      if (ring.getAttribute('data-agy-has-ratio') !== 'true') {
+        ring.setAttribute('data-agy-has-ratio', 'true');
+      }
+    } else if (ring.hasAttribute('data-agy-has-ratio')) {
       ring.removeAttribute('data-agy-has-ratio');
+    }
+
+    if (isCompacting) {
+      if (ring.hasAttribute('data-agy-ctx-tier')) ring.removeAttribute('data-agy-ctx-tier');
+      if (pop && pop.hasAttribute('data-agy-ctx-tier')) pop.removeAttribute('data-agy-ctx-tier');
+      if (ovCtxCard && ovCtxCard.hasAttribute('data-agy-ctx-tier')) ovCtxCard.removeAttribute('data-agy-ctx-tier');
+      return;
     }
 
     if (pop && ratioText) simplifyPopoverReset(pop, ratioText);
 
     if (cState === 'compacted') {
-      ring.removeAttribute('data-agy-ctx-tier');
-      if (pop) pop.removeAttribute('data-agy-ctx-tier');
-      if (ovCtxCard) ovCtxCard.removeAttribute('data-agy-ctx-tier');
+      if (ring.hasAttribute('data-agy-ctx-tier')) ring.removeAttribute('data-agy-ctx-tier');
+      if (pop && pop.hasAttribute('data-agy-ctx-tier')) pop.removeAttribute('data-agy-ctx-tier');
+      if (ovCtxCard && ovCtxCard.hasAttribute('data-agy-ctx-tier')) ovCtxCard.removeAttribute('data-agy-ctx-tier');
       return;
     }
 
@@ -467,9 +596,9 @@ export function createFooterUnifiedRuntime({ onTierChange } = {}) {
   function sync() {
     if (disposed) return;
     wrapEnsureMetricsPillOnce();
-    syncFooterResponsiveLayout();
     syncSpeedCapsule();
     syncContextCapsule();
+    syncFooterResponsiveLayout();
   }
 
   function dispose() {
@@ -496,6 +625,7 @@ export function createFooterUnifiedRuntime({ onTierChange } = {}) {
     const ring = document.getElementById('ag-claude-ctx-ring');
     if (ring) {
       ring.removeAttribute('data-agy-ctx-tier');
+      ring.removeAttribute('data-agy-ctx-compacting');
       ring.removeAttribute('data-agy-has-ratio');
       ring.querySelector('.agy-ctx-ratio')?.remove();
     }

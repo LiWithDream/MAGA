@@ -9,7 +9,12 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { buildPickerShadowCss, createCapsulePickerRuntime } from './modules/capsule-picker.mjs';
+import {
+  buildPickerShadowCss,
+  createCapsulePickerRuntime,
+  shortenEffortBadge,
+  shortenModelName,
+} from './modules/capsule-picker.mjs';
 import { createFooterUnifiedRuntime } from './modules/footer-unified.mjs';
 import { createOverviewUsageRuntime } from './modules/overview-usage.mjs';
 import { createResumeBannerRuntime } from './modules/resume-banner.mjs';
@@ -165,6 +170,8 @@ export async function buildStudioBundle() {
   ].join('\n\n');
 
   const moduleFns = [
+    shortenModelName.toString(),
+    shortenEffortBadge.toString(),
     createCapsulePickerRuntime.toString(),
     createFooterUnifiedRuntime.toString(),
     createOverviewUsageRuntime.toString(),
@@ -202,19 +209,25 @@ ${moduleFns}
     syncModelPicker,
     effortEffects,
     motionThemes,
+    shortenModelName,
+    shortenEffortBadge,
   });
   const footer = createFooterUnifiedRuntime({ onTierChange: () => scheduleSync() });
   const usage = createOverviewUsageRuntime({ motionThemes });
   const resumeBanner = createResumeBannerRuntime();
-  const subagentFooter = createSubagentFooterRuntime({ motionThemes });
+  const subagentFooter = createSubagentFooterRuntime({ motionThemes, shortenModelName, shortenEffortBadge });
 
   function syncAll() {
     if (disposed) return;
-    subagentFooter.sync();
-    resumeBanner.sync();
-    footer.sync();
-    picker.sync(scheduleSync);
-    usage.sync();
+    try {
+      subagentFooter.sync();
+      resumeBanner.sync();
+      picker.sync(scheduleSync);
+      footer.sync();
+      usage.sync();
+    } finally {
+      docObs.takeRecords();
+    }
   }
 
   function scheduleSync() {

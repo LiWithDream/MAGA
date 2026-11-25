@@ -127,7 +127,14 @@ export function createUsageHistory({
           // Skip immutable=1 for open WALs, active conversations, or recently modified files.
           const immutable = !before.hasWal && !activeIds.has(conversationId) && !recentlyModified;
           try {
-            const requests = readRequests(path, { immutable });
+            const rawResult = readRequests(path, { immutable });
+            const requests = Array.isArray(rawResult)
+              ? rawResult
+              : Array.isArray(rawResult?.requests)
+                ? rawResult.requests
+                : [];
+            const parentId = typeof rawResult?.parentId === 'string' ? rawResult.parentId.trim() : '';
+            const rootId = typeof rawResult?.rootId === 'string' ? rawResult.rootId.trim() : '';
             const after = pairStamp(path);
             if (!after) {
               // Deleted mid-read: drop from present so cleanup removes stale cached rows now.
@@ -137,6 +144,8 @@ export function createUsageHistory({
               files.set(path, {
                 key: before.key,
                 cid: conversationId,
+                parentId,
+                rootId,
                 requests: requests.map(req => (req.source ? req : { ...req, source: path })),
               });
               changed = true;
@@ -162,6 +171,44 @@ export function createUsageHistory({
     }
     return { ...totals, unread };
   }
+  function buildChildrenMap() {
+    const childrenByParent = new Map();
+    const addEdge = (parent, child) => {
+      if (!parent || !child || parent === child) return;
+      let set = childrenByParent.get(parent);
+      if (!set) {
+        set = new Set();
+        childrenByParent.set(parent, set);
+      }
+      set.add(child);
+    };
+    for (const file of files.values()) {
+      addEdge(file.parentId, file.cid);
+      addEdge(file.rootId, file.cid);
+    }
+    return childrenByParent;
+  }
+  function expandDescendants(seedIds, childrenByParent) {
+    const visited = new Set();
+    const queue = [];
+    for (const raw of seedIds || []) {
+      const id = typeof raw === 'string' ? raw.trim() : '';
+      if (!id || visited.has(id)) continue;
+      visited.add(id);
+      queue.push(id);
+    }
+    for (let i = 0; i < queue.length; i++) {
+      const next = childrenByParent.get(queue[i]);
+      if (!next) continue;
+      for (const childId of next) {
+        if (!visited.has(childId)) {
+          visited.add(childId);
+          queue.push(childId);
+        }
+      }
+    }
+    return visited;
+  }
   function summarizeForIds(ids = []) {
     const idSet = new Set(
       (Array.isArray(ids) ? ids : []).map(id => (typeof id === 'string' ? id.trim() : '')).filter(Boolean)
@@ -175,20 +222,28 @@ export function createUsageHistory({
         byChat: {},
       };
     }
-    const perCidReqs = new Map();
-    const ordered = [...files.entries()]
-      .filter(([, file]) => idSet.has(file.cid))
-      .sort(byKey)
-      .flatMap(([, file]) => {
-        const list = perCidReqs.get(file.cid);
-        if (list) list.push(...file.requests);
-        else perCidReqs.set(file.cid, file.requests.slice());
-        return file.requests;
-      });
+    const sortedEntries = [...files.entries()].sort(byKey);
+    const byCid = new Map();
+    for (const [, file] of sortedEntries) {
+      const list = byCid.get(file.cid);
+      if (list) list.push(...file.requests);
+      else byCid.set(file.cid, file.requests.slice());
+    }
+    const childrenByParent = buildChildrenMap();
+    const expandedAll = expandDescendants(idSet, childrenByParent);
+    const ordered = [];
+    for (const [, file] of sortedEntries) {
+      if (expandedAll.has(file.cid)) ordered.push(...file.requests);
+    }
     const byChat = {};
     for (const cid of idSet) {
-      const reqs = perCidReqs.get(cid);
-      if (!reqs || !reqs.length) {
+      const chatTree = expandDescendants([cid], childrenByParent);
+      const reqs = [];
+      for (const treeCid of chatTree) {
+        const list = byCid.get(treeCid);
+        if (list) reqs.push(...list);
+      }
+      if (!reqs.length) {
         byChat[cid] = { totalTokens: 0, requests: 0 };
         continue;
       }
@@ -207,14 +262,20 @@ export function createUsageHistory({
       if (list) list.push(file.requests);
       else byCid.set(file.cid, [file.requests]);
     }
+    const childrenByParent = buildChildrenMap();
     const byProject = {};
     for (const [projectId, rawIds] of Object.entries(groups || {})) {
       const seenIds = new Set();
-      const reqs = [];
+      const seedIds = [];
       for (const raw of Array.isArray(rawIds) ? rawIds : []) {
         const cid = typeof raw === 'string' ? raw.trim() : '';
         if (!cid || seenIds.has(cid)) continue;
         seenIds.add(cid);
+        seedIds.push(cid);
+      }
+      const expanded = expandDescendants(seedIds, childrenByParent);
+      const reqs = [];
+      for (const cid of expanded) {
         const chunks = byCid.get(cid);
         if (chunks) {
           for (const chunk of chunks) reqs.push(...chunk);

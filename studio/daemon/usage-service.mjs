@@ -6,7 +6,7 @@
 import os from 'node:os';
 import path from 'node:path';
 import { createUsageHistory } from '../../vendor/agy-capsule/usage_history.mjs';
-import { readConversationUsage } from './usage-reader.mjs';
+import { readConversationUsageRecord } from './usage-reader.mjs';
 
 const HOME = os.homedir();
 const DEFAULT_CONVERSATION_DIRS = [
@@ -24,7 +24,7 @@ function getHistory() {
   if (!sharedHistory) {
     sharedHistory = createUsageHistory({
       directories: DEFAULT_CONVERSATION_DIRS,
-      readRequests: readConversationUsage,
+      readRequests: readConversationUsageRecord,
     });
   }
   return sharedHistory;

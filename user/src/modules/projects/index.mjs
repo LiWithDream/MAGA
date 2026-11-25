@@ -8,6 +8,7 @@ import { createProjectModals } from './modals.mjs';
 import { createProjectWorkspaceUi } from './workspace-ui.mjs';
 import { createConvProjectTopbar } from './conv-topbar.mjs';
 import { createWorktreeUiController } from './worktree-ui.mjs';
+import { createProjectSuggestionsController } from './suggestions-ui.mjs';
 
 export function createProjectsModule(rt, modelApi) {
   const ctx = createProjectSharedContext(rt, modelApi);
@@ -63,6 +64,7 @@ export function createProjectsModule(rt, modelApi) {
   const modals = createProjectModals(ctx);
   const workspaceUi = createProjectWorkspaceUi(ctx);
   const worktreeUi = createWorktreeUiController(ctx);
+  const suggestionsUi = createProjectSuggestionsController(ctx);
 
   const {
     clearNewProjectWatcher,
@@ -857,6 +859,7 @@ export function createProjectsModule(rt, modelApi) {
     if (proj.dirPath) {
       worktreeUi.warmRepoWorktrees(proj.dirPath, { includeStats: true });
       fetchProjectWorkspaceStatus(proj.dirPath);
+      suggestionsUi.loadProjectSuggestions(proj, { force: false });
     }
     if (proj.dirPath && typeof window.__agProjectCall === 'function') {
       const prevSig = JSON.stringify(pState.projectsContextMap[proj.dirPath] || null);
@@ -960,11 +963,15 @@ export function createProjectsModule(rt, modelApi) {
       wsStatus,
       isLoading: isLoadingWs,
     });
+    const aiSuggestionsState = hasLocalDir ? (pState.projectSuggestionsMap[project.dirPath] || null) : null;
+    const isLoadingAi = Boolean(hasLocalDir && pState.projectSuggestionsBusyDirs.has(project.dirPath));
     const quickStripHtml = buildQuickActionsStripHtml({
       project,
       hasLocalDir,
       wsStatus,
       instructions,
+      aiSuggestionsState,
+      isLoadingAi,
     });
     const pdChatIds = (Array.isArray(project.chats) ? project.chats : []).map((c) => c && c.id).filter(Boolean);
 
@@ -1260,6 +1267,31 @@ export function createProjectsModule(rt, modelApi) {
           } catch {}
         });
       });
+      el.querySelectorAll('[data-ag-pd-ai-sugg-idx]').forEach((btn) => {
+        btn.addEventListener('click', (e) => {
+          const idx = Number(btn.getAttribute('data-ag-pd-ai-sugg-idx'));
+          const sugg = project.dirPath ? pState.projectSuggestionsMap[project.dirPath]?.suggestions?.[idx] : null;
+          if (!sugg) return;
+          suggestionsUi.applySuggestion({
+            suggestion: sugg,
+            project,
+            el,
+            compInput,
+            syncSend,
+            dispatchPrompt,
+            shiftKey: Boolean(e.shiftKey),
+            onRefreshStatus: (wtPath, force) => fetchProjectWorkspaceStatus(project.dirPath, { worktreePath: wtPath, force }),
+          });
+        });
+      });
+      const suggRefreshBtn = el.querySelector('[data-ag-pd-sugg-refresh]');
+      if (suggRefreshBtn) {
+        suggRefreshBtn.addEventListener('click', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          suggestionsUi.loadProjectSuggestions(project, { force: true });
+        });
+      }
       if (pState.pdMentionState.open && pState.pdMentionState.projectId === project.id) {
         renderPdMentionPopover();
       }
@@ -1662,6 +1694,7 @@ export function createProjectsModule(rt, modelApi) {
       if (target && target.dirPath) {
         worktreeUi.warmRepoWorktrees(target.dirPath, { includeStats: true });
         fetchProjectWorkspaceStatus(target.dirPath);
+        suggestionsUi.loadProjectSuggestions(target, { force: false });
       }
     }
   }

@@ -13,6 +13,7 @@ export function createProjectWorkspaceUi(ctx) {
     SVG_PROJ_EXTERNAL,
     SVG_PROJ_FOLDER_OPEN,
     SVG_PROJ_FOLDER_ADD,
+    SVG_PROJ_REFRESH,
     RECENT_PIN_SVG,
     RECENT_MORE_SVG,
   } = ICONS;
@@ -652,11 +653,55 @@ export function createProjectWorkspaceUi(ctx) {
     `;
   }
 
-  function buildQuickActionsStripHtml({ project, hasLocalDir, wsStatus, instructions }) {
+  function buildQuickActionsStripHtml({
+    project,
+    hasLocalDir,
+    wsStatus,
+    instructions,
+    aiSuggestionsState = null,
+    isLoadingAi = false,
+  }) {
     if (!project || !Array.isArray(project.chats) || project.chats.length === 0) return '';
     const data = wsStatus && wsStatus.ok ? wsStatus : null;
     const git = data?.git || null;
     const scripts = Array.isArray(data?.scripts) ? data.scripts : [];
+    const aiList = Array.isArray(aiSuggestionsState?.suggestions) ? aiSuggestionsState.suggestions.slice(0, 3) : [];
+    const showRefreshBtn = Boolean(hasLocalDir && aiSuggestionsState?.hasApiKey && aiSuggestionsState?.enabled);
+    const refreshBtnHtml = showRefreshBtn
+      ? `<button type="button" class="ag-pd-quick-refresh${isLoadingAi ? ' is-busy' : ''}" data-ag-pd-sugg-refresh="true" title="${escapeHtml(
+          L('基于最近对话刷新 AI 建议', 'Refresh AI suggestions from recent chats')
+        )}" aria-label="${escapeHtml(L('刷新建议', 'Refresh suggestions'))}">${SVG_PROJ_REFRESH}</button>`
+      : '';
+
+    if (aiList.length > 0) {
+      const pills = [];
+      if (git && git.changedFiles > 0) {
+        const revPrompt = L(
+          `请先检查当前工作区 ${git.changedFiles} 个未提交改动（\`git status\` / \`git diff\`），总结变更并排查隐患。`,
+          `Inspect the ${git.changedFiles} uncommitted changes (\`git status\` / \`git diff\`), summarize the delta, and check for risks.`
+        );
+        pills.push(
+          `<button type="button" class="ag-pd-quick-pill" data-ag-pd-starter-prompt="${escapeHtml(revPrompt)}" title="${escapeHtml(
+            L('点击填入输入框 · 按住 Shift 直接发送', 'Click to fill · Shift+Click to send')
+          )}">${escapeHtml(L(`审查改动 (${git.changedFiles})`, `Review changes (${git.changedFiles})`))}</button>`
+        );
+      }
+      aiList.forEach((s, idx) => {
+        const branchName = typeof s.branch === 'string' ? s.branch.trim() : '';
+        const showBranch = Boolean(branchName && branchName !== 'main' && branchName !== 'master');
+        const branchBadge = showBranch
+          ? `<span class="ag-pd-quick-pill-branch">${escapeHtml(branchName)}</span>`
+          : '';
+        const tip = [s.reason, L('点击填入输入框 · 按住 Shift 直接发送', 'Click to fill · Shift+Click to send')]
+          .filter(Boolean)
+          .join('\n');
+        pills.push(
+          `<button type="button" class="ag-pd-quick-pill is-ai" data-ag-pd-ai-sugg-idx="${idx}" title="${escapeHtml(tip)}"><span class="ag-pd-quick-pill-label">${escapeHtml(s.label)}</span>${branchBadge}</button>`
+        );
+      });
+      return `<div class="ag-pd-quick-strip" data-ag-pd-quick-strip="true">${pills.join('')}${refreshBtnHtml}</div>`;
+    }
+
     const actions = [];
 
     if (git && git.changedFiles > 0) {
@@ -687,14 +732,14 @@ export function createProjectWorkspaceUi(ctx) {
       });
     }
 
-    if (!actions.length) return '';
+    if (!actions.length && !refreshBtnHtml) return '';
     return `<div class="ag-pd-quick-strip" data-ag-pd-quick-strip="true">${actions
       .slice(0, 4)
       .map(
         (a) =>
           `<button type="button" class="ag-pd-quick-pill" data-ag-pd-starter-prompt="${escapeHtml(a.prompt)}" title="${escapeHtml(L('点击填入输入框 · 按住 Shift 直接发送', 'Click to fill · Shift+Click to send'))}">${escapeHtml(a.label)}</button>`
       )
-      .join('')}</div>`;
+      .join('')}${refreshBtnHtml}</div>`;
   }
 
   function buildQuickStartersHtml({ project, hasLocalDir, wsStatus, instructions, filesCount }) {

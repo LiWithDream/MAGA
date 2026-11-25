@@ -36,6 +36,8 @@ export function getViewMeta(view, L) {
       return { title: L('对话与过程流', 'Conversation & Stream'), parent: L('MAGA 设置', 'MAGA') };
     case 'workspace':
       return { title: L('工作区与面板', 'Workspace & Panels'), parent: L('MAGA 设置', 'MAGA') };
+    case 'workspace-ai-suggestions':
+      return { title: L('AI 对话建议', 'AI Chat Suggestions'), parent: L('工作区与面板', 'Workspace & Panels') };
     case 'appearance':
       return { title: L('语言与外观', 'Language & Appearance'), parent: L('MAGA 设置', 'MAGA') };
     default:
@@ -554,7 +556,15 @@ export function renderL2Stream(p, base, { studioPrefs, L }) {
       </div>`;
 }
 
-export function renderL2Workspace(p, base, { L }) {
+export function renderL2Workspace(p, base, { state, L }) {
+  const aiCfg = state?.aiSuggestionsCfg;
+  const aiSum = !aiCfg
+    ? L('Gemini 3.8 Flash', 'Gemini 3.8 Flash')
+    : !aiCfg.hasApiKey
+      ? L('未配置 Key', 'No API key')
+      : !aiCfg.enabled
+        ? `${aiCfg.model || 'gemini-3.8-flash'} · ${L('已关闭', 'Off')}`
+        : `${aiCfg.model || 'gemini-3.8-flash'} · ${L('已就绪', 'Ready')}`;
   return `
       <div class="agy-ms-sec-hdr">${esc(L('Overview 与底栏胶囊', 'Overview & Footer Capsules'))}</div>
       <div class="agy-ms-card">
@@ -576,8 +586,97 @@ export function renderL2Workspace(p, base, { L }) {
       <div class="agy-ms-card">
         ${renderSwitchRow('claudeUxHideSidebarProjects', 'base', L('侧栏统一「最近对话」', 'Unified Sidebar Recents'), L('合并原生项目与普通对话分组，统一按最近时间混排显示', 'Replaces split Projects/Chats with a single chronological Recents list'), base.modules?.claudeUxHideSidebarProjects === true)}
         ${renderSwitchRow('claudeUxProjects', 'base', L('项目工作区 (Projects)', 'Projects Workspace'), L('启用 Claude 风格项目卡片墙、本地 AGENTS 指令与上下文文件管理', 'Enables Claude-style Projects workspace, AGENTS.md & context files'), base.modules?.claudeUxProjects !== false)}
+        ${renderDrillRow('workspace-ai-suggestions', L('AI 历史对话建议', 'AI Conversation Suggestions'), L('使用 Gemini 3.8 Flash 基于最近对话推荐新会话起点并自动切换 Worktree', 'Suggests follow-up chats from recent history with cold-start context handoff'), aiSum)}
         ${renderSwitchRow('claudeUxCustomizations', 'base', L('技能与自定义页优化', 'Customizations Layout & Import'), L('增强「技能与自定义」页分类标签与本地技能快捷导入', 'Adds category tabs and quick local skill import'), base.modules?.claudeUxCustomizations !== false)}
       </div>`;
+}
+
+export function renderL3AiSuggestions(state, { L }) {
+  const cfg = state?.aiSuggestionsCfg || {
+    enabled: true,
+    autoRefresh: true,
+    model: 'gemini-3.8-flash',
+    baseUrl: 'https://generativelanguage.googleapis.com',
+    hasApiKey: false,
+    apiKeySource: 'none',
+    apiKeyMask: '',
+  };
+  const activeModel = cfg.model || 'gemini-3.8-flash';
+  const activeBase = cfg.baseUrl || 'https://generativelanguage.googleapis.com';
+  const testSt = state?.aiSuggestionsTestStatus || null;
+  const presets = [
+    ['gemini-3.8-flash', '3.8 Flash'],
+    ['gemini-2.5-flash', '2.5 Flash'],
+    ['gemini-2.5-flash-lite', '2.5 Flash-Lite'],
+  ];
+
+  const keyStatusText = testSt
+    ? testSt.message
+    : cfg.hasApiKey
+      ? `${L('当前 Key', 'Active key')}: ${cfg.apiKeyMask} (${
+          cfg.apiKeySource === 'env' ? L('来自环境变量', 'from env') : L('本地已保存', 'saved locally')
+        })`
+      : L('未配置 API Key · 留空时项目页保持静态快捷按钮', 'No API Key configured · static quick pills stay active');
+  const statusTone = testSt ? (testSt.busy ? 'muted' : testSt.ok ? 'ok' : 'err') : cfg.hasApiKey ? 'ok' : 'muted';
+
+  return `
+      <div class="agy-ms-card">
+        ${renderSwitchRow('enabled', 'ai-sugg', L('启用 AI 历史对话建议', 'Enable AI Chat Suggestions'), L('在项目详情页输入框下方，基于最近 5 条对话与分支状态生成冷启动交接建议', 'Generates 3 follow-up chat pills with cold-start context handoff from recent history'), cfg.enabled !== false)}
+        ${renderSwitchRow('autoRefresh', 'ai-sugg', L('指纹变化时自动后台刷新', 'Auto-Refresh on History Change'), L('仅当近期对话或 Git 分支变化且超出冷却时间时后台刷新一次，并缓存结果', 'Refreshes in background only when recent chat/git fingerprint changes beyond cooldown'), cfg.autoRefresh !== false)}
+      </div>
+
+      <div class="agy-ms-sec-hdr">${esc(L('Gemini API 凭据与模型', 'Gemini API Key & Model'))}</div>
+      <div class="agy-ms-card">
+        <div class="agy-ms-field">
+          <div class="agy-ms-row-title">${esc(L('Gemini API Key', 'Gemini API Key'))}</div>
+          <div class="agy-ms-row-desc">${esc(L('可使用 Google AI Studio 领取的 Ultra 每月赠金对应的 API Key（也可使用环境变量 GEMINI_API_KEY）', 'Works with your Google AI Studio API Key (Ultra monthly credits) or GEMINI_API_KEY env var'))}</div>
+          <div class="agy-ms-input-row">
+            <input type="password" class="agy-ms-input" data-ms-ai-input="apiKey" autocomplete="off" spellcheck="false" placeholder="${esc(
+              cfg.hasApiKey ? `${cfg.apiKeyMask} · ${L('留空保持不变，输入新 Key 将覆盖', 'Leave blank to keep current key')}` : 'AIza...'
+            )}" />
+          </div>
+          <div class="agy-ms-status-line" data-tone="${esc(statusTone)}">${esc(keyStatusText)}</div>
+        </div>
+
+        <div class="agy-ms-field">
+          <div class="agy-ms-row-title">${esc(L('模型 ID', 'Model ID'))}</div>
+          <div class="agy-ms-seg is-wrap" role="group" aria-label="${esc(L('常用模型预设', 'Model presets'))}">
+            ${presets
+              .map(
+                ([val, lbl]) =>
+                  `<button type="button" class="agy-ms-seg-btn" data-ms-ai-model-preset="${esc(val)}" aria-checked="${activeModel === val ? 'true' : 'false'}">${esc(lbl)}</button>`
+              )
+              .join('')}
+          </div>
+          <div class="agy-ms-input-row">
+            <input type="text" class="agy-ms-input" data-ms-ai-input="model" value="${esc(activeModel)}" spellcheck="false" placeholder="gemini-3.8-flash" />
+          </div>
+        </div>
+
+        <div class="agy-ms-field">
+          <div class="agy-ms-row-title">${esc(L('API Base URL（可选代理地址）', 'API Base URL (Optional)'))}</div>
+          <div class="agy-ms-input-row">
+            <input type="url" class="agy-ms-input" data-ms-ai-input="baseUrl" value="${esc(activeBase)}" spellcheck="false" placeholder="https://generativelanguage.googleapis.com" />
+          </div>
+        </div>
+
+        <div class="agy-ms-tools">
+          <button type="button" class="agy-ms-btn" data-ms-action="ai-sugg-save">${esc(L('保存配置', 'Save'))}</button>
+          <button type="button" class="agy-ms-btn" data-ms-action="ai-sugg-test">${esc(L('测试连接', 'Test Connection'))}</button>
+          ${
+            cfg.hasApiKey && cfg.apiKeySource === 'config'
+              ? `<button type="button" class="agy-ms-btn is-danger" data-ms-action="ai-sugg-clear-key" style="margin-left:auto">${esc(L('清除 Key', 'Clear Key'))}</button>`
+              : ''
+          }
+        </div>
+      </div>
+
+      <div class="agy-ms-note">${esc(
+        L(
+          '隐私与额度说明：API Key 仅保存在本地 ~/.gemini/antigravity/anti-claude/project-suggestions-config.json（0600 权限），不会出现在设置 JSON 导出中；每次建议仅发送最近 5 条对话的脱水摘要（约 800 tokens），不占用 Antigravity 桌面模型主额度。',
+          'Security & quota note: Your API key stays strictly in local project-suggestions-config.json (0600) and is excluded from Settings JSON exports. Each refresh sends only a compact summary (~800 tokens) and does not consume Antigravity quota.'
+        )
+      )}</div>`;
 }
 
 export function renderL2Appearance(p, base, { L }) {

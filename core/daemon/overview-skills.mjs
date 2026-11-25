@@ -764,6 +764,20 @@ export async function handleProjectRpcRequest(rawPayload, callerEntry = null) {
       const { handleOpusGateRpc } = await import('../../studio/daemon/opus-gate-service.mjs');
       return { reqId, result: await handleOpusGateRpc(action, payload) };
     }
+    if (
+      action === 'getProjectSuggestionsConfig' ||
+      action === 'saveProjectSuggestionsConfig' ||
+      action === 'testProjectSuggestionsConfig' ||
+      action === 'getProjectSuggestions'
+    ) {
+      const { handleProjectSuggestionsRpc } = await import('../../studio/daemon/project-suggestions.mjs');
+      return {
+        reqId,
+        result: await handleProjectSuggestionsRpc(action, payload, {
+          readWorkspaceStatus: readProjectWorkspaceStatusAsync
+        })
+      };
+    }
     if (action === 'revealFile') {
       const rawTarget = typeof payload?.targetPath === 'string' ? payload.targetPath.trim() : '';
       if (!rawTarget) return { reqId, result: { ok: false, error: 'missing_path' } };

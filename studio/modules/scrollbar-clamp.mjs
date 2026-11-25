@@ -7,7 +7,16 @@
  * Runs under `MagaKernel` without spawning any extra MutationObserver.
  */
 
-const TRANSLATE_Y_RE = /translate\(\s*0(?:px)?\s*,\s*(-?[\d.]+)px\s*\)/;
+const TRANSLATE_Y_RE = /(?:translate\(\s*0(?:px)?\s*,\s*(-?[\d.]+)(?:px)?\s*\)|translateY\(\s*(-?[\d.]+)(?:px)?\s*\))/;
+const TRANSLATE_ZERO_RE = /^translate\(\s*0(?:px)?\s*\)$/;
+
+function parseTranslateY(tf) {
+  const s = String(tf || '').trim();
+  const m = s.match(TRANSLATE_Y_RE);
+  if (m) return Number.parseFloat(m[1] ?? m[2]);
+  if (TRANSLATE_ZERO_RE.test(s)) return 0;
+  return Number.NaN;
+}
 
 /**
  * Clamp a single vertical overlay scrollbar thumb and its active ScrollTimeline
@@ -44,6 +53,7 @@ export function clampOverlayScrollbar(track, viewport, metrics = null) {
   const maxScroll = Math.max(1, sh - ch);
   const ratio = scrollable ? Math.min(1, Math.max(0, st / maxScroll)) : 0;
   const clampedY = Math.round(ratio * maxOffset);
+  const animMaxOffset = scrollable ? maxOffset : 0;
 
   const nextHeight = `${thumbH}px`;
   const nextTransform = `translate(0px, ${clampedY}px)`;
@@ -57,14 +67,13 @@ export function clampOverlayScrollbar(track, viewport, metrics = null) {
       if (!eff || typeof eff.getKeyframes !== 'function' || typeof eff.setKeyframes !== 'function') continue;
       const kfs = eff.getKeyframes();
       if (!Array.isArray(kfs) || kfs.length < 2) continue;
-      const lastTf = String(kfs[kfs.length - 1]?.transform || '');
-      const m = lastTf.match(TRANSLATE_Y_RE);
-      if (!m) continue;
-      const curMax = Number.parseFloat(m[1]);
-      if (!Number.isFinite(curMax) || Math.abs(curMax - maxOffset) > 0.5) {
+      const startY = parseTranslateY(kfs[0]?.transform);
+      const endY = parseTranslateY(kfs[kfs.length - 1]?.transform);
+      if (!Number.isFinite(endY)) continue;
+      if (!Number.isFinite(startY) || Math.abs(startY) > 0.5 || Math.abs(endY - animMaxOffset) > 0.5) {
         eff.setKeyframes([
           { transform: 'translate(0px, 0px)' },
-          { transform: `translate(0px, ${maxOffset}px)` },
+          { transform: `translate(0px, ${animMaxOffset}px)` },
         ]);
       }
     }
@@ -75,7 +84,7 @@ export function clampOverlayScrollbar(track, viewport, metrics = null) {
 
 /**
  * Create the MagaKernel feature controller that keeps overlay scrollbars clamped
- * across scroll, pointer hover/drag, resize, and panel transitions.
+ * across scroll, pointer hover/drag, wheel, resize, and panel transitions.
  */
 export function createScrollbarClampRuntime() {
   let disposed = false;
@@ -88,19 +97,10 @@ export function createScrollbarClampRuntime() {
     entry.scheduled = true;
     const run = () => {
       entry.scheduled = false;
-      entry.rafId = null;
       if (disposed || !track.isConnected || bound.get(track) !== entry) return;
       clampOverlayScrollbar(track, entry.viewport);
     };
-    const rafFn =
-      typeof requestAnimationFrame === 'function'
-        ? requestAnimationFrame
-        : typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function'
-          ? window.requestAnimationFrame.bind(window)
-          : null;
-    if (rafFn) {
-      entry.rafId = rafFn(run);
-    } else if (typeof queueMicrotask === 'function') {
+    if (typeof queueMicrotask === 'function') {
       queueMicrotask(run);
     } else {
       Promise.resolve().then(run);
@@ -120,19 +120,23 @@ export function createScrollbarClampRuntime() {
     resizeBound = true;
   }
 
+  function syncContentObserver(entry, viewport) {
+    const resizeObs = entry?.resizeObs;
+    if (!resizeObs) return;
+    const nextContent = viewport?.firstElementChild || null;
+    if (nextContent === entry.observedContent) return;
+    if (entry.observedContent && typeof resizeObs.unobserve === 'function') {
+      resizeObs.unobserve(entry.observedContent);
+    }
+    entry.observedContent = nextContent;
+    if (nextContent && typeof resizeObs.observe === 'function') {
+      resizeObs.observe(nextContent);
+    }
+  }
+
   function unbindTrack(track) {
     const entry = bound.get(track);
     if (!entry) return;
-    if (entry.rafId !== null && entry.rafId !== undefined) {
-      const cancelRaf =
-        typeof cancelAnimationFrame === 'function'
-          ? cancelAnimationFrame
-          : typeof window !== 'undefined' && typeof window.cancelAnimationFrame === 'function'
-            ? window.cancelAnimationFrame.bind(window)
-            : null;
-      if (cancelRaf) cancelRaf(entry.rafId);
-    }
-    entry.rafId = null;
     entry.scheduled = false;
     entry.cleanup();
     bound.delete(track);
@@ -142,19 +146,34 @@ export function createScrollbarClampRuntime() {
     if (!track || !viewport || disposed) return;
     const prev = bound.get(track);
     if (prev) {
-      if (prev.viewport === viewport) return;
+      if (prev.viewport === viewport) {
+        syncContentObserver(prev, viewport);
+        return;
+      }
       unbindTrack(track);
     }
     const onEvent = () => scheduleClamp(track);
-    const trackEvents = ['pointerenter', 'pointerdown', 'pointermove'];
-    const vpEvents = ['scroll', 'pointerenter'];
+    const trackEvents = ['pointerenter', 'pointerdown', 'pointermove', 'pointerup', 'wheel'];
+    const vpEvents = ['scroll', 'pointerenter', 'pointerover', 'wheel'];
     for (const ev of trackEvents) track.addEventListener?.(ev, onEvent, { passive: true });
     for (const ev of vpEvents) viewport.addEventListener?.(ev, onEvent, { passive: true });
+
+    let resizeObs = null;
+    const observedContent = viewport.firstElementChild || null;
+    if (typeof ResizeObserver === 'function') {
+      resizeObs = new ResizeObserver(onEvent);
+      resizeObs.observe?.(track);
+      resizeObs.observe?.(viewport);
+      if (observedContent) resizeObs.observe?.(observedContent);
+    }
+
     const cleanup = () => {
       for (const ev of trackEvents) track.removeEventListener?.(ev, onEvent);
       for (const ev of vpEvents) viewport.removeEventListener?.(ev, onEvent);
+      resizeObs?.disconnect?.();
+      resizeObs = null;
     };
-    bound.set(track, { viewport, scheduled: false, rafId: null, cleanup });
+    bound.set(track, { viewport, scheduled: false, resizeObs, observedContent, cleanup });
     ensureResizeBound();
   }
 

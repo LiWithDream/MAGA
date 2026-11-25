@@ -146,7 +146,8 @@ html[data-agy-panel-handoff^="ov-to-aux"] [data-testid="overview-panel-overlay-b
   flex-shrink: 0 !important;
 }
 
-[data-testid="autoscroll-viewport"] div.flex.items-start[style*="75cqh"] {
+[data-testid="autoscroll-viewport"] > div > div[style*="min-height"],
+[data-testid="autoscroll-viewport"] [style*="75cqh"] {
   min-height: 0 !important;
 }
 

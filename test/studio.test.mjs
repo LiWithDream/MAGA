@@ -3142,7 +3142,7 @@ test('Remote/cloud native trigger (orchestratorPick undefined, static Orchestrat
   }
 });
 
-test('footer-capsules.css positions conversation scrollbar left of Overview, bounds track, and removes 75cqh bottom spacer', () => {
+test('footer-capsules.css positions conversation scrollbar left of Overview, bounds track, and removes bottom spacers', () => {
   const css = readFileSync(FOOTER_CSS_PATH, 'utf8');
   assert.equal(css.includes(':has('), false, 'footer-capsules.css must contain zero :has() rules');
   assert.ok(
@@ -3153,18 +3153,18 @@ test('footer-capsules.css positions conversation scrollbar left of Overview, bou
   assert.ok(css.includes('overflow: hidden !important;') && css.includes('align-items: flex-start !important;'), 'track clips and top-aligns thumb');
   assert.match(
     css,
-    /\[data-testid="autoscroll-viewport"\]\s+div\.flex\.items-start\[style\*="75cqh"\]\s*\{[\s\S]*?min-height:\s*0\s*!important;/,
-    'clears excessive 75cqh bottom blank-space min-height on latest turn'
+    /\[data-testid="autoscroll-viewport"\]\s*>\s*div\s*>\s*div\[style\*="min-height"\],\s*\n\[data-testid="autoscroll-viewport"\]\s+\[style\*="75cqh"\]\s*\{[\s\S]*?min-height:\s*0\s*!important;/,
+    'clears both cZc shrink-holder pixel min-height and 75cqh bottom blank-space min-height'
   );
 });
 
-test('scrollbar-clamp clamps thumb geometry, overscroll bounds, and ScrollTimeline keyframes without extra MutationObserver', async () => {
+test('scrollbar-clamp clamps thumb geometry, overscroll bounds, pointerover/ResizeObserver overwrites, and non-scrollable keyframes without extra MutationObserver', async () => {
   const { JSDOM } = await import('jsdom');
   const dom = new JSDOM(
     `<!doctype html><html><body>
       <div data-testid="conversation-view">
         <div data-autoscroll-overlay-host="true">
-          <div data-testid="autoscroll-viewport"></div>
+          <div data-testid="autoscroll-viewport"><div class="mx-auto"></div></div>
           <div data-testid="overlay-scrollbar" data-orientation="vertical">
             <div data-testid="overlay-scrollbar-thumb" style="width: 6px; height: 280px; transform: translate(0px, 600px);"></div>
           </div>
@@ -3175,7 +3175,7 @@ test('scrollbar-clamp clamps thumb geometry, overscroll bounds, and ScrollTimeli
   );
   const w = dom.window;
   const d = w.document;
-  const keys = ['window', 'document', 'MutationObserver', 'requestAnimationFrame', 'cancelAnimationFrame'];
+  const keys = ['window', 'document', 'MutationObserver', 'ResizeObserver'];
   const prev = new Map(keys.map((k) => [k, Object.getOwnPropertyDescriptor(globalThis, k)]));
 
   let observerCreations = 0;
@@ -3185,43 +3185,48 @@ test('scrollbar-clamp clamps thumb geometry, overscroll bounds, and ScrollTimeli
     disconnect() {}
     takeRecords() { return []; }
   }
-  let nextRafId = 1;
-  const rafQueue = new Map();
-  const cancelledRafIds = [];
+  const resizeInstances = [];
+  class MockResizeObserver {
+    constructor(cb) {
+      this.cb = cb;
+      this.observed = new Set();
+      this.disconnected = false;
+      resizeInstances.push(this);
+    }
+    observe(el) { this.observed.add(el); }
+    unobserve(el) { this.observed.delete(el); }
+    disconnect() {
+      this.disconnected = true;
+      this.observed.clear();
+    }
+    trigger() { this.cb([]); }
+  }
+
   globalThis.window = w;
   globalThis.document = d;
   globalThis.MutationObserver = CountingMutationObserver;
-  globalThis.requestAnimationFrame = (cb) => {
-    const id = nextRafId++;
-    rafQueue.set(id, cb);
-    return id;
-  };
-  globalThis.cancelAnimationFrame = (id) => {
-    cancelledRafIds.push(id);
-    rafQueue.delete(id);
-  };
-  const flushRaf = () => {
-    const pending = Array.from(rafQueue.entries());
-    rafQueue.clear();
-    for (const [, cb] of pending) cb(0);
-  };
+  globalThis.ResizeObserver = MockResizeObserver;
+
+  const flushMicrotasks = () => new Promise((resolve) => setTimeout(resolve, 0));
 
   try {
     const vp = d.querySelector('[data-testid="autoscroll-viewport"]');
+    const vpContent = vp.firstElementChild;
     const track = d.querySelector('[data-testid="overlay-scrollbar"]');
     const thumb = d.querySelector('[data-testid="overlay-scrollbar-thumb"]');
 
     let vpScrollTop = 1000;
+    let vpScrollHeight = 2400;
     Object.defineProperties(vp, {
       clientHeight: { value: 600, configurable: true },
-      scrollHeight: { value: 2400, configurable: true },
+      scrollHeight: { get: () => vpScrollHeight, configurable: true },
       scrollTop: { get: () => vpScrollTop, set: (v) => { vpScrollTop = v; }, configurable: true },
     });
     Object.defineProperty(track, 'clientHeight', { value: 586, configurable: true });
 
     let latestKeyframes = [
-      { transform: 'translate(0px, 0px)' },
-      { transform: 'translate(0px, 720px)' },
+      { transform: 'translate(0px, 12px)' },
+      { transform: 'translateY(720px)' },
     ];
     thumb.getAnimations = () => [{
       effect: {
@@ -3230,12 +3235,12 @@ test('scrollbar-clamp clamps thumb geometry, overscroll bounds, and ScrollTimeli
       },
     }];
 
-    // Direct clamp checks normal, negative overscroll, and positive overscroll
+    // Direct clamp checks normal, negative overscroll, positive overscroll, start keyframe & translateY() reset
     // expected thumbH = round((600/2400)*586) = 147, maxOffset = 586 - 147 = 439
     assert.equal(clampOverlayScrollbar(track, vp), true);
     assert.equal(thumb.style.height, '147px');
-    // ratio = 1000 / 1800 -> round(439 * 1000/1800) = 244
     assert.equal(thumb.style.transform, 'translate(0px, 244px)');
+    assert.equal(latestKeyframes[0].transform, 'translate(0px, 0px)');
     assert.equal(latestKeyframes[1].transform, 'translate(0px, 439px)');
 
     vpScrollTop = -120;
@@ -3246,7 +3251,20 @@ test('scrollbar-clamp clamps thumb geometry, overscroll bounds, and ScrollTimeli
     clampOverlayScrollbar(track, vp);
     assert.equal(thumb.style.transform, 'translate(0px, 439px)');
 
-    // Runtime binds via MagaKernel read/write lifecycle, reacts to scroll, creates 0 MutationObservers, and disposes cleanly
+    // Non-scrollable viewport clamps stale ScrollTimeline animation keyframes down to 0px
+    vpScrollHeight = 600;
+    vpScrollTop = 0;
+    thumb.style.height = '200px';
+    latestKeyframes = [
+      { transform: 'translate(0px, 0px)' },
+      { transform: 'translate(0px, 439px)' },
+    ];
+    clampOverlayScrollbar(track, vp);
+    assert.match(thumb.style.transform, /^translate\(0px(?:,\s*0px)?\)$/);
+    assert.equal(latestKeyframes[1].transform, 'translate(0px, 0px)');
+
+    // Restore scrollable height and bind runtime via MagaKernel lifecycle
+    vpScrollHeight = 2400;
     vpScrollTop = 900;
     const rt = createScrollbarClampRuntime();
     const pairs = rt.read();
@@ -3255,28 +3273,59 @@ test('scrollbar-clamp clamps thumb geometry, overscroll bounds, and ScrollTimeli
     thumb.style.transform = 'translate(0px, 999px)';
     rt.write(null, pairs);
     assert.equal(thumb.style.transform, 'translate(0px, 220px)');
+    assert.equal(resizeInstances.length, 1, 'attaches ResizeObserver for track/viewport/content');
+    assert.ok(
+      resizeInstances[0].observed.has(track) &&
+        resizeInstances[0].observed.has(vp) &&
+        resizeInstances[0].observed.has(vpContent),
+      'observes track, viewport, and viewport firstElementChild'
+    );
 
-    // Simulate native i2b mutating thumb synchronously on rapid scroll/pointermove; RAF coalesces into 1 callback
+    // Re-observes replaced viewport content child on subsequent write()
+    const nextContent = d.createElement('div');
+    vp.replaceChild(nextContent, vpContent);
+    rt.write(null, rt.read());
+    assert.equal(resizeInstances[0].observed.has(vpContent), false);
+    assert.equal(resizeInstances[0].observed.has(nextContent), true);
+
+    // Simulate native i2b mutating thumb/ScrollTimeline synchronously on pointerover
     vpScrollTop = 1800;
-    vp.dispatchEvent(new w.Event('scroll'));
-    track.dispatchEvent(new w.Event('pointermove'));
-    vp.dispatchEvent(new w.Event('scroll'));
-    assert.equal(rafQueue.size, 1, 'rapid scroll/pointermove events coalesce into a single RAF callback');
-    thumb.style.transform = 'translate(0px, 850px)';
-    flushRaf();
+    vp.dispatchEvent(new w.Event('pointerover'));
+    thumb.style.height = '149px';
+    thumb.style.transform = 'translate(0px, 596px)';
+    latestKeyframes = [
+      { transform: 'translate(0px, 0px)' },
+      { transform: 'translate(0px, 596px)' },
+    ];
+    await flushMicrotasks();
+    assert.equal(thumb.style.height, '147px');
     assert.equal(thumb.style.transform, 'translate(0px, 439px)');
+    assert.equal(latestKeyframes[1].transform, 'translate(0px, 439px)');
+
+    // Simulate native f2b ResizeObserver recalculating oversized clientHeight - 4 values
+    thumb.style.height = '155px';
+    thumb.style.transform = 'translate(0px, 596px)';
+    latestKeyframes = [
+      { transform: 'translate(0px, 0px)' },
+      { transform: 'translate(0px, 596px)' },
+    ];
+    resizeInstances[0].trigger();
+    await flushMicrotasks();
+    assert.equal(thumb.style.height, '147px');
+    assert.equal(thumb.style.transform, 'translate(0px, 439px)');
+    assert.equal(latestKeyframes[1].transform, 'translate(0px, 439px)');
     assert.equal(observerCreations, 0, 'scrollbar-clamp must create zero MutationObserver instances');
 
-    // Pending RAF handle is cancelled cleanly on dispose
+    // Pending microtask & ResizeObserver are cleaned up on dispose
     vpScrollTop = 0;
     vp.dispatchEvent(new w.Event('scroll'));
-    assert.equal(rafQueue.size, 1, 'scroll queues a RAF callback');
     rt.dispose();
-    assert.equal(cancelledRafIds.length, 1, 'dispose cancels pending RAF handle');
-    assert.equal(rafQueue.size, 0, 'RAF queue is cleared after dispose');
+    assert.equal(resizeInstances[0].disconnected, true, 'dispose disconnects ResizeObserver');
     thumb.style.transform = 'translate(0px, 999px)';
-    vp.dispatchEvent(new w.Event('scroll'));
-    flushRaf();
+    await flushMicrotasks();
+    assert.equal(thumb.style.transform, 'translate(0px, 999px)', 'queued microtask is a no-op after dispose');
+    vp.dispatchEvent(new w.Event('pointerover'));
+    await flushMicrotasks();
     assert.equal(thumb.style.transform, 'translate(0px, 999px)', 'listeners removed after dispose');
   } finally {
     for (const k of keys) {

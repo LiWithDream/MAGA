@@ -131,7 +131,7 @@ test('PreToolUse file edits are blocked on main and allowed in branches, worktre
       artifactDirectoryPath: artifactDir,
       toolCall: { name: 'write_file', args: { Path: path.join(artifactDir, 'notes', 'plan.md') } },
     });
-    assert.deepEqual(artifactEdit, {});
+    assert.deepEqual(artifactEdit, { decision: 'allow' });
 
     // 3. Allowed inside sibling worktree on feat/wt even when cwd is main
     git(repo, ['worktree', 'add', '-b', 'feat/wt', wtDir, 'main']);
@@ -141,7 +141,7 @@ test('PreToolUse file edits are blocked on main and allowed in branches, worktre
       artifactDirectoryPath: artifactDir,
       toolCall: { name: 'edit_file', args: { Path: path.join(wtDir, 'README.md') } },
     });
-    assert.deepEqual(wtEdit, {});
+    assert.deepEqual(wtEdit, { decision: 'allow' });
 
     // 4. Allowed when repo itself is on feat/demo
     git(repo, ['checkout', '-b', 'feat/demo']);
@@ -150,7 +150,7 @@ test('PreToolUse file edits are blocked on main and allowed in branches, worktre
       cwd: repo,
       toolCall: { name: 'edit_file', args: { Path: path.join(repo, 'README.md') } },
     });
-    assert.deepEqual(featEdit, {});
+    assert.deepEqual(featEdit, { decision: 'allow' });
 
     // 5. Allowed on main when MERGE_HEAD exists (merge conflict resolution)
     git(repo, ['checkout', 'main']);
@@ -164,7 +164,7 @@ test('PreToolUse file edits are blocked on main and allowed in branches, worktre
         cwd: repo,
         toolCall: { name: 'edit_file', args: { Path: path.join(repo, 'README.md') } },
       });
-      assert.deepEqual(mergeEdit, {});
+      assert.deepEqual(mergeEdit, { decision: 'allow' });
     } finally {
       fs.rmSync(path.join(ctx.gitDir, 'MERGE_HEAD'), { force: true });
     }
@@ -201,7 +201,7 @@ test('PreToolUse run_command enforces commit, force-push, and --tags guardrails'
         cwd: repo,
         toolCall: { name: 'run_command', args: { CommandLine: cmd } },
       });
-      assert.deepEqual(res, {}, `expected allow for: ${cmd}`);
+      assert.deepEqual(res, { decision: 'allow' }, `expected allow for: ${cmd}`);
     }
 
     // Allowed commit on main with MAGA_ALLOW_MAIN_COMMIT=1 or MERGE_HEAD
@@ -211,7 +211,7 @@ test('PreToolUse run_command enforces commit, force-push, and --tags guardrails'
         cwd: repo,
         toolCall: { name: 'run_command', args: { CommandLine: 'MAGA_ALLOW_MAIN_COMMIT=1 git commit -m "hotfix"' } },
       }),
-      {}
+      { decision: 'allow' }
     );
 
     const ctx = resolveGitContext(repo);
@@ -223,7 +223,7 @@ test('PreToolUse run_command enforces commit, force-push, and --tags guardrails'
           cwd: repo,
           toolCall: { name: 'run_command', args: { CommandLine: 'git commit -m "merge"' } },
         }),
-        {}
+        { decision: 'allow' }
       );
     } finally {
       fs.rmSync(path.join(ctx.gitDir, 'MERGE_HEAD'), { force: true });
@@ -237,7 +237,7 @@ test('PreToolUse run_command enforces commit, force-push, and --tags guardrails'
           cwd: repo,
           toolCall: { name: 'run_command', args: { CommandLine: cmd } },
         }),
-        {},
+        { decision: 'allow' },
         `expected allow for: ${cmd}`
       );
     }
@@ -267,7 +267,7 @@ test('PreToolUse run_command enforces commit, force-push, and --tags guardrails'
         cwd: repo,
         toolCall: { name: 'run_command', args: { CommandLine: 'git push origin v1.2.0' } },
       }),
-      {}
+      { decision: 'allow' }
     );
   } finally {
     gitResult(repo, ['worktree', 'remove', '--force', wtDir]);
@@ -290,6 +290,16 @@ test('CLI subprocess reads stdin JSON and outputs expected decision JSON', () =>
     const denyJson = JSON.parse(denyOut);
     assert.equal(denyJson.decision, 'deny');
 
+    const runAllowOut = execFileSync(process.execPath, [HOOK_SCRIPT], {
+      input: JSON.stringify({
+        hookEventName: 'PreToolUse',
+        cwd: repo,
+        toolCall: { name: 'run_command', args: { CommandLine: 'git status' } },
+      }),
+      encoding: 'utf8',
+    });
+    assert.deepEqual(JSON.parse(runAllowOut), { decision: 'allow' });
+
     git(repo, ['checkout', '-b', 'feat/subproc']);
     const allowOut = execFileSync(process.execPath, [HOOK_SCRIPT], {
       input: JSON.stringify({
@@ -299,7 +309,7 @@ test('CLI subprocess reads stdin JSON and outputs expected decision JSON', () =>
       }),
       encoding: 'utf8',
     });
-    assert.deepEqual(JSON.parse(allowOut), {});
+    assert.deepEqual(JSON.parse(allowOut), { decision: 'allow' });
   } finally {
     fs.rmSync(repo, { recursive: true, force: true });
   }

@@ -551,7 +551,7 @@ function evaluateRunCommand(commandLine, payload) {
     }
   }
 
-  return {};
+  return { decision: 'allow' };
 }
 
 export function evaluateHookPayload(payload) {
@@ -580,20 +580,27 @@ export function evaluateHookPayload(payload) {
     return {};
   }
 
+  const isPreToolUse = eventName === 'PreToolUse' || Boolean(payload.toolCall);
+  const allowResult = isPreToolUse ? { decision: 'allow' } : {};
+
+  if (!isPreToolUse) {
+    return {};
+  }
+
   const toolName = String(payload.toolCall?.name || '').toLowerCase();
   const args = payload.toolCall?.args && typeof payload.toolCall.args === 'object' ? payload.toolCall.args : {};
 
   if (FILE_EDIT_TOOLS.has(toolName)) {
     const rawPath = args.Path || args.TargetFile || args.path || args.file_path || '';
-    if (!rawPath || typeof rawPath !== 'string') return {};
+    if (!rawPath || typeof rawPath !== 'string') return allowResult;
 
     const absPath = path.resolve(baseCwd, expandHome(rawPath));
     if (payload.artifactDirectoryPath && isInsideDir(absPath, payload.artifactDirectoryPath)) {
-      return {};
+      return allowResult;
     }
 
     const ctx = resolveGitContext(path.dirname(absPath));
-    if (!ctx || ctx.merging) return {};
+    if (!ctx || ctx.merging) return allowResult;
 
     if (ctx.branch && PROTECTED_BRANCHES.has(ctx.branch)) {
       return {
@@ -601,7 +608,7 @@ export function evaluateHookPayload(payload) {
         reason: `Blocked by MAGA Git Guardrail: cannot edit repository files directly on protected branch '${ctx.branch}' (${ctx.topLevel}). Switch to a feature/fix branch (\`git checkout -b feat/<slug>\` or \`fix/<slug>\`) or create an isolated sibling worktree (\`git worktree add -b <type>/<slug> ../MAGA-wt/<slug> main\`) first.`,
       };
     }
-    return {};
+    return allowResult;
   }
 
   if (toolName === 'run_command') {
@@ -609,7 +616,7 @@ export function evaluateHookPayload(payload) {
     return evaluateRunCommand(commandLine, payload);
   }
 
-  return {};
+  return allowResult;
 }
 
 function isDirectExecution() {
@@ -623,12 +630,14 @@ function isDirectExecution() {
 }
 
 if (isDirectExecution()) {
+  let raw = '';
   try {
-    const raw = fs.readFileSync(0, 'utf8').trim();
+    raw = fs.readFileSync(0, 'utf8').trim();
     const payload = raw ? JSON.parse(raw) : {};
     const result = evaluateHookPayload(payload);
     process.stdout.write(`${JSON.stringify(result || {})}\n`);
   } catch {
-    process.stdout.write('{}\n');
+    const fallback = raw.includes('PreToolUse') ? { decision: 'allow' } : {};
+    process.stdout.write(`${JSON.stringify(fallback)}\n`);
   }
 }

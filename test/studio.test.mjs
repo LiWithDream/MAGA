@@ -3662,3 +3662,199 @@ test('readGitCommitDetailAsync rejects tree/blob hashes via ^{commit} and parseN
     { path: 'src/new dir/a.mjs', added: 7, deleted: 2 },
   ]);
 });
+
+test('footer-unified ignores closed stale quota popover & decorative compacted arc so brand-new/compacted ctx ring stays centered', async () => {
+  const { JSDOM } = await import('jsdom');
+  const dom = new JSDOM(
+    `<!doctype html><html><body>
+      <div class="agy-composer-footer">
+        <div>
+          <button type="button" aria-label="Add context"></button>
+          <button id="ag-claude-ctx-ring" type="button" title="No context usage yet · Click for plan usage">
+            <svg width="15" height="15" viewBox="0 0 20 20">
+              <circle class="ag-ctx-ring-track" cx="10" cy="10" r="7"></circle>
+              <circle class="ag-ctx-ring-arc" cx="10" cy="10" r="7" style="stroke-dashoffset: 43.98; stroke-opacity: 0;"></circle>
+            </svg>
+          </button>
+        </div>
+        <div></div>
+      </div>
+      <div id="ag-claude-quota-popover" data-open="false">
+        <div class="ag-qp-item">
+          <div class="ag-qp-row">
+            <span class="ag-qp-reset">165.4k / 512k</span>
+            <span class="ag-qp-pct">82%</span>
+          </div>
+        </div>
+      </div>
+      <div id="ag-claude-ov-sections">
+        <section class="ag-ov-card" data-ov-card="context"></section>
+      </div>
+    </body></html>`,
+    { url: 'http://127.0.0.1/c/conv-new-1' }
+  );
+  const doc = dom.window.document;
+  const keys = ['document', 'window', 'location'];
+  const prev = new Map(keys.map((k) => [k, Object.getOwnPropertyDescriptor(globalThis, k)]));
+  globalThis.document = doc;
+  globalThis.window = dom.window;
+  globalThis.location = dom.window.location;
+
+  try {
+    const footer = doc.querySelector('.agy-composer-footer');
+    footer.getBoundingClientRect = () => ({ width: 620, height: 60, top: 0, left: 0, right: 620, bottom: 60 });
+
+    const ring = doc.getElementById('ag-claude-ctx-ring');
+    const pop = doc.getElementById('ag-claude-quota-popover');
+    const ovCtxCard = doc.querySelector('#ag-claude-ov-sections [data-ov-card="context"]');
+    const arc = ring.querySelector('.ag-ctx-ring-arc');
+
+    const rt = createFooterUnifiedRuntime();
+    rt.sync();
+
+    // Case A: brand-new conversation ignores closed 82% popover
+    assert.equal(ring.getAttribute('data-agy-has-ratio'), null);
+    assert.equal(ring.getAttribute('data-agy-has-tight'), '0');
+    assert.equal(ring.getAttribute('data-agy-ctx-tier'), 'cool');
+    assert.equal(ring.querySelector('.agy-ctx-ratio')?.hidden, true);
+    assert.equal(ovCtxCard.getAttribute('data-agy-ctx-tier'), 'cool');
+    assert.equal(pop.querySelector('.ag-qp-reset')?.textContent, '165.4k / 512k');
+
+    // Case B: compacted state with decorative 2% arc must stay centered without ratio
+    ring.setAttribute('data-compact-state', 'compacted');
+    ring.setAttribute('title', 'Context compacted · Click for plan usage');
+    arc.style.strokeOpacity = '1';
+    arc.style.strokeDashoffset = (2 * Math.PI * 7 * 0.98).toFixed(2);
+    rt.sync();
+
+    assert.equal(ring.getAttribute('data-agy-has-ratio'), null);
+    assert.equal(ring.getAttribute('data-agy-has-tight'), '0');
+    assert.equal(ring.querySelector('.agy-ctx-ratio')?.hidden, true);
+
+    // Case C: real ratio only updates open popover reset text
+    ring.removeAttribute('data-compact-state');
+    ring.setAttribute('title', 'Context 12k / 512k (2%) · Click for plan usage');
+    rt.sync();
+    assert.equal(ring.getAttribute('data-agy-has-ratio'), 'true');
+    assert.equal(ring.getAttribute('data-agy-has-tight'), '1');
+    assert.equal(ring.querySelector('.agy-ctx-ratio')?.hidden, false);
+    assert.equal(pop.querySelector('.ag-qp-reset')?.textContent, '165.4k / 512k');
+
+    pop.setAttribute('data-open', 'true');
+    rt.sync();
+    assert.equal(pop.querySelector('.ag-qp-reset')?.textContent, '12k / 512k');
+
+    rt.dispose();
+  } finally {
+    for (const k of keys) {
+      const desc = prev.get(k);
+      if (desc) Object.defineProperty(globalThis, k, desc);
+      else delete globalThis[k];
+    }
+    dom.window.close();
+  }
+});
+
+test('MetricsBus tracks data-agy-has-speed-num, hides unused short slot, and hides pill when stopped without data', async () => {
+  const { JSDOM } = await import('jsdom');
+  const dom = new JSDOM(
+    '<!doctype html><html><body><div id="ag-live-metrics-pill"><span id="ag-live-metrics-text"></span></div></body></html>',
+    { url: 'http://127.0.0.1/c/conv-metrics-empty' }
+  );
+  const doc = dom.window.document;
+  const keys = ['document', 'window', 'location'];
+  const prev = new Map(keys.map((k) => [k, Object.getOwnPropertyDescriptor(globalThis, k)]));
+  globalThis.document = doc;
+  globalThis.window = dom.window;
+  globalThis.location = dom.window.location;
+
+  try {
+    const pill = doc.getElementById('ag-live-metrics-pill');
+    const textEl = doc.getElementById('ag-live-metrics-text');
+
+    renderSpeedSlots(
+      pill,
+      textEl,
+      { cascadeId: 'conv-metrics-empty', hasData: true, metrics: { displayTps: 0, useStream: false, ttft: 3.2 } },
+      { cid: 'conv-metrics-empty', running: false, isZh: false }
+    );
+    assert.equal(pill.getAttribute('data-agy-has-speed-num'), '0');
+    assert.equal(textEl.querySelector('[data-agy-speed-short="1"]').hidden, true);
+    assert.equal(textEl.querySelector('[data-agy-speed-slot="extra"]').hidden, false);
+    assert.equal(pill.style.display, 'inline-flex');
+
+    renderSpeedSlots(
+      pill,
+      textEl,
+      { cascadeId: 'conv-metrics-empty', hasData: false },
+      { cid: 'conv-metrics-empty', running: true, isZh: false }
+    );
+    assert.equal(pill.getAttribute('data-agy-working-placeholder'), 'true');
+    assert.equal(pill.getAttribute('data-agy-has-speed-num'), '0');
+
+    renderSpeedSlots(
+      pill,
+      textEl,
+      { cascadeId: 'conv-metrics-empty', hasData: false },
+      { cid: 'conv-metrics-empty', running: false, isZh: false }
+    );
+    assert.equal(pill.getAttribute('data-agy-working-placeholder'), null);
+    assert.equal(pill.style.display, 'none');
+  } finally {
+    for (const k of keys) {
+      const desc = prev.get(k);
+      if (desc) Object.defineProperty(globalThis, k, desc);
+      else delete globalThis[k];
+    }
+    dom.window.close();
+  }
+});
+
+test('subagent pills handle empty states and footer-capsules.css enforces centering & [hidden] invariants', async () => {
+  const { renderSubCtxPill, renderSubSpeedPill } = await import(
+    pathToFileURL(path.join(REPO, 'studio', 'modules', 'subagent', 'pills.mjs')).href
+  );
+  const { JSDOM } = await import('jsdom');
+  const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://127.0.0.1/c/conv-sub-1' });
+  const doc = dom.window.document;
+  const keys = ['document', 'window', 'location'];
+  const prev = new Map(keys.map((k) => [k, Object.getOwnPropertyDescriptor(globalThis, k)]));
+  globalThis.document = doc;
+  globalThis.window = dom.window;
+  globalThis.location = dom.window.location;
+
+  try {
+    const ctxEl = doc.createElement('span');
+    renderSubCtxPill(ctxEl, { contextTokens: 0, maxContextTokens: 0, pct: 0 });
+    assert.equal(ctxEl.getAttribute('data-agy-has-ratio'), null);
+    assert.equal(ctxEl.getAttribute('data-agy-ctx-tier'), 'cool');
+    assert.equal(ctxEl.querySelector('.agy-sub-ctx-full'), null);
+
+    renderSubCtxPill(ctxEl, { contextTokens: 24000, maxContextTokens: 200000, pct: 12 });
+    assert.equal(ctxEl.getAttribute('data-agy-has-ratio'), 'true');
+    assert.equal(ctxEl.querySelector('.agy-sub-ctx-full')?.textContent, '24.0k / 200.0k');
+
+    const spdEl = doc.createElement('span');
+    renderSubSpeedPill(spdEl, { tps: null, ttft: 2.4, isHold: false, running: false });
+    assert.equal(spdEl.hidden, false);
+    assert.equal(spdEl.getAttribute('data-has-spd-num'), '0');
+
+    renderSubSpeedPill(spdEl, { tps: null, ttft: null, running: false });
+    assert.equal(spdEl.hidden, true);
+  } finally {
+    for (const k of keys) {
+      const desc = prev.get(k);
+      if (desc) Object.defineProperty(globalThis, k, desc);
+      else delete globalThis[k];
+    }
+    dom.window.close();
+  }
+
+  const css = readFileSync(FOOTER_CSS_PATH, 'utf8');
+  assert.equal(css.includes(':has('), false, 'footer-capsules.css must contain zero :has() rules');
+  assert.ok(css.includes('.agy-sub-pill[hidden]'));
+  assert.ok(css.includes('[data-agy-has-tight="0"]'));
+  assert.ok(css.includes('[data-agy-has-speed-num="0"]'));
+  assert.ok(css.includes('.agy-sub-pill.agy-sub-ctx:not([data-agy-has-ratio="true"])'));
+  assert.match(css, /\.agy-composer-footer #ag-claude-ctx-ring#ag-claude-ctx-ring\s*\{[\s\S]*?gap:\s*0\s*!important;/);
+});

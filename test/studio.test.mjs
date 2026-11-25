@@ -2680,6 +2680,61 @@ test('Stage 6: createUsageHistory summarizeForIds and summarizeGroups aggregate 
       pB: { totalTokens: 1500, requests: 1 },
       pEmpty: { totalTokens: 0, requests: 0 },
     });
+
+    // Descendant / swarm Opus worker expansion (child -> grandchild) without double-counting
+    const cChild = 'child-opus-1';
+    const cGrand = 'grand-opus-2';
+    writeFileSync(path.join(dir, `${cChild}.db`), 'child-stub');
+    writeFileSync(path.join(dir, `${cGrand}.db`), 'grand-stub');
+    const historyTree = createUsageHistory({
+      directories: [dir],
+      recentMs: 0,
+      readRequests: (dbPath) => {
+        const cid = path.basename(dbPath, '.db');
+        if (cid === 'c1') return { parentId: '', rootId: '', requests: byCid.c1 };
+        if (cid === 'c2') return { parentId: '', rootId: '', requests: byCid.c2 };
+        if (cid === 'c3') return { parentId: '', rootId: '', requests: byCid.c3 };
+        if (cid === cChild) {
+          return {
+            parentId: 'c1',
+            rootId: 'c1',
+            requests: [
+              { id: 'opus-1', at: todayMs, model: 'Claude Opus 5.5 (High)', uncached: 500, cacheRead: 1500, cacheWrite: 0, output: 200 },
+            ],
+          };
+        }
+        if (cid === cGrand) {
+          return {
+            parentId: cChild,
+            rootId: 'c1',
+            requests: [
+              { id: 'opus-2', at: todayMs, model: 'Claude Opus 5.5 (High)', uncached: 300, cacheRead: 400, cacheWrite: 0, output: 100 },
+              { id: 'opus-1', at: todayMs, model: 'Claude Opus 5.5 (High)', uncached: 500, cacheRead: 1500, cacheWrite: 0, output: 200 },
+            ],
+          };
+        }
+        return [];
+      },
+    });
+    await historyTree.read();
+    const treeForTopOnly = historyTree.summarizeForIds(['c1']);
+    assert.equal(treeForTopOnly.byChat.c1.totalTokens, 1600 + 2200 + 800, 'byChat expands Opus child + grandchild into parent chat');
+    assert.equal(treeForTopOnly.byChat.c1.requests, 4, 'byChat deduplicates shared request IDs across descendants');
+    const opusDayModel = treeForTopOnly.days[0].models.find((m) => m.name === 'Claude Opus 5.5 (High)');
+    assert.equal(
+      opusDayModel ? opusDayModel.uncached + opusDayModel.cacheRead + opusDayModel.cacheWrite + opusDayModel.output : 0,
+      3000,
+      'summarizeForIds includes descendant Opus tokens in project days breakdown'
+    );
+    const treeBothPassed = historyTree.summarizeForIds(['c1', cChild]);
+    const opusBoth = treeBothPassed.days[0].models.find((m) => m.name === 'Claude Opus 5.5 (High)');
+    assert.equal(
+      opusBoth.uncached + opusBoth.cacheRead + opusBoth.cacheWrite + opusBoth.output,
+      3000,
+      'passing both parent and child IDs never double-counts descendant Opus usage'
+    );
+    const groupedTree = historyTree.summarizeGroups({ pA: ['c1', 'c2'], pB: ['c3'] });
+    assert.equal(groupedTree.byProject.pA.totalTokens, 1600 + 1500 - 100 + 3000, 'summarizeGroups expands descendant Opus tokens into owning project');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -3663,4 +3718,113 @@ test('readGitCommitDetailAsync rejects tree/blob hashes via ^{commit} and parseN
     { path: 'assets/logo final.png', added: 0, deleted: 0 },
     { path: 'src/new dir/a.mjs', added: 7, deleted: 2 },
   ]);
+});
+
+test('readConversationUsageRecord and parseConversationMetrics discover Opus swarm descendants via SQLite lineage', async () => {
+  const { readConversationUsage, readConversationUsageRecord } = await import(
+    pathToFileURL(path.join(REPO, 'studio', 'daemon', 'usage-reader.mjs')).href
+  );
+  const { parseConversationMetrics } = await import(
+    pathToFileURL(path.join(REPO, 'core', 'daemon', 'metrics-db.mjs')).href
+  );
+
+  const pbVarint = (n) => {
+    const out = [];
+    let v = BigInt(n);
+    while (v >= 0x80n) {
+      out.push(Number((v & 0x7fn) | 0x80n));
+      v >>= 7n;
+    }
+    out.push(Number(v));
+    return Buffer.from(out);
+  };
+  const pbInt = (fn, n) => Buffer.concat([pbVarint((fn << 3) | 0), pbVarint(n)]);
+  const pbBytes = (fn, buf) => Buffer.concat([pbVarint((fn << 3) | 2), pbVarint(buf.length), buf]);
+  const pbStr = (fn, str) => pbBytes(fn, Buffer.from(str, 'utf8'));
+
+  const makeGenBlob = ({ uncached, output, cacheRead, model, responseId, epochSec }) => {
+    const usage = Buffer.concat([
+      pbInt(2, uncached),
+      pbInt(3, output),
+      pbInt(5, cacheRead),
+      pbInt(6, 1),
+      pbStr(11, responseId),
+    ]);
+    const chatStart = Buffer.concat([pbBytes(4, pbInt(1, epochSec)), pbBytes(10, pbInt(4, 200000))]);
+    const chat = Buffer.concat([
+      pbBytes(4, usage),
+      pbBytes(9, chatStart),
+      pbBytes(11, pbInt(1, 1)),
+      pbBytes(12, pbInt(1, 1)),
+      pbStr(21, model),
+    ]);
+    return pbBytes(1, chat);
+  };
+
+  const rootDir = mkdtempSync(path.join(tmpdir(), 'maga-opus-db-'));
+  try {
+    const convDir = path.join(rootDir, 'conversations');
+    const parentId = '11111111-1111-4111-8111-111111111111';
+    const opusChildId = 'ffffffff-2222-4222-8222-222222222222';
+    const sumDbPath = path.join(rootDir, 'conversation_summaries.db');
+
+    const fsMod = await import('node:fs');
+    fsMod.mkdirSync(convDir, { recursive: true });
+
+    // Create 25 dummy DBs sorting before opusChildId so cold 20-file blob scan alone would miss it
+    for (let i = 0; i < 25; i++) {
+      const dummyId = `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`;
+      const ddb = new DatabaseSync(path.join(convDir, `${dummyId}.db`));
+      ddb.exec('CREATE TABLE trajectory_metadata_blob (data BLOB)');
+      ddb.close();
+    }
+
+    const epochSec = Math.floor(Date.now() / 1000) - 30;
+    const pdb = new DatabaseSync(path.join(convDir, `${parentId}.db`));
+    pdb.exec(
+      'CREATE TABLE trajectory_metadata_blob (data BLOB); CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, data BLOB); CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER, metadata BLOB);'
+    );
+    pdb.prepare('INSERT INTO steps (idx, step_type, metadata) VALUES (0, 14, NULL), (1, 15, NULL)').run();
+    pdb
+      .prepare('INSERT INTO gen_metadata (idx, data) VALUES (0, ?)')
+      .run(makeGenBlob({ uncached: 1000, output: 200, cacheRead: 4000, model: 'Gemini 4 Neon (High)', responseId: 'req-p1', epochSec }));
+    pdb.close();
+
+    const cdb = new DatabaseSync(path.join(convDir, `${opusChildId}.db`));
+    cdb.exec('CREATE TABLE trajectory_metadata_blob (data BLOB); CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, data BLOB);');
+    cdb
+      .prepare('INSERT INTO trajectory_metadata_blob (data) VALUES (?)')
+      .run(Buffer.concat([pbStr(5, parentId), pbStr(6, parentId)]));
+    cdb
+      .prepare('INSERT INTO gen_metadata (idx, data) VALUES (0, ?)')
+      .run(makeGenBlob({ uncached: 600, output: 150, cacheRead: 900, model: 'Claude Opus 5.5 (High)', responseId: 'req-o1', epochSec }));
+    cdb.close();
+
+    const sdb = new DatabaseSync(sumDbPath);
+    sdb.exec(
+      'CREATE TABLE conversation_summaries (conversation_id TEXT PRIMARY KEY, title TEXT, agent_name TEXT, status TEXT, not_fully_idle INTEGER, killed INTEGER, last_modified_time TEXT, parent_conversation_id TEXT);'
+    );
+    sdb
+      .prepare(
+        'INSERT INTO conversation_summaries (conversation_id, title, agent_name, status, not_fully_idle, killed, last_modified_time, parent_conversation_id) VALUES (?, ?, ?, ?, 0, 1, ?, ?)'
+      )
+      .run(opusChildId, '', 'opus-gate', 'CASCADE_RUN_STATUS_IDLE', '2026-11-26T00:00:00Z', parentId);
+    sdb.close();
+
+    const rec = readConversationUsageRecord(path.join(convDir, `${opusChildId}.db`), { immutable: false });
+    assert.equal(rec.parentId, parentId);
+    assert.equal(rec.rootId, parentId);
+    assert.equal(rec.requests.length, 1);
+    assert.equal(rec.requests[0].model, 'Claude Opus 5.5 (High)');
+    assert.equal(readConversationUsage(path.join(convDir, `${opusChildId}.db`), { immutable: false }).length, 1);
+
+    const metrics = parseConversationMetrics(parentId, convDir);
+    assert.equal(metrics.hasData, true);
+    assert.equal(metrics.metrics.childCount, 1, 'discovers Opus child immediately beyond 20-file cold cap via conversation_summaries.db');
+    assert.equal(metrics.metrics.childCalls, 1);
+    assert.equal(metrics.stats.children[0].agentName, 'opus-gate');
+    assert.equal(metrics.stats.children[0].outTok, 150);
+  } finally {
+    rmSync(rootDir, { recursive: true, force: true });
+  }
 });

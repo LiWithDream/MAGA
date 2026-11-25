@@ -965,6 +965,32 @@ test('quota popover: refreshes userTier after account switch and preserves speci
   assert.equal(activeTab.textContent.trim(), 'Gemini 4 Argon', 'selects dedicated Argon tab when Gemini 4 Argon is active');
   assert.match(h.window.localStorage.getItem('ag_claude_ux_quota_cache_v1') || '', /Gemini 4 Argon/, 'persists SWR quota snapshot for 0ms next-boot open');
 
+  /* Companion pools (Claude / GPT, Gemini) render directly below active pool and switch tab on click */
+  const otherPools = pop.querySelector('.ag-qp-other-pools');
+  assert.ok(otherPools, 'renders companion model pools inside quota popover without extra tab clicks');
+  assert.match(otherPools.textContent, /Claude \/ GPT/, 'shows Claude / GPT companion pool while Gemini 4 Argon is selected');
+  const claudeJump = otherPools.querySelector('[data-ag-quota-jump]');
+  const claudeJumpTarget = [...pop.querySelectorAll('[data-ag-quota-jump]')].find((el) =>
+    /Claude \/ GPT/i.test(el.textContent || '')
+  );
+  assert.ok(claudeJump && claudeJumpTarget, 'companion pool rows carry data-ag-quota-jump');
+  claudeJumpTarget.click();
+  assert.equal(
+    pop.querySelector('.ag-qp-tab[data-active="true"]')?.textContent.trim(),
+    'Claude / GPT',
+    'clicking companion pool focuses its tab'
+  );
+  assert.match(
+    ring.title,
+    /Gemini.*Claude \/ GPT/,
+    'context ring hover title summarizes both Gemini and Claude / GPT quota pools'
+  );
+  assert.doesNotMatch(
+    ring.title.split('Click for plan usage')[1] || '',
+    /\(\d+%/,
+    'quota suffix in ring title never wraps % in parentheses (keeps footer-unified context % parsing unambiguous)'
+  );
+
   h.cleanups.forEach((fn) => fn());
   h.close();
 });

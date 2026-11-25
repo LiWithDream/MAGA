@@ -3516,10 +3516,14 @@ test('[claudeUxOverviewPanel] enhances right Overview panel with Google Blue Use
     assert.match(txt, /Subagent task/);
     assert.equal(txt.includes('Atlassian'), false, 'Connectors card starts collapsed by default');
 
-    const firstQuotaSegs = sec.querySelectorAll('.ag-ov-quota-box')[0].querySelectorAll('.ag-ov-seg');
+    const quotaBoxes = sec.querySelectorAll('.ag-ov-quota-box');
+    assert.equal(quotaBoxes.length, 3, 'promotes both Gemini (5h/weekly) and Claude / GPT (5h) into first-class quota boxes');
+    const firstQuotaSegs = quotaBoxes[0].querySelectorAll('.ag-ov-seg');
     assert.equal(firstQuotaSegs.length, 20, '20-segment quota bar rendered');
     assert.match(firstQuotaSegs[0].style.background, /var\(--ag-ov-blue/, 'lit quota segments use Google Blue token');
     assert.match(firstQuotaSegs[7].style.background, /var\(--ag-ov-track\)/, 'unused segments beyond 35% (7/20) use track');
+    assert.match(quotaBoxes[2].querySelector('.ag-ov-qtitle')?.textContent || '', /Claude \/ GPT/, 'Claude / GPT promoted alongside Gemini');
+    assert.match(quotaBoxes[2].querySelectorAll('.ag-ov-seg')[0].style.background, /var\(--ag-ov-claude/, 'Claude / GPT segments use Claude terracotta accent token');
     assert.ok(sec.querySelector('.ag-ov-time-cursor'), 'elapsed time cursor rendered');
 
     /* Expand Connectors card on click */
@@ -3530,9 +3534,11 @@ test('[claudeUxOverviewPanel] enhances right Overview panel with Google Blue Use
     const modelBtn = doc.querySelector('button[data-testid="model-selector-trigger"]');
     modelBtn.textContent = 'Claude Sonnet 4.5';
     await new Promise((r) => setTimeout(r, 120));
-    const primaryTitleAfterSwitch = sec.querySelector('.ag-ov-quota-box .ag-ov-qtitle')?.textContent || '';
+    const boxesAfterSwitch = sec.querySelectorAll('.ag-ov-quota-box');
+    const primaryTitleAfterSwitch = boxesAfterSwitch[0]?.querySelector('.ag-ov-qtitle')?.textContent || '';
     assert.match(primaryTitleAfterSwitch, /Claude \/ GPT/, 'primary quota card follows model switch to Claude/GPT');
-    assert.match(sec.querySelector('.ag-ov-quota-box .ag-ov-qpct')?.textContent || '', /20% used/);
+    assert.match(boxesAfterSwitch[0]?.querySelector('.ag-ov-qpct')?.textContent || '', /20% used/);
+    assert.match(boxesAfterSwitch[1]?.querySelector('.ag-ov-qtitle')?.textContent || '', /Gemini/, 'Gemini remains promoted as full quota box when Claude is active');
 
     window.__agClaudeUxDispose();
     assert.equal(doc.getElementById('ag-claude-ov-sections'), null, 'teardown removes overview sections cleanly');

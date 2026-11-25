@@ -5,12 +5,21 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   execGitAsync,
+  invalidateOverviewGitCache,
   normalizeNumstatPath,
   parseNumstatPerFile,
   parseNumstatZ,
   parsePorcelainDirtyFiles,
   readOverviewGitStatusAsync,
 } from './git-exec.mjs';
+import {
+  collectAuthorizedWorktreeRootsAsync,
+  getAuthorizedProjectDirs,
+  handleWorktreeRpc,
+  listRepoWorktreesAsync,
+  normalizeRealPath,
+  resolveConversationWorktreeAsync,
+} from './worktrees.mjs';
 import {
   ALLOWED_AGENT_TOOLS,
   GLOBAL_AGENTS_DIR,
@@ -32,7 +41,6 @@ import {
 } from './prefs-bundle.mjs';
 import {
   deleteProjectScheduledTask,
-  getRegisteredProjectDirs,
   isPathInsideDir,
   normalizeGitRemoteUrl,
   openExternalUrl,
@@ -254,16 +262,31 @@ export async function readGitCommitDetailAsync(rawDir, rawHash) {
   return res;
 }
 
-export async function readProjectWorkspaceStatusAsync(rawDir, { force = false } = {}) {
+export async function readProjectWorkspaceStatusAsync(rawDir, { force = false, worktreePath = '', convWtDir } = {}) {
   const absDir = resolveLocalProjectDir(rawDir);
   if (!absDir) return { ok: false, error: 'invalid_project_dir' };
+
+  const wtListRes = await listRepoWorktreesAsync(absDir, { force, includeStats: true, convWtDir });
+  let targetDir = absDir;
+  if (worktreePath && wtListRes.ok && Array.isArray(wtListRes.worktrees)) {
+    const wantedNorm = normalizeRealPath(worktreePath);
+    const matched = wtListRes.worktrees.find(
+      (w) => !w.prunable && (normalizeRealPath(w.realPath) === wantedNorm || normalizeRealPath(w.path) === wantedNorm)
+    );
+    if (matched) targetDir = matched.realPath;
+  }
+
+  const cacheKey = `${absDir}::${targetDir}`;
   if (force) {
-    projectWorkspaceCache.delete(absDir);
+    for (const k of Array.from(projectWorkspaceCache.keys())) {
+      if (k === absDir || k.startsWith(`${absDir}::`)) projectWorkspaceCache.delete(k);
+    }
+    invalidateOverviewGitCache(targetDir);
   }
   const now = Date.now();
-  const cached = projectWorkspaceCache.get(absDir);
+  const cached = projectWorkspaceCache.get(cacheKey);
   if (!force && cached && now - cached.ts < 8000) return cached.data;
-  if (projectWorkspaceInFlight.has(absDir)) return projectWorkspaceInFlight.get(absDir);
+  if (projectWorkspaceInFlight.has(cacheKey)) return projectWorkspaceInFlight.get(cacheKey);
 
   const task = (async () => {
     let git = null;
@@ -274,11 +297,11 @@ export async function readProjectWorkspaceStatusAsync(rawDir, { force = false } 
     let dirtyFiles = [];
     try {
       const [gitRes, logOut, tagOut, remoteOut, porcelainZ] = await Promise.all([
-        readOverviewGitStatusAsync(absDir, { force }),
-        execGitAsync(absDir, ['log', '-n', '3', '--format=%h%x1f%H%x1f%s%x1f%cr'], 1000),
-        execGitAsync(absDir, ['describe', '--tags', '--abbrev=0'], 800),
-        execGitAsync(absDir, ['config', '--get', 'remote.origin.url'], 800),
-        execGitAsync(absDir, ['status', '--porcelain=v1', '-z'], 1200)
+        readOverviewGitStatusAsync(targetDir, { force }),
+        execGitAsync(targetDir, ['log', '-n', '3', '--format=%h%x1f%H%x1f%s%x1f%cr'], 1000),
+        execGitAsync(targetDir, ['describe', '--tags', '--abbrev=0'], 800),
+        execGitAsync(targetDir, ['config', '--get', 'remote.origin.url'], 800),
+        execGitAsync(targetDir, ['status', '--porcelain=v1', '-z'], 1200)
       ]);
       git = gitRes || null;
       if (logOut) {
@@ -302,11 +325,11 @@ export async function readProjectWorkspaceStatusAsync(rawDir, { force = false } 
         remoteLabel = parsedRemote.label;
       }
       if (porcelainZ) {
-        let numstatZ = await execGitAsync(absDir, ['diff', 'HEAD', '--numstat', '-z'], 1200);
+        let numstatZ = await execGitAsync(targetDir, ['diff', 'HEAD', '--numstat', '-z'], 1200);
         if (numstatZ === null) {
           const [unstaged, staged] = await Promise.all([
-            execGitAsync(absDir, ['diff', '--numstat', '-z'], 1000),
-            execGitAsync(absDir, ['diff', '--cached', '--numstat', '-z'], 1000)
+            execGitAsync(targetDir, ['diff', '--numstat', '-z'], 1000),
+            execGitAsync(targetDir, ['diff', '--cached', '--numstat', '-z'], 1000)
           ]);
           numstatZ = `${unstaged || ''}\0${staged || ''}`;
         }
@@ -317,7 +340,7 @@ export async function readProjectWorkspaceStatusAsync(rawDir, { force = false } 
     let pkgVersion = null;
     let scripts = [];
     try {
-      const pkgPath = path.join(absDir, 'package.json');
+      const pkgPath = path.join(targetDir, 'package.json');
       const st = fs.statSync(pkgPath, { throwIfNoEntry: false });
       if (st && st.isFile() && st.size > 0 && st.size < 65536) {
         const pkg = readJsonOrFallback(pkgPath, null);
@@ -333,6 +356,9 @@ export async function readProjectWorkspaceStatusAsync(rawDir, { force = false } 
     const data = {
       ok: true,
       dirPath: absDir,
+      activeWorktreePath: targetDir,
+      mainDirPath: wtListRes.mainDirPath || absDir,
+      worktrees: wtListRes.worktrees || [],
       git,
       recentCommits,
       latestTag,
@@ -343,13 +369,13 @@ export async function readProjectWorkspaceStatusAsync(rawDir, { force = false } 
       dirtyFiles,
       fetchedAt: Date.now()
     };
-    setBounded(projectWorkspaceCache, absDir, { ts: Date.now(), data }, 32);
+    setBounded(projectWorkspaceCache, cacheKey, { ts: Date.now(), data }, 32);
     return data;
   })().finally(() => {
-    projectWorkspaceInFlight.delete(absDir);
+    projectWorkspaceInFlight.delete(cacheKey);
   });
 
-  projectWorkspaceInFlight.set(absDir, task);
+  projectWorkspaceInFlight.set(cacheKey, task);
   return task;
 }
 
@@ -391,8 +417,16 @@ export function collectOverviewSnapshot(payload = {}, opts = {}) {
     if (resolved) absDir = resolved;
   }
 
+  const wtMeta = opts.worktreeMeta || null;
+  const effectiveDir = opts.effectiveDir || absDir;
   const workspace = {
-    dirPath: absDir,
+    dirPath: effectiveDir,
+    mainDirPath: absDir,
+    worktreePath: wtMeta ? wtMeta.worktreePath : effectiveDir,
+    isWorktree: Boolean(wtMeta && wtMeta.isWorktree),
+    worktreeSource: wtMeta ? wtMeta.source : 'default',
+    worktreeCount: wtMeta ? wtMeta.worktreeCount : 0,
+    collisionCids: wtMeta ? wtMeta.collisionCids : [],
     name: absDir ? path.basename(absDir) || absDir : '',
     git: opts.gitResolved !== undefined ? opts.gitResolved : null
   };
@@ -544,8 +578,16 @@ export async function collectOverviewSnapshotAsync(payload = {}, opts = {}) {
     const resolved = resolveLocalProjectDir(rawDir);
     if (resolved) absDir = resolved;
   }
-  const gitResolved = absDir && !skipGit ? await readOverviewGitStatusAsync(absDir) : null;
-  return collectOverviewSnapshot(payload, Object.assign({}, opts, { gitResolved }));
+  let worktreeMeta = null;
+  let effectiveDir = absDir;
+  if (absDir && payload?.cid) {
+    worktreeMeta = await resolveConversationWorktreeAsync(absDir, payload.cid, opts);
+    if (worktreeMeta && worktreeMeta.worktreePath) {
+      effectiveDir = worktreeMeta.worktreePath;
+    }
+  }
+  const gitResolved = effectiveDir && !skipGit ? await readOverviewGitStatusAsync(effectiveDir, { force: Boolean(payload?.force) }) : null;
+  return collectOverviewSnapshot(payload, Object.assign({}, opts, { gitResolved, effectiveDir, worktreeMeta }));
 }
 
 function getSafePluginDocRoots(configDir = path.join(HOME, '.gemini', 'config')) {
@@ -579,6 +621,8 @@ export async function handleProjectRpcRequest(rawPayload, callerEntry = null) {
   if (!reqId || !action) return null;
 
   try {
+    const wtResult = await handleWorktreeRpc(action, payload);
+    if (wtResult !== null) return { reqId, result: wtResult };
     if (action === 'saveUiPrefs') {
       const res = saveUiPrefs(payload);
       rebuildBundleIfNeeded();
@@ -639,7 +683,10 @@ export async function handleProjectRpcRequest(rawPayload, callerEntry = null) {
       return { reqId, result: readProjectContext(payload.dirPath) };
     }
     if (action === 'readProjectWorkspaceStatus') {
-      const result = await readProjectWorkspaceStatusAsync(payload?.dirPath, { force: Boolean(payload?.force) });
+      const result = await readProjectWorkspaceStatusAsync(payload?.dirPath, {
+        force: Boolean(payload?.force),
+        worktreePath: typeof payload?.worktreePath === 'string' ? payload.worktreePath : ''
+      });
       return { reqId, result };
     }
     if (action === 'readGitCommitDetail') {
@@ -714,9 +761,10 @@ export async function handleProjectRpcRequest(rawPayload, callerEntry = null) {
       const explicitProj = resolveLocalProjectDir(payload?.dirPath);
       const globalAgentsMd = path.join(HOME, '.gemini', 'AGENTS.md');
       const builtinRootDir = path.join(HOME, '.gemini', 'antigravity', 'builtin');
+      const authorizedWorktrees = await collectAuthorizedWorktreeRootsAsync(explicitProj);
       const allowedRoots = [
-        ...(explicitProj ? [explicitProj] : []),
-        ...getRegisteredProjectDirs(),
+        ...getAuthorizedProjectDirs(),
+        ...authorizedWorktrees,
         GLOBAL_SKILLS_DIR,
         GLOBAL_AGENTS_DIR,
         builtinRootDir,

@@ -114,6 +114,16 @@ export function createProjectSharedContext(rt, modelApi) {
     pdCommitBusyKey: '',
     pdBreadcrumbMenuOpen: false,
     projectsUsageMap: {},
+    repoWorktreesMap: {},
+    repoWorktreesBusyKeys: new Set(),
+    convWorktreeMap: {},
+    convWorktreeMapFetchedAt: 0,
+    convWorktreeMapInFlight: false,
+    convWorktreeMapSig: '',
+    pdActiveWorktreeByProj: {},
+    pdWtCreateOpenByProj: {},
+    pdWtConfirmRemovePath: '',
+    pdWtBusyKey: '',
   };
 
   const pHooks = Object.create(null);

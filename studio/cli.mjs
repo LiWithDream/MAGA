@@ -26,6 +26,7 @@ import {
   stripStudioBlocksOnly,
 } from './build.mjs';
 import { collectUsageStatsAsync } from './daemon/usage-service.mjs';
+import { readDeployMeta } from './deploy-meta.mjs';
 
 const HOME = homedir();
 const AGENTS_MD = path.join(HOME, '.gemini', 'AGENTS.md');
@@ -140,6 +141,7 @@ async function runDoctor() {
   const agyCfg = readJsonSafe(AGY_CONFIG_JSON);
   const hasFastIo = existsSync(AGENTS_MD) && readFileSync(AGENTS_MD, 'utf8').includes(RULE_BEGIN);
   const usage = await collectUsageStatsAsync({ force: true });
+  const deployMeta = readDeployMeta();
 
   return {
     ok: Boolean(
@@ -150,6 +152,8 @@ async function runDoctor() {
       usage?.ok
     ),
     repoRoot: REPO_ROOT,
+    deployedFrom: deployMeta.meta,
+    ...(deployMeta.nonMainWarning ? { deployedFromWarning: deployMeta.nonMainWarning } : {}),
     daemonPointsToStudio: pointsToStudio,
     studioBundle: { jsInjected: hasJsMarker, cssInjected: hasCssMarker },
     remoteControlEnabled: agyCfg?.userSettings?.remoteControlEnabled ?? agyCfg?.remoteControlEnabled ?? null,

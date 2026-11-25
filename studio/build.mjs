@@ -11,7 +11,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { createPresentation } from '../vendor/agy-capsule/ui.mjs';
 import { buildPickerShadowCss } from './modules/capsule-picker.mjs';
-import { writeDeployMeta } from './deploy-meta.mjs';
+import { evaluateDeployGuard, writeDeployMeta } from './deploy-meta.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -238,11 +238,16 @@ export function stripStudioBlocksOnly() {
   }
 }
 
-export async function deployStudio() {
+export async function deployStudio({ allowNonMain = false, metaPath } = {}) {
   if (!existsSync(TARGET_CUSTOM_JS) || !existsSync(TARGET_CUSTOM_CSS)) {
     throw new Error(
       `Anti-Claude user directory not initialized at ${TARGET_USER_DIR}. Run "node studio/cli.mjs install" first.`
     );
+  }
+
+  const guard = evaluateDeployGuard(REPO_ROOT, { allowNonMain, metaPath });
+  if (!guard.allowed) {
+    throw new Error(guard.reason);
   }
 
   await buildUserCustomJs({ writeToRepo: true });
@@ -257,7 +262,7 @@ export async function deployStudio() {
   writeFileSync(TARGET_CUSTOM_CSS, `${baseCss.replace(/\s+$/, '')}\n\n${cssBlock}`, 'utf8');
 
   syncLiveConfigForStudio();
-  const deployedFrom = writeDeployMeta(REPO_ROOT);
+  const deployedFrom = writeDeployMeta(REPO_ROOT, metaPath, { preview: Boolean(guard.preview) });
 
   return {
     ok: true,
@@ -268,6 +273,7 @@ export async function deployStudio() {
     jsBytes: Buffer.byteLength(jsBlock, 'utf8'),
     cssBytes: Buffer.byteLength(cssBlock, 'utf8'),
     deployedFrom,
+    ...(guard.warnings.length ? { deployWarnings: guard.warnings } : {}),
     prefs,
   };
 }

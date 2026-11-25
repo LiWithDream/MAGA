@@ -1666,8 +1666,8 @@ test('[Pinned Sidebar Single-Line] hides redundant project folder subtitle line 
   const customCssSrc = fs.readFileSync(path.join(REPO, 'user', 'custom.css'), 'utf8');
   assert.match(
     customCssSrc,
-    /\[data-testid="conversation-row-sidebar"\]\[data-pinned="true"\][\s\S]*?svg\[data-project-glyph\][\s\S]*?display:\s*none\s*!important/,
-    'custom.css hides redundant project folder subtitle line inside Pinned Conversations'
+    /\[data-testid="conversation-row-sidebar"\]\[data-pinned="true"\]\s+span\[data-maga-pin-glyph="1"\][\s\S]*?display:\s*none\s*!important/,
+    'custom.css hides redundant project folder subtitle line inside Pinned Conversations via O(1) marker'
   );
 
   const customJsSrc = fs.readFileSync(path.join(REPO, 'user', 'custom.js'), 'utf8');
@@ -1702,6 +1702,8 @@ test('[Pinned Sidebar Single-Line] hides redundant project folder subtitle line 
 
   try {
     const sb = doc.querySelector('[data-testid="conversation-list-sidebar"]');
+    const pinGlyphSpan = doc.querySelector('[data-testid="conversation-row-sidebar"][data-pinned="true"] .flex-col > span:nth-child(2)');
+    assert.equal(pinGlyphSpan.getAttribute('data-maga-pin-glyph'), '1', 'marks pinned folder glyph wrapper with O(1) data attribute');
     const link = doc.querySelector('[data-testid="conversation-row-sidebar"] a[href]');
     assert.equal(
       link.getAttribute('title'),
@@ -1799,13 +1801,14 @@ test('[Language Persistence Across Ephemeral Port Restarts] persists Chinese/Eng
     );
     assert.equal(dom2.window.document.documentElement.getAttribute('data-ag-cjk-scale'), '94.5');
 
-    /* 3. User opens UI Enhancements on port 58432 and switches i18n OFF (back to English) */
+    /* 3. User opens UI Enhancements on port 58432 and switches i18n OFF (back to English) via bridge */
     const navBtn = dom2.window.document.querySelector('button[data-testid="settings-nav-item-ClaudeUX"]');
     assert.ok(navBtn, 'mounts UI Enhancements settings nav button');
     navBtn.click();
-    const i18nSwitch = dom2.window.document.querySelector('[data-ag-cux-switch="i18n"]');
-    assert.equal(i18nSwitch.getAttribute('aria-checked'), 'true');
-    i18nSwitch.click();
+    const panel = dom2.window.document.getElementById('ag-claude-ux-settings-panel');
+    assert.ok(panel && !panel.hidden, 'mounts settings host panel');
+    assert.equal(dom2.window.__agClaudeUxBridge.getState().modules.i18n, true);
+    dom2.window.__agClaudeUxBridge.setModule('i18n', false);
     await new Promise((r) => setTimeout(r, 30));
     assert.equal(dom2.window.document.documentElement.getAttribute('data-ag-ux-lang'), 'en');
     const saved2 = JSON.parse(fs.readFileSync(uiPrefsPath, 'utf8'));
@@ -2103,168 +2106,6 @@ test('[Pinned Drag Drop Animation] dispatches layout/setDragOverChatCascadeId ac
       ),
       'dispatches pendingChatDrop to cite pinned conversation'
     );
-  } finally {
-    window.close();
-  }
-});
-
-test('[v2.34.0 Orchestrator Planners & Thinking Effort] unlocks thinking effort on Orchestrators and exposes Claude Opus 5.5 from v7c.Provider', { skip: skipDom }, async () => {
-  const customJsSrc = fs.readFileSync(path.join(REPO, 'user', 'custom.js'), 'utf8');
-  const dom = new JSDOM(
-    `<!doctype html><html><body>
-      <div id="root">
-        <button type="button" data-testid="model-selector-trigger" aria-label="Select model, current: Orchestrator Gemini 4 Neon Extra High">Orchestrator Gemini 4 Neon Extra</button>
-      </div>
-    </body></html>`,
-    { url: 'https://127.0.0.1:62683/c/c-orch', pretendToBeVisual: true, runScripts: 'outside-only' }
-  );
-  const { window } = dom;
-  const doc = window.document;
-  const btn = doc.querySelector('button[data-testid="model-selector-trigger"]');
-  btn.getBoundingClientRect = () => ({ left: 40, top: 760, right: 240, bottom: 788, width: 200, height: 28 });
-
-  const modelOptions = [
-    { label: 'Gemini 4 Carbon (Low)', value: 1438, modelId: 'gemini-4-carbon-low', disabled: false },
-    { label: 'Gemini 4 Carbon (Medium)', value: 1437, modelId: 'gemini-4-carbon-medium', disabled: false },
-    { label: 'Gemini 4 Carbon (High)', value: 1427, modelId: 'gemini-4-carbon-high', disabled: false },
-    { label: 'Orchestrator (Neon)', value: 1537, modelId: 'gemini-pro-orchestrator-neon', disabled: false },
-    { label: 'Orchestrator (Carbon)', value: 1538, modelId: 'gemini-pro-orchestrator-carbon', disabled: false },
-    { label: 'Orchestrator (Argon)', value: 1539, modelId: 'gemini-pro-orchestrator-argon', disabled: false }
-  ];
-  const orchestratorPlanners = [
-    { label: 'Gemini 4 Neon (High)', value: 1532, modelId: 'gemini-4-neon-high', disabled: false },
-    { label: 'Gemini 4 Neon (XHigh)', value: 1535, modelId: 'gemini-4-neon-xhigh', disabled: false },
-    { label: 'Gemini 4 Neon (Medium)', value: 1533, modelId: 'gemini-4-neon-medium', disabled: false },
-    { label: 'Gemini 4 Neon (Low)', value: 1534, modelId: 'gemini-4-neon-low', disabled: false },
-    { label: 'Gemini 4 Carbon (Medium)', value: 1437, modelId: 'gemini-4-carbon-medium', disabled: false },
-    { label: 'Gemini 4 Carbon (High)', value: 1427, modelId: 'gemini-4-carbon-high', disabled: false },
-    { label: 'Gemini 4 Carbon (Low)', value: 1438, modelId: 'gemini-4-carbon-low', disabled: false },
-    { label: 'Gemini 4 Argon (Medium)', value: 1418, modelId: 'gemini-4-argon-medium', disabled: false },
-    { label: 'Gemini 4 Argon (High)', value: 1417, modelId: 'gemini-4-argon-high', disabled: false },
-    { label: 'Gemini 4 Argon (Low)', value: 1419, modelId: 'gemini-4-argon-low', disabled: false },
-    { label: 'Claude Opus 5.5 (Low)', value: 1400, modelId: 'claude-opus-5-5-low', disabled: false },
-    { label: 'Claude Opus 5.5 (Medium)', value: 1401, modelId: 'claude-opus-5-5-medium', disabled: false },
-    { label: 'Claude Opus 5.5 (High)', value: 1402, modelId: 'claude-opus-5-5-high', disabled: false }
-  ];
-
-  let selectedModel = modelOptions[3];
-  let orchPickModel = 0;
-  const calls = [];
-
-  const outerWrapperFiber = {
-    memoizedProps: {
-      modelOptions,
-      get selectedModel() {
-        return selectedModel;
-      },
-      setSelectedModel(o) {
-        calls.push(['setSelected', o && o.value]);
-        selectedModel = o;
-      }
-    },
-    return: null
-  };
-
-  btn.__reactFiber$orch = {
-    memoizedProps: {
-      value: {
-        modelOptions,
-        orchestratorPlanners,
-        orchestratorDefaultPlanner: { label: 'Gemini 4 Neon (XHigh)', value: 1535, modelId: 'gemini-4-neon-xhigh' },
-        orchestratorPick: {
-          get model() {
-            return orchPickModel;
-          },
-          select(v) {
-            calls.push(['orchSelect', v]);
-            orchPickModel = v;
-          }
-        },
-        get selectedModel() {
-          return selectedModel;
-        },
-        setSelectedModel(o) {
-          calls.push(['setSelected', o && o.value]);
-          selectedModel = o;
-        }
-      }
-    },
-    return: outerWrapperFiber
-  };
-
-  window.ctx = { modules: { i18n: false, claudeUxModelMenu: true }, onCleanup: () => {} };
-  window.eval(customJsSrc);
-
-  try {
-    const openMenu = () => btn.dispatchEvent(new window.Event('pointerdown', { bubbles: true, cancelable: true }));
-
-    /* 1. Opening menu while on Neon Orchestrator with model:0 unlocks Thinking effort & shows Extra */
-    openMenu();
-    const mainPop = doc.getElementById('ag-claude-model-popover');
-    const subPop = doc.getElementById('ag-claude-model-subpop');
-    const effTrigger = mainPop.querySelector('[data-ag-cm-subtrigger="effort"]');
-    assert.notEqual(effTrigger.getAttribute('data-disabled'), 'true', 'Orchestrator thinking effort must not be disabled');
-    assert.match(effTrigger.textContent, /Extra/, 'displays default Neon XHigh as Extra');
-    assert.doesNotMatch(effTrigger.textContent, /固定|Fixed/);
-
-    effTrigger.click();
-    assert.equal(subPop.getAttribute('data-open'), 'true');
-    assert.deepEqual(
-      Array.from(subPop.querySelectorAll('[data-ag-cm-effort]')).map((el) => el.getAttribute('data-ag-cm-effort')),
-      ['Low', 'Medium', 'High', 'XHigh'],
-      'Neon Orchestrator offers all 4 thinking efforts'
-    );
-    assert.ok(subPop.querySelector('[data-ag-cm-effort="XHigh"] .ag-cm-check'), 'XHigh row is checked initially');
-
-    /* 2. Switching Neon Orchestrator effort to High dispatches orchestratorPick.select(1532) before setSelectedModel(1537) */
-    subPop.querySelector('[data-ag-cm-effort="High"]').click();
-    assert.deepEqual(calls, [
-      ['orchSelect', 1532],
-      ['setSelected', 1537]
-    ]);
-
-    /* 3. More models lists all 4 dynamic Orchestrator planners including Claude Opus 5.5 without legacy duplicates */
-    openMenu();
-    mainPop.querySelector('[data-ag-cm-subtrigger="more"]').click();
-    const moreLabels = Array.from(subPop.querySelectorAll('[data-ag-cm-more-family]')).map((el) =>
-      el.getAttribute('data-ag-cm-more-family')
-    );
-    assert.deepEqual(moreLabels, [
-      'Orchestrator · Gemini 4 Neon',
-      'Orchestrator · Gemini 4 Carbon',
-      'Orchestrator · Gemini 4 Argon',
-      'Orchestrator · Claude Opus 5.5'
-    ]);
-
-    /* 4. Selecting Claude Opus 5.5 inherits High effort, calls select(1402), and exposes Low/Medium/High only */
-    calls.length = 0;
-    subPop.querySelector('[data-ag-cm-more-family="Orchestrator · Claude Opus 5.5"]').click();
-    assert.deepEqual(calls, [
-      ['orchSelect', 1402],
-      ['setSelected', 1537]
-    ]);
-
-    openMenu();
-    assert.match(mainPop.querySelector('[data-ag-cm-subtrigger="effort"]').textContent, /High/);
-    mainPop.querySelector('[data-ag-cm-subtrigger="effort"]').click();
-    assert.match(subPop.querySelector('.ag-cm-sec-hdr').textContent, /Orchestrator · Claude Opus 5\.5/);
-    assert.deepEqual(
-      Array.from(subPop.querySelectorAll('[data-ag-cm-effort]')).map((el) => el.getAttribute('data-ag-cm-effort')),
-      ['Low', 'Medium', 'High'],
-      'Claude Opus 5.5 Orchestrator offers Low/Medium/High efforts'
-    );
-    calls.length = 0;
-    subPop.querySelector('[data-ag-cm-effort="Low"]').click();
-    assert.deepEqual(calls, [
-      ['orchSelect', 1400],
-      ['setSelected', 1537]
-    ]);
-
-    /* 5. Switching back to a standard primary model invokes setSelectedModel only */
-    calls.length = 0;
-    openMenu();
-    mainPop.querySelector('[data-ag-cm-family="Gemini 4 Carbon"]').click();
-    assert.deepEqual(calls, [['setSelected', 1438]]);
   } finally {
     window.close();
   }
@@ -2727,155 +2568,6 @@ test('[Scheduled Task Dynamic Models] populates account models & all effort tier
 /* -------------------------------------------------------------------------- */
 /* Native pass-through: official features must never be masked by this layer   */
 /* -------------------------------------------------------------------------- */
-
-function mountModelMenuDom(apiValue, { triggerText = 'Claude Opus 5.5 · Devin High' } = {}) {
-  const customJsSrc = fs.readFileSync(path.join(REPO, 'user', 'custom.js'), 'utf8');
-  const dom = new JSDOM(
-    `<!doctype html><html><body><div id="root">
-      <button type="button" data-testid="model-selector-trigger">${triggerText}</button>
-    </div></body></html>`,
-    { url: 'https://127.0.0.1:62683/c/c-native', pretendToBeVisual: true, runScripts: 'outside-only' }
-  );
-  const { window } = dom;
-  const btn = window.document.querySelector('button[data-testid="model-selector-trigger"]');
-  btn.getBoundingClientRect = () => ({ left: 40, top: 760, right: 240, bottom: 788, width: 200, height: 28 });
-  btn.__reactFiber$native = { memoizedProps: { value: apiValue }, return: null };
-  window.ctx = { modules: { i18n: false, claudeUxModelMenu: true }, onCleanup: () => {} };
-  window.eval(customJsSrc);
-  const fire = (type, init = {}) => {
-    const ev = new window.MouseEvent(type, { bubbles: true, cancelable: true, button: 0, ...init });
-    btn.dispatchEvent(ev);
-    return ev;
-  };
-  return { window, doc: window.document, btn, fire };
-}
-
-function thirdPartyOnlyApi(extra = {}) {
-  const modelOptions = [
-    { label: 'Claude Opus 5.5 · Devin (Medium)', value: 1356, modelId: 'devin/claude-opus-5-5:medium', disabled: false },
-    { label: 'Claude Fable 5.2 · Devin (Low)', value: 1349, modelId: 'devin/claude-fable-5-2:low', disabled: false },
-    { label: 'Claude Fable 5.2 · Devin (High)', value: 1344, modelId: 'devin/claude-fable-5-2:high', disabled: false },
-    { label: 'Claude Opus 5.5 · Devin (High)', value: 1359, modelId: 'devin/claude-opus-5-5:high', disabled: false }
-  ];
-  const state = { open: false, openCalls: [], selected: modelOptions[3] };
-  const api = {
-    placement: 'top-start',
-    modelOptions,
-    customModels: [],
-    orchestratorPlanners: [],
-    orchestratorPlannerIndex: {},
-    bestOfNConfig: { isBestOfNEnabled: false, selectedBestOfNModels: [] },
-    get selectedModel() {
-      return state.selected;
-    },
-    setSelectedModel(o) {
-      state.selected = o;
-    },
-    get open() {
-      return state.open;
-    },
-    setIsOpen(v) {
-      state.openCalls.push(v);
-      state.open = v;
-    },
-    ...extra
-  };
-  return { api, state };
-}
-
-test('[Native Pass-through · third-party-only account] primary model list is not empty when the account exposes no Gemini family', { skip: skipDom }, () => {
-  const { api } = thirdPartyOnlyApi();
-  const { window, doc, fire } = mountModelMenuDom(api);
-  try {
-    fire('pointerdown');
-    const mainPop = doc.getElementById('ag-claude-model-popover');
-    assert.equal(mainPop.getAttribute('data-open'), 'true');
-    assert.deepEqual(
-      Array.from(mainPop.querySelectorAll('[data-ag-cm-family]')).map((el) => el.getAttribute('data-ag-cm-family')),
-      ['Claude Opus 5.5 · Devin', 'Claude Fable 5.2 · Devin'],
-      'non-Gemini families fill "Models · This chat" in native order instead of leaving it empty'
-    );
-    assert.ok(
-      mainPop.querySelector('[data-ag-cm-family="Claude Opus 5.5 · Devin"] .ag-cm-check'),
-      'the selected third-party family is checked in the primary list'
-    );
-  } finally {
-    window.close();
-  }
-});
-
-test('[Native Pass-through · escape hatch] Native menu row and Option+click hand the trigger back to the official menu', { skip: skipDom }, async () => {
-  const { api, state } = thirdPartyOnlyApi();
-  const { window, doc, fire } = mountModelMenuDom(api);
-  try {
-    /* 1. Plain click is still taken over by the custom menu, which now carries a Native menu row */
-    const plain = fire('pointerdown');
-    assert.equal(plain.defaultPrevented, true);
-    const mainPop = doc.getElementById('ag-claude-model-popover');
-    const nativeRow = mainPop.querySelector('[data-ag-cm-native]');
-    assert.ok(nativeRow, 'custom menu exposes a Native menu row');
-    assert.equal(nativeRow.hasAttribute('data-ag-cm-native-gaps'), false, 'no hint dot when the native API has nothing extra');
-
-    /* 2. Clicking it closes the custom menu and opens the official one */
-    nativeRow.click();
-    await new Promise((r) => setTimeout(r, 20));
-    assert.equal(mainPop.getAttribute('data-open'), 'false');
-    assert.deepEqual(state.openCalls, [true], 'native setIsOpen(true) is called exactly once');
-
-    /* 3. Option/Alt + click is never intercepted (pointerdown, mousedown and click all pass through) */
-    state.open = false;
-    for (const type of ['pointerdown', 'mousedown', 'click']) {
-      const ev = fire(type, { altKey: true, detail: 1 });
-      assert.equal(ev.defaultPrevented, false, `${type} with Alt reaches the native trigger`);
-    }
-    assert.equal(mainPop.getAttribute('data-open'), 'false', 'custom menu stays closed on Alt+click');
-  } finally {
-    window.close();
-  }
-});
-
-test('[Native Pass-through · gap detection] unknown native fields flag the Native menu row; Best-of-N mode steps aside entirely', { skip: skipDom }, () => {
-  /* soft gap: a future release adds a field this menu does not know -> keep the menu, flag the row */
-  {
-    const { api } = thirdPartyOnlyApi({ someFutureFeature: { enabled: true } });
-    const { window, doc, fire } = mountModelMenuDom(api);
-    try {
-      fire('pointerdown');
-      const row = doc.querySelector('#ag-claude-model-popover [data-ag-cm-native]');
-      assert.match(row.getAttribute('data-ag-cm-native-gaps'), /new:someFutureFeature/);
-      assert.ok(row.querySelector('.ag-cm-dot'), 'hint dot is rendered');
-    } finally {
-      window.close();
-    }
-  }
-  /* known soft gap: the agent selector lives in the native footer (footerExtra) -> "More options", no drift dot */
-  {
-    const { api } = thirdPartyOnlyApi({ footerExtra: { type: 'AgentSelector' } });
-    const { window, doc, fire } = mountModelMenuDom(api);
-    try {
-      fire('pointerdown');
-      const row = doc.querySelector('#ag-claude-model-popover [data-ag-cm-native]');
-      assert.equal(row.getAttribute('data-ag-cm-native-gaps'), 'footerExtra');
-      assert.match(row.textContent, /More options/);
-      assert.equal(row.querySelector('.ag-cm-dot'), null, 'known gaps do not raise the release-drift dot');
-    } finally {
-      window.close();
-    }
-  }
-  /* hard gap: Best-of-N turns the native menu into a multi-select this menu cannot drive */
-  {
-    const { api } = thirdPartyOnlyApi({ bestOfNConfig: { isBestOfNEnabled: true, selectedBestOfNModels: [] } });
-    const { window, doc, fire } = mountModelMenuDom(api);
-    try {
-      const ev = fire('pointerdown');
-      assert.equal(ev.defaultPrevented, false, 'trigger click is left to the native menu');
-      const mainPop = doc.getElementById('ag-claude-model-popover');
-      assert.ok(!mainPop || mainPop.getAttribute('data-open') !== 'true', 'custom menu does not open');
-    } finally {
-      window.close();
-    }
-  }
-});
 
 test('[Native Pass-through · sidebar] Coordinators section above Pinned is never used as the hide cut-off', { skip: skipDom }, () => {
   const customJsSrc = fs.readFileSync(path.join(REPO, 'user', 'custom.js'), 'utf8');
@@ -3392,93 +3084,8 @@ test('[Audit-2026-11-21 · Projects UI] aborts save when readContext fails, rend
   }
 });
 
-test('[Audit-2026-11-21 · Model Menu & Pill] Option+click works on fallback path, customCss:false skips hijack, 1-5 ignored in input, pill restore keeps streamed suffix, checklists stay native', { skip: skipDom }, async () => {
+test('[Audit-2026-11-21 · Pill & Checklists] pill restore preserves streamed suffix without truncation, ordinary checklists stay native', { skip: skipDom }, async () => {
   const customJsSrc = fs.readFileSync(path.join(REPO, 'user', 'custom.js'), 'utf8');
-
-  /* Bug #13 & #19: Redux fallback path still allows Option+click and renders Native menu row; 1-5 ignored when input focused */
-  {
-    const dom = new JSDOM(
-      `<!doctype html><html><body><div id="root">
-        <div class="bg-sidebar"><div data-testid="conversation-list-sidebar"><div class="w-full relative"></div></div></div>
-        <div id="antigravity.agentSidePanelInputBox">
-          <div contenteditable="true" id="chat-ed">hello</div>
-          <button type="button" data-testid="model-selector-trigger">Gemini 4 Neon High</button>
-        </div>
-      </div></body></html>`,
-      { url: 'https://127.0.0.1:62683/c/c-fb', pretendToBeVisual: true, runScripts: 'outside-only' }
-    );
-    const { window } = dom;
-    const doc = window.document;
-    const mockStore = {
-      getState: () => ({
-        userStatus: {
-          cascadeModelConfigData: {
-            clientModelConfigs: [
-              { label: 'Gemini 4 Neon (High)', value: 1 },
-              { label: 'Gemini 4 Argon (High)', value: 2 },
-              { label: 'Gemini 4 Carbon (High)', value: 3 }
-            ]
-          }
-        },
-        modelSelection: {
-          default: { model: 1 }
-        },
-        trajectorySummaries: { summaries: {} },
-        sidebarProjects: { projects: [] }
-      }),
-      subscribe: () => () => {},
-      dispatch: () => {}
-    };
-    doc.querySelector('.bg-sidebar').__reactFiber$s = { memoizedProps: { sidebarStore: mockStore }, return: null };
-    const btn = doc.querySelector('button[data-testid="model-selector-trigger"]');
-    btn.getBoundingClientRect = () => ({ left: 40, top: 760, right: 240, bottom: 788, width: 200, height: 28 });
-
-    window.ctx = { config: { modules: { customCss: true } }, modules: { i18n: false, claudeUxModelMenu: true }, onCleanup: () => {} };
-    window.eval(customJsSrc);
-    try {
-      /* Option+click on Redux fallback path must NOT be prevented */
-      const altEv = new window.MouseEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, altKey: true });
-      btn.dispatchEvent(altEv);
-      assert.equal(altEv.defaultPrevented, false, 'Option+click passes through even on Redux fallback path');
-
-      /* Plain click opens custom menu with Native menu row */
-      btn.dispatchEvent(new window.MouseEvent('pointerdown', { bubbles: true, cancelable: true, button: 0 }));
-      const pop = doc.getElementById('ag-claude-model-popover');
-      assert.equal(pop.getAttribute('data-open'), 'true');
-      assert.ok(pop.querySelector('[data-ag-cm-native]'), 'Native menu row rendered even on Redux fallback path');
-
-      /* Bug #19: Focusing editable composer and typing '2' must NOT be swallowed by open model menu */
-      const ed = doc.getElementById('chat-ed');
-      ed.focus();
-      Object.defineProperty(doc, 'activeElement', { value: ed, configurable: true });
-      const key2 = new window.KeyboardEvent('keydown', { key: '2', bubbles: true, cancelable: true });
-      ed.dispatchEvent(key2);
-      assert.equal(key2.defaultPrevented, false, 'digit key 2 inside composer is not swallowed by open model menu');
-    } finally {
-      window.close();
-    }
-  }
-
-  /* Bug #24: customCss: false disables model trigger interception */
-  {
-    const { api } = thirdPartyOnlyApi();
-    const dom = new JSDOM(
-      `<!doctype html><html><body><div id="root"><button type="button" data-testid="model-selector-trigger">Model</button></div></body></html>`,
-      { url: 'https://127.0.0.1:62683/c/c-nocss', pretendToBeVisual: true, runScripts: 'outside-only' }
-    );
-    const { window } = dom;
-    const btn = window.document.querySelector('button[data-testid="model-selector-trigger"]');
-    btn.__reactFiber$n = { memoizedProps: { value: api }, return: null };
-    window.ctx = { config: { modules: { customCss: false } }, modules: { claudeUxModelMenu: true }, onCleanup: () => {} };
-    window.eval(customJsSrc);
-    try {
-      const ev = new window.MouseEvent('pointerdown', { bubbles: true, cancelable: true, button: 0 });
-      btn.dispatchEvent(ev);
-      assert.equal(ev.defaultPrevented, false, 'model menu does not hijack trigger when customCss is false');
-    } finally {
-      window.close();
-    }
-  }
 
   /* Bug #11 & Bug #10: Pill restore preserves streamed text suffix; unrelated all-[x] list after interrupted todo stays visible */
   {
@@ -3540,16 +3147,10 @@ test('[Audit-2026-11-21 · Sidebar & Settings Safety] refuses to hide sidebar or
     /\[data-testid="settings-sidebar"\]\[data-ag-stats-ready="1"\]/,
     'settings sidebar CSS hide rules are gated by JS data-ag-stats-ready flag'
   );
-  /* Settings panel switches must match Antigravity native h-6 w-11 (44x24px) & thumb h-4 w-4 (16x16px, 4px/24px) */
-  assert.match(
-    customCssSrc,
-    /#ag-claude-ux-settings-panel\s+\.ag-claude-switch\s*\{[^}]*width:\s*44px\s*!important;[^}]*height:\s*24px\s*!important;/s,
-    'UI Enhancements settings switches match native 44x24px size'
-  );
-  assert.match(
-    customCssSrc,
-    /#ag-claude-ux-settings-panel\s+\.ag-claude-switch\[aria-checked="true"\]\s*>\s*span\s*\{[^}]*translateX\(24px\)/s,
-    'UI Enhancements settings switch checked thumb offset matches native 24px'
+  assert.doesNotMatch(
+    customJsSrc,
+    /ag-claude-model-popover|ag-cux-settings-wrap/,
+    'legacy model popover and legacy toggle form markup are retired from custom.js'
   );
 
   /* Bug #12 & #18: On a React host (#root present) where sidebar store cannot be found, native rows stay visible and scrollTop is not forced to 0 */
@@ -3864,7 +3465,7 @@ test('[claudeUxOverviewPanel] enhances right Overview panel with Google Blue Use
   }
 });
 
-test('[v3.1.4 · v2.34 Models i18n & Clean Titlebar] omits titlebar theme pill, localizes Models/Quota strings, and keeps main model menu free of Executor Model row', { skip: !JSDOM }, async () => {
+test('[v3.1.4 · v2.34 Models i18n & Clean Titlebar] omits titlebar theme pill, localizes Models/Quota strings, and exposes whitelisted executor roles via bridge', { skip: !JSDOM }, async () => {
   const customJsSrc = fs.readFileSync(path.join(REPO, 'user', 'custom.js'), 'utf8');
   const customCssSrc = fs.readFileSync(path.join(REPO, 'user', 'custom.css'), 'utf8');
   const i18nDict = JSON.parse(fs.readFileSync(path.join(REPO, 'core', 'i18n.json'), 'utf8'));
@@ -3950,8 +3551,7 @@ test('[v3.1.4 · v2.34 Models i18n & Clean Titlebar] omits titlebar theme pill, 
   window.ctx = {
     dict: i18nDict,
     modules: {
-      i18n: true,
-      claudeUxModelMenu: true
+      i18n: true
     },
     onCleanup: () => {}
   };
@@ -3976,56 +3576,21 @@ test('[v3.1.4 · v2.34 Models i18n & Clean Titlebar] omits titlebar theme pill, 
     assert.equal(doc.getElementById('plan-lbl').textContent, '当前方案：Google AI Ultra');
     assert.equal(doc.getElementById('bd-btn').textContent, '展开 57 项明细');
 
-    /* Verify 3: Main composer model menu omits Executor Model row (managed in official Settings -> Models) */
-    triggerBtn.dispatchEvent(new window.MouseEvent('pointerdown', { bubbles: true, button: 0 }));
-    const mainPop = doc.getElementById('ag-claude-model-popover');
-    assert.equal(mainPop.getAttribute('data-open'), 'true');
-    assert.equal(
-      mainPop.querySelector('[data-ag-cm-subtrigger="executor"]'),
-      null,
-      'Executor model row is not rendered in main composer model menu'
-    );
-    assert.doesNotMatch(mainPop.textContent, /执行模型|Executor model/);
-    assert.ok(mainPop.querySelector('[data-ag-cm-subtrigger="effort"]'), 'Thinking effort row remains intact');
-    assert.ok(mainPop.querySelector('[data-ag-cm-subtrigger="more"]'), 'More models row remains intact');
-
     window.__agClaudeUxDispose();
   } finally {
     window.close();
   }
 });
 
-test('[Scheme C · Orchestrator Level-3 Planner Effort & Official Whitelisted Executor] cascades planner effort and strict Mendel-whitelisted executor row under More Models -> Orchestrators while keeping Level-1 clean', { skip: !JSDOM }, async () => {
+test('[Mendel Whitelist · Orchestrator Executor BaseIds] exposes orchestrator-model-roles executors from root lsClient cleanly and disposes', { skip: !JSDOM }, async () => {
   const customJsSrc = fs.readFileSync(path.join(REPO, 'user', 'custom.js'), 'utf8');
   const dom = new JSDOM(
-    `<!doctype html><html><body>
-      <div id="root">
-        <div id="antigravity.agentSidePanelInputBox">
-          <button type="button" data-testid="model-selector-trigger">Gemini 4 Neon Extra</button>
-        </div>
-      </div>
-    </body></html>`,
+    `<!doctype html><html><body><div id="root"></div></body></html>`,
     { runScripts: 'outside-only', url: 'https://127.0.0.1:61999/' }
   );
   const { window } = dom;
   const doc = window.document;
 
-  /* 1. Mount real v2.34.0 shape: direct getMendelFlags on root fiber memoizedProps.value + prefStore on child fiber */
-  const prefs = { orchestratorExecutorModel: 0 };
-  const prefListeners = new Set();
-  const prefStore = {
-    getState: () => ({
-      getPrefValue: (k) => prefs[k] ?? 0,
-      setPrefValue: (k, v) => {
-        prefs[k] = v;
-        for (const fn of prefListeners) fn();
-      }
-    }),
-    onDidChange: (fn) => {
-      prefListeners.add(fn);
-      return () => prefListeners.delete(fn);
-    }
-  };
   let mendelCalls = 0;
   const lsClient = {
     getMendelFlags: async () => {
@@ -4048,142 +3613,27 @@ test('[Scheme C · Orchestrator Level-3 Planner Effort & Official Whitelisted Ex
       };
     }
   };
-  const rootEl = doc.getElementById('root');
-  rootEl.__reactContainer$test = {
+  doc.getElementById('root').__reactContainer$test = {
     memoizedProps: { value: lsClient },
-    child: {
-      memoizedProps: { value: prefStore },
-      child: null,
-      sibling: null
-    },
+    child: null,
     sibling: null
   };
 
-  /* 2. Attach model-selector-trigger API with planners, executors, and non-whitelisted models (Flash, Opus) */
-  const modelOptions = [
-    { label: 'Gemini 4 Carbon (High)', modelId: 'gemini-4-carbon-high', value: 1427, disabled: false },
-    { label: 'Gemini 4 Carbon (Low)', modelId: 'gemini-4-carbon-low', value: 1438, disabled: false },
-    { label: 'Gemini 4 Neon (High)', modelId: 'gemini-4-neon-high', value: 1532, disabled: false },
-    { label: 'Gemini 4 Neon (XHigh)', modelId: 'gemini-4-neon-xhigh', value: 1535, disabled: false },
-    { label: 'Gemini 4 Hydrogen (Low)', modelId: 'gemini-4-hydrogen-low', value: 1527, disabled: false },
-    { label: 'Gemini 4 Hydrogen (Medium)', modelId: 'gemini-4-hydrogen-medium', value: 1526, disabled: false },
-    { label: 'Gemini 4 Hydrogen (XHigh)', modelId: 'gemini-4-hydrogen-xhigh', value: 1528, disabled: false },
-    { label: 'Gemini 3.8 Flash (Low)', modelId: 'gemini-3.8-flash-low', value: 1320, disabled: false },
-    { label: 'Gemini 3.8 Flash (High)', modelId: 'gemini-3.8-flash-high', value: 1318, disabled: false },
-    { label: 'Claude Opus 5.5 (High)', modelId: 'claude-opus-5-5-high', value: 1402, disabled: false },
-    { label: 'Claude Sonnet 5.5 (Medium)', modelId: 'claude-sonnet-5-5-medium', value: 1404, disabled: false },
-    { label: 'Claude Sonnet 5.5 (High)', modelId: 'claude-sonnet-5-5-high', value: 1405, disabled: false },
-    { label: 'Orchestrator (Neon)', modelId: 'gemini-pro-orchestrator-neon', value: 1537, disabled: false }
-  ];
-  let selectedOpt = modelOptions[3];
-  let pickedPlannerVal = 0;
-  const triggerBtn = doc.querySelector('button[data-testid="model-selector-trigger"]');
-  const apiObj = {
-    modelOptions,
-    get selectedModel() {
-      return selectedOpt;
-    },
-    setSelectedModel: (opt) => {
-      selectedOpt = opt;
-    },
-    open: false,
-    setIsOpen: () => {},
-    orchestratorPick: {
-      get model() {
-        return pickedPlannerVal;
-      },
-      select: (v) => {
-        pickedPlannerVal = v;
-      }
-    },
-    orchestratorPlanners: [modelOptions[2], modelOptions[3], modelOptions[0], modelOptions[1]]
-  };
-  triggerBtn.__reactFiber$test = { memoizedProps: { value: apiObj }, return: null };
-
-  window.ctx = {
-    dict: {},
-    modules: { i18n: true, claudeUxModelMenu: true },
-    onCleanup: () => {}
-  };
+  window.ctx = { dict: {}, modules: { i18n: false }, onCleanup: () => {} };
   window.eval(customJsSrc);
 
   try {
-    /* Open Level 1 menu and let async getMendelFlags resolve */
-    triggerBtn.dispatchEvent(new window.MouseEvent('pointerdown', { bubbles: true, button: 0 }));
-    await new Promise((r) => setTimeout(r, 40));
-
-    const mainPop = doc.getElementById('ag-claude-model-popover');
-    const subPop = doc.getElementById('ag-claude-model-subpop');
-    const triPop = doc.getElementById('ag-claude-model-tripop');
+    assert.ok(window.__agClaudeUxBridge, '__agClaudeUxBridge available');
+    assert.equal(window.__agClaudeUxBridge.getExecutorBaseIds(), null);
     assert.equal(mendelCalls, 1, 'fetches official orchestrator-model-roles directly from root fiber lsClient');
-    assert.equal(mainPop.getAttribute('data-open'), 'true');
-    assert.equal(mainPop.querySelector('[data-ag-cm-subtrigger="executor"]'), null, 'Level 1 menu stays free of Executor Model');
-
-    /* Open Level 2: More models */
-    mainPop.querySelector('[data-ag-cm-subtrigger="more"]').click();
-    assert.equal(subPop.getAttribute('data-open'), 'true');
-    assert.equal(triPop.getAttribute('data-open'), 'false');
-
-    const orchNeonRow = subPop.querySelector('[data-ag-cm-more-family="Orchestrator · Gemini 4 Neon"]');
-    const execRow = subPop.querySelector('[data-ag-cm-tritrigger="executor"]');
-    assert.ok(orchNeonRow, 'Orchestrator · Gemini 4 Neon row present in Level 2');
-    assert.ok(execRow, 'Dedicated Executor model row rendered under Orchestrators in Level 2');
-    assert.match(execRow.textContent, /执行模型/);
-    assert.match(execRow.textContent, /Hydrogen · Extra/, 'defaults to highest-effort first whitelisted executor');
-
-    /* Hover / click Executor row -> Level 3 opens with STRICTLY whitelisted executors (no Flash/Carbon/Neon/Opus) */
-    execRow.click();
-    assert.equal(triPop.getAttribute('data-open'), 'true');
-    assert.equal(triPop.getAttribute('data-tri-kind'), 'executor');
-    assert.match(triPop.textContent, /Gemini 4 Hydrogen/);
-    assert.match(triPop.textContent, /Claude Sonnet 5\.5/);
-    assert.doesNotMatch(triPop.textContent, /Gemini 3\.8 Flash|Gemini 4 Carbon|Gemini 4 Neon|Claude Opus 5\.5/);
-
-    /* Click Hydrogen Medium (1526): writes pref, updates UI live, keeps popover open for further orchestration picking */
-    const hydroMedPill = triPop.querySelector('[data-ag-cm-exec-val="1526"]');
-    assert.ok(hydroMedPill, 'Hydrogen Medium pill present');
-    hydroMedPill.click();
-    assert.equal(prefs.orchestratorExecutorModel, 1526, 'writes orchestratorExecutorModel=1526');
-    assert.equal(mainPop.getAttribute('data-open'), 'true', 'keeps popover open after selecting executor effort');
-    assert.equal(triPop.getAttribute('data-open'), 'true');
-    assert.match(subPop.querySelector('[data-ag-cm-tritrigger="executor"]').textContent, /Hydrogen · Medium/);
-    assert.ok(subPop.querySelector('[data-ag-cm-tritrigger="executor"] .ag-cm-dot'), 'shows blue dot for custom executor');
-
-    /* Clicking default variant (1528) writes 0 (UNSPECIFIED) matching native Settings KSb */
-    triPop.querySelector('[data-ag-cm-exec-val="1528"]').click();
-    assert.equal(prefs.orchestratorExecutorModel, 0, 'picking default executor normalizes pref back to 0');
-
-    /* Pick non-default Sonnet 5.5 High (1405), then test Reset to default */
-    triPop.querySelector('[data-ag-cm-exec-val="1405"]').click();
-    assert.equal(prefs.orchestratorExecutorModel, 1405);
-    assert.match(subPop.querySelector('[data-ag-cm-tritrigger="executor"]').textContent, /Sonnet 5\.5 · High/);
-    triPop.querySelector('[data-ag-cm-exec-val="0"]').click();
-    assert.equal(prefs.orchestratorExecutorModel, 0, 'Reset button restores default executor (0)');
-
-    /* Hovering an "Other models" row closes Level 3 cleanly */
-    const otherRow = subPop.querySelector('[data-ag-cm-more-family="Claude Opus 5.5"]');
-    assert.ok(otherRow);
-    otherRow.dispatchEvent(new window.MouseEvent('mouseover', { bubbles: true }));
-    assert.equal(triPop.getAttribute('data-open'), 'false', 'hovering Other models closes Level 3');
-
-    /* Hovering Orchestrator · Gemini 4 Neon opens Level 3 planner effort submenu; picking High applies Orchestrator + planner */
-    subPop.querySelector('[data-ag-cm-more-family="Orchestrator · Gemini 4 Neon"]').dispatchEvent(
-      new window.MouseEvent('mouseover', { bubbles: true })
+    await new Promise((r) => setTimeout(r, 30));
+    assert.deepStrictEqual(
+      Array.from(window.__agClaudeUxBridge.getExecutorBaseIds() || []),
+      ['gemini-4-hydrogen', 'claude-sonnet-5-5']
     );
-    assert.equal(triPop.getAttribute('data-open'), 'true');
-    assert.equal(triPop.getAttribute('data-tri-kind'), 'planner');
-    assert.match(triPop.textContent, /主模型强度 · Gemini 4 Neon/);
-    const highPlannerRow = triPop.querySelector('[data-ag-cm-orch-effort="High"]');
-    assert.ok(highPlannerRow, 'planner High effort row exists');
-    highPlannerRow.click();
-    assert.equal(selectedOpt.value, 1537, 'switches active model to Orchestrator');
-    assert.equal(pickedPlannerVal, 1532, 'sets orchestrator planner to Gemini 4 Neon (High)');
-    assert.equal(mainPop.getAttribute('data-open'), 'false', 'closes popover after choosing planner effort');
-    assert.equal(triPop.getAttribute('data-open'), 'false');
 
     window.__agClaudeUxDispose();
-    assert.equal(doc.getElementById('ag-claude-model-tripop'), null, 'teardown removes Level 3 popover');
-    assert.equal(prefListeners.size, 0, 'unsubscribes prefStore listener on dispose');
+    assert.equal(window.__agClaudeUxBridge, null, 'clears __agClaudeUxBridge on dispose');
   } finally {
     window.close();
   }
@@ -4421,8 +3871,8 @@ test('Overview Review shortcut tile replaces icon slot with in-flow diff stats i
   const css = fs.readFileSync(path.join(REPO, 'user', 'custom.css'), 'utf8');
   assert.match(
     css,
-    /button\[data-testid="overview-panel-row-review"\]:has\(>\s*\[data-testid="overview-panel-row-review-detail"\]:not\(:empty\)\)\s*>\s*svg\s*\{[\s\S]*?display:\s*none\s*!important;/,
-    'Review tile must hide its icon when live diff stats occupy the top slot'
+    /button\[data-testid="overview-panel-row-review"\]\[data-ag-has-detail="1"\]\s*>\s*svg\s*\{[\s\S]*?display:\s*none\s*!important;/,
+    'Review tile must hide its icon when live diff stats occupy the top slot via O(1) marker'
   );
   assert.match(
     css,

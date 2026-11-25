@@ -3,6 +3,10 @@
  * Sleek baseline-anchored slim bars (Day / Week / Month) + instant floating tooltip
  * ========================================================================== */
 
+#ag-claude-ov-sections #agy-ov-usage-card {
+  contain: layout style;
+}
+
 #ag-claude-ov-sections #agy-ov-usage-card .agy-usage-hdr-right {
   display: inline-flex;
   align-items: center;

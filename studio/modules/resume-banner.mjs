@@ -8,8 +8,10 @@
  * 3. Style B timeline divider: replaces the synthetic user message bubble in the chat
  *    stream with a whisper-quiet centered hairline (`─── ▸ Resumed ───`) via pure CSS.
  */
+import { markOwn, setAttr, setLeafText } from '../core/dom.mjs';
+import { getActiveRouteCid, isComposerRunning, isZhUi, L } from '../core/env.mjs';
 
-export function createResumeBannerRuntime() {
+export function createResumeBannerRuntime({ studioPrefs } = {}) {
   const PILL_ID = 'agy-resume-pill';
   const DISMISS_STORAGE_KEY = 'agy_studio_resume_dismissed_v1';
   const MAX_DISMISSED = 120;
@@ -23,6 +25,13 @@ export function createResumeBannerRuntime() {
   let stateCache = { cid: '', ts: 0, inFlight: false, data: null };
   const scannedSteps = new WeakSet();
   const fallbackTimers = new Set();
+
+  const isEnabled = () => studioPrefs?.get?.()?.resumeBannerEnabled !== false;
+  const offStudioPrefs = studioPrefs?.subscribe?.(() => {
+    if (disposed) return;
+    if (!isEnabled()) removePill();
+    else render();
+  });
 
   function trackTimer(fn, ms) {
     if (disposed) return 0;
@@ -54,19 +63,6 @@ export function createResumeBannerRuntime() {
     } catch {}
   }
 
-  function isZh() {
-    return document.documentElement.getAttribute('data-ag-ux-lang') === 'zh-CN';
-  }
-
-  function L(zh, en) {
-    return isZh() ? zh : en;
-  }
-
-  function getActiveCid() {
-    const m = String(location.pathname || '').match(/\/c\/([^/?#]+)/);
-    return m ? m[1] : '';
-  }
-
   function getMainBox() {
     return (
       document.getElementById('antigravity.agentSidePanelInputBox') ||
@@ -74,19 +70,7 @@ export function createResumeBannerRuntime() {
     );
   }
 
-  function isMainRunning() {
-    const box = getMainBox();
-    if (!box) return false;
-    const cancelBtn = box.querySelector('.agy-composer-footer button[data-testid="input-cancel-button"]');
-    if (!cancelBtn) return false;
-    if (typeof cancelBtn.checkVisibility === 'function') {
-      return cancelBtn.checkVisibility({ opacityProperty: true, visibilityProperty: true });
-    }
-    return cancelBtn.offsetParent !== null;
-  }
-
-  function isEditorEmpty() {
-    const box = getMainBox();
+  function isEditorEmpty(box = getMainBox()) {
     const editor = box?.querySelector('[data-lexical-editor="true"]');
     if (!editor) return true;
     const text = (editor.textContent || '').replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
@@ -170,7 +154,7 @@ export function createResumeBannerRuntime() {
     } catch {}
 
     const clickSend = (attempt = 0) => {
-      if (disposed || isMainRunning() || isEditorEmpty()) return;
+      if (disposed || isComposerRunning(box) || isEditorEmpty(box)) return;
       const sendBtn = findSendButton(box);
       if (sendBtn) {
         sendBtn.click();
@@ -205,7 +189,6 @@ export function createResumeBannerRuntime() {
 
     const prompt = `${RESUME_SENTINEL}Please resume from where the task was interrupted — quickly verify the current state and continue the remaining steps.`;
 
-    // Prefer silent React handleSubmit (never flashes text inside the input box)
     const handleSubmit = findAgentHandleSubmit(box);
     if (handleSubmit) {
       try {
@@ -217,10 +200,9 @@ export function createResumeBannerRuntime() {
           undefined,
           undefined
         );
-        // Verify within 450ms that the run actually started; otherwise fall back cleanly to editor submit
         Promise.resolve(res).catch(() => {});
         trackTimer(() => {
-          if (!disposed && !isMainRunning() && getActiveCid() === cid) {
+          if (!disposed && !isComposerRunning() && getActiveRouteCid() === cid) {
             submitViaEditorFallback(box, prompt);
           }
         }, 450);
@@ -231,27 +213,38 @@ export function createResumeBannerRuntime() {
     submitViaEditorFallback(box, prompt);
   }
 
-  function tagResumedSteps() {
+  function readStepTags() {
     const steps = document.querySelectorAll('[data-testid="conversation-view"] [data-testid="user-input-step"]');
     const dividerLabel = L('已从中断处继续', 'Resumed');
+    const updates = [];
     for (const step of steps) {
       if (scannedSteps.has(step)) continue;
       if (step.getAttribute('data-agy-resumed-step') === '1') {
-        if (step.getAttribute('data-agy-resumed-label') !== dividerLabel) {
-          step.setAttribute('data-agy-resumed-label', dividerLabel);
-        }
+        updates.push({ step, label: dividerLabel });
         continue;
       }
       const content = step.querySelector('[data-testid="user-message-content"]');
       if (!content) continue;
       const txt = content.textContent || '';
       if (txt.startsWith(RESUME_SENTINEL) || LEGACY_RESUME_RE.test(txt.trim())) {
-        step.setAttribute('data-agy-resumed-step', '1');
-        step.setAttribute('data-agy-resumed-label', dividerLabel);
+        updates.push({ step, label: dividerLabel });
       } else if (txt.trim()) {
         scannedSteps.add(step);
       }
     }
+    return updates;
+  }
+
+  function writeStepTags(updates) {
+    if (!updates || !updates.length) return;
+    for (const { step, label } of updates) {
+      setAttr(step, 'data-agy-resumed-step', '1');
+      setAttr(step, 'data-agy-resumed-label', label);
+    }
+  }
+
+  function tagResumedSteps() {
+    writeStepTags(readStepTags());
   }
 
   function fetchResumeState(cid, { force = false } = {}) {
@@ -277,21 +270,25 @@ export function createResumeBannerRuntime() {
       });
   }
 
-  function render() {
+  function render(plan = null) {
     if (disposed) return;
-    tagResumedSteps();
+    if (!isEnabled()) {
+      removePill();
+      return;
+    }
 
-    const cid = getActiveCid();
-    const box = getMainBox();
-    const footer = box?.querySelector('.agy-composer-footer');
-    const leftGroup = footer?.children?.[0];
+    const cid = plan ? plan.cid : getActiveRouteCid();
+    const box = plan ? plan.box : getMainBox();
+    const footer = plan ? plan.footer : box?.querySelector('.agy-composer-footer');
+    const leftGroup = plan ? plan.leftGroup : footer?.children?.[0];
     if (!cid || !footer || !leftGroup) {
       removePill();
       return;
     }
 
-    const running = isMainRunning();
-    if (running || !isEditorEmpty()) {
+    const running = plan ? plan.running : isComposerRunning();
+    const editorEmpty = plan ? plan.editorEmpty : isEditorEmpty(box);
+    if (running || !editorEmpty) {
       removePill();
       return;
     }
@@ -312,6 +309,7 @@ export function createResumeBannerRuntime() {
     if (!pill) {
       pill = document.createElement('div');
       pill.id = PILL_ID;
+      markOwn(pill);
       pill.setAttribute('data-no-drag', '');
       pill.setAttribute('data-ag-i18n-ignore', '1');
       pill.innerHTML =
@@ -326,7 +324,7 @@ export function createResumeBannerRuntime() {
       pill.querySelector('.agy-resume-go')?.addEventListener('click', (e) => {
         e.preventDefault();
         e.stopPropagation();
-        const curCid = getActiveCid();
+        const curCid = getActiveRouteCid();
         const curData = stateCache.cid === curCid ? stateCache.data : null;
         if (curCid && curData) triggerResume(curCid, curData.lastIdx);
       });
@@ -334,10 +332,12 @@ export function createResumeBannerRuntime() {
       pill.querySelector('.agy-resume-dismiss')?.addEventListener('click', (e) => {
         e.preventDefault();
         e.stopPropagation();
-        const curCid = getActiveCid();
+        const curCid = getActiveRouteCid();
         const curData = stateCache.cid === curCid ? stateCache.data : null;
         if (curCid && curData) dismissCurrent(curCid, curData.lastIdx);
       });
+    } else {
+      markOwn(pill);
     }
 
     if (pill.parentElement !== leftGroup) {
@@ -346,23 +346,66 @@ export function createResumeBannerRuntime() {
 
     const label = L('继续任务', 'Resume');
     const tip = `${reasonText(data.reason)} · ${L('点击自动续跑', 'Click to resume')}`;
-    const sig = `${key}|${label}|${tip}`;
+    const langTag = plan ? plan.langTag : (isZhUi() ? 'zh' : 'en');
+    const sig = `${key}|${langTag}|${label}|${tip}`;
     if (pill.getAttribute('data-sig') !== sig) {
-      pill.setAttribute('data-sig', sig);
+      setAttr(pill, 'data-sig', sig);
       const lblEl = pill.querySelector('.agy-resume-label');
-      if (lblEl) lblEl.textContent = label;
+      if (lblEl) setLeafText(lblEl, label);
       const goBtn = pill.querySelector('.agy-resume-go');
-      if (goBtn) goBtn.title = tip;
+      if (goBtn && goBtn.title !== tip) goBtn.title = tip;
       const disBtn = pill.querySelector('.agy-resume-dismiss');
-      if (disBtn) disBtn.title = L('忽略提示', 'Dismiss');
+      const dismissLbl = L('忽略提示', 'Dismiss');
+      if (disBtn) {
+        if (disBtn.title !== dismissLbl) disBtn.title = dismissLbl;
+        setAttr(disBtn, 'aria-label', dismissLbl);
+      }
     }
   }
 
-  function sync() {
-    if (disposed) return;
-    const cid = getActiveCid();
-    const running = isMainRunning();
+  function read(snapshot = null) {
+    if (disposed) return null;
+    const topics = snapshot?.topics;
+    const shouldScanSteps =
+      !topics || topics.has('all') || topics.has('stream') || topics.has('route') || topics.has('prefs');
+    const stepTags = shouldScanSteps ? readStepTags() : null;
+    const enabled = isEnabled();
+    const cid = snapshot ? snapshot.cid : getActiveRouteCid();
+    const box = snapshot ? snapshot.mainBox : getMainBox();
+    const footer = box?.querySelector?.('.agy-composer-footer') || null;
+    const leftGroup = footer?.children?.[0] || null;
+    const running = snapshot ? snapshot.isRunning : isComposerRunning();
+    const editorEmpty = enabled && cid && leftGroup ? isEditorEmpty(box) : true;
+    const langTag = snapshot ? snapshot.langTag : (isZhUi() ? 'zh' : 'en');
+    return {
+      enabled,
+      cid,
+      box,
+      footer,
+      leftGroup,
+      running,
+      editorEmpty,
+      langTag,
+      stepTags,
+    };
+  }
 
+  function write(snapshot = null, planArg = undefined) {
+    if (disposed) return;
+    const plan = planArg !== undefined ? planArg : read(snapshot);
+    if (!plan) return;
+    writeStepTags(plan.stepTags);
+
+    if (!plan.enabled) {
+      if (settleTimer) {
+        clearTimeout(settleTimer);
+        settleTimer = 0;
+      }
+      removePill();
+      return;
+    }
+
+    const { cid, running } = plan;
     if (cid !== prevCid) {
       prevCid = cid;
       stateCache = { cid: '', ts: 0, inFlight: false, data: null };
@@ -375,7 +418,7 @@ export function createResumeBannerRuntime() {
       if (settleTimer) clearTimeout(settleTimer);
       settleTimer = setTimeout(() => {
         settleTimer = 0;
-        if (!disposed && !isMainRunning() && getActiveCid() === cid) {
+        if (!disposed && isEnabled() && !isComposerRunning() && getActiveRouteCid() === cid) {
           fetchResumeState(cid, { force: true });
         }
       }, 650);
@@ -384,12 +427,18 @@ export function createResumeBannerRuntime() {
     }
 
     prevRunning = running;
-    render();
+    render(plan);
+  }
+
+  function sync() {
+    if (disposed) return;
+    write(null, read(null));
   }
 
   function dispose() {
     if (disposed) return;
     disposed = true;
+    offStudioPrefs?.();
     if (settleTimer) {
       clearTimeout(settleTimer);
       settleTimer = 0;
@@ -403,5 +452,11 @@ export function createResumeBannerRuntime() {
     });
   }
 
-  return { sync, dispose };
+  return {
+    topics: ['composer', 'stream', 'route', 'prefs'],
+    read,
+    write,
+    sync,
+    dispose,
+  };
 }

@@ -10,9 +10,7 @@
     "model_picker.mjs",
     "motion_themes.mjs",
     "sqlite_cache.mjs",
-    "turn_ui.mjs",
     "ui.mjs",
-    "usage_history.mjs",
-    "usage_ui.mjs"
+    "usage_history.mjs"
   ]
 }

@@ -313,12 +313,12 @@
       }
       if (lightDecls.length > 0) {
         blocks.push(
-          `html[data-ag-os]:not([data-ag-theme-mode="dark"]):not(:has(> body.dark)), html[data-ag-os]:not([data-ag-theme-mode="dark"]) body:not(.dark) { ${lightDecls.join(' ')} }`
+          `html[data-ag-os][data-ag-theme-mode="light"], html[data-ag-os]:not([data-ag-theme-mode="dark"]) body:not(.dark) { ${lightDecls.join(' ')} }`
         );
       }
       if (darkDecls.length > 0) {
         blocks.push(
-          `html[data-ag-os][data-ag-theme-mode="dark"], html[data-ag-os][data-ag-theme-mode="dark"] body, html[data-ag-os]:has(> body.dark), html[data-ag-os] body.dark { ${darkDecls.join(' ')} }`
+          `html[data-ag-os][data-ag-theme-mode="dark"], html[data-ag-os][data-ag-theme-mode="dark"] body, html[data-ag-os] body.dark { ${darkDecls.join(' ')} }`
         );
       }
       const nextCss = blocks.join('\n');
@@ -718,20 +718,40 @@
       if (runtimeDisposed || !ENABLED || !MODULES.metrics) return;
       window.__ag_last_metrics = payload;
       const currentId = extractCascadeId();
+      const hasStudioRenderer = typeof window.__agyStudioMetricsRenderer === 'function';
       const pill = ensureMetricsPill(false);
       const ttEl = ensureMetricsTooltip();
       if (!pill) return;
-      if (!currentId || !payload || !payload.hasData || payload.cascadeId !== currentId) {
-        if (pill.style.display !== 'none') pill.style.display = 'none';
+      const isValid = Boolean(currentId && payload && payload.hasData && payload.cascadeId === currentId);
+      if (!isValid) {
         if (ttEl) ttEl.removeAttribute('data-visible');
+        if (hasStudioRenderer) {
+          const textEl = pill.querySelector('#ag-live-metrics-text');
+          window.__agyStudioMetricsRenderer(payload, pill, textEl, false);
+          return;
+        }
+        if (pill.style.display !== 'none') pill.style.display = 'none';
         return;
       }
+      if (ttEl && ttEl.__agLastTooltipHtml !== payload.tooltipHtml) {
+        ttEl.__agLastTooltipHtml = payload.tooltipHtml;
+        if (ttEl.innerHTML !== payload.tooltipHtml) ttEl.innerHTML = payload.tooltipHtml;
+      }
+      if (ttEl) {
+        const hasUxTt = Boolean(ttEl.firstElementChild && ttEl.firstElementChild.classList && ttEl.firstElementChild.classList.contains('ag-ux-tt'));
+        if (hasUxTt) {
+          if (ttEl.getAttribute('data-ag-ux-tt') !== '1') ttEl.setAttribute('data-ag-ux-tt', '1');
+        } else if (ttEl.hasAttribute('data-ag-ux-tt')) {
+          ttEl.removeAttribute('data-ag-ux-tt');
+        }
+      }
       const textEl = pill.querySelector('#ag-live-metrics-text');
+      if (hasStudioRenderer) {
+        window.__agyStudioMetricsRenderer(payload, pill, textEl, true);
+        return;
+      }
       if (textEl && textEl.innerHTML !== payload.inlineHtml) {
         textEl.innerHTML = payload.inlineHtml;
-      }
-      if (ttEl && ttEl.innerHTML !== payload.tooltipHtml) {
-        ttEl.innerHTML = payload.tooltipHtml;
       }
       if (pill.style.display !== 'inline-flex') {
         pill.style.display = 'inline-flex';
@@ -739,6 +759,17 @@
       }
     } catch {}
   };
+
+  function emitRouteChangeIfNeeded(pageType, cid) {
+    const nextSig = `${pageType}|${cid}`;
+    if (window.__ag_last_route_sig === nextSig) return;
+    window.__ag_last_route_sig = nextSig;
+    if (typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
+      try {
+        window.dispatchEvent(new CustomEvent('agy:route-change', { detail: { pageType, cid } }));
+      } catch {}
+    }
+  }
 
   function checkRouteAndMountMetrics() {
     try {
@@ -758,6 +789,7 @@
       if (document.documentElement.getAttribute('data-ag-page-type') !== pageType) {
         document.documentElement.setAttribute('data-ag-page-type', pageType);
       }
+      emitRouteChangeIfNeeded(pageType, cid);
 
       if (!MODULES.metrics) {
         const existing = document.getElementById('ag-live-metrics-pill');
@@ -827,7 +859,7 @@
 
   window.__ag_check_route_fn = checkRouteAndMountMetrics;
   if (!IS_SWARM_PLUGIN_FRAME) {
-    window.__ag_metrics_route_watcher = setInterval(checkRouteAndMountMetrics, 3000);
+    window.__ag_metrics_route_watcher = setInterval(checkRouteAndMountMetrics, 10000);
   }
   if (document.body || IS_SWARM_PLUGIN_FRAME) {
     checkRouteAndMountMetrics();
@@ -915,6 +947,7 @@
     config: boot.config || {},
     modules: MODULES,
     features: MODULES,
+    studioPrefs: boot.studioPrefs || null,
     themeVars: THEME_VARS,
     darkThemeVars: DARK_THEME_VARS,
     dict: DICT,

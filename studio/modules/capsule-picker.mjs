@@ -4,6 +4,9 @@
  * matching the Context and Speed pills in both Light and Dark modes.
  */
 
+import { isVisibleFast, markOwn, setAttr, setLeafText, setStyle } from '../core/dom.mjs';
+import { getActiveRouteCid, isZhUi } from '../core/env.mjs';
+
 export function buildPickerShadowCss({ effortBarCss, agentEntryCss }) {
   return `
 #deck-metrics-strip, #deck-metrics-strip * { box-sizing: border-box; }
@@ -233,7 +236,6 @@ export function buildPickerShadowCss({ effortBarCss, agentEntryCss }) {
   border-radius: 14px;
   border: 1px solid color-mix(in srgb, var(--foreground, #141413) 10%, transparent);
   background: var(--card, var(--background, rgb(255, 255, 255)));
-  backdrop-filter: blur(12px) saturate(160%);
   contain: layout style;
   box-shadow: 0 1px 0 color-mix(in srgb, var(--foreground, #fff) 8%, transparent) inset, 0 18px 40px -10px rgba(0, 0, 0, 0.20), 0 4px 12px -2px rgba(0, 0, 0, 0.10);
   color: var(--foreground, CanvasText);
@@ -370,8 +372,10 @@ ${agentEntryCss}
 .dk-model-options [role="status"] { padding: 6px 8px 2px; color: #e06c75; font-size: 12px; }
 .dk-model-options [role="status"]:empty { display: none; }
 
-/* Sleek 18px effort slider & refined Orchestrator dock proportions */
+/* Sleek 18px effort slider & refined Orchestrator proportions */
+.dk-orch-slot { margin: 5px 0 2px !important; }
 .dk-orch-slot[data-style="dock"] { margin: 6px 0 0 !important; }
+.dk-orch-slot:not([hidden]) + .agy-effort { margin-top: 0 !important; }
 .dk-orch-btn[data-style="dock"] {
   min-height: 30px !important;
   padding: 5px 10px !important;
@@ -379,9 +383,14 @@ ${agentEntryCss}
 .dk-orch-btn .dk-orch-label {
   font-size: 12.5px !important;
   font-weight: 500 !important;
+  line-height: 1 !important;
+}
+.ces-ag-effort-row {
+  padding: 8px 10px 9px !important;
+  gap: 8px !important;
 }
 .ces-ag-effort-head {
-  align-items: baseline !important;
+  align-items: center !important;
   line-height: 16px !important;
 }
 .ces-ag-effort-title,
@@ -496,9 +505,9 @@ export function shortenEffortBadge(effortText) {
  */
 export function createCapsulePickerRuntime({
   prefs,
+  studioPrefs,
   labelsByLang,
   shadowCss,
-  cfgMods,
   syncModelPicker,
   effortEffects,
   motionThemes,
@@ -510,7 +519,6 @@ export function createCapsulePickerRuntime({
   const MODEL_WRAP_ATTR = 'data-agy-model-wrap';
   const NATIVE_STYLE_ID = 'agy-capsule-picker-native-layout';
   const EFFORT_STORAGE_KEY = 'agy-capsule.effort-bar.v1';
-  const MODS_STORAGE_KEY = 'ag_claude_ux_modules_v1';
   const NATIVE_STYLE_CSS = [
     '.agy-composer-footer button[data-deck-model-bubble="hidden"],',
     '#antigravity\\.agentSidePanelInputBox button[data-deck-model-bubble="hidden"],',
@@ -524,41 +532,21 @@ export function createCapsulePickerRuntime({
 
   let disposed = false;
   let seededPrefs = false;
+  let lastScheduleParent = null;
   const instances = new Map(); // footerLeft -> { hostEl, rootEl, footerObs, modelWrap, ... }
-
-  // Synchronize stale pre-studio localStorage override once on boot if config disables claudeUxModelMenu
-  if (cfgMods.claudeUxModelMenu === false) {
-    try {
-      const raw = typeof localStorage === 'object' && localStorage ? localStorage.getItem(MODS_STORAGE_KEY) : null;
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (parsed && parsed.claudeUxModelMenu === true) {
-          parsed.claudeUxModelMenu = false;
-          localStorage.setItem(MODS_STORAGE_KEY, JSON.stringify(parsed));
-        }
-      }
-    } catch {}
-  }
-
-  function isClaudeModelMenuEnabled() {
-    try {
-      const raw = typeof localStorage === 'object' && localStorage
-        ? localStorage.getItem(MODS_STORAGE_KEY)
-        : null;
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (parsed && typeof parsed.claudeUxModelMenu === 'boolean') return parsed.claudeUxModelMenu;
-      }
-    } catch {}
-    return cfgMods.claudeUxModelMenu === true;
-  }
+  const activePrefs = () => (studioPrefs ? studioPrefs.get() : prefs);
+  const offStudioPrefs = studioPrefs?.subscribe?.(() => {
+    if (disposed) return;
+    for (const inst of instances.values()) inst.dirty = true;
+    if (typeof lastScheduleParent === 'function') lastScheduleParent();
+  });
 
   function isFooterLeftVisible(el) {
     if (!el || !el.isConnected) return false;
     // Narrow 2-row mode sets `display: contents` on div:first-child; measure its visible footer parent instead.
     const parentHasRow2 = el.parentElement?.getAttribute?.('data-agy-has-row2') === 'true';
     const boxEl = parentHasRow2 || getComputedStyle(el).display === 'contents' ? el.parentElement : el;
-    if (!boxEl || !boxEl.checkVisibility({ opacityProperty: true, visibilityProperty: true })) return false;
+    if (!isVisibleFast(boxEl)) return false;
     const r = boxEl.getBoundingClientRect();
     return !(
       Math.min(r.bottom, innerHeight) <= Math.max(r.top, 0) ||
@@ -652,9 +640,10 @@ export function createCapsulePickerRuntime({
       if (!hostEl) {
         hostEl = document.createElement('span');
         if (!isSide && !document.getElementById(HOST_ID)) hostEl.id = HOST_ID;
-        hostEl.setAttribute(HOST_ATTR, '1');
-        hostEl.setAttribute('data-ag-i18n-ignore', '1');
-        hostEl.setAttribute('data-no-drag', '');
+        markOwn(hostEl);
+        setAttr(hostEl, HOST_ATTR, '1');
+        setAttr(hostEl, 'data-ag-i18n-ignore', '1');
+        setAttr(hostEl, 'data-no-drag', '');
         hostEl.style.display = 'contents';
         const markDirty = () => {
           const cur = instances.get(hostEl.parentElement);
@@ -668,6 +657,8 @@ export function createCapsulePickerRuntime({
         rootEl = document.createElement('div');
         rootEl.id = 'deck-metrics-strip';
         shadow.append(style, rootEl);
+      } else {
+        markOwn(hostEl);
       }
       inst = {
         hostEl,
@@ -704,9 +695,7 @@ export function createCapsulePickerRuntime({
 
     const footer = footerLeft?.closest?.('.agy-composer-footer');
     const dockTier = footer?.getAttribute('data-agy-dock-tier') || 'full';
-    if (root.getAttribute('data-dock-tier') !== dockTier) {
-      root.setAttribute('data-dock-tier', dockTier);
-    }
+    setAttr(root, 'data-dock-tier', dockTier);
 
     let dot = btn.querySelector('.agy-mp-dot');
     if (!dot) {
@@ -729,10 +718,10 @@ export function createCapsulePickerRuntime({
     let effortText = '';
     if (effortEl) {
       effortText = (effortEl.textContent || '').trim();
-      if (effortEl.textContent !== effortText) effortEl.textContent = effortText;
+      setLeafText(effortEl, effortText);
     }
 
-    const isZh = document.documentElement.getAttribute('data-ag-ux-lang') === 'zh-CN';
+    const isZh = isZhUi();
     const modelName = (nameEl?.textContent || '').trim();
     const isOrch = /^orchestrator$/i.test(modelName);
     const shortName = shortenModelName(modelName, isZh);
@@ -743,10 +732,10 @@ export function createCapsulePickerRuntime({
         shortEl.className = 'agy-mp-short';
         shortEl.setAttribute('aria-hidden', 'true');
         nameEl.insertAdjacentElement('afterend', shortEl);
-      } else if (shortEl.getAttribute('aria-hidden') !== 'true') {
-        shortEl.setAttribute('aria-hidden', 'true');
+      } else {
+        setAttr(shortEl, 'aria-hidden', 'true');
       }
-      if (shortEl.textContent !== shortName) shortEl.textContent = shortName;
+      setLeafText(shortEl, shortName);
     }
 
     const effortShort = shortenEffortBadge(effortText);
@@ -757,23 +746,17 @@ export function createCapsulePickerRuntime({
         effortShortEl.className = 'agy-mp-effort-short';
         effortShortEl.setAttribute('aria-hidden', 'true');
         effortEl.insertAdjacentElement('afterend', effortShortEl);
-      } else if (effortShortEl.getAttribute('aria-hidden') !== 'true') {
-        effortShortEl.setAttribute('aria-hidden', 'true');
+      } else {
+        setAttr(effortShortEl, 'aria-hidden', 'true');
       }
-      if (effortShortEl.textContent !== effortShort) effortShortEl.textContent = effortShort;
+      setLeafText(effortShortEl, effortShort);
     } else if (effortShortEl) {
-      effortShortEl.textContent = '';
+      setLeafText(effortShortEl, '');
     }
 
-    const orchAttr = isOrch ? '1' : '0';
-    if (btn.getAttribute('data-is-orch') !== orchAttr) {
-      btn.setAttribute('data-is-orch', orchAttr);
-    }
+    setAttr(btn, 'data-is-orch', isOrch ? '1' : '0');
+    setAttr(btn, 'data-has-effort', effortText.length > 0 ? '1' : '0');
 
-    const hasEffort = effortText.length > 0 ? '1' : '0';
-    if (btn.getAttribute('data-has-effort') !== hasEffort) {
-      btn.setAttribute('data-has-effort', hasEffort);
-    }
     const fullTitle = `${modelName}${effortText ? ` · ${effortText}` : ''}`.trim();
     if (fullTitle && btn.title !== fullTitle) {
       btn.title = fullTitle;
@@ -782,18 +765,14 @@ export function createCapsulePickerRuntime({
     const caption = (typeof labels === 'string' ? labels : labels?.modelEffortPicker) || 'Enhanced model capsule';
     const cleanText = `${modelName}${effortText ? ` ${effortText}` : ''}`.trim();
     const nextAria = cleanText ? `${caption}: ${cleanText}` : caption;
-    if (btn.getAttribute('aria-label') !== nextAria) {
-      btn.setAttribute('aria-label', nextAria);
-    }
+    setAttr(btn, 'aria-label', nextAria);
 
     let accent = '#7c5ce6';
     try {
       const c = motionThemes().dotColorFor(modelName);
       if (c) accent = c;
     } catch {}
-    if (btn.style.getPropertyValue('--agy-model-accent') !== accent) {
-      btn.style.setProperty('--agy-model-accent', accent);
-    }
+    setStyle(btn, '--agy-model-accent', accent);
   }
 
   function seedEffortPrefsOnce() {
@@ -803,39 +782,61 @@ export function createCapsulePickerRuntime({
       const existing = typeof localStorage === 'object' && localStorage
         ? localStorage.getItem(EFFORT_STORAGE_KEY)
         : null;
-      if (!existing) effortEffects().applySidecarPrefs(prefs, window);
+      if (!existing) effortEffects().applySidecarPrefs(activePrefs(), window);
     } catch {}
   }
 
   function getActiveLabels() {
-    const isZh = document.documentElement.getAttribute('data-ag-ux-lang') === 'zh-CN';
+    const isZh = isZhUi();
     const labels = isZh ? labelsByLang['zh-CN'] : labelsByLang.en;
-    const settingsLabels = isZh ? labelsByLang['zh-CN'] : labelsByLang.en;
+    const settingsLabels = labels;
     return { labels, settingsLabels };
   }
 
-  function sync(scheduleParent) {
+  function read(snapshot = null) {
+    if (disposed) return null;
+    const curPrefs = activePrefs();
+    if (curPrefs && curPrefs.modelEffortPicker === false) {
+      return {
+        disabled: true,
+        shouldTeardownAll: instances.size > 0 || Boolean(document.querySelector('button[data-deck-model-bubble]')),
+      };
+    }
+    const eligible = findEligibleFooterLefts();
+    const curRoute = snapshot ? snapshot.pathname : (typeof location !== 'undefined' ? String(location.pathname || '') : '');
+    const curCid = snapshot ? snapshot.cid : getActiveRouteCid();
+    const curLang = snapshot ? snapshot.langTag : (document.documentElement.getAttribute('data-ag-ux-lang') || '');
+    const now = snapshot ? snapshot.now : Date.now();
+    return {
+      disabled: false,
+      eligible,
+      curRoute: `${curRoute}|${curCid}`,
+      curLang,
+      now,
+      curPrefs,
+      labelsPack: getActiveLabels(),
+    };
+  }
+
+  function write(snapshot = null, planArg = undefined, scheduleParent = lastScheduleParent) {
     if (disposed) return;
-    if (isClaudeModelMenuEnabled()) {
-      if (instances.size > 0 || document.querySelector('button[data-deck-model-bubble]')) {
-        teardownAll();
-      }
+    if (typeof scheduleParent === 'function') lastScheduleParent = scheduleParent;
+    const plan = planArg !== undefined ? planArg : read(snapshot);
+    if (!plan) return;
+    if (plan.disabled) {
+      if (plan.shouldTeardownAll) teardownAll();
       return;
     }
 
     ensureNativeStyle();
     seedEffortPrefsOnce();
 
-    const eligible = findEligibleFooterLefts();
+    const { eligible, curRoute, curLang, now, curPrefs, labelsPack } = plan;
+    const { labels, settingsLabels } = labelsPack;
     const activeSet = new Set(eligible.map((item) => item.el));
     for (const prevFooter of Array.from(instances.keys())) {
       if (!activeSet.has(prevFooter)) teardownInstance(prevFooter);
     }
-
-    const { labels, settingsLabels } = getActiveLabels();
-    const curRoute = typeof location !== 'undefined' ? String(location.pathname || '') : '';
-    const curLang = document.documentElement.getAttribute('data-ag-ux-lang') || '';
-    const now = Date.now();
 
     for (const { el: footerLeft, isSide } of eligible) {
       const inst = ensureHostFor(footerLeft, isSide);
@@ -855,13 +856,13 @@ export function createCapsulePickerRuntime({
         inst.lastTriggerText !== triggerText ||
         inst.lastRoute !== curRoute ||
         inst.lastLang !== curLang ||
-        panelOpen ||
+        (panelOpen && now - inst.lastPickerSyncTs >= 800) ||
         now - inst.lastPickerSyncTs >= 2500;
 
       if (needsPickerSync) {
         const scopedFind = () => (isFooterLeftVisible(footerLeft) ? footerLeft : null);
         try {
-          syncModelPicker(inst.rootEl, footerLeft, prefs, labels, scopedFind, settingsLabels);
+          syncModelPicker(inst.rootEl, footerLeft, curPrefs, labels, scopedFind, settingsLabels);
           if (inst.rootEl._modelPicker) inst.rootEl._modelPicker.setBubble(true);
           decorateModelCapsule(inst.rootEl, footerLeft);
         } catch (err) {
@@ -876,28 +877,43 @@ export function createCapsulePickerRuntime({
       } else {
         const footer = footerLeft?.closest?.('.agy-composer-footer');
         const dockTier = footer?.getAttribute?.('data-agy-dock-tier') || 'full';
-        if (inst.rootEl.getAttribute('data-dock-tier') !== dockTier) {
-          inst.rootEl.setAttribute('data-dock-tier', dockTier);
-        }
+        setAttr(inst.rootEl, 'data-dock-tier', dockTier);
       }
 
-      if (!inst.footerObs) {
-        inst.footerObs = new MutationObserver((mutations) => {
-          if (mutations.every((m) => inst.hostEl && (inst.hostEl === m.target || inst.hostEl.contains(m.target)))) return;
+      // Scoped strictly to native trigger button text/child mutations (never whole footer subtree)
+      if (trigger && inst.observedTrigger !== trigger && typeof MutationObserver === 'function') {
+        if (inst.footerObs) {
+          try { inst.footerObs.disconnect(); } catch {}
+        }
+        inst.observedTrigger = trigger;
+        inst.footerObs = new MutationObserver(() => {
           inst.dirty = true;
-          scheduleParent();
+          lastScheduleParent?.();
         });
-        inst.footerObs.observe(footerLeft, { subtree: true, characterData: true, childList: true });
+        inst.footerObs.observe(trigger, { subtree: true, characterData: true, childList: true });
       }
     }
+  }
+
+  function sync(scheduleParent) {
+    if (disposed) return;
+    if (typeof scheduleParent === 'function') lastScheduleParent = scheduleParent;
+    write(null, read(null), scheduleParent);
   }
 
   function dispose() {
     if (disposed) return;
     disposed = true;
+    offStudioPrefs?.();
     teardownAll();
     document.getElementById(NATIVE_STYLE_ID)?.remove();
   }
 
-  return { sync, dispose };
+  return {
+    topics: ['composer', 'route', 'prefs', 'subagent'],
+    read,
+    write,
+    sync,
+    dispose,
+  };
 }

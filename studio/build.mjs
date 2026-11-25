@@ -1,30 +1,26 @@
 /**
- * Modular bundler & deployer for agy-studio.
- * Composes vendor/agy-capsule + studio/modules + studio/styles into bounded blocks
- * inside ~/.gemini/antigravity/anti-claude/user/{custom.js,custom.css,config.json},
- * keeping upstream Anti-Claude user/* templates untouched for conflict-free upstream merges.
+ * Modular esbuild bundler & deployer for agy-studio.
+ * Compiles studio/entry.mjs (ESM) + studio/styles/*.css into bounded blocks inside
+ * ~/.gemini/antigravity/anti-claude/user/{custom.js,custom.css,config.json}.
  */
+import * as esbuild from 'esbuild';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import {
-  buildPickerShadowCss,
-  createCapsulePickerRuntime,
-  shortenEffortBadge,
-  shortenModelName,
-} from './modules/capsule-picker.mjs';
-import { createFooterUnifiedRuntime } from './modules/footer-unified.mjs';
-import { createOverviewUsageRuntime } from './modules/overview-usage.mjs';
-import { createResumeBannerRuntime } from './modules/resume-banner.mjs';
-import { createSubagentFooterRuntime } from './modules/subagent-footer.mjs';
+import { createPresentation } from '../vendor/agy-capsule/ui.mjs';
+import { buildPickerShadowCss } from './modules/capsule-picker.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 export const REPO_ROOT = path.resolve(__dirname, '..');
 const VENDOR_CAPSULE = path.join(REPO_ROOT, 'vendor', 'agy-capsule');
 const STYLES_DIR = path.join(__dirname, 'styles');
+const ENTRY_FILE = path.join(__dirname, 'entry.mjs');
+const USER_ENTRY_FILE = path.join(REPO_ROOT, 'user', 'src', 'entry.mjs');
+const REPO_USER_JS = path.join(REPO_ROOT, 'user', 'custom.js');
+const REPO_USER_CSS = path.join(REPO_ROOT, 'user', 'custom.css');
 const HOME = homedir();
 
 export const STATE_DIR = path.join(HOME, '.gemini', 'antigravity', 'anti-claude');
@@ -33,22 +29,19 @@ export const TARGET_CUSTOM_JS = path.join(TARGET_USER_DIR, 'custom.js');
 export const TARGET_CUSTOM_CSS = path.join(TARGET_USER_DIR, 'custom.css');
 export const TARGET_CONFIG_JSON = path.join(TARGET_USER_DIR, 'config.json');
 export const TARGET_UI_PREFS_JSON = path.join(STATE_DIR, 'ui-prefs.json');
-const CAPSULE_SETTINGS_PATH = path.join(HOME, '.gemini', 'config', 'agy-capsule', 'settings.json');
+const STUDIO_PREFS_PATH = path.join(STATE_DIR, 'studio-prefs.json');
 
 export const JS_BEGIN = '/* === BEGIN AGY-STUDIO === */';
 export const JS_END = '/* === END AGY-STUDIO === */';
 export const CSS_BEGIN = '/* === BEGIN AGY-STUDIO-CSS === */';
 export const CSS_END = '/* === END AGY-STUDIO-CSS === */';
 
-// Legacy markers from pre-refactor single-file script (auto-cleaned on deploy/rollback)
-const LEGACY_JS_MARKERS = ['/* === BEGIN AGY-CAPSULE MODEL PICKER === */', '/* === END AGY-CAPSULE MODEL PICKER === */'];
-const LEGACY_CSS_MARKERS = ['/* === BEGIN AGY-FOOTER-POLISH === */', '/* === END AGY-FOOTER-POLISH === */'];
-
 const STYLE_FILES = [
   'typography.css',
   'footer-capsules.css',
   'quota-popover.css',
   'overview-usage.css',
+  'studio-settings.css',
 ];
 
 const DEFAULT_PREFS = {
@@ -60,6 +53,7 @@ const DEFAULT_PREFS = {
   hideDefaultEffort: true,
   customizeModelList: false,
   hiddenModels: [],
+  defaultTierByFamily: { 'Gemini 4 Neon': 'high' },
   showModelDots: true,
   effortMotion: 'full',
   effortTicks: 'highlight',
@@ -70,6 +64,12 @@ const DEFAULT_PREFS = {
   orchestratorMode: 'dock',
   orchestrator3dStyle: 'helix',
   orchestratorIcon: 'prism',
+  hideThinkingProse: true,
+  resumeBannerEnabled: true,
+  overviewUsageEnabled: true,
+  overviewUsageDefaultPeriod: 'day',
+  subagentFooterEnabled: true,
+  motionLevel: 'full',
 };
 
 export function stripBlock(content, beginMarker, endMarker) {
@@ -84,8 +84,8 @@ export function stripBlock(content, beginMarker, endMarker) {
 function loadUserCapsulePrefs() {
   let saved = {};
   try {
-    if (existsSync(CAPSULE_SETTINGS_PATH)) {
-      saved = JSON.parse(readFileSync(CAPSULE_SETTINGS_PATH, 'utf8'));
+    if (existsSync(STUDIO_PREFS_PATH)) {
+      saved = JSON.parse(readFileSync(STUDIO_PREFS_PATH, 'utf8'));
     }
   } catch {}
   return {
@@ -99,22 +99,40 @@ function loadUserCapsulePrefs() {
   };
 }
 
+export async function buildUserCustomJs({ writeToRepo = true } = {}) {
+  if (!existsSync(USER_ENTRY_FILE)) {
+    throw new Error(`Missing user runtime entry point at ${USER_ENTRY_FILE}`);
+  }
+  const bundled = await esbuild.build({
+    entryPoints: [USER_ENTRY_FILE],
+    bundle: true,
+    write: false,
+    format: 'iife',
+    platform: 'browser',
+    target: ['chrome126'],
+    minify: false,
+    keepNames: false,
+    legalComments: 'none',
+  });
+  const compiled = (bundled.outputFiles?.[0]?.text || '').trim();
+  if (!compiled) {
+    throw new Error('esbuild produced an empty bundle for user/src/entry.mjs');
+  }
+  const banner = '/* Anti-Claude — user/custom.js (compiled from user/src/entry.mjs via esbuild; run `npm run build:user`) */';
+  const code = `${banner}\n${compiled}\n`;
+  // Validate standalone script compatibility with core/runtime.js and Chrome Desktop WebView
+  new Function('ctx', code);
+  if (writeToRepo) {
+    writeFileSync(REPO_USER_JS, code, 'utf8');
+  }
+  return { code, bytes: Buffer.byteLength(code, 'utf8') };
+}
+
 export async function buildStudioBundle() {
   const imp = (file) => import(pathToFileURL(path.join(VENDOR_CAPSULE, file)).href);
-  const [
-    { resolveInheritedLabel, readPickerState, syncModelPicker },
-    { readAgentState, AGENT_ENTRY_CSS, renderAgentEntry },
-    { createMotionThemes, motionThemes },
-    { createUpstreamEffort },
-    { EFFORT_BAR_CSS, effortEffects, mountEffortBar, mountOrchestratorSwitch },
-    { createPresentation },
-  ] = await Promise.all([
-    imp('model_picker.mjs'),
+  const [{ AGENT_ENTRY_CSS }, { EFFORT_BAR_CSS }] = await Promise.all([
     imp('agent_entry.mjs'),
-    imp('motion_themes.mjs'),
-    imp('effort_upstream.mjs'),
     imp('effort_bar.mjs'),
-    imp('ui.mjs'),
   ]);
 
   const prefs = loadUserCapsulePrefs();
@@ -138,236 +156,30 @@ export async function buildStudioBundle() {
     agentEntryCss: AGENT_ENTRY_CSS,
   });
 
-  // Scale effort slider canvas constants cleanly to 18px track & knob (fail fast if vendor code changes)
-  const EFFORT_REPLACEMENTS = [
-    ['var TRACK_HEIGHT = 28;', 'var TRACK_HEIGHT = 18;'],
-    ['var KNOB_SIZE = 28;', 'var KNOB_SIZE = 18;'],
-    ['var CLAUDE_CELL = 28 / 6;', 'var CLAUDE_CELL = 18 / 6;'],
-    ['var CLAUDE_KNOB_W = 24;', 'var CLAUDE_KNOB_W = 16;'],
-    ['var CLAUDE_KNOB_H = 30;', 'var CLAUDE_KNOB_H = 20;'],
-    ['var CLAUDE_KNOB_R = 7;', 'var CLAUDE_KNOB_R = 5;'],
-  ];
-  let scaledCreateUpstreamEffort = createUpstreamEffort.toString();
-  for (const [from, to] of EFFORT_REPLACEMENTS) {
-    if (!scaledCreateUpstreamEffort.includes(from)) {
-      throw new Error(`Expected effort slider constant not found in vendor/agy-capsule/effort_upstream.mjs: ${from}`);
-    }
-    scaledCreateUpstreamEffort = scaledCreateUpstreamEffort.replace(from, to);
-  }
-
-  const vendorFns = [
-    createMotionThemes.toString(),
-    motionThemes.toString(),
-    scaledCreateUpstreamEffort,
-    effortEffects.toString(),
-    mountEffortBar.toString(),
-    mountOrchestratorSwitch.toString(),
-    readAgentState.toString(),
-    renderAgentEntry.toString(),
-    resolveInheritedLabel.toString(),
-    readPickerState.toString(),
-    syncModelPicker.toString(),
-  ].join('\n\n');
-
-  const moduleFns = [
-    shortenModelName.toString(),
-    shortenEffortBadge.toString(),
-    createCapsulePickerRuntime.toString(),
-    createFooterUnifiedRuntime.toString(),
-    createOverviewUsageRuntime.toString(),
-    createResumeBannerRuntime.toString(),
-    createSubagentFooterRuntime.toString(),
-  ].join('\n\n');
-
-  const jsBlock = `${JS_BEGIN}
-(function () {
-  if (typeof window.__agyStudioDispose === 'function') {
-    try { window.__agyStudioDispose(); } catch {}
-  }
-  if (typeof window.__agyCapsulePickerDispose === 'function') {
-    try { window.__agyCapsulePickerDispose(); } catch {}
-  }
-
-  const STUDIO_PREFS = ${JSON.stringify(prefs, null, 2)};
-  const STUDIO_LABELS = ${JSON.stringify(labelsByLang, null, 2)};
-  const PICKER_SHADOW_CSS = ${JSON.stringify(shadowCss)};
-  const CFG_MODS =
-    (typeof ctx !== 'undefined' && ctx && (ctx.modules || (ctx.config && ctx.config.modules))) || {};
-
-${vendorFns}
-
-${moduleFns}
-
-  let disposed = false;
-  let rafId = 0;
-  let throttleTimer = 0;
-  let lastSyncTs = 0;
-  const MIN_STREAM_SYNC_GAP_MS = 120;
-  const STUDIO_OWN_SEL =
-    '[data-agy-picker-host="1"], #agy-capsule-picker-host, #agy-main-subagent-pill, #agy-subagent-menu, #agy-resume-pill, [data-agy-sub-pill], #agy-ov-usage-card, #agy-usage-tooltip';
-  const URGENT_MUT_SEL =
-    '.agy-composer-footer, [data-testid="overview-panel"], [data-testid="aux-pane-split"], [data-testid="subagent-tab-composer"], [data-testid="toggle-aux-sidebar"], [data-testid="toggle-overview-panel"]';
-
-  function isStudioOwnNode(node) {
-    const el = node && (node.nodeType === 1 ? node : node.parentElement);
-    return Boolean(el && el.closest && el.closest(STUDIO_OWN_SEL));
-  }
-
-  function isStudioOwnMutation(m) {
-    if (isStudioOwnNode(m.target)) return true;
-    const added = m.addedNodes || [];
-    const removed = m.removedNodes || [];
-    if (!added.length && !removed.length) return true;
-    for (const n of added) if (!isStudioOwnNode(n)) return false;
-    for (const n of removed) if (!isStudioOwnNode(n)) return false;
-    return true;
-  }
-
-  function isUrgentMutation(m) {
-    const t = m.target && (m.target.nodeType === 1 ? m.target : m.target.parentElement);
-    if (t && ((t.matches && t.matches(URGENT_MUT_SEL)) || (t.closest && t.closest(URGENT_MUT_SEL)))) {
-      return true;
-    }
-    for (const list of [m.addedNodes, m.removedNodes]) {
-      if (!list) continue;
-      for (const n of list) {
-        if (n && n.nodeType === 1 && ((n.matches && n.matches(URGENT_MUT_SEL)) || (n.querySelector && n.querySelector(URGENT_MUT_SEL)))) {
-          return true;
-        }
-      }
-    }
-    return false;
-  }
-
-  const picker = createCapsulePickerRuntime({
-    prefs: STUDIO_PREFS,
-    labelsByLang: STUDIO_LABELS,
-    shadowCss: PICKER_SHADOW_CSS,
-    cfgMods: CFG_MODS,
-    syncModelPicker,
-    effortEffects,
-    motionThemes,
-    shortenModelName,
-    shortenEffortBadge,
+  const bundled = await esbuild.build({
+    entryPoints: [ENTRY_FILE],
+    bundle: true,
+    write: false,
+    format: 'iife',
+    platform: 'browser',
+    target: ['chrome126'],
+    minify: false,
+    keepNames: false,
+    legalComments: 'none',
+    define: {
+      __STUDIO_DEFAULT_PREFS__: JSON.stringify(DEFAULT_PREFS),
+      __STUDIO_PREFS__: JSON.stringify(prefs),
+      __STUDIO_LABELS__: JSON.stringify(labelsByLang),
+      __PICKER_SHADOW_CSS__: JSON.stringify(shadowCss),
+    },
   });
-  const footer = createFooterUnifiedRuntime({ onTierChange: () => scheduleSync(true) });
-  const usage = createOverviewUsageRuntime({ motionThemes });
-  const resumeBanner = createResumeBannerRuntime();
-  const subagentFooter = createSubagentFooterRuntime({ motionThemes, shortenModelName, shortenEffortBadge });
 
-  function syncAll() {
-    if (disposed) return;
-    lastSyncTs = Date.now();
-    try {
-      subagentFooter.sync();
-      resumeBanner.sync();
-      picker.sync(() => scheduleSync(true));
-      footer.sync();
-      usage.sync();
-    } finally {
-      docObs.takeRecords();
-    }
+  const compiledJs = bundled.outputFiles?.[0]?.text || '';
+  if (!compiledJs.trim()) {
+    throw new Error('esbuild produced an empty bundle for studio/entry.mjs');
   }
 
-  function scheduleSync(immediate = false) {
-    if (disposed) return;
-    if (immediate) {
-      if (throttleTimer) {
-        clearTimeout(throttleTimer);
-        throttleTimer = 0;
-      }
-      if (!rafId) {
-        rafId = requestAnimationFrame(() => {
-          rafId = 0;
-          syncAll();
-        });
-      }
-      return;
-    }
-    if (rafId || throttleTimer) return;
-    const wait = MIN_STREAM_SYNC_GAP_MS - (Date.now() - lastSyncTs);
-    if (wait > 0) {
-      throttleTimer = setTimeout(() => {
-        throttleTimer = 0;
-        if (!disposed && !rafId) {
-          rafId = requestAnimationFrame(() => {
-            rafId = 0;
-            syncAll();
-          });
-        }
-      }, wait);
-      return;
-    }
-    rafId = requestAnimationFrame(() => {
-      rafId = 0;
-      syncAll();
-    });
-  }
-
-  const docObs = new MutationObserver((mutations) => {
-    if (disposed) return;
-    let needSync = false;
-    let urgent = false;
-    for (const m of mutations) {
-      if (isStudioOwnMutation(m)) continue;
-      needSync = true;
-      if (isUrgentMutation(m)) {
-        urgent = true;
-        break;
-      }
-    }
-    if (needSync) scheduleSync(urgent);
-  });
-  if (document.body) {
-    docObs.observe(document.body, { childList: true, subtree: true });
-  }
-  const pollTimer = setInterval(() => {
-    if (disposed || document.hidden) return;
-    syncAll();
-  }, 2500);
-  const onVisibleSync = () => {
-    if (!document.hidden) scheduleSync(true);
-  };
-  const onNavSync = () => scheduleSync(true);
-  window.addEventListener('storage', onNavSync);
-  window.addEventListener('popstate', onNavSync);
-  document.addEventListener('visibilitychange', onVisibleSync);
-
-  syncAll();
-
-  function dispose() {
-    if (disposed) return;
-    disposed = true;
-    if (throttleTimer) {
-      clearTimeout(throttleTimer);
-      throttleTimer = 0;
-    }
-    if (rafId) {
-      cancelAnimationFrame(rafId);
-      rafId = 0;
-    }
-    clearInterval(pollTimer);
-    window.removeEventListener('storage', onNavSync);
-    window.removeEventListener('popstate', onNavSync);
-    document.removeEventListener('visibilitychange', onVisibleSync);
-    docObs.disconnect();
-    picker.dispose();
-    footer.dispose();
-    resumeBanner.dispose();
-    subagentFooter.dispose();
-    usage.dispose();
-    if (window.__agyStudioDispose === dispose) {
-      window.__agyStudioDispose = null;
-    }
-  }
-
-  window.__agyStudioDispose = dispose;
-  if (typeof ctx !== 'undefined' && ctx && typeof ctx.onCleanup === 'function') {
-    ctx.onCleanup(dispose);
-  }
-})();
-${JS_END}
-`;
+  const jsBlock = `${JS_BEGIN}\n${compiledJs.trim()}\n${JS_END}\n`;
 
   // Fail fast if generated JS has any syntax issue before touching live files
   new Function('ctx', jsBlock);
@@ -382,31 +194,20 @@ ${JS_END}
   return { jsBlock, cssBlock, prefs };
 }
 
-function updateConfigJson({ claudeUxModelMenu }) {
+function syncLiveConfigForStudio() {
   if (existsSync(TARGET_CONFIG_JSON)) {
     const cfg = JSON.parse(readFileSync(TARGET_CONFIG_JSON, 'utf8'));
     cfg.modules = cfg.modules && typeof cfg.modules === 'object' ? cfg.modules : {};
-    cfg.modules.claudeUxModelMenu = claudeUxModelMenu;
-    if (!claudeUxModelMenu) {
-      cfg.modules.claudeUxStepUnfold = false;
-      cfg.cjkFontScale = '100';
-    } else {
-      cfg.modules.claudeUxStepUnfold = true;
-      delete cfg.cjkFontScale;
-    }
+    cfg.modules.claudeUxStepUnfold = false;
+    cfg.cjkFontScale = '100';
     writeFileSync(TARGET_CONFIG_JSON, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
   }
-  // Keep daemon's ui-prefs.json synchronized so Anti-Claude Settings toggles cannot
-  // overwrite claudeUxModelMenu back to stale state and tear down the studio picker.
   if (existsSync(TARGET_UI_PREFS_JSON)) {
     try {
       const prefs = JSON.parse(readFileSync(TARGET_UI_PREFS_JSON, 'utf8'));
       if (prefs && typeof prefs === 'object') {
         prefs.modules = prefs.modules && typeof prefs.modules === 'object' ? prefs.modules : {};
-        prefs.modules.claudeUxModelMenu = claudeUxModelMenu;
-        if (!claudeUxModelMenu) {
-          prefs.modules.claudeUxStepUnfold = false;
-        }
+        prefs.modules.claudeUxStepUnfold = false;
         writeFileSync(TARGET_UI_PREFS_JSON, JSON.stringify(prefs, null, 2) + '\n', 'utf8');
       }
     } catch {}
@@ -415,15 +216,11 @@ function updateConfigJson({ claudeUxModelMenu }) {
 
 export function stripStudioBlocksOnly() {
   if (existsSync(TARGET_CUSTOM_JS)) {
-    let raw = readFileSync(TARGET_CUSTOM_JS, 'utf8');
-    raw = stripBlock(raw, LEGACY_JS_MARKERS[0], LEGACY_JS_MARKERS[1]);
-    raw = stripBlock(raw, JS_BEGIN, JS_END);
+    const raw = stripBlock(readFileSync(TARGET_CUSTOM_JS, 'utf8'), JS_BEGIN, JS_END);
     writeFileSync(TARGET_CUSTOM_JS, raw, 'utf8');
   }
   if (existsSync(TARGET_CUSTOM_CSS)) {
-    let raw = readFileSync(TARGET_CUSTOM_CSS, 'utf8');
-    raw = stripBlock(raw, LEGACY_CSS_MARKERS[0], LEGACY_CSS_MARKERS[1]);
-    raw = stripBlock(raw, CSS_BEGIN, CSS_END);
+    const raw = stripBlock(readFileSync(TARGET_CUSTOM_CSS, 'utf8'), CSS_BEGIN, CSS_END);
     writeFileSync(TARGET_CUSTOM_CSS, raw, 'utf8');
   }
 }
@@ -435,19 +232,18 @@ export async function deployStudio() {
     );
   }
 
+  await buildUserCustomJs({ writeToRepo: true });
   const { jsBlock, cssBlock, prefs } = await buildStudioBundle();
 
-  let baseJs = readFileSync(TARGET_CUSTOM_JS, 'utf8');
-  baseJs = stripBlock(baseJs, LEGACY_JS_MARKERS[0], LEGACY_JS_MARKERS[1]);
+  let baseJs = existsSync(REPO_USER_JS) ? readFileSync(REPO_USER_JS, 'utf8') : readFileSync(TARGET_CUSTOM_JS, 'utf8');
   baseJs = stripBlock(baseJs, JS_BEGIN, JS_END);
   writeFileSync(TARGET_CUSTOM_JS, `${baseJs.replace(/\s+$/, '')}\n\n${jsBlock}`, 'utf8');
 
-  let baseCss = readFileSync(TARGET_CUSTOM_CSS, 'utf8');
-  baseCss = stripBlock(baseCss, LEGACY_CSS_MARKERS[0], LEGACY_CSS_MARKERS[1]);
+  let baseCss = existsSync(REPO_USER_CSS) ? readFileSync(REPO_USER_CSS, 'utf8') : readFileSync(TARGET_CUSTOM_CSS, 'utf8');
   baseCss = stripBlock(baseCss, CSS_BEGIN, CSS_END);
   writeFileSync(TARGET_CUSTOM_CSS, `${baseCss.replace(/\s+$/, '')}\n\n${cssBlock}`, 'utf8');
 
-  updateConfigJson({ claudeUxModelMenu: false });
+  syncLiveConfigForStudio();
 
   return {
     ok: true,
@@ -463,6 +259,5 @@ export async function deployStudio() {
 
 export function rollbackStudio() {
   stripStudioBlocksOnly();
-  updateConfigJson({ claudeUxModelMenu: true });
-  return { ok: true, action: 'rolled_back', claudeUxModelMenu: true };
+  return { ok: true, action: 'rolled_back' };
 }

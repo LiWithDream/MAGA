@@ -157,12 +157,15 @@ export function readPickerState(trigger) {
         targets,
       };
       // Keep the display row separate from the concrete host options and planner IDs.
+      const isZhUi = /^zh\b/i.test(document.documentElement?.getAttribute?.('data-ag-ux-lang') || '');
       const displayOptions = new Map();
       for (const [label, opt] of byLabel) {
         if (!isOrchestrator(opt)) displayOptions.set(label, opt);
         else if (!displayOptions.has('Orchestrator')) displayOptions.set('Orchestrator', {
           tagTitle: hostRoot.tagTitle,
-          tagDescription: 'Offloads routine steps to a faster executor.',
+          tagDescription: isZhUi
+            ? '将常规执行步骤分流至轻量模型，保持规划品质并节省 Token。'
+            : 'Offloads routine steps to a faster executor.',
         });
       }
       const { labels, items, families } = summarize(displayOptions, extraDisabled.filter(opt => !isOrchestrator(opt)));
@@ -224,6 +227,9 @@ export function syncModelPicker(root, footer, prefsOrEnabled, labels, findFooter
   const effortOptions = effortCaption ? settingsLabels?.effortBarOptions : null;
   const customizeList = typeof prefsOrEnabled === 'object' ? prefsOrEnabled?.customizeModelList === true : false;
   const hiddenList = customizeList && Array.isArray(prefsOrEnabled?.hiddenModels) ? prefsOrEnabled.hiddenModels : [];
+  const defaultTierByFamily = typeof prefsOrEnabled === 'object' && prefsOrEnabled?.defaultTierByFamily && typeof prefsOrEnabled.defaultTierByFamily === 'object'
+    ? prefsOrEnabled.defaultTierByFamily
+    : null;
   const previous = root._modelPicker;
   if (!enabled && !previous) return;
   const trigger = enabled && footer.querySelector('button[data-testid="model-selector-trigger"]');
@@ -243,10 +249,12 @@ export function syncModelPicker(root, footer, prefsOrEnabled, labels, findFooter
 
   const resolveCaption = src => (typeof src === 'string' ? src : src?.modelEffortPicker) || 'Enhanced model capsule';
   const resolveUnconfirmed = src => (typeof src === 'object' && src?.modelPickerUnconfirmed) ||
-    (document.documentElement.lang.startsWith('zh') ? '尚未确认切换，请查看原生菜单。' : 'Selection unconfirmed. Check the native menu.');
+    (/^zh\b/i.test(document.documentElement?.getAttribute?.('data-ag-ux-lang') || '')
+      ? '尚未确认切换，请查看原生菜单。'
+      : 'Selection unconfirmed. Check the native menu.');
 
   if (root._modelPicker) {
-    root._modelPicker.setConfig(hiddenList, hideTags, hideDefaultEffort, effortCaption, effortOptions, showModelDots);
+    root._modelPicker.setConfig(hiddenList, hideTags, hideDefaultEffort, effortCaption, effortOptions, showModelDots, defaultTierByFamily);
     root._modelPicker.refresh(state, resolveCaption(labels), resolveUnconfirmed(labels));
     return;
   }
@@ -295,7 +303,21 @@ export function syncModelPicker(root, footer, prefsOrEnabled, labels, findFooter
   const tierOrder = { off: 0, minimal: 1, low: 2, medium: 3, high: 4, xhigh: 5, extra: 6, max: 7 };
   const tierRe = /^(.*?)\s*\((off|low|medium|high|extra|xhigh|max|minimal)(?:\s+thinking)?\)$/i;
   const displayTier = tier => tier?.toLowerCase() === 'xhigh' ? 'Extra High' : tier;
-  const defaultTierFor = name => /\bneon\b/i.test(String(name || '')) ? 'high' : 'medium';
+  const defaultTierFor = name => {
+    const key = String(name || '').trim();
+    if (currentDefaultTiers && typeof currentDefaultTiers === 'object') {
+      if (typeof currentDefaultTiers[key] === 'string' && currentDefaultTiers[key]) {
+        return currentDefaultTiers[key].toLowerCase();
+      }
+      const lower = key.toLowerCase();
+      for (const [k, v] of Object.entries(currentDefaultTiers)) {
+        if (k.trim().toLowerCase() === lower && typeof v === 'string' && v) {
+          return v.toLowerCase();
+        }
+      }
+    }
+    return /\bneon\b/i.test(key) ? 'high' : 'medium';
+  };
   const plannerText = (label, showEffort = true) => {
     const name = label?.replace(/^Orchestrator → /, '') ?? '';
     const match = tierRe.exec(name);
@@ -338,6 +360,7 @@ export function syncModelPicker(root, footer, prefsOrEnabled, labels, findFooter
   let currentCaption = resolveCaption(labels);
   let currentUnconfirmed = resolveUnconfirmed(labels);
   let currentHidden = [...hiddenList];
+  let currentDefaultTiers = defaultTierByFamily ? { ...defaultTierByFamily } : null;
   let currentHideTags = hideTags;
   let currentHideDefaultEffort = hideDefaultEffort;
   let currentShowModelDots = showModelDots;
@@ -612,8 +635,9 @@ export function syncModelPicker(root, footer, prefsOrEnabled, labels, findFooter
 
   const picker = {
     trigger, id: state.conversationId,
-    setConfig(nextHidden, nextHideTags = false, nextHideDefaultEffort = false, nextEffortCaption = '', effortSettings = null, nextShowModelDots = true) {
+    setConfig(nextHidden, nextHideTags = false, nextHideDefaultEffort = false, nextEffortCaption = '', effortSettings = null, nextShowModelDots = true, nextDefaultTiers = null) {
       currentHidden = Array.isArray(nextHidden) ? [...nextHidden] : [];
+      currentDefaultTiers = nextDefaultTiers && typeof nextDefaultTiers === 'object' ? { ...nextDefaultTiers } : null;
       currentHideTags = nextHideTags === true;
       currentHideDefaultEffort = nextHideDefaultEffort === true;
       currentShowModelDots = nextShowModelDots !== false;
@@ -647,16 +671,22 @@ export function syncModelPicker(root, footer, prefsOrEnabled, labels, findFooter
       currentCaption = caption || currentCaption;
       currentUnconfirmed = unconfirmed || currentUnconfirmed;
       currentSelected = next.selected;
-      if (button.dataset.label !== next.selected) {
+      const labelChanged = button.dataset.label !== next.selected;
+      if (labelChanged) {
         button.dataset.label = next.selected;
         setFormattedLabel(button, next.selected, next.orchestrator);
+        if (button.hasAttribute('title')) button.removeAttribute('title');
       }
-      button.removeAttribute('title');
-      button.setAttribute('aria-label', currentCaption + ': ' +
+      const nextBtnAria = currentCaption + ': ' +
         (next.orchestrator?.active
           ? (next.orchestrator.current ? 'Orchestrator ' + plannerText(next.orchestrator.current) : 'Orchestrator')
-          : next.selected));
-      panel.setAttribute('aria-label', currentCaption);
+          : next.selected);
+      if ((labelChanged || !button.getAttribute('aria-label')) && button.getAttribute('aria-label') !== nextBtnAria) {
+        button.setAttribute('aria-label', nextBtnAria);
+      }
+      if (panel.getAttribute('aria-label') !== currentCaption) {
+        panel.setAttribute('aria-label', currentCaption);
+      }
       if (pending && (next.selected === pending || (pending === 'Orchestrator' && next.orchestrator?.active))) {
         clearTimeout(expiry);
         pending = null;
@@ -667,7 +697,7 @@ export function syncModelPicker(root, footer, prefsOrEnabled, labels, findFooter
         if (queued && queued !== next.selected) queueMicrotask(() => void commitSelection(queued, 'effort'));
       }
       const agentKey = next.agents ? [next.agents.items.map(item => [item.name, item.description]), next.agents.selected, currentCaption] : null;
-      const key = JSON.stringify([next.items || next.labels, next.selected, next.orchestrator, pending, currentHidden, currentHideTags, currentHideDefaultEffort, currentShowModelDots, currentEffortCaption, currentEffortOptions?.title, agentKey]);
+      const key = JSON.stringify([next.items || next.labels, next.selected, next.orchestrator, pending, currentHidden, currentDefaultTiers, currentHideTags, currentHideDefaultEffort, currentShowModelDots, currentEffortCaption, currentCaption, currentEffortOptions?.title, agentKey]);
       if (key === signature) return;
       signature = key;
       hideSub();

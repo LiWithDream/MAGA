@@ -3,24 +3,23 @@
  * MAGA (agy-studio) CLI — unified manager for daemon installation, hot-deploy, rules & diagnostics.
  *
  * Commands:
- *   node studio/cli.mjs install         Install daemon from this repo + deploy studio + sync fast-io rules
+ *   node studio/cli.mjs install         Build & install daemon from this repo + deploy studio + sync fast-io rules
  *   node studio/cli.mjs deploy          Rebuild & hot-deploy studio JS/CSS bundle into live user/ directory
  *   node studio/cli.mjs sync-rules      Sync critically pruned fast-io rules into ~/.gemini/AGENTS.md
- *   node studio/cli.mjs sync-capsule [dir]  Refresh vendored agy-capsule files from a local checkout
  *   node studio/cli.mjs doctor          Verify daemon, plist, CDP, usage stats, bundle markers & config
  *   node studio/cli.mjs rollback        Strip studio blocks and restore stock defaults
  */
 import { execFileSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import {
   CSS_BEGIN,
   JS_BEGIN,
   REPO_ROOT,
-  TARGET_CONFIG_JSON,
   TARGET_CUSTOM_CSS,
   TARGET_CUSTOM_JS,
+  buildUserCustomJs,
   deployStudio,
   rollbackStudio,
   stripBlock,
@@ -33,11 +32,11 @@ const AGENTS_MD = path.join(HOME, '.gemini', 'AGENTS.md');
 const AGY_CONFIG_JSON = path.join(HOME, '.gemini', 'config', 'config.json');
 const DAEMON_PLIST = path.join(HOME, 'Library', 'LaunchAgents', 'com.antigravity.anti-claude.daemon.plist');
 const RULES_SRC = path.join(REPO_ROOT, 'studio', 'rules', 'fast-io.md');
-const VENDOR_DIR = path.join(REPO_ROOT, 'vendor', 'agy-capsule');
-const VENDOR_VERSION = path.join(VENDOR_DIR, 'VERSION.json');
 
 const RULE_BEGIN = '<!-- BEGIN agy-fast-io-pruned -->';
 const RULE_END = '<!-- END agy-fast-io-pruned -->';
+const DEFAULT_ORCHESTRATOR_MODEL_ID = 1532; // Gemini 4 Neon (High)
+const DEFAULT_ORCHESTRATOR_MODEL_ENUM = 'MODEL_PLACEHOLDER_M532';
 
 function readJsonSafe(filePath) {
   if (!existsSync(filePath)) return null;
@@ -79,8 +78,38 @@ async function applyCollapsedStepsPreference() {
   } catch {}
 }
 
+async function applyDefaultOrchestratorModelPreference() {
+  // Default Orchestrator planner to Gemini 4 Neon (High) only when unset, preserving explicit user overrides.
+  let cdpHandled = false;
+  try {
+    const { cdpPrefs } = await import(path.join(REPO_ROOT, 'install.mjs'));
+    if (typeof cdpPrefs === 'function') {
+      const live = await cdpPrefs(null, ['orchestratorModel']);
+      if (live?.ok) {
+        cdpHandled = true;
+        const current = live.after?.orchestratorModel;
+        if (current === 0 || current === undefined || current === null) {
+          await cdpPrefs({ orchestratorModel: DEFAULT_ORCHESTRATOR_MODEL_ID });
+        }
+      }
+    }
+  } catch {}
+  if (!cdpHandled && existsSync(AGY_CONFIG_JSON)) {
+    const cfg = readJsonSafe(AGY_CONFIG_JSON);
+    if (cfg && typeof cfg === 'object') {
+      cfg.userSettings = cfg.userSettings || {};
+      const cur = cfg.userSettings.orchestratorModel;
+      if (cur === undefined || cur === null || cur === '' || cur === 0 || cur === 'MODEL_UNSPECIFIED') {
+        cfg.userSettings.orchestratorModel = DEFAULT_ORCHESTRATOR_MODEL_ENUM;
+        writeFileSync(AGY_CONFIG_JSON, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
+      }
+    }
+  }
+}
+
 async function runAntiClaudeInstall() {
-  // Strip studio blocks before base install so 3-way merge updates base custom.{js,css} cleanly
+  await buildUserCustomJs({ writeToRepo: true });
+  // Strip studio blocks before base install so base custom.{js,css} installs cleanly
   stripStudioBlocksOnly();
   const installScript = path.join(REPO_ROOT, 'install.mjs');
   execFileSync(
@@ -89,31 +118,7 @@ async function runAntiClaudeInstall() {
     { stdio: 'inherit', cwd: REPO_ROOT }
   );
   await applyCollapsedStepsPreference();
-}
-
-function syncCapsuleVendor(sourceDir) {
-  const meta = JSON.parse(readFileSync(VENDOR_VERSION, 'utf8'));
-  const resolved = path.resolve(sourceDir || path.join(HOME, 'agy-capsule'));
-  const sidecarDir = existsSync(path.join(resolved, 'agy-capsule', 'sidecars', 'agy_capsule'))
-    ? path.join(resolved, 'agy-capsule', 'sidecars', 'agy_capsule')
-    : resolved;
-
-  for (const file of meta.files) {
-    const src = path.join(sidecarDir, file);
-    if (!existsSync(src)) {
-      throw new Error(`Missing expected agy-capsule file: ${src}`);
-    }
-    copyFileSync(src, path.join(VENDOR_DIR, file));
-  }
-
-  let commit = meta.commit;
-  try {
-    commit = execFileSync('git', ['-C', resolved, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
-  } catch {}
-  meta.commit = commit;
-  meta.syncedAt = new Date().toISOString().slice(0, 10);
-  writeFileSync(VENDOR_VERSION, JSON.stringify(meta, null, 2) + '\n', 'utf8');
-  return { ok: true, source: sidecarDir, commit, files: meta.files.length };
+  await applyDefaultOrchestratorModelPreference();
 }
 
 async function runDoctor() {
@@ -132,11 +137,9 @@ async function runDoctor() {
   const pointsToStudio = plistText.includes(path.join(REPO_ROOT, 'core', 'daemon.mjs'));
   const hasJsMarker = existsSync(TARGET_CUSTOM_JS) && readFileSync(TARGET_CUSTOM_JS, 'utf8').includes(JS_BEGIN);
   const hasCssMarker = existsSync(TARGET_CUSTOM_CSS) && readFileSync(TARGET_CUSTOM_CSS, 'utf8').includes(CSS_BEGIN);
-  const cfg = readJsonSafe(TARGET_CONFIG_JSON);
   const agyCfg = readJsonSafe(AGY_CONFIG_JSON);
   const hasFastIo = existsSync(AGENTS_MD) && readFileSync(AGENTS_MD, 'utf8').includes(RULE_BEGIN);
   const usage = await collectUsageStatsAsync({ force: true });
-  const claudeUxModelMenu = cfg?.modules?.claudeUxModelMenu ?? null;
 
   return {
     ok: Boolean(
@@ -144,15 +147,14 @@ async function runDoctor() {
       pointsToStudio &&
       hasJsMarker &&
       hasCssMarker &&
-      claudeUxModelMenu === false &&
       usage?.ok
     ),
     repoRoot: REPO_ROOT,
     daemonPointsToStudio: pointsToStudio,
     studioBundle: { jsInjected: hasJsMarker, cssInjected: hasCssMarker },
-    claudeUxModelMenu,
     remoteControlEnabled: agyCfg?.userSettings?.remoteControlEnabled ?? agyCfg?.remoteControlEnabled ?? null,
     verboseConversationSteps: agyCfg?.userSettings?.verboseConversationSteps ?? null,
+    orchestratorModel: agyCfg?.userSettings?.orchestratorModel ?? null,
     fastIoRuleInstalled: hasFastIo,
     usageSummary: {
       daysCount: usage.days.length,
@@ -163,7 +165,7 @@ async function runDoctor() {
   };
 }
 
-const [cmd = 'deploy', arg1] = process.argv.slice(2);
+const [cmd = 'deploy'] = process.argv.slice(2);
 
 try {
   if (cmd === 'install') {
@@ -173,13 +175,10 @@ try {
     console.log(JSON.stringify({ ok: true, command: 'install', deploy: deployRes, rules: rulesRes }, null, 2));
   } else if (cmd === 'deploy') {
     const res = await deployStudio();
+    await applyDefaultOrchestratorModelPreference();
     console.log(JSON.stringify(res, null, 2));
   } else if (cmd === 'sync-rules') {
     console.log(JSON.stringify(syncFastIoRules(), null, 2));
-  } else if (cmd === 'sync-capsule') {
-    const syncRes = syncCapsuleVendor(arg1);
-    const deployRes = await deployStudio();
-    console.log(JSON.stringify({ ok: true, sync: syncRes, deploy: deployRes }, null, 2));
   } else if (cmd === 'doctor') {
     const report = await runDoctor();
     console.log(JSON.stringify(report, null, 2));
@@ -187,7 +186,7 @@ try {
   } else if (cmd === 'rollback') {
     console.log(JSON.stringify(rollbackStudio(), null, 2));
   } else {
-    console.error(`Unknown command: ${cmd}\nUse: install | deploy | sync-rules | sync-capsule | doctor | rollback`);
+    console.error(`Unknown command: ${cmd}\nUse: install | deploy | sync-rules | doctor | rollback`);
     process.exit(1);
   }
 } catch (err) {

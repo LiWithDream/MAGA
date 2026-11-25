@@ -4,11 +4,11 @@
 // Animation replay and canvas geometry optimizations adapted from upstream 70ebd41.
 import { motionThemes } from './motion_themes.mjs';
 
-export function createUpstreamEffort() {
+export function createUpstreamEffort(opts = {}) {
   var mt = motionThemes();
   var globalRoot = globalThis;
-  var TRACK_HEIGHT = 28;
-  var KNOB_SIZE = 28;
+  var TRACK_HEIGHT = opts.trackHeight ?? 18;
+  var KNOB_SIZE = opts.knobSize ?? 18;
   var KNOB_RADIUS = KNOB_SIZE / 2;
   var BASE_SPEEDUP = 4;
 
@@ -28,12 +28,12 @@ export function createUpstreamEffort() {
   };
 
   // Claude 专属主题常量（6×60 点阵、1.6s 从右至左扫掠、Capsule 胶囊滑块）
-  var CLAUDE_CELL = 28 / 6; // ≈ 4.67px
+  var CLAUDE_CELL = TRACK_HEIGHT / 6;
   var CLAUDE_ROWS = 6;
   var CLAUDE_SWEEP_MS = 1600;
-  var CLAUDE_KNOB_W = 24;
-  var CLAUDE_KNOB_H = 30;
-  var CLAUDE_KNOB_R = 7;
+  var CLAUDE_KNOB_W = opts.claudeKnobW ?? 16;
+  var CLAUDE_KNOB_H = opts.claudeKnobH ?? 20;
+  var CLAUDE_KNOB_R = opts.claudeKnobR ?? 5;
 
   function isClaudeModel(name) {
     if (!name || typeof name !== "string") return false;
@@ -288,8 +288,19 @@ export function createUpstreamEffort() {
     return false;
   }
 
-  function motionMode(win, explicitSettings) {
-    if (prefersReducedMotion(win)) return "quick";
+  function isMotionDisabled(win, explicitDoc) {
+    if (prefersReducedMotion(win)) return true;
+    var d = explicitDoc || (typeof document !== "undefined" ? document : null);
+    return Boolean(d && d.documentElement && d.documentElement.getAttribute && d.documentElement.getAttribute("data-agy-motion") === "off");
+  }
+
+  function isMotionReducedAttr(explicitDoc) {
+    var d = explicitDoc || (typeof document !== "undefined" ? document : null);
+    return Boolean(d && d.documentElement && d.documentElement.getAttribute && d.documentElement.getAttribute("data-agy-motion") === "reduced");
+  }
+
+  function motionMode(win, explicitSettings, doc) {
+    if (isMotionDisabled(win, doc)) return "quick";
     var s = explicitSettings || readSettings(win);
     return s.motion || "fast";
   }
@@ -609,9 +620,16 @@ export function createUpstreamEffort() {
     try {
       var d = doc || (typeof document !== "undefined" ? document : null);
       var w = win || (typeof window !== "undefined" ? window : globalRoot);
-      if (!d || !d.body || !w) return true;
-      if (d.documentElement && d.documentElement.classList.contains("dark")) return true;
-      if (d.body && d.body.classList.contains("dark")) return true;
+      if (!d || !w) return true;
+      var docEl = d.documentElement;
+      if (docEl) {
+        var themeAttr = docEl.getAttribute && docEl.getAttribute("data-ag-theme-mode");
+        if (themeAttr === "dark") return true;
+        if (themeAttr === "light") return false;
+        if (docEl.classList && docEl.classList.contains("dark")) return true;
+      }
+      if (!d.body) return true;
+      if (d.body.classList && d.body.classList.contains("dark")) return true;
       var bg = (w.getComputedStyle && w.getComputedStyle(d.body).backgroundColor) || "";
       var parts = bg.match(/[\d.]+/g);
       if (!parts || parts.length < 3) return true;
@@ -686,30 +704,34 @@ export function createUpstreamEffort() {
 
     var dotCol = isCustomClaude ? (dark ? pal.core : pal.back) : (dark ? [208, 192, 246] : [150, 130, 205]);
     var hiCol = isCustomClaude ? pal.glow : (dark ? [220, 204, 255] : [247, 243, 255]);
+    var dotStyle = "rgb(" + dotCol[0] + "," + dotCol[1] + "," + dotCol[2] + ")";
+    var hiStyle = "rgb(" + hiCol[0] + "," + hiCol[1] + "," + hiCol[2] + ")";
     var cell = h / 6 > 0 ? h / 6 : CLAUDE_CELL;
     var cols = Math.ceil(w / cell);
     var rows = 6;
+    var front = 1 - progress;
+    var lmap = !dark ? getMergeMap(cols, rows) : null;
 
-    for (var col = 0; col < cols; col += 1) {
-      var x = col * cell;
-      var t = clamp01(x / Math.max(1, w));
-      var fade = clamp01((t - 0.02) / 0.48);
-      for (var row = 0; row < rows; row += 1) {
-        // 确定性稀疏：同一格在同一强度下始终同样保留/剔除，避免拖动时整片闪烁
+    for (var row = 0; row < rows; row += 1) {
+      var rowWaves = 3 + Math.floor(hash01(0, row, 47) * 5);
+      var rowSpeed = 5.0 + 10.0 * hash01(0, row, 43);
+      var rowPhase = hash01(0, row, 53) * Math.PI * 2;
+      var rowWaves2 = 2 + Math.floor(hash01(0, row, 61) * 4);
+      var rowSpeed2 = rowSpeed * (rowWaves2 / rowWaves);
+      var rowPhase2 = hash01(0, row, 71) * Math.PI * 2;
+      var yPos = row * cell;
+      var dotY = yPos + 0.5;
+      var dotSize = cell * 0.72;
+
+      for (var col = 0; col < cols; col += 1) {
         if (keepRatio < 1 && hash01(col, row, 101) > keepRatio) continue;
+        var x = col * cell;
+        var t = clamp01(x / Math.max(1, w));
         var base = ditherAlphaAt(x, w, col, row) * alphaMul;
         if (base < 0.05) continue;
-        var front = 1 - progress;
         var edgeJit = (hash01(col, row, 31) - 0.5) * 0.05;
         if (t < front + edgeJit) continue;
         var appear = (0.35 + 0.65 * clamp01((t - front - edgeJit) / 0.04)) * (dark ? 1 : alphaMul);
-
-        var rowWaves = 3 + Math.floor(hash01(0, row, 47) * 5);
-        var rowSpeed = 5.0 + 10.0 * hash01(0, row, 43);
-        var rowPhase = hash01(0, row, 53) * Math.PI * 2;
-        var rowWaves2 = 2 + Math.floor(hash01(0, row, 61) * 4);
-        var rowSpeed2 = rowSpeed * (rowWaves2 / rowWaves);
-        var rowPhase2 = hash01(0, row, 71) * Math.PI * 2;
 
         var u1 = ((t * rowWaves * Math.PI * 2 + timeSec * rowSpeed + rowPhase) / (Math.PI * 2)) % 1;
         if (u1 < 0) u1 += 1;
@@ -723,17 +745,15 @@ export function createUpstreamEffort() {
         if (!dark) {
           var lt = clamp01((t - 0.05) / 0.2);
           if (lt <= 0) continue;
-          var lmap = getMergeMap(cols, rows);
           var mi = row * cols + col;
           var mv = lmap[mi];
           if (mv === 2) continue;
           if (hash01(col, row, 95) < 0.03) continue;
           var wide = mv === 3 || mv === 1;
           var tall = mv === 4 || mv === 1;
-          var y2 = row * cell;
-          var u = hash01(col, row, 93);
+          var uHash = hash01(col, row, 93);
           var sp = 22 + 66 * t;
-          var off = (u - 0.42) * sp;
+          var off = (uHash - 0.42) * sp;
           if (off > 0) off *= 1.1;
           var lr, lg, lb;
           if (isCustomClaude) {
@@ -761,23 +781,22 @@ export function createUpstreamEffort() {
           var lAlpha = clamp01(lt * appear * presence * (0.7 + 0.3 * (1 - flicker)) * (0.85 + 0.15 * hash01(col, row, 29)));
           ctx.globalAlpha = lAlpha;
           ctx.fillStyle = "rgb(" + lr + "," + lg + "," + lb + ")";
-          fillRoundRect(ctx, x + 0.5, y2 + 0.5, lw, lh, 1);
-          // 流光脉冲是点阵“流动”的唯一来源：亮度不随强度衰减（中档只靠点更少、底色更淡、速度更慢来区分）
+          ctx.fillRect(x + 0.5, dotY, lw, lh);
           var whiteAmt = clamp01(pulse * (0.35 + 0.65 * t)) * (0.55 + 0.45 * hash01(col, row, 71));
           if (progress < 0.999) {
             var flash = clamp01(1 - (t - front) / 0.16) * (0.55 + 0.45 * hash01(col, row, 73));
             whiteAmt = Math.max(whiteAmt, flash);
           }
           if (whiteAmt > 0.03) {
-            // 除回 alphaMul，让高光核心亮度与 High 一致
             ctx.globalAlpha = Math.min(1, (lAlpha / alphaMul) * (0.12 + 0.88 * whiteAmt));
-            ctx.fillStyle = "rgb(" + hiCol[0] + "," + hiCol[1] + "," + hiCol[2] + ")";
+            ctx.fillStyle = hiStyle;
             var ins = lw * 0.14;
-            fillRoundRect(ctx, x + 0.5 + ins, y2 + 0.5 + ins, lw - ins * 2, lh - ins * 2, 0.7);
+            ctx.fillRect(x + 0.5 + ins, dotY + ins, lw - ins * 2, lh - ins * 2);
           }
           continue;
         }
 
+        var fade = clamp01((t - 0.02) / 0.48);
         var flick = valueNoise(col, row, timeSec, 1.5, 5);
         var gap = 0.6 + 0.4 * clamp01((flick - (1 - fade) * 0.5) / 0.3);
         var vis = clamp01((t - 0.2) / 0.18);
@@ -785,13 +804,10 @@ export function createUpstreamEffort() {
         var baseAlpha = 0.04 + 0.96 * vis + ghost;
         var gridAlpha = clamp01(base * baseAlpha * gap * appear * 1.15 * (0.9 + 0.1 * hash01(col, row, 29)));
         if (gridAlpha < 0.008) continue;
-        var y = row * cell;
-        var size = cell * 0.72;
         ctx.globalAlpha = Math.min(1, gridAlpha * 0.55);
-        ctx.fillStyle = "rgb(" + dotCol[0] + "," + dotCol[1] + "," + dotCol[2] + ")";
-        fillRoundRect(ctx, x + 0.5, y + 0.5, size, size, 1.1);
+        ctx.fillStyle = dotStyle;
+        ctx.fillRect(x + 0.5, dotY, dotSize, dotSize);
 
-        // 同浅色模式：流光亮度不随强度衰减
         var whiteAmtDark = clamp01(pulse * (0.35 + 0.65 * t)) * (0.55 + 0.45 * hash01(col, row, 71));
         if (progress < 0.999) {
           var flashDark = clamp01(1 - (t - front) / 0.16) * (0.55 + 0.45 * hash01(col, row, 73));
@@ -799,8 +815,8 @@ export function createUpstreamEffort() {
         }
         if (whiteAmtDark > 0.03) {
           ctx.globalAlpha = Math.min(1, (gridAlpha / alphaMul) * (0.1 + 0.72 * whiteAmtDark));
-          ctx.fillStyle = "rgb(" + hiCol[0] + "," + hiCol[1] + "," + hiCol[2] + ")";
-          fillRoundRect(ctx, x + 0.5, y + 0.5, size, size, 0.7);
+          ctx.fillStyle = hiStyle;
+          ctx.fillRect(x + 0.5, dotY, dotSize, dotSize);
         }
       }
     }
@@ -1198,6 +1214,7 @@ export function createUpstreamEffort() {
     var claudeFlowTime = 0;
     var claudeClock = 0;
     var claudeLastTs = 0;
+    var claudeLastDrawTs = 0;
     // applyVisualPct 提供绘制状态，ResizeObserver 提供尺寸；绘制帧无需读取档位快照。
     var claudeIntensity = 0;
     var claudeEnergy = 0;
@@ -1216,7 +1233,10 @@ export function createUpstreamEffort() {
       ? new win.ResizeObserver(function (entries) {
           if (destroyed) return;
           var rect = entries[0].contentRect;
-          if (rememberClaudeTrackSize(rect) && claudeIntensity > 0) startClaudeCanvasAnimation();
+          if (rememberClaudeTrackSize(rect) && claudeIntensity > 0) {
+            claudeLastDrawTs = 0;
+            startClaudeCanvasAnimation();
+          }
         })
       : null;
     trackResizeObserver?.observe(trackEl);
@@ -1239,6 +1259,12 @@ export function createUpstreamEffort() {
     var lastRenderedTickCount = -1;
     var lastAppliedEnergy = -1;
     var lastAppliedSlowdown = -1;
+    var lastAccentRgb = "";
+    var lastOffsetCss = "";
+    var lastFillBg = "";
+    var lastTrackCursor = "";
+    var lastVisualSig = "";
+    var lastUsesCanvas = null;
 
     function nowMs() {
       if (win && win.performance && typeof win.performance.now === "function") {
@@ -1340,7 +1366,8 @@ export function createUpstreamEffort() {
         if (rowEl.getAttribute("data-motion") !== motionTag) {
           rowEl.setAttribute("data-motion", motionTag);
         }
-        if (rowEl.style && typeof rowEl.style.setProperty === "function") {
+        if (rowEl.style && typeof rowEl.style.setProperty === "function" && rowEl.__cesAccentRgb !== accentRgb) {
+          rowEl.__cesAccentRgb = accentRgb;
           rowEl.style.setProperty("--ces-accent-rgb", accentRgb);
         }
         if (isMax) {
@@ -1357,7 +1384,7 @@ export function createUpstreamEffort() {
         if (valEl.textContent !== label) {
           valEl.textContent = label;
           // 无论是 Claude 还是 Gemini / Codex，文字切换时统一触发顺滑向上翻转动效
-          if (label && !prefersReducedMotion(win)) {
+          if (label && !isMotionDisabled(win, doc)) {
             if (valEl.__cesRiseTimer) {
               clearTimeout(valEl.__cesRiseTimer);
               valEl.__cesRiseTimer = null;
@@ -1379,22 +1406,28 @@ export function createUpstreamEffort() {
       }
 
       if (typeof opts.onVisualChange === "function") {
-        try {
-          opts.onVisualChange({
-            index: safeIdx,
-            count: count,
-            label: label,
-            effort: levelItem ? levelItem.effort : "",
-            isMax: isMax,
-            locked: snap.locked,
-            baseName: snap.baseName,
-            theme: snap.theme,
-            element: snap.element,
-            energy: typeof energy === "number" ? energy : 0,
-            pct: typeof pct === "number" ? pct : 0
-          });
-        } catch (err) {
-          // 忽略外部视觉回调错误
+        var visualSig =
+          safeIdx + "|" + (isMax ? 1 : 0) + "|" + (snap.locked ? 1 : 0) + "|" +
+          snap.baseName + "|" + snap.theme + "|" + snap.element + "|" + Math.round((typeof energy === "number" ? energy : 0) * 50);
+        if (visualSig !== lastVisualSig) {
+          lastVisualSig = visualSig;
+          try {
+            opts.onVisualChange({
+              index: safeIdx,
+              count: count,
+              label: label,
+              effort: levelItem ? levelItem.effort : "",
+              isMax: isMax,
+              locked: snap.locked,
+              baseName: snap.baseName,
+              theme: snap.theme,
+              element: snap.element,
+              energy: typeof energy === "number" ? energy : 0,
+              pct: typeof pct === "number" ? pct : 0
+            });
+          } catch (err) {
+            // 忽略外部视觉回调错误
+          }
         }
       }
     }
@@ -1457,14 +1490,27 @@ export function createUpstreamEffort() {
 
     function stepClaudeCanvas(nowTs) {
       claudeRafId = null;
-      if (destroyed || claudeIntensity <= 0) return;
+      if (destroyed || claudeIntensity <= 0 || (doc && doc.hidden)) return;
       var now = typeof nowTs === "number" && nowTs > 0 ? nowTs : nowMs();
       var elapsed = Math.max(0, now - claudeAnimStart);
-      var reducedMotion = prefersReducedMotion(win);
+      var motionDisabled = isMotionDisabled(win, doc);
       var sweepMs = claudeMotion === "full" ? CLAUDE_SWEEP_MS : 640;
-      var progress = reducedMotion ? 1 : Math.min(1, elapsed / sweepMs);
-      // 相位按帧累加：dt 上限 50ms，防止切后台回来后一次性跳很远
-      var frameDt = claudeLastTs > 0 ? Math.min(0.05, Math.max(0, (now - claudeLastTs) / 1000)) : 0;
+      var progress = motionDisabled ? 1 : Math.min(1, elapsed / sweepMs);
+      var isTransitioning = dragging || rafId !== null || progress < 0.999;
+
+      if (claudeLastDrawTs > 0 && !motionDisabled && !isTransitioning) {
+        var minInterval = isMotionReducedAttr(doc) ? 48 : claudeMotion === "full" ? 30 : 38;
+        if (now - claudeLastDrawTs < minInterval) {
+          if (win && typeof win.requestAnimationFrame === "function") {
+            claudeRafId = win.requestAnimationFrame(stepClaudeCanvas);
+          }
+          return;
+        }
+      }
+      claudeLastDrawTs = now;
+
+      // 相位按帧累加：dt 上限 80ms，确保低频待机节流下流光速度依然与墙钟时间一致
+      var frameDt = claudeLastTs > 0 ? Math.min(0.08, Math.max(0, (now - claudeLastTs) / 1000)) : 0;
       claudeLastTs = now;
       var flowMul = claudeMotion === "full" ? 0.74 : 1.25;
       claudeClock += frameDt * flowMul;
@@ -1478,37 +1524,47 @@ export function createUpstreamEffort() {
         claudeThemeCheckedAt = now;
       }
       if (!trackResizeObserver) rememberClaudeTrackSize(trackEl.getBoundingClientRect?.());
-      // 画布像素宽度 = 已填充宽度（圆钮中心），与 CSS width: var(--ces-fill) 对齐
-      var tw = Math.max(1, Math.round(KNOB_RADIUS + (claudeTrackWidth - KNOB_RADIUS * 2) * claudeFill));
-      var dpr = Math.min((win && win.devicePixelRatio) || 1, 2);
-      var pxW = Math.max(1, Math.round(tw * dpr));
-      var pxH = Math.max(1, Math.round(claudeTrackHeight * dpr));
+      // 固定满轨画布缓冲，仅按当前填充宽度 tw 裁剪绘制，避免拖动/弹簧期间反复销毁重建 GPU 纹理
+      var trackW = Math.max(1, claudeTrackWidth);
+      var trackH = Math.max(1, claudeTrackHeight);
+      var dpr = Math.min((win && win.devicePixelRatio) || 1, 1.5);
+      var pxW = Math.max(1, Math.round(trackW * dpr));
+      var pxH = Math.max(1, Math.round(trackH * dpr));
       if (claudeCanvasEl.width !== pxW) claudeCanvasEl.width = pxW;
       if (claudeCanvasEl.height !== pxH) claudeCanvasEl.height = pxH;
+      var tw = Math.max(1, Math.round(KNOB_RADIUS + (trackW - KNOB_RADIUS * 2) * claudeFill));
       if (claudeContext === undefined) claudeContext = claudeCanvasEl.getContext?.("2d") ?? null;
       if (claudeContext) {
         if (typeof claudeContext.setTransform === "function") {
           claudeContext.setTransform(dpr, 0, 0, dpr, 0, 0);
         }
-        if (claudeTheme === "gemini") {
-          claudeContext.clearRect(0, 0, tw, claudeTrackHeight);
-          mt.paintGeminiSlider(claudeContext, claudePal, claudeSubTheme, tw, claudeTrackHeight, claudeFlowTime, claudeClock, claudeEnergy, { glass: true, glassStrength: 0.62 });
-        } else if (claudeSubTheme === "bars" || claudeSubTheme === "spark") {
-          claudeContext.clearRect(0, 0, tw, claudeTrackHeight);
-          claudeContext.globalAlpha = 0.35 + 0.65 * progress;
-          mt.paintClaudeSlider(claudeContext, claudePal, claudeSubTheme, tw, claudeTrackHeight, claudeFlowTime * 0.72, claudeClock, claudeEnergy, { fillBase: true, glass: true, glassStrength: 0.54 });
-          claudeContext.globalAlpha = 1;
-        } else {
-          paintDither(claudeContext, tw, claudeTrackHeight, claudeIsDark, progress, claudeFlowTime, claudeIntensity, claudePal);
+        claudeContext.clearRect(0, 0, trackW, trackH);
+        if (tw > 0) {
+          if (claudeContext.save) claudeContext.save();
+          if (claudeContext.beginPath && claudeContext.rect && claudeContext.clip) {
+            claudeContext.beginPath();
+            claudeContext.rect(0, 0, tw, trackH);
+            claudeContext.clip();
+          }
+          if (claudeTheme === "gemini") {
+            mt.paintGeminiSlider(claudeContext, claudePal, claudeSubTheme, tw, trackH, claudeFlowTime, claudeClock, claudeEnergy, { glass: true, glassStrength: 0.62 });
+          } else if (claudeSubTheme === "bars" || claudeSubTheme === "spark") {
+            claudeContext.globalAlpha = 0.35 + 0.65 * progress;
+            mt.paintClaudeSlider(claudeContext, claudePal, claudeSubTheme, tw, trackH, claudeFlowTime * 0.72, claudeClock, claudeEnergy, { fillBase: true, glass: true, glassStrength: 0.54 });
+            claudeContext.globalAlpha = 1;
+          } else {
+            paintDither(claudeContext, tw, trackH, claudeIsDark, progress, claudeFlowTime, claudeIntensity, claudePal);
+          }
+          if (claudeContext.restore) claudeContext.restore();
         }
       }
-      if (!reducedMotion && win && typeof win.requestAnimationFrame === "function") {
+      if (!motionDisabled && !(doc && doc.hidden) && win && typeof win.requestAnimationFrame === "function") {
         claudeRafId = win.requestAnimationFrame(stepClaudeCanvas);
       }
     }
 
     function startClaudeCanvasAnimation() {
-      if (destroyed || claudeRafId !== null) return;
+      if (destroyed || claudeRafId !== null || (doc && doc.hidden)) return;
       if (win && typeof win.requestAnimationFrame === "function") {
         claudeRafId = win.requestAnimationFrame(stepClaudeCanvas);
       } else {
@@ -1531,11 +1587,14 @@ export function createUpstreamEffort() {
       if (trackEl.getAttribute("data-theme") !== theme) trackEl.setAttribute("data-theme", theme);
       if (rootEl.getAttribute("data-element") !== elementTag) rootEl.setAttribute("data-element", elementTag);
       if (rootEl.getAttribute("data-motion") !== motionTag) rootEl.setAttribute("data-motion", motionTag);
-      rootEl.style.setProperty("--ces-accent-rgb", accentRgb);
+      if (accentRgb !== lastAccentRgb) {
+        lastAccentRgb = accentRgb;
+        rootEl.style.setProperty("--ces-accent-rgb", accentRgb);
+        if (container && container.style) container.style.setProperty("--ces-accent-rgb", accentRgb);
+      }
       if (container && container.setAttribute) {
         if (container.getAttribute("data-theme") !== theme) container.setAttribute("data-theme", theme);
         if (container.getAttribute("data-element") !== elementTag) container.setAttribute("data-element", elementTag);
-        if (container.style) container.style.setProperty("--ces-accent-rgb", accentRgb);
       }
 
       // Keep the unlocked slider reachable by keyboard in agy-capsule’s popover.
@@ -1557,23 +1616,43 @@ export function createUpstreamEffort() {
       } else if (trackEl.classList.contains("is-locked")) {
         trackEl.classList.remove("is-locked");
       }
-      trackEl.style.cursor = snap.visualMax ? "not-allowed" : "";
-
-      var offsetCss = knobOffsetOf(p, KNOB_RADIUS);
-      var fillBg = fillBackgroundFor(p, snap.energyStart, snap.energyEnd, theme, snap.pal);
-      trackEl.style.setProperty("--ces-fill", offsetCss);
-      trackEl.style.setProperty("--ces-fill-bg", fillBg);
-      fillEl.style.width = offsetCss;
-      fillEl.style.background = fillBg;
-      energyEl.style.width = offsetCss;
-      starsEl.style.width = offsetCss;
-      knobEl.style.left = offsetCss;
+      var nextCursor = snap.visualMax ? "not-allowed" : "";
+      if (nextCursor !== lastTrackCursor) {
+        lastTrackCursor = nextCursor;
+        trackEl.style.cursor = nextCursor;
+      }
 
       var animateTrack = !snap.locked || snap.visualMax;
       var energy = animateTrack ? energyForPct(p, snap.energyStart) : 0;
       var usesCanvas = theme === "claude" || theme === "gemini";
+      if (lastUsesCanvas !== null && usesCanvas !== lastUsesCanvas) {
+        lastOffsetCss = "";
+        lastAppliedEnergy = -1;
+      }
+      lastUsesCanvas = usesCanvas;
+
+      var offsetCss = knobOffsetOf(p, KNOB_RADIUS);
+      if (offsetCss !== lastOffsetCss) {
+        lastOffsetCss = offsetCss;
+        trackEl.style.setProperty("--ces-fill", offsetCss);
+        fillEl.style.width = offsetCss;
+        knobEl.style.left = offsetCss;
+        if (!usesCanvas) {
+          energyEl.style.width = offsetCss;
+          starsEl.style.width = offsetCss;
+        }
+      }
+
+      var fillBg = fillBackgroundFor(p, snap.energyStart, snap.energyEnd, theme, snap.pal);
+      if (fillBg !== lastFillBg) {
+        lastFillBg = fillBg;
+        trackEl.style.setProperty("--ces-fill-bg", fillBg);
+        fillEl.style.background = fillBg;
+      }
+
       var prevSub = claudeSubTheme;
       var prevTheme = claudeTheme;
+      var prevPal = claudePal;
       claudeTheme = theme;
       claudePal = snap.pal;
       claudeSubTheme = theme === "gemini" ? (activeSettings.geminiTheme || "physical") : (activeSettings.claudeTheme || "matrix");
@@ -1583,13 +1662,18 @@ export function createUpstreamEffort() {
         ? (theme === "claude" ? claudeIntensityFor(p, snap.energyStart) : (energy > 0 ? energy : 0))
         : 0;
       claudeSpeed = claudeSpeedFor(p, snap.energyStart);
+      var fillMoved = Math.abs(p - claudeFill) > 1e-4;
       claudeFill = p;
       if (claudeIntensity > 0) {
-        if (claudeCanvasEl.style.display !== "block" || prevSub !== claudeSubTheme || prevTheme !== claudeTheme) {
+        var subOrThemeChanged = claudeCanvasEl.style.display !== "block" || prevSub !== claudeSubTheme || prevTheme !== claudeTheme || prevPal !== claudePal;
+        if (subOrThemeChanged) {
           claudeCanvasEl.style.display = "block";
           claudeAnimStart = nowMs();
           claudeLastTs = 0;
+          claudeLastDrawTs = 0;
           claudeThemeCheckedAt = -Infinity;
+        } else if (fillMoved) {
+          claudeLastDrawTs = 0;
         }
         startClaudeCanvasAnimation();
       } else {
@@ -1599,7 +1683,7 @@ export function createUpstreamEffort() {
         stopClaudeCanvasAnimation();
       }
 
-      var modeNow = motionMode(win, activeSettings);
+      var modeNow = motionMode(win, activeSettings, doc);
       var slowdown = modeNow === "quick" ? REDUCED_MOTION_SLOWDOWN : modeNow === "full" ? 1.35 : 0.8;
       if (Math.abs(energy - lastAppliedEnergy) > 1e-5 || slowdown !== lastAppliedSlowdown) {
         lastAppliedEnergy = energy;
@@ -1614,21 +1698,23 @@ export function createUpstreamEffort() {
           if (container.style) container.style.setProperty("--ces-energy", energyStr);
         }
 
-        var starLayerOpacity = starLayerOpacityFor(energy);
-        trackEl.style.setProperty("--ces-star-opacity", String(starLayerOpacity));
-        starsEl.style.opacity = String(starLayerOpacity);
+        if (!usesCanvas) {
+          var starLayerOpacity = starLayerOpacityFor(energy);
+          trackEl.style.setProperty("--ces-star-opacity", String(starLayerOpacity));
+          starsEl.style.opacity = String(starLayerOpacity);
 
-        var visibleCount = Math.round(energy * PARTICLES.length);
-        var speedFactor = speedFor(p, snap.energyStart);
-        starsEl.setAttribute("data-count", String(visibleCount));
+          var visibleCount = Math.round(energy * PARTICLES.length);
+          var speedFactor = speedFor(p, snap.energyStart);
+          starsEl.setAttribute("data-count", String(visibleCount));
 
-        for (var i = 0; i < starNodes.length; i += 1) {
-          var sNode = starNodes[i];
-          var dur = starDurationFor(i, speedFactor) * slowdown;
-          var delay = starDelayFor(i, dur);
-          sNode.el.style.display = i < visibleCount ? "" : "none";
-          sNode.el.style.animationDuration = dur.toFixed(3) + "s";
-          sNode.el.style.animationDelay = delay.toFixed(3) + "s";
+          for (var i = 0; i < starNodes.length; i += 1) {
+            var sNode = starNodes[i];
+            var dur = starDurationFor(i, speedFactor) * slowdown;
+            var delay = starDelayFor(i, dur);
+            sNode.el.style.display = i < visibleCount ? "" : "none";
+            sNode.el.style.animationDuration = dur.toFixed(3) + "s";
+            sNode.el.style.animationDelay = delay.toFixed(3) + "s";
+          }
         }
       }
 
@@ -1993,6 +2079,21 @@ export function createUpstreamEffort() {
       applyVisualPct(snap, m.x, currentShownIndex(snap));
     }, win);
 
+    function handleVisibilityChange() {
+      if (destroyed) return;
+      if (doc && doc.hidden) {
+        stopClaudeCanvasAnimation();
+        stopFrames();
+      } else if (claudeIntensity > 0) {
+        claudeLastDrawTs = 0;
+        claudeLastTs = 0;
+        startClaudeCanvasAnimation();
+      }
+    }
+    if (doc && typeof doc.addEventListener === "function") {
+      doc.addEventListener("visibilitychange", handleVisibilityChange);
+    }
+
     // 首次同步渲染
     var initSnap = readSeatSnapshot();
     var initMotion = ensureMotion(initSnap);
@@ -2015,6 +2116,9 @@ export function createUpstreamEffort() {
         valEl?.classList.remove("ces-text-rise", "is-claude-changing");
         if (typeof offSeat === "function") offSeat();
         if (typeof offSettings === "function") offSettings();
+        if (doc && typeof doc.removeEventListener === "function") {
+          doc.removeEventListener("visibilitychange", handleVisibilityChange);
+        }
         trackEl.removeEventListener("pointerdown", onPointerDown);
         trackEl.removeEventListener("pointermove", onPointerMove);
         trackEl.removeEventListener("pointerup", onPointerUp);
@@ -2266,9 +2370,9 @@ export const UPSTREAM_EFFORT_CSS = `
   position: absolute;
   left: 0;
   top: 0;
-  width: var(--ces-fill, 0px);
+  width: 100%;
   height: 100%;
-  border-radius: 9px 0 0 9px;
+  border-radius: 9px;
   display: none;
   pointer-events: none;
 }
@@ -2417,7 +2521,6 @@ export const UPSTREAM_EFFORT_CSS = `
   color: #f4f4f6;
   border: 1px solid rgba(255, 255, 255, 0.12);
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55);
-  backdrop-filter: blur(12px);
   font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   font-size: 12px;
   box-sizing: border-box;

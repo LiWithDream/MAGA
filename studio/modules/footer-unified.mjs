@@ -7,11 +7,14 @@
  *    via ResizeObserver (`data-agy-dock-tier`) with zero wrapping or clipping.
  * 3. Syncs Context Ratio + unified 0/60/75 3-tier warnings across Footer, Quota Popover,
  *    and Overview Context card.
- * 4. Enhances #ag-live-metrics-pill with live working indicator dot, color-coded tok/s
- *    tiers, and progressive compression spans (full -> no TTFT -> number only -> dot only).
+ * 4. Enhances #ag-live-metrics-pill with permanent child slots (0 innerHTML / 0 childList churn),
+ *    live working dot, color-coded tok/s tiers, and progressive compression.
  */
+import { markOwn, setAttr, setLeafText } from '../core/dom.mjs';
+import { getActiveRouteCid, isComposerRunning, isZhUi } from '../core/env.mjs';
+import { installMetricsBus, renderSpeedSlots } from '../core/metrics-bus.mjs';
 
-export function createFooterUnifiedRuntime({ onTierChange } = {}) {
+export function createFooterUnifiedRuntime({ onTierChange, kernel } = {}) {
   let disposed = false;
   let footerResizeObs = null;
   let resizeRafId = 0;
@@ -19,9 +22,8 @@ export function createFooterUnifiedRuntime({ onTierChange } = {}) {
   const observedFooters = new Set();
   const observedWidths = new WeakMap();
   const layoutSigCache = new WeakMap();
-  let popObs = null;
-  let observedPop = null;
   let wrappedEnsureMetricsPill = null;
+  let metricsBusCleanup = null;
 
   const speedActivity = {
     running: false,
@@ -30,42 +32,23 @@ export function createFooterUnifiedRuntime({ onTierChange } = {}) {
     lastCid: '',
   };
 
-  function isZhUi() {
-    return document.documentElement.getAttribute('data-ag-ux-lang') === 'zh-CN';
-  }
-
-  function getActiveRouteCid() {
-    const m = String(location.pathname || '').match(/\/c\/([^/?#]+)/);
-    return m ? m[1] : '';
-  }
-
-  function hasValidMetricsForCurrentChat() {
-    const m = window.__ag_last_metrics;
-    if (!m || !m.hasData) return false;
-    const cid = getActiveRouteCid();
-    if (!cid) return false;
-    return !m.cascadeId || m.cascadeId === cid;
-  }
-
   function wrapEnsureMetricsPillOnce() {
+    if (typeof window === 'undefined') return;
     const cur = window.__ag_ensure_metrics_pill_fn;
     if (typeof cur !== 'function' || cur === wrappedEnsureMetricsPill) return;
     const orig = cur.__agyOrigEnsure || cur;
     const wrapped = function (...args) {
       const pill = orig.apply(this, args);
       if (!disposed && pill) {
+        markOwn(pill);
         const footer = document.querySelector('#antigravity\\.agentSidePanelInputBox .agy-composer-footer')
           || document.querySelector('.agy-composer-footer');
         const leftGroup = footer?.children?.[0];
         if (leftGroup && pill.parentElement !== leftGroup) {
           leftGroup.appendChild(pill);
         }
-        if (pill.getAttribute('data-ag-row-mode') !== 'middle') {
-          pill.setAttribute('data-ag-row-mode', 'middle');
-        }
-        if (footer && footer.getAttribute('data-ag-row-mode') !== 'middle') {
-          footer.setAttribute('data-ag-row-mode', 'middle');
-        }
+        setAttr(pill, 'data-ag-row-mode', 'middle');
+        if (footer) setAttr(footer, 'data-ag-row-mode', 'middle');
       }
       return pill;
     };
@@ -132,21 +115,17 @@ export function createFooterUnifiedRuntime({ onTierChange } = {}) {
   function simplifyPopoverReset(pop, ratioText) {
     if (!pop || !ratioText) return;
     const firstReset = pop.querySelector(':scope > .ag-qp-item .ag-qp-reset');
-    if (firstReset && firstReset.textContent !== ratioText) {
-      firstReset.textContent = ratioText;
-    }
+    if (firstReset) setLeafText(firstReset, ratioText);
   }
 
-  function watchPopoverSync(pop, getRatioText) {
-    if (!pop || observedPop === pop) return;
-    if (popObs) popObs.disconnect();
-    observedPop = pop;
-    popObs = new MutationObserver(() => {
-      if (disposed || !pop.isConnected) return;
-      const ratioText = getRatioText();
-      if (ratioText) simplifyPopoverReset(pop, ratioText);
-    });
-    popObs.observe(pop, { childList: true, subtree: true, characterData: true });
+  let lastRatioText = '';
+  const onQuotaPopRendered = () => {
+    if (disposed || !lastRatioText) return;
+    const pop = document.getElementById('ag-claude-quota-popover');
+    if (pop) simplifyPopoverReset(pop, lastRatioText);
+  };
+  if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+    window.addEventListener('agy:quota-popover-rendered', onQuotaPopRendered);
   }
 
   function hasExtraVisibleChip(leftGroup, addCtxBtnArg) {
@@ -157,9 +136,14 @@ export function createFooterUnifiedRuntime({ onTierChange } = {}) {
       if (ch.getAttribute?.('data-agy-model-wrap') === '1') continue;
       if (ch.id === 'ag-claude-ctx-ring' || ch.id === 'ag-live-metrics-pill' || ch.id === 'agy-resume-pill') continue;
       if (ch.hasAttribute('data-agy-sub-pill')) continue;
+      if (ch.id === 'agy-main-subagent-pill') {
+        if (!ch.hidden && ch.style.display !== 'none') return true;
+        continue;
+      }
       if (ch.tagName === 'INPUT') continue;
       if (ch === addCtxBtn) continue;
       if (ch.getAttribute?.('data-deck-model-bubble') === 'hidden' || ch.querySelector?.('button[data-deck-model-bubble="hidden"]')) continue;
+      if (ch.hidden || ch.style.display === 'none') continue;
       const r = ch.getBoundingClientRect();
       if (r.width > 1 && r.height > 1) return true;
     }
@@ -182,21 +166,13 @@ export function createFooterUnifiedRuntime({ onTierChange } = {}) {
   }
 
   function applyDockTier(footer, leftGroup, dockTier) {
-    if (footer.getAttribute('data-agy-has-row2') !== 'true') {
-      footer.setAttribute('data-agy-has-row2', 'true');
-    }
-    if (footer.getAttribute('data-agy-dock-tier') !== dockTier) {
-      footer.setAttribute('data-agy-dock-tier', dockTier);
-    }
+    setAttr(footer, 'data-agy-has-row2', 'true');
+    setAttr(footer, 'data-agy-dock-tier', dockTier);
     const pickerHost = leftGroup?.querySelector(':scope > [data-agy-picker-host="1"]');
     if (pickerHost) {
-      if (pickerHost.getAttribute('data-agy-dock-tier') !== dockTier) {
-        pickerHost.setAttribute('data-agy-dock-tier', dockTier);
-      }
+      setAttr(pickerHost, 'data-agy-dock-tier', dockTier);
       const strip = pickerHost.shadowRoot?.getElementById('deck-metrics-strip');
-      if (strip && strip.getAttribute('data-dock-tier') !== dockTier) {
-        strip.setAttribute('data-dock-tier', dockTier);
-      }
+      if (strip) setAttr(strip, 'data-dock-tier', dockTier);
     }
   }
 
@@ -293,22 +269,145 @@ export function createFooterUnifiedRuntime({ onTierChange } = {}) {
     ].join('|');
   }
 
-  function syncFooterResponsiveLayout() {
-    const excluded = '[data-testid="side-question-tab-content"], [data-testid="voice-dock-composer"]';
-    const footers = Array.from(document.querySelectorAll('.agy-composer-footer')).filter(
-      (f) => !f.closest(excluded)
-    );
-    watchFooters(footers);
-    const splitAnimating = Boolean(document.querySelector('[data-testid="aux-pane-split"][data-split-transition]'));
+  function readContextData(snapshot) {
+    const ring = document.getElementById('ag-claude-ctx-ring');
+    const pop = document.getElementById('ag-claude-quota-popover');
+    const ovCtxCard = document.querySelector('#ag-claude-ov-sections [data-ov-card="context"]');
+    if (!ring) return null;
 
+    const cState = ring.getAttribute('data-compact-state');
+    const title = ring.getAttribute('title') || '';
+    let ratioText = '';
+    const rm = title.match(/(\d+(?:\.\d+)?[kKmM]?\s*\/\s*\d+(?:\.\d+)?[kKmM]?)/);
+    if (rm) ratioText = rm[1].replace(/\s*\/\s*/, ' / ');
+
+    let pct = NaN;
+    const m = title.match(/\((\d+(?:\.\d+)?)%/);
+    if (m) pct = parseFloat(m[1]);
+    let pm = null;
+    if (!Number.isFinite(pct) && pop) {
+      const pctEl = pop.querySelector('.ag-qp-item .ag-qp-pct');
+      pm = (pctEl?.textContent || '').match(/(\d+(?:\.\d+)?)%/);
+      if (pm) pct = parseFloat(pm[1]);
+    }
+    const arc = ring.querySelector('.ag-ctx-ring-arc');
+    let hasArcPct = false;
+    if (!Number.isFinite(pct)) {
+      const offset = parseFloat(arc?.style?.strokeDashoffset || '');
+      if (Number.isFinite(offset)) {
+        const circ = 2 * Math.PI * 7;
+        pct = Math.max(0, Math.min(100, Math.round((1 - offset / circ) * 100)));
+        hasArcPct = arc?.style?.strokeOpacity !== '0';
+      }
+    }
+
+    const isZh = snapshot ? snapshot.isZh : isZhUi();
+    const isCompacting = cState === 'compacting';
+    let fullText = '';
+    let tightText = '';
+    if (isCompacting) {
+      fullText = isZh ? '压缩中…' : 'Compacting…';
+      tightText = '';
+    } else {
+      fullText = ratioText;
+      const hasPctSource = Boolean(ratioText || m || pm || hasArcPct);
+      tightText = hasPctSource && Number.isFinite(pct)
+        ? `${Math.round(pct)}%`
+        : (ratioText ? ratioText.split('/')[0].trim() : '');
+    }
+    const hasRatio = Boolean(fullText || tightText);
+    const tier = isCompacting || cState === 'compacted'
+      ? null
+      : (!Number.isFinite(pct) || pct < 60 ? 'cool' : pct >= 75 ? 'crit' : 'warn');
+
+    return {
+      ring,
+      pop,
+      ovCtxCard,
+      ratioText,
+      isCompacting,
+      compactingAttr: isCompacting ? '1' : '0',
+      fullText,
+      tightText,
+      hasRatio,
+      tier,
+    };
+  }
+
+  function writeContextData(ctx) {
+    if (!ctx || !ctx.ring) return;
+    const { ring, pop, ovCtxCard, ratioText, isCompacting, compactingAttr, fullText, tightText, hasRatio, tier } = ctx;
+    markOwn(ring);
+    lastRatioText = ratioText;
+
+    let ratioSpan = ring.querySelector('.agy-ctx-ratio');
+    if (!ratioSpan) {
+      ratioSpan = document.createElement('span');
+      ratioSpan.className = 'agy-ctx-ratio';
+      ring.appendChild(ratioSpan);
+    }
+    let fullSpan = ratioSpan.querySelector('.agy-ctx-full');
+    if (!fullSpan) {
+      fullSpan = document.createElement('span');
+      fullSpan.className = 'agy-ctx-full';
+      ratioSpan.appendChild(fullSpan);
+    }
+    let tightSpan = ratioSpan.querySelector('.agy-ctx-tight');
+    if (!tightSpan) {
+      tightSpan = document.createElement('span');
+      tightSpan.className = 'agy-ctx-tight';
+      ratioSpan.appendChild(tightSpan);
+    }
+
+    setAttr(ring, 'data-agy-ctx-compacting', compactingAttr);
+    setLeafText(fullSpan, fullText);
+    setLeafText(tightSpan, tightText);
+
+    if (ratioSpan.hidden !== !hasRatio) ratioSpan.hidden = !hasRatio;
+    setAttr(ring, 'data-agy-has-ratio', hasRatio ? 'true' : null);
+
+    if (!isCompacting && pop && ratioText) simplifyPopoverReset(pop, ratioText);
+    setAttr(ring, 'data-agy-ctx-tier', tier);
+    if (pop) setAttr(pop, 'data-agy-ctx-tier', tier);
+    if (ovCtxCard) setAttr(ovCtxCard, 'data-agy-ctx-tier', tier);
+  }
+
+  function readFootersLayout(snapshot) {
+    const excluded = '[data-testid="side-question-tab-content"], [data-testid="voice-dock-composer"]';
+    const footers = snapshot
+      ? snapshot.footers
+      : Array.from(document.querySelectorAll('.agy-composer-footer')).filter((f) => !f.closest(excluded));
+    const splitAnimating = snapshot
+      ? snapshot.splitAnimating
+      : Boolean(document.querySelector('[data-testid="aux-pane-split"][data-split-transition]'));
+
+    const items = [];
     for (const footer of footers) {
       const cachedW = observedWidths.get(footer);
       const footerW = cachedW > 0 ? cachedW : Math.round(footer.getBoundingClientRect().width);
       if (footerW <= 0) continue;
-
       const leftGroup = footer.children[0];
-      // Disable redundant hover tooltip on [+ Add context] button (button itself displays the label)
-      const addCtxBtn = leftGroup?.querySelector(':scope > button:first-of-type');
+      const addCtxBtn = leftGroup?.querySelector(':scope > button:first-of-type') || null;
+      const speedPill = footer.querySelector('#ag-live-metrics-pill')
+        || (footer.nextElementSibling?.id === 'ag-live-metrics-pill' ? footer.nextElementSibling : null);
+      const hasSubChip = hasExtraVisibleChip(leftGroup, addCtxBtn);
+      const targetTier = computeDockTier(footerW, hasSubChip);
+      const sigW = splitAnimating ? Math.floor(footerW / 24) * 24 : footerW;
+      items.push({ footer, leftGroup, addCtxBtn, speedPill, footerW, sigW, hasSubChip, targetTier });
+    }
+    return { footers, items };
+  }
+
+  function writeFootersLayout(layoutData) {
+    if (!layoutData) return;
+    watchFooters(layoutData.footers);
+
+    for (const item of layoutData.items) {
+      const { footer, leftGroup, addCtxBtn, speedPill, footerW, sigW, hasSubChip, targetTier } = item;
+      const shell = footer.parentElement;
+      if (shell && shell.tagName === 'DIV' && footer.closest?.('[data-testid="agent-input-box"]')) {
+        setAttr(shell, 'data-maga-footer-shell', '1');
+      }
       if (addCtxBtn) {
         const tipId = addCtxBtn.getAttribute('data-tooltip-id');
         if (tipId) {
@@ -322,26 +421,15 @@ export function createFooterUnifiedRuntime({ onTierChange } = {}) {
           if (tipNode && tipNode.style.display !== 'none') tipNode.style.display = 'none';
         }
       }
-      const speedPill = footer.querySelector('#ag-live-metrics-pill')
-        || (footer.nextElementSibling?.id === 'ag-live-metrics-pill' ? footer.nextElementSibling : null);
 
       if (leftGroup && speedPill && speedPill.parentElement !== leftGroup) {
         leftGroup.appendChild(speedPill);
-        if (speedPill.getAttribute('data-ag-row-mode') !== 'middle') {
-          speedPill.setAttribute('data-ag-row-mode', 'middle');
-        }
-        if (footer.getAttribute('data-ag-row-mode') !== 'middle') {
-          footer.setAttribute('data-ag-row-mode', 'middle');
-        }
+        setAttr(speedPill, 'data-ag-row-mode', 'middle');
+        setAttr(footer, 'data-ag-row-mode', 'middle');
       }
 
-      const hasSubChip = hasExtraVisibleChip(leftGroup, addCtxBtn);
-      const targetTier = computeDockTier(footerW, hasSubChip);
-      const sigW = splitAnimating ? Math.floor(footerW / 24) * 24 : footerW;
       const prevSig = buildFooterLayoutSig(footer, leftGroup, sigW, hasSubChip, addCtxBtn, speedPill, targetTier);
-      if (layoutSigCache.get(footer) === prevSig) {
-        continue;
-      }
+      if (layoutSigCache.get(footer) === prevSig) continue;
 
       const prevTier = footer.getAttribute('data-agy-dock-tier') || '';
       let tierIdx = DOCK_TIERS.indexOf(targetTier);
@@ -364,162 +452,12 @@ export function createFooterUnifiedRuntime({ onTierChange } = {}) {
     }
   }
 
-  let lastRatioText = '';
+  function writeSpeedCapsule(speedData) {
+    if (!speedData || !speedData.pill || !speedData.textEl) return;
+    const { pill, textEl, cid, running, isZh, now, payload } = speedData;
+    const { parsed } = renderSpeedSlots(pill, textEl, payload, { cid, running, isZh });
 
-  function syncContextCapsule() {
-    const ring = document.getElementById('ag-claude-ctx-ring');
-    const pop = document.getElementById('ag-claude-quota-popover');
-    const ovCtxCard = document.querySelector('#ag-claude-ov-sections [data-ov-card="context"]');
-    if (!ring) return;
-
-    const cState = ring.getAttribute('data-compact-state');
-    const title = ring.getAttribute('title') || '';
-
-    let ratioText = '';
-    const rm = title.match(/(\d+(?:\.\d+)?[kKmM]?\s*\/\s*\d+(?:\.\d+)?[kKmM]?)/);
-    if (rm) ratioText = rm[1].replace(/\s*\/\s*/, ' / ');
-    lastRatioText = ratioText;
-
-    if (pop) watchPopoverSync(pop, () => lastRatioText);
-
-    let pct = NaN;
-    const m = title.match(/\((\d+(?:\.\d+)?)%/);
-    if (m) pct = parseFloat(m[1]);
-    let pm = null;
-    if (!Number.isFinite(pct) && pop) {
-      const pctEl = pop.querySelector('.ag-qp-item .ag-qp-pct');
-      pm = (pctEl?.textContent || '').match(/(\d+(?:\.\d+)?)%/);
-      if (pm) pct = parseFloat(pm[1]);
-    }
-    const arc = ring.querySelector('.ag-ctx-ring-arc');
-    let hasArcPct = false;
-    if (!Number.isFinite(pct)) {
-      const offset = parseFloat(arc?.style?.strokeDashoffset || '');
-      if (Number.isFinite(offset)) {
-        const circ = 2 * Math.PI * 7;
-        pct = Math.max(0, Math.min(100, Math.round((1 - offset / circ) * 100)));
-        hasArcPct = arc?.style?.strokeOpacity !== '0';
-      }
-    }
-
-    let ratioSpan = ring.querySelector('.agy-ctx-ratio');
-    if (!ratioSpan) {
-      ratioSpan = document.createElement('span');
-      ratioSpan.className = 'agy-ctx-ratio';
-      ring.appendChild(ratioSpan);
-    }
-    let fullSpan = ratioSpan.querySelector('.agy-ctx-full');
-    if (!fullSpan) {
-      fullSpan = document.createElement('span');
-      fullSpan.className = 'agy-ctx-full';
-      ratioSpan.appendChild(fullSpan);
-    }
-    let tightSpan = ratioSpan.querySelector('.agy-ctx-tight');
-    if (!tightSpan) {
-      tightSpan = document.createElement('span');
-      tightSpan.className = 'agy-ctx-tight';
-      ratioSpan.appendChild(tightSpan);
-    }
-
-    const isCompacting = cState === 'compacting';
-    const compactingAttr = isCompacting ? '1' : '0';
-    if (ring.getAttribute('data-agy-ctx-compacting') !== compactingAttr) {
-      ring.setAttribute('data-agy-ctx-compacting', compactingAttr);
-    }
-
-    let fullText = '';
-    let tightText = '';
-    if (isCompacting) {
-      fullText = isZhUi() ? '压缩中…' : 'Compacting…';
-      tightText = '';
-    } else {
-      fullText = ratioText;
-      const hasPctSource = Boolean(ratioText || m || pm || hasArcPct);
-      tightText = hasPctSource && Number.isFinite(pct)
-        ? `${Math.round(pct)}%`
-        : (ratioText ? ratioText.split('/')[0].trim() : '');
-    }
-
-    if (fullSpan.textContent !== fullText) fullSpan.textContent = fullText;
-    if (tightSpan.textContent !== tightText) tightSpan.textContent = tightText;
-
-    const hasRatio = Boolean(fullText || tightText);
-    if (ratioSpan.hidden !== !hasRatio) ratioSpan.hidden = !hasRatio;
-    if (hasRatio) {
-      if (ring.getAttribute('data-agy-has-ratio') !== 'true') {
-        ring.setAttribute('data-agy-has-ratio', 'true');
-      }
-    } else if (ring.hasAttribute('data-agy-has-ratio')) {
-      ring.removeAttribute('data-agy-has-ratio');
-    }
-
-    if (isCompacting) {
-      if (ring.hasAttribute('data-agy-ctx-tier')) ring.removeAttribute('data-agy-ctx-tier');
-      if (pop && pop.hasAttribute('data-agy-ctx-tier')) pop.removeAttribute('data-agy-ctx-tier');
-      if (ovCtxCard && ovCtxCard.hasAttribute('data-agy-ctx-tier')) ovCtxCard.removeAttribute('data-agy-ctx-tier');
-      return;
-    }
-
-    if (pop && ratioText) simplifyPopoverReset(pop, ratioText);
-
-    if (cState === 'compacted') {
-      if (ring.hasAttribute('data-agy-ctx-tier')) ring.removeAttribute('data-agy-ctx-tier');
-      if (pop && pop.hasAttribute('data-agy-ctx-tier')) pop.removeAttribute('data-agy-ctx-tier');
-      if (ovCtxCard && ovCtxCard.hasAttribute('data-agy-ctx-tier')) ovCtxCard.removeAttribute('data-agy-ctx-tier');
-      return;
-    }
-
-    // Unified 3-tier thresholds (0 / 60% / 75%) across Footer, Quota Popover, and Overview Context card
-    const tier = !Number.isFinite(pct) || pct < 60 ? 'cool' : pct >= 75 ? 'crit' : 'warn';
-    if (ring.getAttribute('data-agy-ctx-tier') !== tier) ring.setAttribute('data-agy-ctx-tier', tier);
-    if (pop && pop.getAttribute('data-agy-ctx-tier') !== tier) pop.setAttribute('data-agy-ctx-tier', tier);
-    if (ovCtxCard && ovCtxCard.getAttribute('data-agy-ctx-tier') !== tier) {
-      ovCtxCard.setAttribute('data-agy-ctx-tier', tier);
-    }
-  }
-
-  function isComposerRunning() {
-    const cancelBtns = document.querySelectorAll('.agy-composer-footer button[data-testid="input-cancel-button"]');
-    for (const btn of cancelBtns) {
-      if (btn.closest('[data-side-panel-composer], [data-testid="subagent-tab-composer"]')) continue;
-      if (typeof btn.checkVisibility === 'function') {
-        if (btn.checkVisibility({ opacityProperty: true, visibilityProperty: true })) return true;
-      } else if (btn.offsetParent !== null) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  function syncSpeedCapsule() {
-    const pill = document.getElementById('ag-live-metrics-pill');
-    if (!pill) return;
-    const textEl = pill.querySelector('#ag-live-metrics-text');
-    if (!textEl) return;
-
-    let dot = pill.querySelector(':scope > .agy-speed-dot');
-    if (!dot) {
-      dot = document.createElement('span');
-      dot.className = 'agy-speed-dot';
-      dot.setAttribute('aria-hidden', 'true');
-      pill.insertBefore(dot, pill.firstChild);
-    }
-
-    const now = Date.now();
-    const cid = getActiveRouteCid();
-    if (cid !== speedActivity.lastCid) {
-      speedActivity.lastCid = cid;
-      speedActivity.coolUntil = 0;
-      speedActivity.lastMetricsText = '';
-    }
-
-    const running = isComposerRunning();
-    const validMetrics = hasValidMetricsForCurrentChat();
-
-    if (!validMetrics) {
-      for (const ch of Array.from(textEl.children)) {
-        if (ch.getAttribute('data-agy-working-label') !== '1') ch.remove();
-      }
+    if (!parsed) {
       const tt = document.getElementById('ag-live-metrics-tooltip');
       if (tt) {
         tt.removeAttribute('data-visible');
@@ -527,79 +465,13 @@ export function createFooterUnifiedRuntime({ onTierChange } = {}) {
       }
     }
 
-    const existingPlaceholder = textEl.querySelector('[data-agy-working-label="1"]');
-    const hasRealContent = validMetrics && Array.from(textEl.children).some(
-      (ch) =>
-        ch.getAttribute('data-agy-working-label') !== '1' &&
-        ch.getAttribute('data-agy-speed-short') !== '1' &&
-        (ch.textContent || '').trim() !== ''
-    );
-
-    if (running && !hasRealContent) {
-      const label = isZhUi() ? '生成中…' : 'Working…';
-      if (!existingPlaceholder) {
-        const span = document.createElement('span');
-        span.setAttribute('data-agy-working-label', '1');
-        span.textContent = label;
-        textEl.appendChild(span);
-      } else if (existingPlaceholder.textContent !== label) {
-        existingPlaceholder.textContent = label;
-      }
-      if (pill.getAttribute('data-agy-working-placeholder') !== 'true') {
-        pill.setAttribute('data-agy-working-placeholder', 'true');
-      }
-    } else {
-      if (existingPlaceholder) existingPlaceholder.remove();
-      if (pill.hasAttribute('data-agy-working-placeholder')) {
-        pill.removeAttribute('data-agy-working-placeholder');
-      }
+    if (cid !== speedActivity.lastCid) {
+      speedActivity.lastCid = cid;
+      speedActivity.coolUntil = 0;
+      speedActivity.lastMetricsText = '';
     }
 
-    let tps = NaN;
-    let speedNumStr = '';
-    const fullParts = [];
-    if (hasRealContent) {
-      for (const child of Array.from(textEl.children)) {
-        if (child.getAttribute('data-agy-speed-short') === '1') continue;
-        if (child.getAttribute('data-agy-working-label') === '1') continue;
-        const txt = (child.textContent || '').trim();
-        if (txt) fullParts.push(txt);
-        const tm = txt.match(/^([\d.]+)\s*tok\/s$/i);
-        if (tm) {
-          tps = parseFloat(tm[1]);
-          speedNumStr = String(Math.round(tps));
-          if (child.getAttribute('data-agy-speed-num') !== '1') {
-            child.setAttribute('data-agy-speed-num', '1');
-          }
-          if (child.hasAttribute('data-agy-speed-extra')) {
-            child.removeAttribute('data-agy-speed-extra');
-          }
-        } else {
-          if (child.getAttribute('data-agy-speed-num') === '1') {
-            child.removeAttribute('data-agy-speed-num');
-          }
-          // Tag separator & TTFT spans so compact/tight tiers can cleanly hide them via CSS
-          if (child.getAttribute('data-agy-speed-extra') !== '1') {
-            child.setAttribute('data-agy-speed-extra', '1');
-          }
-        }
-      }
-    }
-
-    // Maintain a compact number-only span ("108") for `tight` tier without touching runtime.js spans
-    let shortSpan = textEl.querySelector('[data-agy-speed-short="1"]');
-    if (speedNumStr) {
-      if (!shortSpan) {
-        shortSpan = document.createElement('span');
-        shortSpan.setAttribute('data-agy-speed-short', '1');
-        textEl.insertBefore(shortSpan, textEl.firstChild);
-      }
-      if (shortSpan.textContent !== speedNumStr) shortSpan.textContent = speedNumStr;
-    } else if (shortSpan) {
-      shortSpan.remove();
-    }
-
-    const currentText = fullParts.join(' ');
+    const currentText = parsed?.fullText || '';
     if (currentText && pill.title !== currentText) {
       pill.title = currentText;
     }
@@ -615,6 +487,7 @@ export function createFooterUnifiedRuntime({ onTierChange } = {}) {
     if (currentText) speedActivity.lastMetricsText = currentText;
 
     const motion = running ? 'active' : speedActivity.coolUntil > now ? 'recent' : 'idle';
+    const tps = parsed ? parsed.tps : NaN;
     const tier = !Number.isFinite(tps) || tps <= 0
       ? 'unknown'
       : tps >= 25
@@ -623,25 +496,63 @@ export function createFooterUnifiedRuntime({ onTierChange } = {}) {
           ? 'mid'
           : 'slow';
 
-    if (pill.getAttribute('data-agy-motion') !== motion) {
-      pill.setAttribute('data-agy-motion', motion);
+    setAttr(pill, 'data-agy-motion', motion);
+    setAttr(pill, 'data-agy-speed-tier', tier);
+  }
+
+  function read(snapshot = null) {
+    if (disposed) return null;
+    const pill = document.getElementById('ag-live-metrics-pill');
+    const textEl = pill?.querySelector('#ag-live-metrics-text') || null;
+    const cid = snapshot ? snapshot.cid : getActiveRouteCid();
+    const running = snapshot ? snapshot.isRunning : isComposerRunning();
+    const isZh = snapshot ? snapshot.isZh : isZhUi();
+    const now = snapshot ? snapshot.now : Date.now();
+    const payload = snapshot ? snapshot.metrics : (typeof window !== 'undefined' ? window.__ag_last_metrics || null : null);
+
+    return {
+      speedData: pill && textEl ? { pill, textEl, cid, running, isZh, now, payload } : null,
+      contextData: readContextData(snapshot),
+      layoutData: readFootersLayout(snapshot),
+    };
+  }
+
+  function write(snapshot = null, planArg = undefined) {
+    if (disposed) return;
+    wrapEnsureMetricsPillOnce();
+    const plan = planArg !== undefined ? planArg : read(snapshot);
+    if (!plan) return;
+    writeSpeedCapsule(plan.speedData);
+    writeContextData(plan.contextData);
+    writeFootersLayout(plan.layoutData);
+  }
+
+  function mount() {
+    if (disposed || metricsBusCleanup) return;
+    if (typeof window !== 'undefined' && window.__ag_metrics_ro) {
+      try { window.__ag_metrics_ro.disconnect(); } catch {}
+      window.__ag_metrics_ro = null;
     }
-    if (pill.getAttribute('data-agy-speed-tier') !== tier) {
-      pill.setAttribute('data-agy-speed-tier', tier);
-    }
+    metricsBusCleanup = installMetricsBus({
+      onMetrics: () => {
+        if (!disposed) kernel?.markDirty('metrics', true);
+      },
+    });
   }
 
   function sync() {
     if (disposed) return;
-    wrapEnsureMetricsPillOnce();
-    syncSpeedCapsule();
-    syncContextCapsule();
-    syncFooterResponsiveLayout();
+    write(null, read(null));
   }
 
   function dispose() {
     if (disposed) return;
     disposed = true;
+    metricsBusCleanup?.();
+    metricsBusCleanup = null;
+    if (typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
+      window.removeEventListener('agy:quota-popover-rendered', onQuotaPopRendered);
+    }
     if (wrappedEnsureMetricsPill && window.__ag_ensure_metrics_pill_fn === wrappedEnsureMetricsPill) {
       window.__ag_ensure_metrics_pill_fn = wrappedEnsureMetricsPill.__agyOrigEnsure;
     }
@@ -659,14 +570,12 @@ export function createFooterUnifiedRuntime({ onTierChange } = {}) {
       footerResizeObs = null;
     }
     observedFooters.clear();
-    if (popObs) {
-      popObs.disconnect();
-      popObs = null;
-    }
-    observedPop = null;
     document.querySelectorAll('.agy-composer-footer[data-agy-dock-tier]').forEach((el) => {
       el.removeAttribute('data-agy-dock-tier');
       el.removeAttribute('data-agy-has-row2');
+    });
+    document.querySelectorAll('[data-maga-footer-shell]').forEach((el) => {
+      el.removeAttribute('data-maga-footer-shell');
     });
     const ring = document.getElementById('ag-claude-ctx-ring');
     if (ring) {
@@ -683,6 +592,11 @@ export function createFooterUnifiedRuntime({ onTierChange } = {}) {
       pill.removeAttribute('data-agy-speed-tier');
       pill.removeAttribute('data-agy-working-placeholder');
       pill.querySelector(':scope > .agy-speed-dot')?.remove();
+      const textEl = pill.querySelector('#ag-live-metrics-text');
+      if (textEl) {
+        textEl.removeAttribute('data-agy-speed-slots');
+        delete textEl._agySlots;
+      }
       pill.querySelector('[data-agy-working-label="1"]')?.remove();
       pill.querySelector('[data-agy-speed-short="1"]')?.remove();
       pill.querySelectorAll('[data-agy-speed-num="1"]').forEach((el) => el.removeAttribute('data-agy-speed-num'));
@@ -690,5 +604,12 @@ export function createFooterUnifiedRuntime({ onTierChange } = {}) {
     }
   }
 
-  return { sync, dispose };
+  return {
+    topics: ['composer', 'metrics', 'route', 'prefs', 'subagent'],
+    mount,
+    read,
+    write,
+    sync,
+    dispose,
+  };
 }

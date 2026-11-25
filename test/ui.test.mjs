@@ -17,12 +17,7 @@ try {
 } catch {}
 const skip = JSDOM ? false : 'jsdom not installed';
 
-const SRC = fs
-  .readFileSync(path.join(REPO, 'user', 'custom.js'), 'utf8')
-  .replace(
-    /\}\)\(\);\s*$/,
-    'window.__t = { scheduleSync, syncStepStream, dispose, parseAndSlimMetricsPayload, cacheTierForRate, detectCompactStatus, triggerConversationCompact }; })();'
-  );
+const SRC = fs.readFileSync(path.join(REPO, 'user', 'custom.js'), 'utf8');
 
 function mount(html, { modules = {}, dict = null } = {}) {
   const dom = new JSDOM(`<!doctype html><body>${html}</body>`, {
@@ -40,6 +35,7 @@ function mount(html, { modules = {}, dict = null } = {}) {
   };
   window.cancelAnimationFrame = (id) => queue.delete(id);
   const cleanups = [];
+  window.__AG_ENABLE_TEST_HOOKS__ = true;
   window.ctx = { modules, dict: dict || undefined, onCleanup: (fn) => cleanups.push(fn) };
   window.eval(SRC);
   const flushFrames = () => {
@@ -117,92 +113,6 @@ test('running timer lights only the generating pane', { skip }, async () => {
   assert.ok(a.querySelector('.ag-orbit-dots'), 'generating pane shows the indicator');
   assert.equal(b.querySelector('.ag-orbit-dots'), null, 'idle pane must stay clean');
   h.cleanups.forEach((fn) => fn());
-  h.close();
-});
-
-function modelTrigger(h) {
-  const btn = h.doc.createElement('button');
-  btn.setAttribute('data-testid', 'model-selector-trigger');
-  btn.textContent = 'Gemini';
-  let selected = { label: 'Gemini 4 Carbon (Medium)', value: 'c-m' };
-  btn.__reactFiber$test = {
-    memoizedProps: {
-      modelOptions: [
-        { label: 'Gemini 4 Carbon (Medium)', value: 'c-m' },
-        { label: 'Gemini 4 Carbon (High)', value: 'c-h' },
-        { label: 'Gemini 4 Carbon (XHigh)', value: 'c-xh' },
-        { label: 'Gemini 3.8 Flash', value: 'f' }
-      ],
-      get selectedModel() {
-        return selected;
-      },
-      setSelectedModel(o) {
-        selected = o;
-      }
-    }
-  };
-  h.doc.body.appendChild(btn);
-  return { btn, selected: () => selected };
-}
-
-test('keyboard activation (click detail=0) opens the custom menu', { skip }, () => {
-  const h = mount('');
-  const { btn, selected } = modelTrigger(h);
-  btn.dispatchEvent(new h.window.MouseEvent('click', { bubbles: true, cancelable: true, detail: 0 }));
-  const pop = h.doc.getElementById('ag-claude-model-popover');
-  assert.ok(pop);
-  assert.equal(pop.getAttribute('data-open'), 'true');
-  assert.equal(pop.getAttribute('role'), 'menu');
-
-  /* Effort flyout displays XHigh as "Extra" while still selecting the underlying XHigh option */
-  const effortTrigger = pop.querySelector('[data-ag-cm-subtrigger="effort"]');
-  effortTrigger.click();
-  const subPop = h.doc.getElementById('ag-claude-model-subpop');
-  assert.equal(subPop.getAttribute('data-open'), 'true');
-  const xhRow = subPop.querySelector('[data-ag-cm-effort="XHigh"]');
-  assert.ok(xhRow, 'XHigh option row exists');
-  assert.equal(xhRow.textContent.includes('Extra'), true, 'displays Extra label');
-  assert.equal(xhRow.textContent.includes('XHigh'), false, 'hides raw XHigh text');
-  xhRow.click();
-  assert.equal(selected().value, 'c-xh', 'selecting Extra commits underlying XHigh option');
-
-  /* Re-opening reflects Extra on the main effort row too */
-  btn.dispatchEvent(new h.window.Event('pointerdown', { bubbles: true, cancelable: true }));
-  assert.match(pop.querySelector('[data-ag-cm-subtrigger="effort"]').textContent, /Extra/);
-  assert.equal(h.doc.querySelectorAll('#ag-claude-model-popover').length, 1);
-  h.close();
-});
-
-test('Enter opens + focuses menu, arrows move, Escape returns focus', { skip }, () => {
-  const h = mount('');
-  const { btn } = modelTrigger(h);
-  btn.focus();
-  const key = (target, k) => target.dispatchEvent(new h.window.KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true }));
-  key(btn, 'Enter');
-  const pop = h.doc.getElementById('ag-claude-model-popover');
-  assert.equal(pop.getAttribute('data-open'), 'true');
-  assert.ok(pop.contains(h.doc.activeElement), 'focus moved into the menu');
-  const first = h.doc.activeElement;
-  key(first, 'ArrowDown');
-  assert.notEqual(h.doc.activeElement, first);
-  key(h.doc.activeElement, 'Escape');
-  assert.equal(pop.getAttribute('data-open'), 'false');
-  assert.ok(pop.hasAttribute('inert'), 'closed menu leaves the tab order');
-  assert.equal(h.doc.activeElement, btn);
-  h.close();
-});
-
-test('feature switch off: model menu is not intercepted, checklists untouched', { skip }, () => {
-  const h = mount(pane([ul(li('读代码', 'in_progress'), li('修复'))]), {
-    modules: { claudeUxModelMenu: false }
-  });
-  const { btn } = modelTrigger(h);
-  let native = 0;
-  btn.addEventListener('click', () => native++);
-  btn.dispatchEvent(new h.window.MouseEvent('click', { bubbles: true, cancelable: true, detail: 0 }));
-  assert.equal(native, 1);
-  assert.equal(h.doc.getElementById('ag-claude-model-popover'), null);
-  assert.equal(h.doc.querySelectorAll('.ag-claude-todo-card').length, 0);
   h.close();
 });
 
@@ -455,13 +365,13 @@ test('native Settings -> UI Enhancements panel: defaults to English and live-tog
   const rightHost = h.doc.getElementById('settings-right-host');
   const panel = h.doc.getElementById('ag-claude-ux-settings-panel');
   assert.equal(rightHost.getAttribute('data-ag-claude-settings-open'), 'true');
-  assert.ok(panel && !panel.hidden, 'Anti-Claude settings panel visible');
+  assert.ok(panel && !panel.hidden, 'Anti-Claude settings host panel visible for MAGA mounting');
 
-  /* Toggle Chinese UI localization ON -> translates native UI & enhancement panel live */
-  const i18nSwitch = panel.querySelector('[data-ag-cux-switch="i18n"]');
-  assert.ok(i18nSwitch, 'Chinese UI localization switch rendered');
-  assert.equal(i18nSwitch.getAttribute('aria-checked'), 'false', 'i18n switch off by default');
-  i18nSwitch.click();
+  /* Toggle Chinese UI localization ON via bridge -> translates native UI live & updates nav host */
+  const bridge = h.window.__agClaudeUxBridge;
+  assert.ok(bridge, '__agClaudeUxBridge exposed');
+  assert.equal(bridge.getState().modules.i18n, false, 'i18n off by default');
+  assert.equal(bridge.setModule('i18n', true), true);
   assert.equal(h.doc.documentElement.getAttribute('data-ag-ux-lang'), 'zh');
   assert.equal(navBtn.textContent.trim(), '界面增强');
   assert.equal(h.doc.querySelector('button[data-testid="settings-nav-item-General"]').textContent.trim(), '常规');
@@ -471,7 +381,6 @@ test('native Settings -> UI Enhancements panel: defaults to English and live-tog
   assert.equal(h.doc.getElementById('p-active').textContent, '正在编辑 custom.js');
   assert.equal(h.doc.getElementById('p-runfor').textContent, '已运行 4s');
   assert.equal(h.doc.getElementById('p-working').textContent, '正在工作');
-  assert.match(panel.textContent, /中文界面汉化/);
   assert.match(h.window.localStorage.getItem('ag_claude_ux_modules_v1') || '', /"i18n":true/);
 
   /* Newly rendered React nodes (e.g. Knowledge Work / Software Engineering toggle) must translate synchronously in the microtask before Frame 0 paints (zero 40ms English flash) */
@@ -486,8 +395,8 @@ test('native Settings -> UI Enhancements panel: defaults to English and live-tog
   assert.equal(h.doc.getElementById('kw-btn').textContent, '知识工作', 'translates characterData update in microtask before first paint');
   modeWrap.remove();
 
-  /* Toggle Chinese UI localization back OFF -> restores native English UI & enhancement panel live */
-  panel.querySelector('[data-ag-cux-switch="i18n"]').click();
+  /* Toggle Chinese UI localization back OFF -> restores native English UI & nav host live */
+  bridge.setModule('i18n', false);
   assert.equal(h.doc.documentElement.getAttribute('data-ag-ux-lang'), 'en');
   assert.equal(navBtn.textContent.trim(), 'UI Enhancements');
   assert.equal(h.doc.querySelector('button[data-testid="settings-nav-item-General"]').textContent.trim(), 'General');
@@ -519,37 +428,22 @@ test('native Settings -> UI Enhancements panel: defaults to English and live-tog
   projH2.parentElement.click();
   assert.equal(projH2.parentElement.nextElementSibling.hasAttribute('data-ag-stats-hidden'), false, 'clicking Projects expands specific project items');
 
-  /* Verify 3-tier CJK Optical Font Scale selector (94.5% / 95% / 100%) in UI Enhancements */
-  const scale945 = panel.querySelector('[data-ag-cux-cjk-scale="94.5"]');
-  const scale95 = panel.querySelector('[data-ag-cux-cjk-scale="95"]');
-  const scale100 = panel.querySelector('[data-ag-cux-cjk-scale="100"]');
-  assert.ok(scale945 && scale95 && scale100, 'renders 94.5%, 95%, and 100% CJK font scale buttons');
+  /* Verify 3-tier CJK Optical Font Scale persistence (94.5% / 95% / 100%) via bridge */
   assert.equal(h.doc.documentElement.getAttribute('data-ag-cjk-scale'), '95', 'defaults to 95% CJK optical scale');
-  assert.equal(scale95.getAttribute('aria-checked'), 'true');
-  assert.equal(scale945.getAttribute('aria-checked'), 'false');
-
-  scale945.click();
+  assert.equal(bridge.setCjkScale('94.5'), '94.5');
   assert.equal(h.doc.documentElement.getAttribute('data-ag-cjk-scale'), '94.5');
-  assert.equal(scale945.getAttribute('aria-checked'), 'true');
-  assert.equal(scale95.getAttribute('aria-checked'), 'false');
   assert.match(h.window.localStorage.getItem('ag_claude_ux_modules_v1') || '', /"cjkFontScale":"94\.5"/);
 
-  scale100.click();
+  assert.equal(bridge.setCjkScale('100'), '100');
   assert.equal(h.doc.documentElement.getAttribute('data-ag-cjk-scale'), '100');
-  assert.equal(scale100.getAttribute('aria-checked'), 'true');
-  assert.equal(scale945.getAttribute('aria-checked'), 'false');
   assert.match(h.window.localStorage.getItem('ag_claude_ux_modules_v1') || '', /"cjkFontScale":"100"/);
 
-  const projectsSwitch = panel.querySelector('[data-ag-cux-switch="claudeUxProjects"]');
-  assert.equal(projectsSwitch.getAttribute('aria-checked'), 'true');
-  projectsSwitch.click();
-  assert.equal(projectsSwitch.getAttribute('aria-checked'), 'false');
+  bridge.setModule('claudeUxProjects', false);
+  assert.equal(bridge.getState().modules.claudeUxProjects, false);
   assert.match(h.window.localStorage.getItem('ag_claude_ux_modules_v1') || '', /"claudeUxProjects":false/);
 
-  const hideProjSwitch = panel.querySelector('[data-ag-cux-switch="claudeUxHideSidebarProjects"]');
-  assert.equal(hideProjSwitch.getAttribute('aria-checked'), 'true');
-  hideProjSwitch.click();
-  assert.equal(hideProjSwitch.getAttribute('aria-checked'), 'false');
+  bridge.setModule('claudeUxHideSidebarProjects', false);
+  assert.equal(bridge.getState().modules.claudeUxHideSidebarProjects, false);
   assert.match(h.window.localStorage.getItem('ag_claude_ux_modules_v1') || '', /"claudeUxHideSidebarProjects":false/);
 
   h.doc.querySelector('button[data-testid="settings-nav-item-General"]').click();
@@ -909,7 +803,7 @@ test('inline pill CJK hygiene & fractional sub-1 tok/s metrics formatting', { sk
   h.close();
 });
 
-test('dictation editor isolation, ask-question icon removal & Orchestrator model pass-through', { skip }, async () => {
+test('dictation editor isolation, ask-question icon removal & i18n Orchestrator override protection', { skip }, () => {
   const customCss = fs.readFileSync(path.join(REPO, 'user', 'custom.css'), 'utf8');
   const configJson = JSON.parse(fs.readFileSync(path.join(REPO, 'user', 'config.json'), 'utf8'));
   const i18nOverride = JSON.parse(fs.readFileSync(path.join(REPO, 'user', 'i18n.override.json'), 'utf8'));
@@ -924,78 +818,22 @@ test('dictation editor isolation, ask-question icon removal & Orchestrator model
 
   /* 2. i18n config & override protect all Orchestrator model names */
   const ex = configJson.selectors && configJson.selectors.excludeI18n;
-  for (const sel of [
-    '[data-testid="model-selector-trigger"]',
-    '[data-ag-i18n-ignore="1"]',
-    '#ag-claude-model-popover',
-    '#ag-claude-model-subpop'
-  ]) {
+  for (const sel of ['[data-testid="model-selector-trigger"]', '[data-ag-i18n-ignore="1"]']) {
     assert.ok(ex.includes(sel), `excludeI18n contains ${sel}`);
   }
   assert.equal(i18nOverride['Orchestrator (Neon)'], 'Orchestrator (Neon)');
-
-  /* 3. syncModelTriggerDisplay restores accidentally translated Orchestrator text and maps XHigh -> Extra */
-  const html = `
-    <section>
-      <div id="antigravity.agentSidePanelInputBox">
-        <button type="button" data-testid="model-selector-trigger"><span>编排器 (Neon)</span></button>
-      </div>
-    </section>
-  `;
-  const h = mount(html);
-  h.window.__t.syncStepStream();
-  await settle(h);
-  const btn = h.doc.querySelector('button[data-testid="model-selector-trigger"]');
-  assert.equal(btn.getAttribute('data-ag-i18n-ignore'), '1');
-  assert.equal(btn.textContent.trim(), 'Orchestrator (Neon)');
-
-  btn.querySelector('span').textContent = 'Gemini 4 Carbon Extra High';
-  h.window.__t.syncStepStream();
-  assert.equal(btn.textContent.trim(), 'Gemini 4 Carbon Extra');
-
-  /* 4. Primary list places Gemini 4 Neon above Argon (5 items) and omits Orch abbreviation on 更多模型 */
-  btn.__reactFiber$m = {
-    memoizedProps: {
-      selectedModel: { label: 'Orchestrator (Neon)', value: 'orch-neon' },
-      setSelectedModel: () => {},
-      modelOptions: [
-        { label: 'Gemini 4 Carbon (High)', value: 'c-h' },
-        { label: 'Gemini 4 Argon (High)', value: 'a-h' },
-        { label: 'Gemini 4 Hydrogen (High)', value: 'h-h' },
-        { label: 'Gemini 3.8 Flash', value: 'f' },
-        { label: 'Gemini 4 Neon (High)', value: 'n-h' },
-        { label: 'Orchestrator (Neon)', value: 'orch-neon' },
-        { label: 'Claude Opus 5.5', value: 'opus' }
-      ]
-    }
-  };
-  btn.dispatchEvent(new h.window.MouseEvent('pointerdown', { bubbles: true, button: 0 }));
-  const mainPop = h.doc.getElementById('ag-claude-model-popover');
-  const primaryNames = [...mainPop.querySelectorAll('[data-ag-cm-family]')].map((el) =>
-    el.getAttribute('data-ag-cm-family')
-  );
-  assert.deepEqual(primaryNames, [
-    'Gemini 4 Carbon',
-    'Gemini 4 Neon',
-    'Gemini 4 Argon',
-    'Gemini 4 Hydrogen',
-    'Gemini 3.8 Flash'
-  ]);
-  const moreRow = mainPop.querySelector('[data-ag-cm-subtrigger="more"]');
-  assert.ok(moreRow && moreRow.querySelector('.ag-cm-dot'), 'blue dot marks active model inside 更多模型');
-  assert.equal(moreRow.textContent.includes('Orch'), false, 'no abbreviated label shown on 更多模型 row');
-
-  h.cleanups.forEach((fn) => fn());
-  h.close();
 });
 
 test('answered ask_question card hides speech-bubble ? icon and running timer stays live while drafting in composer', { skip }, async () => {
   const css = fs.readFileSync(path.join(REPO, 'user', 'custom.css'), 'utf8');
-  assert.match(css, /\.rounded-xl\.border\s*>\s*div\.border-b\s*>\s*svg:has\(>\s*path\[d\^="M477\.92-295\.77"\]\)/);
+  assert.match(css, /\.rounded-xl\.border\s*>\s*div\.border-b\s*>\s*svg\[data-maga-q-icon="1"\]/);
 
   /* Active turn with `<h6>Agent working</h6>` but NO `input-cancel-button` (user drafting a queued message mid-turn) */
   const html = `
     <section>
+      <div class="rounded-xl border">
+        <div class="border-b"><svg><path d="M477.92-295.77z"></path></svg></div>
+      </div>
       <div data-testid="agent-response">
         <h6 class="sr-only">Agent working</h6>
         <button data-testid="tool-group-collapsible" aria-expanded="false"><span title="Running command">Running command</span><svg></svg></button>
@@ -1009,6 +847,7 @@ test('answered ask_question card hides speech-bubble ? icon and running timer st
   h.window.__t.syncStepStream();
   await settle(h);
 
+  assert.equal(h.doc.querySelector('.rounded-xl.border > div.border-b > svg').getAttribute('data-maga-q-icon'), '1', 'marks answered ask_question ? icon for O(1) CSS hiding');
   assert.ok(h.doc.querySelector('.ag-orbit-dots'), 'running indicator stays active when composer swaps cancel button for send button');
 
   /* Localized Chinese heading (`Agent 正在执行`) also keeps indicator live */
@@ -1406,10 +1245,10 @@ test('projects workspace: 3-level Claude Projects flow (grid -> detail page with
   assert.ok(pdModelBtn, 'interactive model selector button rendered in project composer');
   assert.match(pdModelBtn.textContent, /Gemini 4 Neon/, 'model label resolves from Redux even without a native model-selector-trigger in DOM');
   assert.match(pdModelBtn.textContent, /Extra/, 'effort label resolves from Redux default model');
-  pdModelBtn.dispatchEvent(new h.window.Event('pointerdown', { bubbles: true }));
-  const modelPop = h.doc.getElementById('ag-claude-model-popover');
-  assert.equal(modelPop && modelPop.getAttribute('data-open'), 'true', 'clicking project model button opens real Claude model popover purely via Redux fallback');
-  modelPop.querySelector('[data-ag-cm-family="Gemini 4 Argon"]').click();
+  pdModelBtn.click();
+  const modelPop = h.doc.getElementById('ag-pd-model-menu');
+  assert.equal(modelPop && modelPop.getAttribute('data-open'), 'true', 'clicking project model button opens lightweight Project Detail model menu purely via Redux fallback');
+  modelPop.querySelector('[data-ag-pd-model-family="Gemini 4 Argon"]').click();
   assert.ok(
     dispatched.some((a) => a && a.type === 'modelSelection/modelPicked' && a.payload && a.payload.model === 1417),
     'selecting a model from project composer dispatches modelSelection/modelPicked'

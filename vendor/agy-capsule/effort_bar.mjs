@@ -464,7 +464,6 @@ const ORCHESTRATOR_CSS = `
   border: 1px solid color-mix(in srgb, var(--foreground, #fff) 9%, transparent);
   box-shadow: 0 1px 0 color-mix(in srgb, var(--foreground, #fff) 8%, transparent) inset,
     0 20px 44px -12px rgba(0, 0, 0, 0.24), 0 3px 10px -2px rgba(0, 0, 0, 0.16);
-  backdrop-filter: blur(22px);
 }
 .ces-set-label {
   color: var(--muted-foreground, color-mix(in srgb, var(--foreground, CanvasText) 65%, transparent));
@@ -861,10 +860,18 @@ export function mountOrchestratorSwitch(onToggle, onContextMenu) {
   let burstRaf = 0;
 
   const sysReduced = () => Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches);
-  const instantTransition = () => sysReduced();
+  const motionOff = () => sysReduced() || document.documentElement?.getAttribute?.('data-agy-motion') === 'off';
+  const reducedAttr = () => document.documentElement?.getAttribute?.('data-agy-motion') === 'reduced';
+  const instantTransition = () => motionOff();
+  let lastMotionDisabled = motionOff();
 
   const surfaceIsLight = () => {
     try {
+      const docEl = document.documentElement;
+      const themeAttr = docEl?.getAttribute?.('data-ag-theme-mode');
+      if (themeAttr === 'dark') return false;
+      if (themeAttr === 'light') return true;
+      if (docEl?.classList?.contains?.('dark')) return false;
       const bg = getComputedStyle(document.body).backgroundColor || '';
       const parts = bg.match(/[\d.]+/g);
       if (!parts || parts.length < 3 || (parts.length > 3 && Number(parts[3]) < 0.5)) return false;
@@ -890,12 +897,14 @@ export function mountOrchestratorSwitch(onToggle, onContextMenu) {
     if (!ctx) return null;
     const H = 28;
     let W = measureWidth();
-    let dpr = Math.min(window.devicePixelRatio || 1, 2);
+    let dpr = Math.min(window.devicePixelRatio || 1, 1.5);
     const resize = nextW => {
       W = Math.max(80, Math.round(nextW || W));
-      dpr = Math.min(window.devicePixelRatio || 1, 2);
-      canvas.width = Math.round(W * dpr);
-      canvas.height = Math.round(H * dpr);
+      dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+      const pxW = Math.round(W * dpr);
+      const pxH = Math.round(H * dpr);
+      if (canvas.width !== pxW) canvas.width = pxW;
+      if (canvas.height !== pxH) canvas.height = pxH;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     };
     resize(W);
@@ -909,8 +918,11 @@ export function mountOrchestratorSwitch(onToggle, onContextMenu) {
     let oClock = 0;
     let smoothEnergy = Math.max(0.18, liveEnergy);
     let lastTime = performance.now();
+    let lastDrawTs = 0;
     let isLight = surfaceIsLight();
     let lightCheckedAt = performance.now();
+    let lastTransform = '';
+    let lastBoxShadow = '';
 
     const paint = now => {
       const targetE = Math.max(0.18, liveEnergy);
@@ -924,14 +936,22 @@ export function mountOrchestratorSwitch(onToggle, onContextMenu) {
       const primaryPal = palette;
 
       const pop = turningOn && !instantTransition() ? impact * (isFull ? 0.018 : 0.010) : 0;
-      button.style.transform = pop > 0.001 ? `scale3d(${(1 + pop).toFixed(4)}, ${(1 + pop).toFixed(4)}, 1)` : '';
+      const nextTransform = pop > 0.001 ? `scale3d(${(1 + pop).toFixed(4)}, ${(1 + pop).toFixed(4)}, 1)` : '';
+      if (nextTransform !== lastTransform) {
+        lastTransform = nextTransform;
+        button.style.transform = nextTransform;
+      }
 
       const [cr, cg, cb] = primaryPal.core;
       const eGlow = Math.pow(mt.clamp01(smoothEnergy), 1.3);
       const gAlpha = (0.05 + 0.24 * eGlow + impact * (isFull ? 0.14 : 0.09)) * bgRev;
-      button.style.boxShadow = bgRev > 0.02
+      const nextBoxShadow = bgRev > 0.02
         ? `0 3px ${Math.round(7 + 9 * eGlow)}px -2px rgba(${cr},${cg},${cb},${gAlpha.toFixed(3)}), inset 0 0 0 1px rgba(255,255,255,${((0.12 + 0.14 * eGlow) * bgRev).toFixed(3)})`
         : 'inset 0 0 0 1px var(--orch-off-border)';
+      if (nextBoxShadow !== lastBoxShadow) {
+        lastBoxShadow = nextBoxShadow;
+        button.style.boxShadow = nextBoxShadow;
+      }
 
       mt.paintOrchestrator3D(ctx, {
         w: W,
@@ -954,8 +974,20 @@ export function mountOrchestratorSwitch(onToggle, onContextMenu) {
     };
 
     const tick = now => {
-      if (!open || slot.hidden) { rafId = 0; return; }
-      const dt = Math.min(0.05, Math.max(0.001, (now - lastTime) / 1000));
+      if (!open || slot.hidden || document.hidden) { rafId = 0; return; }
+      const targetE = Math.max(0.18, liveEnergy);
+      const isOff = motionOff();
+      const isTransitioning = Math.abs(animP - target) > 0.002 || Math.abs(smoothEnergy - targetE) > 0.01;
+      if (lastDrawTs > 0 && !isOff && !isTransitioning) {
+        const minInterval = reducedAttr() ? 48 : motion === 'full' ? 30 : 38;
+        if (now - lastDrawTs < minInterval) {
+          rafId = requestAnimationFrame(tick);
+          return;
+        }
+      }
+      lastDrawTs = now;
+
+      const dt = Math.min(0.08, Math.max(0.001, (now - lastTime) / 1000));
       lastTime = now;
       if (now - lightCheckedAt >= 800) {
         isLight = surfaceIsLight();
@@ -972,7 +1004,6 @@ export function mountOrchestratorSwitch(onToggle, onContextMenu) {
       } else {
         animP = target;
       }
-      const targetE = Math.max(0.18, liveEnergy);
       smoothEnergy += (targetE - smoothEnergy) * (1 - Math.exp(-dt * (isFull ? 9 : 16)));
       const loopMul = isFull ? 0.74 : 1.25;
       const phaseBoost = Math.abs(animP - target) > 0.02 ? (isFull ? 1.55 : 2.1) : 1.0;
@@ -980,48 +1011,63 @@ export function mountOrchestratorSwitch(onToggle, onContextMenu) {
       oClock += dt * loopMul;
 
       const energyMoving = paint(now);
-      if (!sysReduced() && (target === 1 || animP > 0.002 || energyMoving)) {
+      if (!isOff && (target === 1 || animP > 0.002 || energyMoving)) {
         rafId = requestAnimationFrame(tick);
       } else {
-        button.style.transform = '';
+        if (lastTransform !== '') { lastTransform = ''; button.style.transform = ''; }
         rafId = 0;
       }
     };
 
     const ensure = () => {
-      if (!rafId && open && !slot.hidden && !sysReduced()) {
+      if (!rafId && open && !slot.hidden && !document.hidden && !motionOff()) {
+        lastDrawTs = 0;
         lastTime = performance.now();
         rafId = requestAnimationFrame(tick);
       }
     };
+
+    const onVisibility = () => {
+      if (document.hidden) {
+        if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
+      } else if (open && !slot.hidden && (target === 1 || animP > 0.002)) {
+        ensure();
+      }
+    };
+    document.addEventListener?.('visibilitychange', onVisibility);
 
     paint(performance.now());
     if (active) ensure();
 
     return {
       resize(nextW) {
-        if (Math.abs(nextW - W) >= 1) { resize(nextW); paint(performance.now()); }
+        if (Math.abs(nextW - W) >= 1) { resize(nextW); lastDrawTs = 0; paint(performance.now()); }
       },
       setMotion() {
         if (instantTransition()) {
-          animP = target; fromP = target; button.style.transform = '';
+          if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
+          animP = target; fromP = target;
+          if (lastTransform !== '') { lastTransform = ''; button.style.transform = ''; }
           paint(performance.now());
+        } else if (target === 1) {
+          ensure();
         }
-        if (target === 1) ensure();
       },
       setContext() {
-        paint(performance.now());
+        if (!rafId || motionOff()) paint(performance.now());
         if (target === 1 || animP > 0.002) ensure();
       },
       setOn(next, animate) {
         target = next ? 1 : 0;
         if (!animate || instantTransition() || !open || slot.hidden) {
-          animP = target; fromP = target; button.style.transform = '';
+          animP = target; fromP = target;
+          if (lastTransform !== '') { lastTransform = ''; button.style.transform = ''; }
           paint(performance.now());
           if (target === 1) ensure();
         } else {
           fromP = animP;
           animStart = performance.now();
+          lastDrawTs = 0;
           ensure();
         }
       },
@@ -1029,17 +1075,21 @@ export function mountOrchestratorSwitch(onToggle, onContextMenu) {
         if (isOpen) {
           resize(measureWidth());
           isLight = surfaceIsLight();
+          lastDrawTs = 0;
           paint(performance.now());
           if (target === 1 || animP > 0.002) ensure();
         } else if (rafId) {
           cancelAnimationFrame(rafId);
           rafId = 0;
-          button.style.transform = '';
+          if (lastTransform !== '') { lastTransform = ''; button.style.transform = ''; }
         }
       },
       destroy() {
         if (rafId) cancelAnimationFrame(rafId);
         rafId = 0;
+        document.removeEventListener?.('visibilitychange', onVisibility);
+        lastTransform = '';
+        lastBoxShadow = '';
         button.style.transform = '';
         button.style.boxShadow = '';
       },
@@ -1051,12 +1101,14 @@ export function mountOrchestratorSwitch(onToggle, onContextMenu) {
     if (!ctx) return null;
     const H = 28;
     let W = measureWidth();
-    let dpr = Math.min(window.devicePixelRatio || 1, 2);
+    let dpr = Math.min(window.devicePixelRatio || 1, 1.5);
     const resize = nextW => {
       W = Math.max(80, Math.round(nextW || W));
-      dpr = Math.min(window.devicePixelRatio || 1, 2);
-      canvas.width = Math.round(W * dpr);
-      canvas.height = Math.round(H * dpr);
+      dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+      const pxW = Math.round(W * dpr);
+      const pxH = Math.round(H * dpr);
+      if (canvas.width !== pxW) canvas.width = pxW;
+      if (canvas.height !== pxH) canvas.height = pxH;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     };
     resize(W);
@@ -1068,6 +1120,7 @@ export function mountOrchestratorSwitch(onToggle, onContextMenu) {
     let endImpact = 0;
     let phase = 0;
     let lastTime = performance.now();
+    let lastDrawTs = 0;
     let sparks = [];
 
     const spawnSparks = () => {
@@ -1165,11 +1218,10 @@ export function mountOrchestratorSwitch(onToggle, onContextMenu) {
         const py = H * 0.5 + Math.sin(p.angle) * p.radius;
         const rad = p.size * (0.65 + depth * 0.7);
         const a = p.life * (0.35 + depth * 0.65);
-        const pg = ctx.createRadialGradient(p.x, py, 0, p.x, py, rad * 2.4);
-        pg.addColorStop(0, `rgba(255, 255, 255, ${a.toFixed(3)})`);
-        pg.addColorStop(0.5, `rgba(216, 180, 254, ${(a * 0.65).toFixed(3)})`);
-        pg.addColorStop(1, 'rgba(168, 85, 247, 0)');
-        ctx.fillStyle = pg; ctx.beginPath(); ctx.arc(p.x, py, rad * 2.4, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = `rgba(216, 180, 254, ${(a * 0.36).toFixed(3)})`;
+        ctx.beginPath(); ctx.arc(p.x, py, rad * 2.2, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = `rgba(255, 255, 255, ${(a * 0.92).toFixed(3)})`;
+        ctx.beginPath(); ctx.arc(p.x, py, rad * 0.85, 0, Math.PI * 2); ctx.fill();
       }
       if (reach > 0.02) { drawRibbon(-1, true, reach, burst, progress); drawRibbon(1, true, reach, burst, progress); }
       const nodePower = Math.max(0, (progress - 0.55) / 0.45) * (0.85 + 0.15 * Math.sin(phase * 0.9));
@@ -1178,8 +1230,19 @@ export function mountOrchestratorSwitch(onToggle, onContextMenu) {
     };
 
     const tick = now => {
-      if (!open || slot.hidden) { rafId = 0; return; }
-      const dt = Math.min(0.05, (now - lastTime) / 1000);
+      if (!open || slot.hidden || document.hidden) { rafId = 0; return; }
+      const isOff = motionOff();
+      const isTransitioning = Math.abs(target - progress) > 0.005 || burst > 0.02 || endImpact > 0.02 || sparks.length > 0;
+      if (lastDrawTs > 0 && !isOff && !isTransitioning) {
+        const minInterval = reducedAttr() ? 48 : motion === 'full' ? 30 : 38;
+        if (now - lastDrawTs < minInterval) {
+          rafId = requestAnimationFrame(tick);
+          return;
+        }
+      }
+      lastDrawTs = now;
+
+      const dt = Math.min(0.08, Math.max(0.001, (now - lastTime) / 1000));
       lastTime = now;
       const isFull = motion === 'full';
       const speed = isFull ? (target > progress ? 3.8 : 4.8) : (target > progress ? 13 : 15);
@@ -1200,7 +1263,7 @@ export function mountOrchestratorSwitch(onToggle, onContextMenu) {
         if (p.life <= 0 || p.x < 6 || p.x > W - 6) sparks.splice(i, 1);
       }
       paint();
-      if (!sysReduced() && (target === 1 || progress > 0.002 || burst > 0.002 || sparks.length > 0)) {
+      if (!isOff && (target === 1 || progress > 0.002 || burst > 0.002 || sparks.length > 0)) {
         rafId = requestAnimationFrame(tick);
       } else {
         rafId = 0;
@@ -1208,25 +1271,37 @@ export function mountOrchestratorSwitch(onToggle, onContextMenu) {
     };
 
     const ensure = () => {
-      if (!rafId && open && !slot.hidden && !sysReduced()) {
+      if (!rafId && open && !slot.hidden && !document.hidden && !motionOff()) {
+        lastDrawTs = 0;
         lastTime = performance.now();
         rafId = requestAnimationFrame(tick);
       }
     };
+
+    const onVisibility = () => {
+      if (document.hidden) {
+        if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
+      } else if (open && !slot.hidden && (target === 1 || progress > 0.002)) {
+        ensure();
+      }
+    };
+    document.addEventListener?.('visibilitychange', onVisibility);
 
     paint();
     if (active) ensure();
 
     return {
       resize(nextW) {
-        if (Math.abs(nextW - W) >= 1) { resize(nextW); paint(); }
+        if (Math.abs(nextW - W) >= 1) { resize(nextW); lastDrawTs = 0; paint(); }
       },
       setMotion() {
         if (instantTransition()) {
+          if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
           progress = target; burst = 0; endImpact = 0; sparks = [];
           paint();
+        } else if (target === 1) {
+          ensure();
         }
-        if (target === 1) ensure();
       },
       setOn(next, animate) {
         target = next ? 1 : 0;
@@ -1237,12 +1312,14 @@ export function mountOrchestratorSwitch(onToggle, onContextMenu) {
         } else {
           if (next) { burst = 1; spawnSparks(); }
           else { burst = 0.35; }
+          lastDrawTs = 0;
           ensure();
         }
       },
       setOpen(isOpen) {
         if (isOpen) {
           resize(measureWidth());
+          lastDrawTs = 0;
           paint();
           if (target === 1 || progress > 0.002) ensure();
         } else if (rafId) {
@@ -1250,7 +1327,11 @@ export function mountOrchestratorSwitch(onToggle, onContextMenu) {
           rafId = 0;
         }
       },
-      destroy() { if (rafId) cancelAnimationFrame(rafId); rafId = 0; },
+      destroy() {
+        if (rafId) cancelAnimationFrame(rafId);
+        rafId = 0;
+        document.removeEventListener?.('visibilitychange', onVisibility);
+      },
     };
   };
 
@@ -1471,16 +1552,18 @@ export function mountOrchestratorSwitch(onToggle, onContextMenu) {
     const nextShape = resolved.shape || 'pill';
     const nextIcon = prefs.orchestratorIcon || 'prism';
     const nextMotion = prefs.motion || 'fast';
+    const nextOff = motionOff();
     const nextPalette = mt.resolvePalette(modelName);
     const markupChanged = nextStyle !== style || nextIcon !== icon;
     const engineChanged = nextEngineKey !== engineKey || nextShape !== shape;
-    const motionChanged = nextMotion !== motion;
+    const motionChanged = nextMotion !== motion || nextOff !== lastMotionDisabled;
     const paletteChanged = nextPalette !== palette;
     style = nextStyle;
     engineKey = nextEngineKey;
     shape = nextShape;
     icon = nextIcon;
     motion = nextMotion;
+    lastMotionDisabled = nextOff;
     palette = nextPalette;
     slot.dataset.motion = motion;
     slot.dataset.engine = engineKey;

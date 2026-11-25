@@ -127,20 +127,38 @@ html[data-agy-panel-handoff^="ov-to-aux"] [data-testid="overview-panel-overlay-b
   }
 }
 
+html[data-agy-motion="reduced"] [data-testid="aux-pane-split"][data-split-transition="opening"] > div:last-child > div:first-child {
+  animation-duration: 120ms !important;
+}
+html[data-agy-motion="reduced"] [data-testid="aux-pane-split"][data-split-transition="closing"] > div:last-child > div:first-child,
+html[data-agy-motion="reduced"] html[data-agy-panel-handoff="ov-to-aux-closing"] .animate-overview-panel,
+html[data-agy-motion="reduced"] .agy-composer-footer * {
+  transition-duration: 80ms !important;
+}
+
+html[data-agy-motion="off"] [data-testid="aux-pane-split"][data-split-transition="opening"] > div:last-child > div:first-child,
+html[data-agy-motion="off"] [data-testid="subagent-tab-conversation"][data-agy-sub-switching="1"],
+html[data-agy-motion="off"] #agy-main-subagent-pill .agy-sub-live-dot,
+html[data-agy-motion="off"] #agy-ov-usage-card *,
+html[data-agy-motion="off"] .agy-composer-footer * {
+  animation: none !important;
+  transition: none !important;
+}
+
 /* Remove redundant inner subagent list sidebar + divider + header toggle inside aux split pane
    (the main bottom-dock Subagent capsule menu already handles subagent status & switching).
-   Note: Never nest :has() inside :has(), which CSS Selectors drops as invalid! */
+   Note: Uses O(1) data-maga-sub-* markers set by dom-flags.mjs cleanly without global relational selectors! */
 [data-testid="aux-pane-split"] > div:last-child [data-testid="subagent-tab-sidebar"],
-[data-testid="aux-pane-split"] > div:last-child div:has([data-testid="subagent-tab-sidebar"]):not(:has([data-testid="subagent-tab-conversation"])),
-[data-testid="aux-pane-split"] > div:last-child div:has(> div > [data-testid="subagent-tab-conversation"]) + div:not([data-testid]) {
+[data-testid="aux-pane-split"] > div:last-child div[data-maga-sub-sidebar-wrap="1"],
+[data-testid="aux-pane-split"] > div:last-child div[data-maga-sub-conv-outer="1"] + div:not([data-testid]) {
   display: none !important;
   width: 0 !important;
   min-width: 0 !important;
   max-width: 0 !important;
 }
 
-[data-testid="aux-pane-split"] > div:last-child div:has(> [data-testid="subagent-tab-conversation"]),
-[data-testid="aux-pane-split"] > div:last-child div:has(> div > [data-testid="subagent-tab-conversation"]),
+[data-testid="aux-pane-split"] > div:last-child div[data-maga-sub-conv-wrap="1"],
+[data-testid="aux-pane-split"] > div:last-child div[data-maga-sub-conv-outer="1"],
 [data-testid="aux-pane-split"] > div:last-child [data-testid="subagent-tab-conversation"] {
   flex: 1 1 0% !important;
   min-width: 0 !important;
@@ -153,7 +171,7 @@ button[data-testid="subagent-tab-open-full-view"] + button[data-testid="sidebar-
 }
 
 /* Scope composer proportions to primary/subagent composers (never compact voice-dock or side-question) */
-[data-testid="agent-input-box"]:not([data-testid="voice-dock-composer"] *):not([data-testid="side-question-tab-content"] *) div:has(> .agy-composer-footer) {
+[data-testid="agent-input-box"]:not([data-testid="voice-dock-composer"] *):not([data-testid="side-question-tab-content"] *) div[data-maga-footer-shell="1"] {
   border-radius: 16px !important;
   padding: 10px 10px 8px 12px !important;
 }
@@ -604,6 +622,7 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) :is(#ag-claude-quota-popov
 }
 
 #ag-live-metrics-pill {
+  contain: layout style;
   --agy-spd-color: var(--muted-foreground, #787774);
 }
 

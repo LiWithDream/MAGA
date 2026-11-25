@@ -46,17 +46,17 @@ body {
 }
 
 /* Hide English thinking prose & remove expand/collapse chevron on Thinking/Thought rows */
-[data-testid="thinking-collapsible-trigger"] + div,
-[data-testid="thinking-collapsible-trigger"] > svg:last-of-type {
+html:not([data-agy-show-thinking="1"]) [data-testid="thinking-collapsible-trigger"] + div,
+html:not([data-agy-show-thinking="1"]) [data-testid="thinking-collapsible-trigger"] > svg:last-of-type {
   display: none !important;
 }
 
-[data-testid="thinking-collapsible-trigger"] {
+html:not([data-agy-show-thinking="1"]) [data-testid="thinking-collapsible-trigger"] {
   cursor: default !important;
   pointer-events: none !important;
 }
 
 /* Avoid duplicate elapsed timers when Antigravity already renders its native tool-group-elapsed */
-[data-testid="tool-group-collapsible"]:has([data-testid="tool-group-elapsed"]) .ag-elapsed-timer {
+[data-testid="tool-group-collapsible"][data-maga-native-elapsed="1"] .ag-elapsed-timer {
   display: none !important;
 }

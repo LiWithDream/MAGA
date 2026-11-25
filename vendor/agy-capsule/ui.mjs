@@ -1,7 +1,6 @@
 // Shared presentation only. Token counts and breakdown arithmetic stay unchanged.
-import { createTurnPresentation } from './turn_ui.mjs';
 
-export function createPresentation(turnFactory = createTurnPresentation) {
+export function createPresentation(turnFactory = () => ({ dictionaries: {} })) {
   const dictionaries = {
     en: {
       cache: 'Cache', turn0: 'Turn0', read: 'Read', think: 'Think', write: 'Write',
@@ -454,8 +453,8 @@ export function createPresentation(turnFactory = createTurnPresentation) {
     const m = Math.round(n / 100000) / 10;
     return m >= 100 ? Math.round(n / 1000000) + 'M' : m.toFixed(1) + 'M';
   }
-  const { dictionaries: turnDictionaries, ...turnMethods } = turnFactory(formatTokens);
-  for (const language of Object.keys(dictionaries)) Object.assign(dictionaries[language], turnDictionaries[language]);
+  const { dictionaries: turnDictionaries = {}, ...turnMethods } = turnFactory(formatTokens) || {};
+  for (const language of Object.keys(dictionaries)) Object.assign(dictionaries[language], turnDictionaries[language] || {});
   function cacheThresholds(prefs = {}) {
     const rawWarn = Number(prefs?.cacheWarnMin);
     const rawCold = Number(prefs?.cacheColdMin);
@@ -842,5 +841,3 @@ export function createPresentation(turnFactory = createTurnPresentation) {
   const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   return { version: 103, dictionaries, locale, systemLocale, apply, appearance, formatReset, escapeHtml, formatTokens, cacheThresholds, makeCacheRingSvg, cacheTooltip, cacheView, contextBreakdown, contextTooltips, renderContextTooltips, quotaTooltip, applyQuotaTooltips, quotaColor, makeRingSvg, formatGroupTitle, formatBucketLabel, activeGroupColor, quotaView, quotaStaleNote, alertView, renderAlerts, generationText, generationMarkup, renderGeneration, ...turnMethods };
 }
-
-export const getPresentationScript = () => `if (globalThis.__agyCapsulePresentation?.version !== 103) globalThis.__agyCapsulePresentation = (${createPresentation.toString()})(${createTurnPresentation.toString()});`;

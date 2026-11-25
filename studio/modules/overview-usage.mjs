@@ -6,7 +6,10 @@
  * - Incremental SQLite usage history via unified daemon's getUsageStats action
  */
 
-export function createOverviewUsageRuntime({ motionThemes }) {
+import { markOwn } from '../core/dom.mjs';
+import { isZhUi, L } from '../core/env.mjs';
+
+export function createOverviewUsageRuntime({ motionThemes, studioPrefs } = {}) {
   const CARD_ID = 'agy-ov-usage-card';
   const TOOLTIP_ID = 'agy-usage-tooltip';
   const STORAGE_KEY = 'agy_studio_usage_ui_v1';
@@ -30,14 +33,18 @@ export function createOverviewUsageRuntime({ motionThemes }) {
   let fetchInFlight = false;
   let lastFetchTs = 0;
   let lastRenderCtx = null;
-  let sectionsObs = null;
-  let observedSections = null;
   const lastTurnSigByCid = new Map();
 
   const onViewportScrollOrResize = () => hideTooltip();
   window.addEventListener('scroll', onViewportScrollOrResize, { capture: true, passive: true });
   window.addEventListener('resize', onViewportScrollOrResize);
 
+  const defaultPeriodPref = () => {
+    const p = studioPrefs?.get?.()?.overviewUsageDefaultPeriod;
+    return SPANS[p] ? p : 'day';
+  };
+  let lastDefaultPeriod = defaultPeriodPref();
+  let lastIsZh = isZhUi();
   const uiState = loadUiState();
 
   function loadUiState() {
@@ -45,11 +52,11 @@ export function createOverviewUsageRuntime({ motionThemes }) {
       const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
       return {
         open: typeof parsed.open === 'boolean' ? parsed.open : true,
-        period: SPANS[parsed.period] ? parsed.period : 'day',
+        period: SPANS[parsed.period] ? parsed.period : defaultPeriodPref(),
         shift: 0,
       };
     } catch {
-      return { open: true, period: 'day', shift: 0 };
+      return { open: true, period: defaultPeriodPref(), shift: 0 };
     }
   }
 
@@ -59,13 +66,33 @@ export function createOverviewUsageRuntime({ motionThemes }) {
     } catch {}
   }
 
-  function isZh() {
-    return document.documentElement.getAttribute('data-ag-ux-lang') === 'zh-CN';
-  }
-
-  function L(zh, en) {
-    return isZh() ? zh : en;
-  }
+  const offStudioPrefs = studioPrefs?.subscribe?.((nextPrefs) => {
+    if (disposed) return;
+    if (nextPrefs.overviewUsageEnabled === false) {
+      hideTooltip();
+      if (cardEl) {
+        try { cardEl.remove(); } catch {}
+        cardEl = null;
+      }
+      return;
+    }
+    const nextDef = SPANS[nextPrefs.overviewUsageDefaultPeriod] ? nextPrefs.overviewUsageDefaultPeriod : 'day';
+    let needRerender = false;
+    if (nextDef !== lastDefaultPeriod) {
+      lastDefaultPeriod = nextDef;
+      uiState.period = nextDef;
+      uiState.shift = 0;
+      saveUiState();
+      needRerender = true;
+    }
+    const curZh = isZhUi();
+    if (curZh !== lastIsZh) {
+      lastIsZh = curZh;
+      needRerender = true;
+    }
+    if (needRerender && cardEl) renderCard();
+    sync();
+  });
 
   function esc(str) {
     return String(str ?? '')
@@ -95,7 +122,7 @@ export function createOverviewUsageRuntime({ motionThemes }) {
   const emptyParts = () => ({ requests: 0, uncached: 0, cacheRead: 0, cacheWrite: 0, output: 0 });
   const addParts = (t, s = {}) => { t.requests += s.requests || 0; for (const k of COUNTERS) t[k] += s[k] || 0; };
   const tokensOf = (b = {}) => (b.uncached || 0) + (b.cacheRead || 0) + (b.cacheWrite || 0) + (b.output || 0);
-  const reqFmt = (n) => (isZh() ? `${exact(n)} 次请求` : `${exact(n)} req`);
+  const reqFmt = (n) => (isZhUi() ? `${exact(n)} 次请求` : `${exact(n)} req`);
 
   function splitModelName(raw) {
     const trimmed = String(raw || '').trim().replace(/^models\//i, '').trim();
@@ -290,6 +317,7 @@ export function createOverviewUsageRuntime({ motionThemes }) {
       tooltipEl.setAttribute('data-ag-i18n-ignore', '1');
       document.body.appendChild(tooltipEl);
     }
+    markOwn(tooltipEl);
     return tooltipEl;
   }
 
@@ -445,7 +473,7 @@ export function createOverviewUsageRuntime({ motionThemes }) {
               : `<span class="agy-usage-bar-zero"></span>`;
             const showX = (view.bars.length - 1 - idx) % stride === 0;
             const xLabel = showX
-              ? (uiState.period === 'month' && isZh() ? `${item.label}月` : item.label)
+              ? (uiState.period === 'month' && isZhUi() ? `${item.label}月` : item.label)
               : '';
             return `<div class="agy-usage-bar" data-agy-tip-bar="${idx}"><div class="agy-usage-bar-track">${colHtml}</div><span class="agy-usage-bar-x">${esc(xLabel)}</span></div>`;
           })
@@ -524,7 +552,7 @@ export function createOverviewUsageRuntime({ motionThemes }) {
       </button>
       <div class="agy-usage-hdr-right">
         <span class="ag-ov-muted ag-ov-tabular">${esc(todayBadge)}</span>
-        <button type="button" class="ag-ov-icon-btn" data-agy-usage-action="refresh" title="${esc(L('刷新用量统计', 'Refresh usage stats'))}" aria-label="Refresh">
+        <button type="button" class="ag-ov-icon-btn" data-agy-usage-action="refresh" title="${esc(L('刷新用量统计', 'Refresh usage stats'))}" aria-label="${esc(L('刷新用量统计', 'Refresh usage stats'))}">
           <svg class="${fetchInFlight ? 'ag-ov-spinning' : ''}" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M13.5 8a5.5 5.5 0 1 1-1.35-3.6M13.5 2.5v2.9h-2.9"/></svg>
         </button>
       </div>
@@ -536,6 +564,7 @@ export function createOverviewUsageRuntime({ motionThemes }) {
     cardEl = document.createElement('section');
     cardEl.id = CARD_ID;
     cardEl.className = 'ag-ov-card';
+    markOwn(cardEl);
     cardEl.setAttribute('data-ov-card', 'usage');
     cardEl.setAttribute('data-ag-i18n-ignore', '1');
 
@@ -630,33 +659,57 @@ export function createOverviewUsageRuntime({ motionThemes }) {
     }
   }
 
-  function watchSectionsSync(sections) {
-    if (!sections || observedSections === sections) return;
-    if (sectionsObs) sectionsObs.disconnect();
-    observedSections = sections;
-    // MutationObserver runs as a microtask before paint — zero 1-frame detach flicker
-    sectionsObs = new MutationObserver(() => {
-      if (!disposed && sections.isConnected) {
-        anchorCardInSections(sections);
-      }
-    });
-    sectionsObs.observe(sections, { childList: true });
+  const onOverviewRendered = () => {
+    if (disposed || studioPrefs?.get?.()?.overviewUsageEnabled === false) return;
+    const sections = document.getElementById('ag-claude-ov-sections');
+    if (sections && sections.isConnected) {
+      anchorCardInSections(sections);
+    }
+  };
+  window.addEventListener('agy:overview-rendered', onOverviewRendered);
+
+  function read(snapshot = null) {
+    if (disposed) return null;
+    const enabled = studioPrefs?.get?.()?.overviewUsageEnabled !== false;
+    if (!enabled) return { enabled: false };
+    const overviewOpen = snapshot
+      ? snapshot.overviewOpen
+      : (() => {
+          const panel = document.querySelector('[data-testid="overview-panel"]');
+          return Boolean(panel && !panel.hidden && panel.getAttribute('aria-hidden') !== 'true');
+        })();
+    if (!overviewOpen) return { enabled: true, overviewOpen: false };
+    const sections = document.getElementById('ag-claude-ov-sections');
+    const curZh = snapshot ? snapshot.isZh : isZhUi();
+    const metrics = snapshot ? snapshot.metrics : (typeof window !== 'undefined' ? window.__ag_last_metrics || null : null);
+    return { enabled: true, overviewOpen: true, sections, curZh, metrics, now: snapshot ? snapshot.now : Date.now() };
   }
 
-  function sync() {
+  function write(snapshot = null, planArg = undefined) {
     if (disposed) return;
-    const panel = document.querySelector('[data-testid="overview-panel"]');
-    if (!panel || panel.hidden || panel.getAttribute('aria-hidden') === 'true') {
+    const plan = planArg !== undefined ? planArg : read(snapshot);
+    if (!plan) return;
+    if (!plan.enabled) {
+      hideTooltip();
+      if (cardEl) {
+        try { cardEl.remove(); } catch {}
+        cardEl = null;
+      }
+      return;
+    }
+    if (!plan.overviewOpen) {
       hideTooltip();
       return;
     }
-    const sections = document.getElementById('ag-claude-ov-sections');
-    if (!sections) return;
+    if (plan.curZh !== lastIsZh) {
+      lastIsZh = plan.curZh;
+      if (cardEl) renderCard();
+    }
+    if (!plan.sections) return;
 
-    watchSectionsSync(sections);
-    anchorCardInSections(sections);
+    anchorCardInSections(plan.sections);
 
-    const m = window.__ag_last_metrics;
+    const m = plan.metrics;
     let turnChanged = false;
     if (m?.hasData && m?.stats) {
       const cid = String(m.cascadeId || '_default');
@@ -671,21 +724,23 @@ export function createOverviewUsageRuntime({ motionThemes }) {
       }
     }
 
-    if (!usageData || turnChanged || Date.now() - lastFetchTs >= CACHE_TTL_MS) {
+    if (!usageData || turnChanged || plan.now - lastFetchTs >= CACHE_TTL_MS) {
       fetchUsage(turnChanged);
     }
+  }
+
+  function sync() {
+    if (disposed) return;
+    write(null, read(null));
   }
 
   function dispose() {
     if (disposed) return;
     disposed = true;
+    offStudioPrefs?.();
+    window.removeEventListener('agy:overview-rendered', onOverviewRendered);
     window.removeEventListener('scroll', onViewportScrollOrResize, { capture: true });
     window.removeEventListener('resize', onViewportScrollOrResize);
-    if (sectionsObs) {
-      sectionsObs.disconnect();
-      sectionsObs = null;
-    }
-    observedSections = null;
     hideTooltip();
     if (tooltipEl) {
       try { tooltipEl.remove(); } catch {}
@@ -697,5 +752,11 @@ export function createOverviewUsageRuntime({ motionThemes }) {
     }
   }
 
-  return { sync, dispose };
+  return {
+    topics: ['overview', 'route', 'metrics', 'prefs'],
+    read,
+    write,
+    sync,
+    dispose,
+  };
 }

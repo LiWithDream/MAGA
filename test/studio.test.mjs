@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { buildStudioBundle, CSS_BEGIN, CSS_END, JS_BEGIN, JS_END } from '../studio/build.mjs';
 import {
@@ -17,6 +17,11 @@ import { createFooterUnifiedRuntime } from '../studio/modules/footer-unified.mjs
 import { createResumeBannerRuntime } from '../studio/modules/resume-banner.mjs';
 import { createSubagentFooterRuntime } from '../studio/modules/subagent-footer.mjs';
 import { collectResumeState } from '../studio/daemon/resume-detector.mjs';
+import { createStudioPrefsRuntime } from '../studio/modules/studio-prefs.mjs';
+import { OWN_HOST_IDS, OWN_ATTR, setAttr, setLeafText } from '../studio/core/dom.mjs';
+import { createDomFlagsFeature } from '../studio/core/dom-flags.mjs';
+import { createMagaKernel } from '../studio/core/kernel.mjs';
+import { renderSpeedSlots } from '../studio/core/metrics-bus.mjs';
 import { syncModelPicker } from '../vendor/agy-capsule/model_picker.mjs';
 import { motionThemes } from '../vendor/agy-capsule/motion_themes.mjs';
 
@@ -409,14 +414,15 @@ test('buildStudioBundle compiles clean JS and complete CSS bundle', async () => 
   // Verify JS syntax compiles cleanly
   assert.doesNotThrow(() => new Function('ctx', jsBlock));
 
-  // Verify MutationObserver self-trigger draining, studio filter & hidden poll guard
-  assert.match(jsBlock, /finally\s*\{\s*docObs\.takeRecords\(\);\s*\}/);
-  assert.match(jsBlock, /STUDIO_OWN_SEL/);
+  // Verify esbuild output retains MagaKernel self-trigger draining, data-maga-own filter & hidden guard
+  assert.match(jsBlock, /finally\s*\{\s*docObs\?\.takeRecords\?\.\(\);\s*\}/);
+  assert.match(jsBlock, /OWN_ATTR\s*=\s*["']data-maga-own["']/);
   assert.match(jsBlock, /document\.hidden/);
-  assert.match(jsBlock, /createSubagentFooterRuntime\(\{\s*motionThemes,\s*shortenModelName,\s*shortenEffortBadge\s*\}\)/);
+  assert.match(jsBlock, /createMagaKernel/);
+  assert.match(jsBlock, /createSubagentFooterRuntime\(/);
 
-  // Verify all 4 style files are bundled
-  for (const name of ['typography.css', 'footer-capsules.css', 'quota-popover.css', 'overview-usage.css']) {
+  // Verify all 5 style files are bundled
+  for (const name of ['typography.css', 'footer-capsules.css', 'quota-popover.css', 'overview-usage.css', 'studio-settings.css']) {
     assert.ok(cssBlock.includes(`/* --- studio/styles/${name} --- */`), `Missing ${name}`);
   }
 });
@@ -663,7 +669,6 @@ test('model_picker and decorateModelCapsule preserve clean aria-label and wrap p
         'zh-CN': { modelEffortPicker: '优化模型胶囊' },
       },
       shadowCss: '',
-      cfgMods: { claudeUxModelMenu: false },
       syncModelPicker: (root) => {
         if (!root.querySelector('button.dk-pill[data-el="modelPicker"]')) {
           const btn = env.createEl('button');
@@ -771,7 +776,6 @@ test('capsule-picker avoids redundant style writes, marks data-agy-model-wrap, a
         'zh-CN': { modelEffortPicker: '优化模型胶囊' },
       },
       shadowCss: '',
-      cfgMods: { claudeUxModelMenu: false },
       syncModelPicker: (root) => {
         pickerSyncCalls += 1;
         root._modelPicker = {
@@ -1256,10 +1260,10 @@ test('Gemini 4 Neon defaults to High thinking effort across picker rows and fall
   const modelPickerSrc = readFileSync(path.join(REPO, 'vendor', 'agy-capsule', 'model_picker.mjs'), 'utf8');
   const customJsSrc = readFileSync(path.join(REPO, 'user', 'custom.js'), 'utf8');
 
-  assert.match(modelPickerSrc, /const defaultTierFor = name => \/\\bneon\\b\/i\.test\(String\(name \|\| ''\)\) \? 'high' : 'medium';/);
+  assert.match(modelPickerSrc, /const defaultTierFor = name => \{[\s\S]*?return \/\\bneon\\b\/i\.test\(key\) \? 'high' : 'medium';/);
   assert.match(modelPickerSrc, /showSubFor[\s\S]*?const defTier = defaultTierFor\(planner\.name\);/);
   assert.match(modelPickerSrc, /renderedGroups[\s\S]*?const defTier = defaultTierFor\(group\.name\);/);
-  assert.match(customJsSrc, /function pickVariantForFamily[\s\S]*?\/\\bneon\\b\/i[\s\S]*?v\.effort === 'High'/);
+  assert.match(customJsSrc, /function pickVariantForFamily[\s\S]*?\/\\bneon\\b\/i[\s\S]*?v\.effort === ['"]High['"]/);
 
   const env = makeMockDomEnv({ pathname: '/c/conv-neon', lang: 'en', width: 620 });
   const enhanceEl = (el, rootRef) => {
@@ -1374,10 +1378,802 @@ test('Gemini 4 Neon defaults to High thinking effort across picker rows and fall
       const gptRow = rows.find((r) => r.dataset.family === 'GPT-5');
       assert.equal(neonRow?.dataset.label, 'Gemini 4 Neon (High)');
       assert.equal(gptRow?.dataset.label, 'GPT-5 (Medium)');
+
+      // Verify custom defaultTierByFamily overrides apply dynamically
+      syncModelPicker(
+        root,
+        footer,
+        {
+          modelEffortPicker: true,
+          showEffortBar: true,
+          defaultTierByFamily: { 'Gemini 4 Neon': 'low', 'GPT-5': 'high' },
+        },
+        {},
+        () => leftGroup
+      );
+      const updatedRows = root.querySelectorAll('button.dk-model-row');
+      assert.equal(updatedRows.find((r) => r.dataset.family === 'Gemini 4 Neon')?.dataset.label, 'Gemini 4 Neon (Low)');
+      assert.equal(updatedRows.find((r) => r.dataset.family === 'GPT-5')?.dataset.label, 'GPT-5 (High)');
       root._modelPicker?.dispose?.();
     } finally {
       if (prevMatchMedia === undefined) delete globalThis.matchMedia;
       else globalThis.matchMedia = prevMatchMedia;
     }
   });
+});
+
+test('sanitizeStudioPrefs, loadStudioPrefs & saveStudioPrefs validate enums, defaults and support reset', async () => {
+  const daemon = await import(pathToFileURL(path.join(REPO, 'core', 'daemon.mjs')).href);
+  const dir = mkdtempSync(path.join(tmpdir(), 'agy-studio-prefs-'));
+  try {
+    const studioFile = path.join(dir, 'studio-prefs.json');
+
+    const initial = daemon.loadStudioPrefs({ studioPrefsFile: studioFile });
+    assert.equal(initial.customizeModelList, false);
+    assert.deepEqual(initial.hiddenModels, []);
+    assert.equal(initial.effortTheme, 'auto');
+    assert.equal(initial.claudeTheme, 'matrix');
+    assert.equal(initial.defaultTierByFamily['Gemini 4 Neon'], 'high');
+    assert.equal(initial.hideThinkingProse, true);
+
+    const saved = daemon.saveStudioPrefs(
+      {
+        hideThinkingProse: false,
+        motionLevel: 'reduced',
+        overviewUsageDefaultPeriod: 'week',
+        defaultTierByFamily: { 'Gemini 4 Neon': 'high', 'Claude Opus 5.5': 'HIGH', Invalid: 'nope' },
+      },
+      { studioPrefsFile: studioFile }
+    );
+    assert.equal(saved.ok, true);
+    assert.equal(saved.prefs.hideThinkingProse, false);
+    assert.equal(saved.prefs.motionLevel, 'reduced');
+    assert.equal(saved.prefs.overviewUsageDefaultPeriod, 'week');
+    assert.deepEqual(saved.prefs.defaultTierByFamily, {
+      'Gemini 4 Neon': 'high',
+      'Claude Opus 5.5': 'high',
+    });
+
+    const sanitized = daemon.sanitizeStudioPrefs({
+      effortTheme: 'bogus',
+      motionLevel: 'invalid',
+      hiddenModels: ['A', 123, 'A', 'B'],
+    });
+    assert.equal(sanitized.effortTheme, 'auto');
+    assert.equal(sanitized.motionLevel, 'full');
+    assert.deepEqual(sanitized.hiddenModels, ['A', 'B']);
+
+    const resetRes = daemon.saveStudioPrefs({ reset: true }, { studioPrefsFile: studioFile });
+    assert.equal(resetRes.ok, true);
+    assert.equal(resetRes.prefs.hideThinkingProse, true);
+    assert.deepEqual(resetRes.prefs.hiddenModels, []);
+    assert.equal(resetRes.prefs.motionLevel, 'full');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('buildStudioBundle includes unified MAGA settings runtime & non-nested CSS', async () => {
+  const { jsBlock, cssBlock } = await buildStudioBundle();
+  assert.ok(jsBlock.includes('createStudioPrefsRuntime'));
+  assert.ok(jsBlock.includes('createStudioSettingsRuntime'));
+  assert.ok(cssBlock.includes('/* --- studio/styles/studio-settings.css --- */'));
+  assert.equal(hasNestedHasSelector(cssBlock), false);
+});
+
+test('studio-settings & capsule-picker enforce symmetrical centering, merge capsule/theme 3-tab workbench & show all Gemini 4 elements', () => {
+  const settingsSrc = [
+    readFileSync(path.join(REPO, 'studio', 'modules', 'studio-settings.mjs'), 'utf8'),
+    readFileSync(path.join(REPO, 'studio', 'modules', 'settings', 'constants.mjs'), 'utf8'),
+    readFileSync(path.join(REPO, 'studio', 'modules', 'settings', 'events.mjs'), 'utf8'),
+    readFileSync(path.join(REPO, 'studio', 'modules', 'settings', 'preview.mjs'), 'utf8'),
+    readFileSync(path.join(REPO, 'studio', 'modules', 'settings', 'views.mjs'), 'utf8'),
+  ].join('\n');
+  const settingsCss = readFileSync(path.join(REPO, 'studio', 'styles', 'studio-settings.css'), 'utf8');
+  const pickerSrc = readFileSync(path.join(REPO, 'studio', 'modules', 'capsule-picker.mjs'), 'utf8');
+
+  assert.match(settingsSrc, /viewBox="0 0 24 24"[\s\S]*?<circle cx="12" cy="12" r="3"\/>/);
+  assert.match(settingsCss, /\.agy-ms-body\s*>\s*\*\s*\{[^}]*flex-shrink:\s*0/);
+  assert.equal(settingsSrc.includes('data-ms-host="orchestratorModel"'), false, 'Planner dropdown must be removed');
+  assert.equal(settingsSrc.includes('agy-ms-prev-effortbar'), false, 'Fake stretched progress bar must be removed');
+  assert.equal(settingsSrc.includes('GPT-OSS'), false, 'Unused GPT-OSS / Codex sample must be removed');
+
+  for (const modelName of ['Gemini 4 Neon', 'Gemini 4 Carbon', 'Gemini 4 Argon', 'Gemini 4 Hydrogen', 'Claude Opus 5.5']) {
+    assert.ok(settingsSrc.includes(modelName), `Missing preview model ${modelName}`);
+  }
+
+  assert.ok(settingsSrc.includes('agy-ms-studio-split'));
+  assert.ok(settingsSrc.includes('agy-ms-model-rail'));
+  assert.ok(settingsSrc.includes('agy-ms-model-chip'));
+  assert.ok(settingsSrc.includes('data-ms-host="orchestratorExecutorModel"'));
+  assert.ok(settingsSrc.includes('agy-ms-preview-stage'));
+  assert.ok(settingsSrc.includes('agy-ms-prev-fx-host'));
+  assert.ok(settingsSrc.includes('data-ms-studio-tab="capsule"'));
+  assert.ok(settingsSrc.includes('data-ms-studio-tab="slider"'));
+  assert.ok(settingsSrc.includes('data-ms-studio-tab="orch"'));
+  assert.match(settingsSrc, /const\s+showCodex\s*=\s*p\.effortTheme\s*===\s*'codex'/);
+  assert.ok(settingsSrc.includes('agy-ms-opt-grid'));
+  assert.ok(settingsSrc.includes('ORCH_MINI_ICONS'));
+  assert.ok(settingsSrc.includes('mountOrchestratorSwitch'));
+  assert.ok(settingsSrc.includes('mountEffortBar'));
+
+  // Symmetrical vertical centering & spacing across all Effort Bar modes
+  assert.match(pickerSrc, /\.dk-orch-btn\s+\.dk-orch-label\s*\{[^}]*line-height:\s*1\s*!important/);
+  assert.match(pickerSrc, /\.ces-ag-effort-row\s*\{[^}]*padding:\s*8px\s+10px\s+9px\s*!important[^}]*gap:\s*8px\s*!important/);
+  assert.match(pickerSrc, /\.ces-ag-effort-head\s*\{[^}]*align-items:\s*center\s*!important/);
+  assert.equal(settingsSrc.includes('margin: 5px 0 1px'), false, 'Asymmetric preview .agy-effort margin override must be removed');
+  assert.ok(settingsSrc.includes('.agy-fx-stage .agy-effort { margin: 0 !important; }'));
+});
+
+test('studio-prefs getModelCatalog sorts executor & planner tiers monotonically (XHigh before High) including cached fallback', async () => {
+  const env = makeMockDomEnv({ pathname: '/c/conv-cat', lang: 'zh', width: 720 });
+  const prevLS = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+  const storeMap = new Map();
+  globalThis.localStorage = {
+    getItem: (k) => (storeMap.has(k) ? storeMap.get(k) : null),
+    setItem: (k, v) => { storeMap.set(k, String(v)); },
+    removeItem: (k) => { storeMap.delete(k); },
+  };
+
+  await withGlobals(env, () => {
+    let prefsRt;
+    try {
+      const trigger = env.createEl('button');
+      trigger.setAttribute('data-testid', 'model-selector-trigger');
+      const modelOptions = [
+        { label: 'Gemini 4 Neon (High)', modelId: 'gemini-4-neon-high', value: 1532 },
+        { label: 'Gemini 4 Neon (XHigh)', modelId: 'gemini-4-neon-xhigh', value: 1533 },
+        { label: 'Gemini 4 Hydrogen (High)', modelId: 'gemini-4-hydrogen-high', value: 1603 },
+        { label: 'Gemini 4 Hydrogen (XHigh)', modelId: 'gemini-4-hydrogen-xhigh', value: 1604 },
+        { label: 'Gemini 4 Hydrogen (Medium)', modelId: 'gemini-4-hydrogen-medium', value: 1602 },
+        { label: 'Gemini 4 Hydrogen (Low)', modelId: 'gemini-4-hydrogen-low', value: 1601 },
+        { label: 'Claude 4.5 Sonnet (Medium)', modelId: 'claude-4-5-sonnet-medium', value: 1702 },
+        { label: 'Claude 4.5 Sonnet (High)', modelId: 'claude-4-5-sonnet-high', value: 1703 },
+        { label: 'Claude 4.5 Sonnet (Low)', modelId: 'claude-4-5-sonnet-low', value: 1701 },
+      ];
+      const orchestratorPlanners = [
+        { label: 'Gemini 4 Neon (High)', modelId: 'gemini-4-neon-high', value: 1532 },
+        { label: 'Gemini 4 Neon (XHigh)', modelId: 'gemini-4-neon-xhigh', value: 1533 },
+        { label: 'Gemini 4 Neon (Low)', modelId: 'gemini-4-neon-low', value: 1530 },
+      ];
+      trigger.__reactFiber$test = {
+        memoizedProps: {
+          setSelectedModel() {},
+          modelOptions,
+          orchestratorPlanners,
+        },
+        return: null,
+      };
+      env.doc.body.append(trigger);
+
+      prefsRt = createStudioPrefsRuntime({});
+      const cat = prefsRt.getModelCatalog();
+
+      assert.deepEqual(
+        cat.executors.map((e) => e.label),
+        [
+          'Gemini 4 Hydrogen (XHigh)',
+          'Gemini 4 Hydrogen (High)',
+          'Gemini 4 Hydrogen (Medium)',
+          'Gemini 4 Hydrogen (Low)',
+          'Claude 4.5 Sonnet (High)',
+          'Claude 4.5 Sonnet (Medium)',
+          'Claude 4.5 Sonnet (Low)',
+        ]
+      );
+      assert.deepEqual(
+        cat.planners.map((p) => p.label),
+        ['Gemini 4 Neon (XHigh)', 'Gemini 4 Neon (High)', 'Gemini 4 Neon (Low)']
+      );
+      const hyd = cat.families.find((f) => f.name === 'Gemini 4 Hydrogen');
+      assert.deepEqual(hyd?.items.map((i) => i.tier), ['low', 'medium', 'high', 'xhigh']);
+
+      // Seed unsorted legacy cache, detach trigger & verify cache fallback re-sorts too
+      trigger.remove();
+      globalThis.localStorage.setItem(
+        'agy_studio_model_catalog_v1',
+        JSON.stringify({
+          families: [
+            {
+              name: 'Gemini 4 Hydrogen',
+              displayName: 'Gemini 4 Hydrogen',
+              isMultiTier: true,
+              items: [
+                { label: 'Gemini 4 Hydrogen (High)', tier: 'high', value: 1603 },
+                { label: 'Gemini 4 Hydrogen (XHigh)', tier: 'xhigh', value: 1604 },
+                { label: 'Gemini 4 Hydrogen (Low)', tier: 'low', value: 1601 },
+              ],
+            },
+          ],
+          planners: [
+            { label: 'Gemini 4 Neon (High)', value: 1532 },
+            { label: 'Gemini 4 Neon (XHigh)', value: 1533 },
+          ],
+          executors: [
+            { label: 'Gemini 4 Hydrogen (High)', value: 1603 },
+            { label: 'Gemini 4 Hydrogen (XHigh)', value: 1604 },
+            { label: 'Gemini 4 Hydrogen (Medium)', value: 1602 },
+          ],
+        })
+      );
+
+      const cachedCat = prefsRt.getModelCatalog();
+      assert.deepEqual(cachedCat.executors.map((e) => e.label), [
+        'Gemini 4 Hydrogen (XHigh)',
+        'Gemini 4 Hydrogen (High)',
+        'Gemini 4 Hydrogen (Medium)',
+      ]);
+      assert.deepEqual(cachedCat.planners.map((p) => p.label), ['Gemini 4 Neon (XHigh)', 'Gemini 4 Neon (High)']);
+      assert.deepEqual(cachedCat.families[0].items.map((i) => i.tier), ['low', 'high', 'xhigh']);
+    } finally {
+      prefsRt?.dispose?.();
+      if (prevLS) Object.defineProperty(globalThis, 'localStorage', prevLS);
+      else delete globalThis.localStorage;
+    }
+  });
+});
+
+test('subagent-footer, resume-banner and footer-unified recognize data-ag-ux-lang="zh" for Chinese i18n', async () => {
+  const env = makeMockDomEnv({ pathname: '/c/conv-zh', lang: 'zh', width: 720 });
+  const resumeRt = createResumeBannerRuntime({});
+  const footerRt = createFooterUnifiedRuntime({});
+  const origDocEl = env.doc.documentElement;
+  origDocEl.setAttribute('data-ag-ux-lang', 'zh');
+
+  const extraKeys = ['CustomEvent', 'history', 'PopStateEvent'];
+  const prevExtra = new Map();
+  for (const k of extraKeys) prevExtra.set(k, Object.getOwnPropertyDescriptor(globalThis, k));
+
+  await withGlobals(env, () => {
+    try {
+      // Subagent-footer Chinese check under data-ag-ux-lang="zh"
+      const mainBox = env.createEl('div');
+      mainBox.id = 'antigravity.agentSidePanelInputBox';
+      const footer = env.createEl('div');
+      footer.className = 'agy-composer-footer';
+      const leftGroup = env.createEl('div');
+      const addBtn = env.createEl('button');
+      leftGroup.append(addBtn);
+      footer.append(leftGroup);
+      mainBox.append(footer);
+      env.doc.body.append(mainBox);
+
+      env.win.__ag_last_metrics = {
+        cascadeId: 'conv-zh',
+        stats: {
+          children: [
+            { id: 'c1', agentName: '', running: true, calls: 1, outTok: 10 },
+            { id: 'c2', agentName: 'Tester', running: false, calls: 2, outTok: 20 },
+          ],
+        },
+      };
+
+      const subRt = createSubagentFooterRuntime({
+        motionThemes,
+        shortenModelName,
+        shortenEffortBadge,
+      });
+      subRt.sync();
+      const pill = env.doc.getElementById('agy-main-subagent-pill');
+      assert.ok(pill, 'subagent pill mounts');
+      assert.match(pill.innerHTML, /子代理/, 'subagent pill switches to Chinese on data-ag-ux-lang="zh"');
+      assert.match(pill.title, /工作中/, 'tooltip switches to Chinese');
+      subRt.dispose();
+
+      // Footer-unified Chinese Compacting check
+      const ring = env.createEl('button');
+      ring.id = 'ag-claude-ctx-ring';
+      ring.setAttribute('data-compact-state', 'compacting');
+      leftGroup.append(ring);
+      footerRt.sync();
+      assert.equal(ring.querySelector('.agy-ctx-full')?.textContent, '压缩中…');
+
+      // Resume-banner Chinese divider check
+      const step = env.createEl('div');
+      step.setAttribute('data-testid', 'user-input-step');
+      const content = env.createEl('div');
+      content.setAttribute('data-testid', 'user-message-content');
+      content.textContent = '\u2063\u200B\u2063Please resume from where the task was interrupted';
+      step.append(content);
+      const convView = env.createEl('div');
+      convView.setAttribute('data-testid', 'conversation-view');
+      convView.append(step);
+      env.doc.body.append(convView);
+      resumeRt.sync();
+      assert.equal(step.getAttribute('data-agy-resumed-label'), '已从中断处继续');
+
+      resumeRt.dispose();
+      footerRt.dispose();
+    } finally {
+      for (const k of extraKeys) {
+        const desc = prevExtra.get(k);
+        if (desc) Object.defineProperty(globalThis, k, desc);
+        else delete globalThis[k];
+      }
+    }
+  });
+});
+
+test('effort_upstream, effort_bar, motion_themes & capsule-picker apply canvas buffer reuse, style caching, idle throttling & drop opaque backdrop blur', () => {
+  const upstreamSrc = readFileSync(path.join(REPO, 'vendor', 'agy-capsule', 'effort_upstream.mjs'), 'utf8');
+  const effortBarSrc = readFileSync(path.join(REPO, 'vendor', 'agy-capsule', 'effort_bar.mjs'), 'utf8');
+  const themesSrc = readFileSync(path.join(REPO, 'vendor', 'agy-capsule', 'motion_themes.mjs'), 'utf8');
+  const pickerSrc = readFileSync(path.join(REPO, 'studio', 'modules', 'capsule-picker.mjs'), 'utf8');
+
+  // effort_upstream: fixed full-track canvas width via CSS 100%, visibility pause, DOM write deduplication
+  assert.match(upstreamSrc, /\.ces-claude-canvas\s*\{[^}]*width:\s*100%/);
+  assert.equal(upstreamSrc.includes('tw * dpr'), false, 'Canvas buffer width must not depend on fill width tw');
+  assert.ok(upstreamSrc.includes('trackW * dpr'));
+  assert.ok(upstreamSrc.includes('lastAccentRgb'));
+  assert.ok(upstreamSrc.includes('lastOffsetCss'));
+  assert.ok(upstreamSrc.includes('lastFillBg'));
+  assert.ok(upstreamSrc.includes('lastVisualSig'));
+  assert.ok(upstreamSrc.includes('visibilitychange'));
+  assert.ok(upstreamSrc.includes('isMotionDisabled'));
+
+  // effort_bar: boxShadow / transform caching, visibilitychange pause, idle throttling & no sync double paint
+  assert.ok(effortBarSrc.includes('lastTransform'));
+  assert.ok(effortBarSrc.includes('lastBoxShadow'));
+  assert.ok(effortBarSrc.includes('lastDrawTs'));
+  assert.ok(effortBarSrc.includes('visibilitychange'));
+  assert.ok(effortBarSrc.includes('minInterval'));
+  assert.match(effortBarSrc, /setContext\(\)\s*\{\s*if\s*\(!rafId\s*\|\|\s*motionOff\(\)\)\s*paint/);
+
+  // motion_themes: HEX_COS precomputation & WeakMap caches for glass sheen and exec palette
+  assert.ok(themesSrc.includes('HEX_COS'));
+  assert.ok(themesSrc.includes('HEX_SIN'));
+  assert.ok(themesSrc.includes('GLASS_SHEEN_CACHE'));
+  assert.ok(themesSrc.includes('EXEC_PALETTE_CACHE'));
+
+  // capsule-picker: no redundant backdrop-filter on opaque popover card
+  const popoverBlock = pickerSrc.match(/\.dk-model-options,\s*\.dk-model-sub,\s*\.dk-model-tiers,\s*\.dk-model-tip\s*\{[^}]*\}/)?.[0] || '';
+  assert.ok(popoverBlock.length > 0, 'Missing popover CSS block');
+  assert.equal(popoverBlock.includes('backdrop-filter'), false, 'Opaque popover should avoid expensive backdrop-filter blur');
+  assert.ok(pickerSrc.includes('panelOpen && now - inst.lastPickerSyncTs >= 800'), 'panelOpen must throttle repeated Fiber scans');
+  assert.equal(effortBarSrc.includes('backdrop-filter'), false, 'effort_bar .ces-set should not use backdrop-filter');
+  assert.equal(upstreamSrc.includes('backdrop-filter'), false, 'effort_upstream .ces-set should not use backdrop-filter');
+});
+
+test('observer loop prevention & idempotent DOM writes across studio-settings, build & user/custom.js', () => {
+  const settingsSrc = readFileSync(path.join(REPO, 'studio', 'modules', 'studio-settings.mjs'), 'utf8');
+  const buildSrc = readFileSync(path.join(REPO, 'studio', 'build.mjs'), 'utf8');
+  const customJsSrc = readFileSync(path.join(REPO, 'user', 'custom.js'), 'utf8');
+  const modelPickerSrc = readFileSync(path.join(REPO, 'vendor', 'agy-capsule', 'model_picker.mjs'), 'utf8');
+
+  // studio-settings: updateTriggerState delegates aria-expanded / aria-label idempotently via setAttr
+  const trigFn = settingsSrc.match(/function updateTriggerState\(\)\s*\{[\s\S]*?\n\s*\}/)?.[0] || '';
+  assert.ok(trigFn.includes("setAttr(btn, 'aria-expanded', exp)"), 'updateTriggerState must guard aria-expanded writes via setAttr');
+  assert.ok(trigFn.includes("setAttr(btn, 'aria-label', lbl)"), 'updateTriggerState must guard aria-label writes via setAttr');
+
+  // user/custom.js: OWN_SEL ignores MAGA settings trigger/drawer/root & guards projects nav label
+  const ownSelLine = customJsSrc.match(/const OWN_SEL\s*=\s*[\s\S]*?;/)?.[0] || '';
+  assert.ok(ownSelLine.includes('#agy-maga-settings-trigger'), 'OWN_SEL must include #agy-maga-settings-trigger');
+  assert.ok(ownSelLine.includes('#agy-maga-settings-drawer'), 'OWN_SEL must include #agy-maga-settings-drawer');
+  assert.ok(ownSelLine.includes('#agy-maga-settings-root'), 'OWN_SEL must include #agy-maga-settings-root');
+  const navFn = customJsSrc.match(/function updateProjectsNavActiveVisual\(\)\s*\{[\s\S]*?\n\s*\}/)?.[0] || '';
+  assert.ok(navFn.includes('setLeafText(lbl, nextLbl)') || navFn.includes('lbl.textContent !== nextLbl'), 'updateProjectsNavActiveVisual must guard textContent writes');
+  const setLeafFn = customJsSrc.match(/function setLeafText\([\s\S]*?\n\s*\}/)?.[0] || '';
+  assert.ok(setLeafFn.includes('first.nodeValue'), 'setLeafText must update Text nodeValue in place');
+  const runTimerFn = customJsSrc.match(/function syncRunningToolIndicators\([\s\S]*?\n    \}/)?.[0] || '';
+  assert.ok(runTimerFn.includes('setLeafText(timerEl, txt)'), 'syncRunningToolIndicators must use setLeafText');
+
+  // studio/core & build.mjs: unified OWN_ATTR + OWN_HOST_IDS, esbuild bundling (no .toString()), repo sync in deployStudio
+  assert.equal(OWN_ATTR, 'data-maga-own');
+  for (const ownId of ['ag-claude-projects-nav-btn', 'ag-claude-ov-sections', 'ag-live-metrics-pill']) {
+    assert.ok(OWN_HOST_IDS.has(ownId), `OWN_HOST_IDS must ignore user/custom.js node #${ownId}`);
+  }
+  assert.equal(buildSrc.includes('.toString()'), false, 'studio/build.mjs must bundle via esbuild instead of .toString() concatenation');
+  assert.ok(buildSrc.includes('esbuild.build('), 'studio/build.mjs must invoke esbuild.build');
+  assert.ok(buildSrc.includes('REPO_USER_JS') && buildSrc.includes('REPO_USER_CSS'), 'deployStudio must sync repo user/custom.{js,css}');
+
+  // model_picker.mjs: only clears title when label changes
+  assert.ok(modelPickerSrc.includes('if (labelChanged) {') && modelPickerSrc.includes("button.removeAttribute('title')"));
+});
+
+test('MagaKernel routes dirty topics with 1 root observer, filters data-maga-own & batches read/write phases', async () => {
+  const { JSDOM } = await import('jsdom');
+  const dom = new JSDOM('<!doctype html><html><body><div class="agy-composer-footer"></div><aside data-testid="overview-panel"></aside></body></html>', {
+    url: 'http://127.0.0.1/c/conv-kernel-1',
+    pretendToBeVisual: true,
+  });
+  const win = dom.window;
+  const doc = win.document;
+
+  const keys = ['window', 'document', 'location', 'MutationObserver', 'requestAnimationFrame', 'cancelAnimationFrame', 'Node', 'Element', 'CustomEvent'];
+  const prev = new Map(keys.map((k) => [k, Object.getOwnPropertyDescriptor(globalThis, k)]));
+  globalThis.window = win;
+  globalThis.document = doc;
+  globalThis.location = win.location;
+  globalThis.MutationObserver = win.MutationObserver;
+  globalThis.Node = win.Node;
+  globalThis.Element = win.Element;
+  globalThis.CustomEvent = win.CustomEvent;
+  globalThis.requestAnimationFrame = (cb) => setTimeout(cb, 0);
+  globalThis.cancelAnimationFrame = (id) => clearTimeout(id);
+
+  let kernel = null;
+  try {
+    const events = [];
+    kernel = createMagaKernel({ fallbackPollMs: 60000 });
+    let disposedCount = 0;
+
+    kernel.register({
+      id: 'composer-mod',
+      topics: ['composer'],
+      read(snap) {
+        events.push(`read:composer:${Array.from(snap.topics).join(',')}`);
+        return { count: snap.footers.length };
+      },
+      write(snap, plan) {
+        events.push(`write:composer:${plan.count}`);
+        const badge = doc.createElement('span');
+        badge.setAttribute(OWN_ATTR, '1');
+        badge.id = 'test-own-badge';
+        doc.querySelector('.agy-composer-footer').appendChild(badge);
+      },
+      dispose() { disposedCount += 1; },
+    });
+
+    kernel.register({
+      id: 'overview-mod',
+      topics: ['overview'],
+      read() { events.push('read:overview'); return {}; },
+      write() { events.push('write:overview'); },
+      dispose() { disposedCount += 1; },
+    });
+
+    kernel.start();
+    assert.deepEqual(events.slice(0, 4), ['read:composer:all', 'read:overview', 'write:composer:1', 'write:overview']);
+    assert.equal(kernel.getStats().observerCount, 1);
+
+    // Mutate inside own data-maga-own subtree -> must NOT wake any feature
+    events.length = 0;
+    const ownBadge = doc.getElementById('test-own-badge');
+    ownBadge.appendChild(doc.createElement('i'));
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(events.length, 0, 'Own data-maga-own subtree mutations must be ignored');
+
+    // Mutate overview panel -> wakes only overview-mod, NOT composer-mod
+    doc.querySelector('[data-testid="overview-panel"]').appendChild(doc.createElement('div'));
+    await new Promise((r) => setTimeout(r, 30));
+    assert.deepEqual(events, ['read:overview', 'write:overview']);
+
+    kernel.dispose();
+    assert.equal(disposedCount, 2);
+    assert.equal(kernel.getStats().observerCount, 0);
+  } finally {
+    kernel?.dispose?.();
+    for (const k of keys) {
+      const desc = prev.get(k);
+      if (desc) Object.defineProperty(globalThis, k, desc);
+      else delete globalThis[k];
+    }
+    dom.window.close();
+  }
+});
+
+test('MetricsBus renders permanent speed slots via setLeafText with zero childList mutations after init', async () => {
+  const { JSDOM } = await import('jsdom');
+  const dom = new JSDOM('<!doctype html><html><body><div id="ag-live-metrics-pill"><span id="ag-live-metrics-text"></span></div></body></html>', {
+    url: 'http://127.0.0.1/c/conv-metrics-1',
+  });
+  const doc = dom.window.document;
+  const keys = ['document', 'window', 'location'];
+  const prev = new Map(keys.map((k) => [k, Object.getOwnPropertyDescriptor(globalThis, k)]));
+  globalThis.document = doc;
+  globalThis.window = dom.window;
+  globalThis.location = dom.window.location;
+
+  try {
+    const pill = doc.getElementById('ag-live-metrics-pill');
+    const textEl = doc.getElementById('ag-live-metrics-text');
+
+    renderSpeedSlots(pill, textEl, {
+      cascadeId: 'conv-metrics-1',
+      hasData: true,
+      metrics: { displayTps: 108, useStream: true, ttft: 9.4 },
+    }, { cid: 'conv-metrics-1', running: false, isZh: false });
+
+    assert.equal(textEl.querySelector('[data-agy-speed-num="1"]').textContent, '108 tok/s');
+    assert.equal(textEl.querySelector('[data-agy-speed-short="1"]').textContent, '108');
+    assert.equal(textEl.querySelector('[data-agy-speed-slot="extra"]').textContent, 'TTFT 9.4s');
+
+    let childListMutCount = 0;
+    const obs = new dom.window.MutationObserver((muts) => {
+      for (const m of muts) {
+        if (m.type === 'childList') childListMutCount += 1;
+      }
+    });
+    obs.observe(textEl, { childList: true, subtree: true });
+
+    // Push updated metrics -> must mutate Text.nodeValue only, zero childList mutations!
+    renderSpeedSlots(pill, textEl, {
+      cascadeId: 'conv-metrics-1',
+      hasData: true,
+      metrics: { displayTps: 0.4, useStream: false, ttft: 125 },
+    }, { cid: 'conv-metrics-1', running: false, isZh: true });
+
+    await new Promise((r) => setTimeout(r, 15));
+    obs.disconnect();
+
+    assert.equal(childListMutCount, 0, 'Speed updates must cause zero childList mutations on #ag-live-metrics-text');
+    assert.equal(textEl.querySelector('[data-agy-speed-num="1"]').textContent, '0.4 tok/s');
+    assert.equal(textEl.querySelector('[data-agy-speed-slot="extra"]').textContent, 'Hold 2m 5s');
+    assert.equal(setAttr(pill, 'data-test', '1'), true);
+    assert.equal(setAttr(pill, 'data-test', '1'), false);
+    assert.equal(setLeafText(textEl.querySelector('[data-agy-speed-num="1"]'), '0.4 tok/s'), false);
+  } finally {
+    for (const k of keys) {
+      const desc = prev.get(k);
+      if (desc) Object.defineProperty(globalThis, k, desc);
+      else delete globalThis[k];
+    }
+    dom.window.close();
+  }
+});
+
+test('Stage 3: eliminates all global CSS :has() rules and applies safe containment isolation', async () => {
+  const globalCssPaths = [
+    path.join(REPO, 'user', 'custom.css'),
+    path.join(REPO, 'studio', 'styles', 'footer-capsules.css'),
+    path.join(REPO, 'studio', 'styles', 'typography.css'),
+    path.join(REPO, 'studio', 'styles', 'overview-usage.css'),
+    path.join(REPO, 'studio', 'styles', 'studio-settings.css'),
+  ];
+  for (const p of globalCssPaths) {
+    const css = readFileSync(p, 'utf8');
+    assert.equal(css.includes(':has('), false, `${path.relative(REPO, p)} must contain zero :has() rules`);
+  }
+  const runtimeJs = readFileSync(path.join(REPO, 'core', 'runtime.js'), 'utf8');
+  assert.equal(runtimeJs.includes(':has('), false, 'core/runtime.js must contain zero :has() rules in dynamic CSS');
+
+  const userCss = readFileSync(path.join(REPO, 'user', 'custom.css'), 'utf8');
+  const footerCss = readFileSync(FOOTER_CSS_PATH, 'utf8');
+  const usageCss = readFileSync(path.join(REPO, 'studio', 'styles', 'overview-usage.css'), 'utf8');
+  const drawerCss = readFileSync(path.join(REPO, 'studio', 'styles', 'studio-settings.css'), 'utf8');
+  assert.match(userCss, /\.ag-orbit-dots\s*\{[\s\S]*?contain:\s*layout style;/);
+  assert.match(userCss, /\.ag-elapsed-timer\s*\{[\s\S]*?contain:\s*layout style;/);
+  assert.match(userCss, /\[data-testid="overview-panel"\]\[data-ag-ov-enhanced="1"\]\s*\{[\s\S]*?contain:\s*style;/);
+  assert.match(footerCss, /#ag-live-metrics-pill\s*\{[\s\S]*?contain:\s*layout style;/);
+  assert.match(usageCss, /#agy-ov-usage-card\s*\{[\s\S]*?contain:\s*layout style;/);
+  assert.match(drawerCss, /#agy-maga-settings-drawer\s*\{[\s\S]*?contain:\s*layout style;/);
+
+  const { JSDOM } = await import('jsdom');
+  const dom = new JSDOM(
+    `<!doctype html><html><body>
+      <div id="antigravity.agentSidePanelInputBox" data-testid="agent-input-box">
+        <div id="ed-wrap"><div data-lexical-editor="true"></div><p class="pointer-events-none"></p></div>
+        <div id="footer-shell"><div class="agy-composer-footer"></div></div>
+      </div>
+      <div id="ag-live-metrics-tooltip"><div class="ag-ux-tt"></div></div>
+      <div class="agy-sheet" data-sheet-inset="1"><div id="hole-host" data-main-content-body="1"><span data-browser-hole="true"></span></div></div>
+      <div id="steps-row" data-step-rows="true">
+        <button data-testid="tool-group-collapsible"><span data-testid="tool-group-elapsed">2s</span></button>
+      </div>
+      <div class="rounded-xl border"><div class="border-b"><svg id="q-svg"><path d="M477.92-295.77z"></path></svg></div></div>
+      <div data-testid="aux-pane-split">
+        <div></div>
+        <div>
+          <div id="sub-sb-wrap"><div data-testid="subagent-tab-sidebar"></div></div>
+          <div id="sub-conv-outer"><div id="sub-conv-wrap"><div data-testid="subagent-tab-conversation"></div></div></div>
+        </div>
+      </div>
+      <div id="dlg" role="dialog">
+        <div id="wrap-outer"><div id="wrap-inner"><div data-testid="settings-sidebar"></div></div></div>
+        <div class="agy-card"><div id="split-card"><div class="w-full flex justify-between"></div></div></div>
+      </div>
+      <div data-testid="conversation-row-sidebar" data-pinned="true"><span id="pin-span"><svg data-project-glyph="1"></svg></span></div>
+      <section id="ag-claude-recent-section"><button class="ag-recent-hdr" aria-expanded="false"></button></section>
+      <div data-testid="overview-panel">
+        <button id="ov-rev" data-testid="overview-panel-row-review"><span data-testid="overview-panel-row-review-detail">+3 -1</span></button>
+      </div>
+    </body></html>`,
+    { url: 'http://127.0.0.1/' }
+  );
+  const keys = ['document', 'window', 'location'];
+  const prev = new Map(keys.map((k) => [k, Object.getOwnPropertyDescriptor(globalThis, k)]));
+  globalThis.document = dom.window.document;
+  globalThis.window = dom.window;
+  globalThis.location = dom.window.location;
+
+  try {
+    const doc = dom.window.document;
+    const domFlags = createDomFlagsFeature();
+    domFlags.sync();
+
+    assert.equal(doc.getElementById('footer-shell').getAttribute('data-maga-footer-shell'), '1');
+    assert.equal(doc.getElementById('ed-wrap').getAttribute('data-maga-editor-wrap'), '1');
+    assert.equal(doc.getElementById('ag-live-metrics-tooltip').getAttribute('data-ag-ux-tt'), '1');
+    assert.equal(doc.getElementById('steps-row').getAttribute('data-maga-has-tools'), '1');
+    assert.equal(doc.querySelector('[data-testid="tool-group-collapsible"]').getAttribute('data-maga-native-elapsed'), '1');
+    assert.equal(doc.getElementById('q-svg').getAttribute('data-maga-q-icon'), '1');
+    assert.equal(doc.getElementById('hole-host').getAttribute('data-maga-has-browser-hole'), '1');
+    assert.equal(doc.getElementById('sub-sb-wrap').getAttribute('data-maga-sub-sidebar-wrap'), '1');
+    assert.equal(doc.getElementById('sub-conv-wrap').getAttribute('data-maga-sub-conv-wrap'), '1');
+    assert.equal(doc.getElementById('sub-conv-outer').getAttribute('data-maga-sub-conv-outer'), '1');
+    assert.equal(doc.getElementById('dlg').getAttribute('data-maga-settings-host'), '1');
+    assert.equal(doc.getElementById('wrap-inner').getAttribute('data-maga-settings-wrap'), '1');
+    assert.equal(doc.getElementById('wrap-outer').getAttribute('data-maga-settings-wrap'), '1');
+    assert.equal(doc.getElementById('split-card').getAttribute('data-maga-card-split'), '1');
+    assert.equal(doc.getElementById('pin-span').getAttribute('data-maga-pin-glyph'), '1');
+    assert.equal(doc.getElementById('ag-claude-recent-section').getAttribute('data-collapsed'), '1');
+    assert.equal(doc.getElementById('ov-rev').getAttribute('data-ag-has-detail'), '1');
+
+    domFlags.dispose();
+    assert.equal(doc.getElementById('footer-shell').hasAttribute('data-maga-footer-shell'), false);
+    assert.equal(doc.getElementById('sub-sb-wrap').hasAttribute('data-maga-sub-sidebar-wrap'), false);
+    assert.equal(doc.getElementById('dlg').hasAttribute('data-maga-settings-host'), false);
+  } finally {
+    for (const k of keys) {
+      const desc = prev.get(k);
+      if (desc) Object.defineProperty(globalThis, k, desc);
+      else delete globalThis[k];
+    }
+    dom.window.close();
+  }
+});
+
+test('Stage 4: daemon, studio-settings & subagent-footer maintain thin orchestrators and acyclic submodules', async () => {
+  const { execFileSync } = await import('node:child_process');
+  const countLines = (rel) => readFileSync(path.join(REPO, rel), 'utf8').split('\n').length;
+
+  assert.ok(countLines('core/daemon.mjs') < 350, `core/daemon.mjs should stay <350 lines (got ${countLines('core/daemon.mjs')})`);
+  assert.ok(countLines('studio/modules/studio-settings.mjs') < 550, `studio-settings.mjs should stay <550 lines (got ${countLines('studio/modules/studio-settings.mjs')})`);
+  assert.ok(countLines('studio/modules/subagent-footer.mjs') < 550, `subagent-footer.mjs should stay <550 lines (got ${countLines('studio/modules/subagent-footer.mjs')})`);
+
+  const expectedSubmodules = [
+    'core/daemon/env.mjs',
+    'core/daemon/pid.mjs',
+    'core/daemon/prefs-bundle.mjs',
+    'core/daemon/metrics-db.mjs',
+    'core/daemon/projects.mjs',
+    'core/daemon/overview-skills.mjs',
+    'core/daemon/cdp-bootstrap.mjs',
+    'core/daemon/cdp-attach.mjs',
+    'core/daemon/sync-loop.mjs',
+    'studio/modules/settings/constants.mjs',
+    'studio/modules/settings/events.mjs',
+    'studio/modules/settings/preview.mjs',
+    'studio/modules/settings/views.mjs',
+    'studio/modules/subagent/panel-handoff.mjs',
+    'studio/modules/subagent/pills.mjs',
+  ];
+  for (const rel of expectedSubmodules) {
+    const abs = path.join(REPO, rel);
+    assert.equal(existsSync(abs), true, `Missing Stage 4 submodule ${rel}`);
+    execFileSync(process.execPath, ['--check', abs], { stdio: 'pipe' });
+  }
+
+  const daemon = await import(pathToFileURL(path.join(REPO, 'core', 'daemon.mjs')).href);
+  for (const sym of [
+    'isOwnDaemonProcess', 'claimPidFile', 'checkPidOwnership', 'waitForMacRelaunchReady',
+    'saveUiPrefs', 'DEFAULT_STUDIO_PREFS', 'sanitizeStudioPrefs', 'loadStudioPrefs', 'saveStudioPrefs',
+    'isSensitiveSourcePath', 'isSafeProjectDir', 'saveProjectContext', 'saveProjectScheduledTask', 'deleteProjectScheduledTask',
+    'createLocalSkill', 'createLocalAgent', 'readOverviewGitStatusAsync', 'collectOverviewSnapshot', 'collectOverviewSnapshotAsync',
+    'isAllowedOrigin', 'HOST_IDENTITY_PROBE_EXPR', 'attachTarget', 'attachedTargets', 'skippedNonHostTargets',
+    'sync', 'rebuildBundleIfNeeded', 'getCachedBootPayload',
+  ]) {
+    assert.ok(sym in daemon, `core/daemon.mjs must re-export ${sym}`);
+  }
+});
+
+test('Stage 5: user/src modular decomposition, zero legacy dead code, and MagaKernel single-observer bridge', async () => {
+  const { execFileSync } = await import('node:child_process');
+  const { readdirSync } = await import('node:fs');
+  const { JSDOM } = await import('jsdom');
+
+  const expectedUserModules = [
+    'user/src/entry.mjs',
+    'user/src/core/runtime-ctx.mjs',
+    'user/src/core/model-api.mjs',
+    'user/src/modules/step-stream.mjs',
+    'user/src/modules/metrics-quota.mjs',
+    'user/src/modules/inline-undo.mjs',
+    'user/src/modules/sidebar-recents.mjs',
+    'user/src/modules/i18n.mjs',
+    'user/src/modules/settings-host.mjs',
+    'user/src/modules/projects/shared.mjs',
+    'user/src/modules/projects/mentions-media.mjs',
+    'user/src/modules/projects/native-store.mjs',
+    'user/src/modules/projects/modals.mjs',
+    'user/src/modules/projects/index.mjs',
+    'user/src/modules/customizations.mjs',
+    'user/src/modules/overview-panel.mjs',
+  ];
+  assert.equal(existsSync(path.join(REPO, 'user/src/modules/projects.mjs')), false, 'monolithic projects.mjs must be removed');
+  for (const rel of expectedUserModules) {
+    const abs = path.join(REPO, rel);
+    assert.equal(existsSync(abs), true, `Missing Stage 5 user module ${rel}`);
+    const lineCount = readFileSync(abs, 'utf8').split('\n').length;
+    assert.ok(lineCount < 2000, `User module ${rel} must be < 2000 lines (got ${lineCount})`);
+    execFileSync(process.execPath, ['--check', abs], { stdio: 'pipe' });
+  }
+
+  // Pre-1.0 clean-slate guards: compiled user/custom.js is gitignored & untracked; zero compat shims remain
+  const gitignoreSrc = readFileSync(path.join(REPO, '.gitignore'), 'utf8');
+  assert.match(gitignoreSrc, /^user\/custom\.js$/m, '.gitignore must ignore generated user/custom.js');
+  const trackedCustom = execFileSync('git', ['-C', REPO, 'ls-files', 'user/custom.js'], { encoding: 'utf8' }).trim();
+  assert.equal(trackedCustom, '', 'user/custom.js build artifact must not be tracked in git');
+
+  const shimPattern = /CAPSULE_SETTINGS_PATH|CAPSULE_SETTINGS_FILE|LEGACY_JS_MARKERS|LEGACY_CSS_MARKERS|claudeUxModelMenu|\.ag-cux-settings-wrap/;
+  const collectMjsAndCss = (dir) => {
+    const out = [];
+    for (const ent of readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, ent.name);
+      if (ent.isDirectory()) out.push(...collectMjsAndCss(full));
+      else if (/\.(mjs|css)$/.test(ent.name)) out.push(full);
+    }
+    return out;
+  };
+  for (const f of [...collectMjsAndCss(path.join(REPO, 'studio')), ...collectMjsAndCss(path.join(REPO, 'core', 'daemon'))]) {
+    const text = readFileSync(f, 'utf8');
+    assert.equal(shimPattern.test(text), false, `Removed Pre-1.0 shim found in ${path.relative(REPO, f)}`);
+  }
+
+  const customJsSrc = readFileSync(path.join(REPO, 'user', 'custom.js'), 'utf8');
+  const customCssSrc = readFileSync(path.join(REPO, 'user', 'custom.css'), 'utf8');
+  assert.equal(customCssSrc.includes(':has('), false, 'user/custom.css must have zero :has() rules');
+  assert.equal(/#ag-claude-model-popover|\.ag-cm-row/.test(customCssSrc), false, 'legacy model popover CSS removed');
+  assert.equal(/ag-claude-model-popover|ag-cux-settings-wrap|renderSettingsPanelContent/.test(customJsSrc), false, 'legacy model popover & toggle form JS removed');
+
+  const dom = new JSDOM('<!doctype html><html><body><div id="root"><div id="antigravity.agentSidePanelInputBox"></div></div></body></html>', {
+    url: 'http://127.0.0.1/c/conv-stage5',
+    runScripts: 'outside-only',
+    pretendToBeVisual: true,
+  });
+  const win = dom.window;
+  const doc = win.document;
+
+  const keys = ['window', 'document', 'location', 'requestAnimationFrame', 'cancelAnimationFrame', 'MutationObserver'];
+  const prev = new Map(keys.map((k) => [k, Object.getOwnPropertyDescriptor(globalThis, k)]));
+  globalThis.window = win;
+  globalThis.document = doc;
+  globalThis.location = win.location;
+  globalThis.requestAnimationFrame = win.requestAnimationFrame.bind(win);
+  globalThis.cancelAnimationFrame = win.cancelAnimationFrame.bind(win);
+  globalThis.MutationObserver = win.MutationObserver;
+
+  try {
+    win.ctx = { modules: { i18n: false }, onCleanup: () => {} };
+    win.eval(customJsSrc);
+
+    const hooks = win.__agClaudeUxKernelHooks;
+    assert.ok(hooks && typeof hooks.attachKernel === 'function', 'user/custom.js must expose __agClaudeUxKernelHooks');
+    assert.equal(hooks.isUsingKernel(), false, 'starts standalone until kernel attaches');
+
+    const kernel = createMagaKernel();
+    hooks.attachKernel(kernel);
+    const offImmediate = kernel.registerImmediateMutationHandler(hooks.handleImmediateMutation);
+    kernel.register({
+      id: 'custom-ux',
+      topics: ['all'],
+      write: (snap) => hooks.syncByTopics(snap.topics),
+      dispose: () => {
+        offImmediate?.();
+        hooks.detachKernel?.();
+      },
+    });
+    kernel.start();
+
+    assert.equal(hooks.isUsingKernel(), true, 'custom runtime runs under unified MagaKernel');
+    const st = kernel.getStats();
+    assert.equal(st.observerCount, 1, 'exactly 1 root MutationObserver when custom-ux + kernel are active');
+    assert.ok(st.features.includes('custom-ux'));
+
+    kernel.markDirty(['stream'], false);
+    kernel.flush();
+    kernel.markDirty(['composer'], false);
+    kernel.flush();
+
+    kernel.dispose();
+    win.__agClaudeUxDispose();
+    assert.equal(win.__agClaudeUxKernelHooks, null, 'dispose clears __agClaudeUxKernelHooks');
+  } finally {
+    for (const k of keys) {
+      const desc = prev.get(k);
+      if (desc) Object.defineProperty(globalThis, k, desc);
+      else delete globalThis[k];
+    }
+    win.close();
+  }
 });

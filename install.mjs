@@ -750,7 +750,12 @@ const JSON_INVALID = Symbol('json_invalid');
 export function validateSourceRoot(root = __dirname) {
   const problems = [];
   for (const rel of ['install.mjs', 'core/daemon.mjs', 'core/runtime.js', 'user/custom.js', 'cli/statusline.mjs']) {
-    const abs = path.join(root, rel);
+    let targetRel = rel;
+    let abs = path.join(root, rel);
+    if (rel === 'user/custom.js' && !fs.existsSync(abs) && fs.existsSync(path.join(root, 'user', 'src', 'entry.mjs'))) {
+      targetRel = 'user/src/entry.mjs';
+      abs = path.join(root, targetRel);
+    }
     if (!fs.existsSync(abs)) {
       problems.push(`${rel}: missing`);
       continue;
@@ -758,7 +763,7 @@ export function validateSourceRoot(root = __dirname) {
     try {
       execFileSync(process.execPath, ['--check', abs], { stdio: 'pipe' });
     } catch (err) {
-      problems.push(`${rel}: ${String(err.stderr || err.message).split('\n')[0]}`);
+      problems.push(`${targetRel}: ${String(err.stderr || err.message).split('\n')[0]}`);
     }
   }
   for (const rel of ['core/i18n.json', 'user/config.json', 'user/i18n.override.json']) {
@@ -912,8 +917,13 @@ export async function withCdpPage(fn, { timeoutMs = CDP_TIMEOUT_MS } = {}) {
 }
 
 /** Read (and optionally set) Antigravity preference values through the live React pref store. */
-export async function cdpPrefs(setMap) {
-  const keys = ['project4kMode', 'verboseConversationSteps'];
+export async function cdpPrefs(setMap, extraKeys = []) {
+  const keys = Array.from(new Set([
+    'project4kMode',
+    'verboseConversationSteps',
+    ...(Array.isArray(extraKeys) ? extraKeys : []),
+    ...Object.keys(setMap || {}),
+  ]));
   const pageFn = async function (keys, setMap) {
     let prefStore = null;
     for (const el of document.querySelectorAll('#root *')) {

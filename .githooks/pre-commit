@@ -1,0 +1,25 @@
+#!/bin/sh
+set -eu
+
+branch=$(git symbolic-ref --short HEAD 2>/dev/null || true)
+case "$branch" in
+  main|master)
+    git_dir=$(git rev-parse --git-dir)
+    if [ -f "$git_dir/MERGE_HEAD" ]; then
+      exit 0
+    fi
+    if [ "${MAGA_ALLOW_MAIN_COMMIT:-0}" = "1" ]; then
+      exit 0
+    fi
+    cat >&2 <<EOF
+[MAGA pre-commit] Direct commits on protected branch '$branch' are blocked.
+Create a feature/fix branch or sibling worktree first:
+  git checkout -b feat/<slug>
+  # or: git worktree add -b feat/<slug> ../MAGA-wt/<slug> main
+To override intentionally (e.g. emergency hotfix/release): MAGA_ALLOW_MAIN_COMMIT=1 git commit ...
+EOF
+    exit 1
+    ;;
+esac
+
+exit 0

@@ -182,6 +182,18 @@ npm run install-all
 
 ---
 
+## Troubleshooting
+
+### `Error Loading Models` / `loadCodeAssist: EOF`
+
+- **Root cause**: This error comes from Antigravity's native `language_server` backend when its TLS/proxy connection to `daily-cloudcode-pa.googleapis.com` drops unexpectedly—it is **not caused by MAGA's UI injection**.
+- **How to resolve**:
+  1. Enable **TUN mode** or **System Proxy** in your proxy client (Clash / Mihomo / Surge / V2Ray, etc.) and ensure `daily-cloudcode-pa.googleapis.com` (`*.googleapis.com`) routes through a stable node.
+  2. **Built-in compatibility**: If you launch Antigravity from a shell with proxy or custom CA environment variables (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`, `SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`) or `--proxy-*` flags, MAGA automatically preserves and forwards them during macOS CDP auto-relaunch. You can also run `npm run doctor` to inspect `proxyDiagnostics`.
+  3. To disable automatic CDP relaunch and manage `--remote-debugging-port=0` yourself, start the daemon with `ANTI_CLAUDE_NO_CDP_BOOTSTRAP=1`.
+
+---
+
 ## Acknowledgements
 
 MAGA builds on and evolves several outstanding open-source projects. Sincere thanks to each upstream author and contributor for the foundations and mechanisms below:

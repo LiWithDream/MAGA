@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Proxy Diagnostics in `npm run doctor` (`studio/cli.mjs`)**: Added non-blocking `proxyDiagnostics` reporting (active proxy env key names without exposing values, plus macOS `scutil --proxy` status and troubleshooting hint when shell proxy vars are set without System Proxy).
+
+### Fixed
+- **macOS CDP Auto-Relaunch Proxy & TLS Compatibility (`core/daemon/cdp-bootstrap.mjs`)**: Preserve allowlisted proxy/TLS environment variables (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`, `GRPC_PROXY_EXP`, `SSL_CERT_FILE`, `SSL_CERT_DIR`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, and lowercase variants) via `/usr/bin/open --env` and space-separated `--proxy-*` CLI flags across macOS cold-boot CDP relaunches without logging secrets or persisting credential-bearing URLs to `relaunch-intent.json`.
+
 ## [1.1.0] - 2026-11-25
 
 Upgrade the standalone **Projects Workspace** into a cohesive cockpit with per-project token usage analytics, an active-conversation project topbar, live Git diff/commit inspection, remote-only repository support, static Orchestrator folding, and clamped conversation scrollbars.

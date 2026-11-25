@@ -259,6 +259,84 @@ test('[Audit #5] macOS cold-boot waitForMacRelaunchReady waits past 900ms Single
   assert.equal(openedWhenReplaced, 0);
 });
 
+test('macOS CDP bootstrap preserves proxy/TLS env vars and space-separated proxy flags without persisting credentials', async () => {
+  const bootstrap = await import(pathToFileURL(path.join(REPO, 'core', 'daemon', 'cdp-bootstrap.mjs')).href);
+
+  const mainBin = '/Applications/Antigravity.app/Contents/MacOS/Antigravity';
+  const cmd = `${mainBin} --foo=bar`;
+  const psLine =
+    `${cmd} HOME=/Users/alice SSH_AUTH_SOCK=/tmp/ssh.sock OPENAI_API_KEY=sk-secret ` +
+    `HTTPS_PROXY=http://127.0.0.1:7890 all_proxy=socks5://127.0.0.1:7891 ` +
+    `SSL_CERT_FILE=/Users/My User/ca.pem NO_PROXY=localhost, 127.0.0.1 ` +
+    `EMPTY_PROXY= HTTP_PROXY= `;
+  const envExtracted = bootstrap.extractPreservedEnvFromPsOutput(psLine, cmd);
+  assert.deepEqual(envExtracted, {
+    HTTPS_PROXY: 'http://127.0.0.1:7890',
+    all_proxy: 'socks5://127.0.0.1:7891',
+    SSL_CERT_FILE: '/Users/My User/ca.pem',
+    NO_PROXY: 'localhost, 127.0.0.1'
+  });
+  assert.equal(Object.hasOwn(envExtracted, 'SSH_AUTH_SOCK'), false);
+  assert.equal(Object.hasOwn(envExtracted, 'OPENAI_API_KEY'), false);
+  assert.equal(Object.hasOwn(envExtracted, 'HOME'), false);
+  assert.deepEqual(
+    bootstrap.extractPreservedEnvFromPsOutput(`${cmd} HTTP_PROXY=http://bad\nvalue`, cmd),
+    {}
+  );
+
+  const parsedProxy = bootstrap.parseLaunchExtraArgs(
+    `${mainBin} --proxy-server=http://127.0.0.1:7890 --proxy-pac-url http://127.0.0.1:7890/pac --proxy-server http://127.0.0.1:8888`,
+    mainBin
+  );
+  assert.equal(parsedProxy.hasCustomProfile, false);
+  assert.equal(parsedProxy.hasAmbiguousArgs, false);
+  assert.deepEqual(parsedProxy.extraArgs, [
+    '--proxy-server=http://127.0.0.1:7890',
+    '--proxy-pac-url',
+    'http://127.0.0.1:7890/pac',
+    '--proxy-server',
+    'http://127.0.0.1:8888'
+  ]);
+
+  const parsedProfile = bootstrap.parseLaunchExtraArgs(`${mainBin} --user-data-dir=/tmp/prof`, mainBin);
+  assert.equal(parsedProfile.hasCustomProfile, true);
+  const parsedAmbiguous = bootstrap.parseLaunchExtraArgs(`${mainBin} nonexistent-arg-token`, mainBin);
+  assert.equal(parsedAmbiguous.hasAmbiguousArgs, true);
+
+  const openArgs = bootstrap.buildMacOpenArgs(
+    '/Applications/Antigravity.app',
+    ['--proxy-server', 'http://127.0.0.1:7890'],
+    { HTTPS_PROXY: 'http://127.0.0.1:7890', OPENAI_API_KEY: 'sk-secret' },
+    true
+  );
+  assert.deepEqual(openArgs, [
+    '-n',
+    '-a',
+    '/Applications/Antigravity.app',
+    '--env',
+    'HTTPS_PROXY=http://127.0.0.1:7890',
+    '--args',
+    '--proxy-server',
+    'http://127.0.0.1:7890',
+    '--remote-debugging-port=0'
+  ]);
+  assert.deepEqual(
+    bootstrap.buildMacOpenArgs('/Applications/Antigravity.app', [], {}, false),
+    ['-a', '/Applications/Antigravity.app', '--args', '--remote-debugging-port=0']
+  );
+
+  const diskSafe = bootstrap.stripCredentialEnvForDisk({
+    HTTP_PROXY: 'http://user:pass@127.0.0.1:7890',
+    ALL_PROXY: 'socks5://u:p@host:1080',
+    HTTPS_PROXY: 'http://127.0.0.1:7890',
+    SSL_CERT_FILE: '/Users/My User/ca.pem'
+  });
+  assert.deepEqual(diskSafe, {
+    HTTPS_PROXY: 'http://127.0.0.1:7890',
+    SSL_CERT_FILE: '/Users/My User/ca.pem'
+  });
+});
+
 test('[Audit #14 & R2-#8] editing native scheduled task preserves multi-folder workspace_uris; foreign sidecar delete is rejected', async () => {
   const daemon = await import(pathToFileURL(path.join(REPO, 'core', 'daemon.mjs')).href);
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ac-sidecar-test-'));

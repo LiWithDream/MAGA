@@ -17,6 +17,131 @@ import {
 } from './env.mjs';
 import { getActiveConfig, rebuildBundleIfNeeded } from './prefs-bundle.mjs';
 
+export const PRESERVED_RELAUNCH_ENV_KEYS = Object.freeze([
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'ALL_PROXY',
+  'NO_PROXY',
+  'http_proxy',
+  'https_proxy',
+  'all_proxy',
+  'no_proxy',
+  'GRPC_PROXY_EXP',
+  'grpc_proxy',
+  'SSL_CERT_FILE',
+  'SSL_CERT_DIR',
+  'NODE_EXTRA_CA_CERTS',
+  'REQUESTS_CA_BUNDLE',
+  'CURL_CA_BUNDLE'
+]);
+const PRESERVED_RELAUNCH_ENV_SET = new Set(PRESERVED_RELAUNCH_ENV_KEYS);
+const VALUE_TAKING_PROXY_FLAGS = new Set([
+  '--proxy-server',
+  '--proxy-bypass-list',
+  '--proxy-pac-url',
+  '--host-resolver-rules',
+  '--ignore-certificate-errors-spki-list'
+]);
+
+export function sanitizePreservedEnv(envObj) {
+  if (!envObj || typeof envObj !== 'object') return {};
+  const out = {};
+  for (const [k, rawVal] of Object.entries(envObj)) {
+    if (!PRESERVED_RELAUNCH_ENV_SET.has(k)) continue;
+    if (typeof rawVal !== 'string' || /[\0\r\n]/.test(rawVal)) continue;
+    const trimmed = rawVal.trim();
+    if (!trimmed) continue;
+    out[k] = trimmed;
+  }
+  return out;
+}
+
+export function stripCredentialEnvForDisk(envObj) {
+  const clean = sanitizePreservedEnv(envObj);
+  const out = {};
+  for (const [k, v] of Object.entries(clean)) {
+    if (/^[a-z][a-z0-9+.-]*:\/\/[^/\s]*@/i.test(v)) continue;
+    out[k] = v;
+  }
+  return out;
+}
+
+export function extractPreservedEnvFromPsOutput(psEwwOutput, commandLine = '') {
+  let raw = String(psEwwOutput || '').trim();
+  if (!raw) return {};
+  const trimmedCmd = String(commandLine || '').trim();
+  if (trimmedCmd && raw.startsWith(trimmedCmd)) {
+    const nextCh = raw.charAt(trimmedCmd.length);
+    if (!nextCh || /\s/.test(nextCh)) {
+      raw = raw.slice(trimmedCmd.length).trim();
+    }
+  }
+  if (!raw) return {};
+  const re = /(?:^|\s)([A-Za-z_][A-Za-z0-9_]*)=/g;
+  const matches = [];
+  let m;
+  while ((m = re.exec(raw)) !== null) {
+    matches.push({
+      key: m[1],
+      valStart: m.index + m[0].length,
+      matchStart: m.index
+    });
+  }
+  if (matches.length === 0) return {};
+  const extracted = {};
+  for (let i = 0; i < matches.length; i++) {
+    const cur = matches[i];
+    const end = i + 1 < matches.length ? matches[i + 1].matchStart : raw.length;
+    extracted[cur.key] = raw.slice(cur.valStart, end).trim();
+  }
+  return sanitizePreservedEnv(extracted);
+}
+
+export function parseLaunchExtraArgs(cmd, mainBin = '') {
+  const rawCmd = String(cmd || '');
+  const rest = (mainBin && rawCmd.startsWith(mainBin) ? rawCmd.slice(mainBin.length) : rawCmd).trim();
+  if (!rest) return { extraArgs: [], hasCustomProfile: false, hasAmbiguousArgs: false };
+  const tokens = rest.split(/\s+/).filter(Boolean);
+  const extraArgs = [];
+  let hasCustomProfile = false;
+  let hasAmbiguousArgs = false;
+  for (let i = 0; i < tokens.length; i++) {
+    const tok = tokens[i];
+    if (/^-psn_/.test(tok)) continue;
+    if (/^--remote-debugging-port(?:=|$)/.test(tok)) {
+      if (!tok.includes('=') && i + 1 < tokens.length && /^\d+$/.test(tokens[i + 1])) i += 1;
+      continue;
+    }
+    if (/^--(user-data-dir|extensions-dir|profile-directory)(?:=|$)/.test(tok)) {
+      hasCustomProfile = true;
+      continue;
+    }
+    if (VALUE_TAKING_PROXY_FLAGS.has(tok) && i + 1 < tokens.length && !tokens[i + 1].startsWith('-')) {
+      extraArgs.push(tok, tokens[i + 1]);
+      i += 1;
+      continue;
+    }
+    if (tok.startsWith('-')) {
+      extraArgs.push(tok);
+    } else if (fs.existsSync(tok)) {
+      extraArgs.push(tok);
+    } else {
+      hasAmbiguousArgs = true;
+    }
+  }
+  return { extraArgs, hasCustomProfile, hasAmbiguousArgs };
+}
+
+export function buildMacOpenArgs(appBundle, extraArgs = [], extraEnv = {}, useNewInstance = true) {
+  const argv = useNewInstance ? ['-n', '-a', appBundle] : ['-a', appBundle];
+  const cleanEnv = sanitizePreservedEnv(extraEnv);
+  for (const [k, v] of Object.entries(cleanEnv)) {
+    argv.push('--env', `${k}=${v}`);
+  }
+  argv.push('--args', ...(Array.isArray(extraArgs) ? extraArgs : []), '--remote-debugging-port=0');
+  return argv;
+}
+
 function hasRecentConversationWalActivity(conversationsDir, withinMs = 15000) {
   try {
     if (!fs.existsSync(conversationsDir)) return false;
@@ -113,35 +238,6 @@ export function startMacCdpBootstrap() {
     return Infinity;
   };
 
-  const parseLaunchExtraArgs = (cmd, mainBin) => {
-    const rest = String(cmd || '').slice(mainBin.length).trim();
-    if (!rest) return { extraArgs: [], hasCustomProfile: false, hasAmbiguousArgs: false };
-    const tokens = rest.split(/\s+/).filter(Boolean);
-    const extraArgs = [];
-    let hasCustomProfile = false;
-    let hasAmbiguousArgs = false;
-    for (let i = 0; i < tokens.length; i++) {
-      const tok = tokens[i];
-      if (/^-psn_/.test(tok)) continue;
-      if (/^--remote-debugging-port(?:=|$)/.test(tok)) {
-        if (!tok.includes('=') && i + 1 < tokens.length && /^\d+$/.test(tokens[i + 1])) i += 1;
-        continue;
-      }
-      if (/^--(user-data-dir|extensions-dir|profile-directory)(?:=|$)/.test(tok)) {
-        hasCustomProfile = true;
-        continue;
-      }
-      if (tok.startsWith('-')) {
-        extraArgs.push(tok);
-      } else if (fs.existsSync(tok)) {
-        extraArgs.push(tok);
-      } else {
-        hasAmbiguousArgs = true;
-      }
-    }
-    return { extraArgs, hasCustomProfile, hasAmbiguousArgs };
-  };
-
   const parseMainProcesses = (stdout) => {
     const list = [];
     for (const line of String(stdout || '').split('\n')) {
@@ -158,6 +254,7 @@ export function startMacCdpBootstrap() {
             pid,
             age,
             appBundle,
+            cmd,
             hasCdp: cmd.includes('--remote-debugging-port'),
             ...argInfo
           });
@@ -212,6 +309,19 @@ export function startMacCdpBootstrap() {
       );
     });
 
+  const queryProcessPreservedEnv = (pid, commandLine = '') =>
+    new Promise((resolve) => {
+      if (!pid) return resolve({});
+      execFile(
+        'ps',
+        ['eww', '-p', String(pid), '-o', 'command='],
+        { timeout: 1500, maxBuffer: 4 * 1024 * 1024, env: psEnv },
+        (err, stdout) => {
+          resolve(!err && stdout ? extractPreservedEnvFromPsOutput(stdout, commandLine) : {});
+        }
+      );
+    });
+
   const waitPortAndSync = (triesLeft = 40) => {
     if (readPort(portFile) > 0) {
       runtimeState.syncFn?.().catch(() => {});
@@ -222,20 +332,30 @@ export function startMacCdpBootstrap() {
     }
   };
 
-  const openAppWithRetry = async (appBundle, extraArgs = []) => {
+  const openAppWithRetry = async (appBundle, extraArgs = [], extraEnv = {}) => {
     try {
       fs.rmSync(portFile, { force: true });
     } catch {}
-    const launchArgs = [...extraArgs, '--remote-debugging-port=0'];
-    const attempts = [
-      ['-n', '-a', appBundle, '--args', ...launchArgs],
-      ['-n', '-a', appBundle, '--args', ...launchArgs],
-      ['-a', appBundle, '--args', ...launchArgs]
-    ];
+    const sanitizedEnv = sanitizePreservedEnv(extraEnv);
+    const hasExtraEnv = Object.keys(sanitizedEnv).length > 0;
+    const openEnv = hasExtraEnv ? { ...process.env, ...sanitizedEnv } : process.env;
+    const attempts = [true, true, false];
     for (let i = 0; i < attempts.length; i++) {
-      const err = await new Promise((resolve) => {
-        execFile('/usr/bin/open', attempts[i], { timeout: 10000 }, (e) => resolve(e || null));
+      const useNewInstance = attempts[i];
+      const openArgs = buildMacOpenArgs(appBundle, extraArgs, sanitizedEnv, useNewInstance);
+      let err = await new Promise((resolve) => {
+        execFile('/usr/bin/open', openArgs, { timeout: 10000, env: openEnv }, (e, _stdout, stderr) => {
+          if (!e) return resolve(null);
+          if (stderr && !e.stderr) e.stderr = stderr;
+          resolve(e);
+        });
       });
+      if (err && hasExtraEnv && /(?:unrecognized|unknown|illegal)\s+option/i.test(`${err.stderr || ''} ${err.message || ''}`)) {
+        const fallbackArgs = buildMacOpenArgs(appBundle, extraArgs, {}, useNewInstance);
+        err = await new Promise((resolve) => {
+          execFile('/usr/bin/open', fallbackArgs, { timeout: 10000, env: openEnv }, (e) => resolve(e || null));
+        });
+      }
       if (!err) {
         waitPortAndSync(40);
         return true;
@@ -266,7 +386,11 @@ export function startMacCdpBootstrap() {
       candidateApps.find((p) => fs.existsSync(p)) ||
       candidateApps[0];
     console.log(`[Anti-Claude Daemon] Recovering interrupted relaunch for ${bundle}`);
-    await openAppWithRetry(bundle, Array.isArray(intent.extraArgs) ? intent.extraArgs : []);
+    await openAppWithRetry(
+      bundle,
+      Array.isArray(intent.extraArgs) ? intent.extraArgs : [],
+      sanitizePreservedEnv(intent.extraEnv)
+    );
   };
 
   let emptyStreak = 0;
@@ -357,19 +481,29 @@ export function startMacCdpBootstrap() {
         const targetPid = candidate.pid;
         const appBundle = candidate.appBundle || candidateApps.find((p) => fs.existsSync(p)) || candidateApps[0];
         const extraArgs = Array.isArray(candidate.extraArgs) ? candidate.extraArgs : [];
+        const extraEnv = await queryProcessPreservedEnv(targetPid, candidate.cmd);
+        const preservedEnvKeys = Object.keys(extraEnv);
         const startTs = Date.now();
         lastAttemptAt = startTs;
         attemptedPids.set(targetPid, startTs);
         recentAttempts.push(startTs);
+        const envNote = preservedEnvKeys.length > 0 ? `, preserving env keys=[${preservedEnvKeys.join(', ')}]` : '';
         console.log(
-          `[Anti-Claude Daemon] Relaunching fresh Antigravity (PID ${targetPid}, age=${candidate.age}s) with --remote-debugging-port=0`
+          `[Anti-Claude Daemon] Relaunching fresh Antigravity (PID ${targetPid}, age=${candidate.age}s${envNote}) with --remote-debugging-port=0`
         );
 
         const doRelaunch = async () => {
+          const persistedEnv = stripCredentialEnvForDisk(extraEnv);
           try {
             writeAtomicUtf8(
               RELAUNCH_INTENT_FILE,
-              `${JSON.stringify({ targetPid, appBundle, extraArgs, startedAt: Date.now() })}\n`
+              `${JSON.stringify({
+                targetPid,
+                appBundle,
+                extraArgs,
+                ...(Object.keys(persistedEnv).length > 0 ? { extraEnv: persistedEnv } : {}),
+                startedAt: Date.now()
+              })}\n`
             );
           } catch {}
 
@@ -395,7 +529,7 @@ export function startMacCdpBootstrap() {
             listMainProcs: queryMainProcs,
             hasLock: hasSingletonLock,
             tryClearStaleLock: tryClearStaleSingletonLock,
-            onReadyToOpen: () => openAppWithRetry(appBundle, extraArgs)
+            onReadyToOpen: () => openAppWithRetry(appBundle, extraArgs, extraEnv)
           });
 
           if (!outcome.relaunched && outcome.reason === 'exit_timeout') {
@@ -405,7 +539,7 @@ export function startMacCdpBootstrap() {
               if (lingering.length === 0) {
                 if (hasSingletonLock()) tryClearStaleSingletonLock(targetPid);
                 if (!hasSingletonLock()) {
-                  await openAppWithRetry(appBundle, extraArgs);
+                  await openAppWithRetry(appBundle, extraArgs, extraEnv);
                   outcome = { relaunched: true, lateExitRecovered: true };
                 }
               }
@@ -414,7 +548,7 @@ export function startMacCdpBootstrap() {
             await new Promise((r) => setTimeout(r, 1500));
             const lingering = await queryMainProcs();
             if (lingering.length === 0 && tryClearStaleSingletonLock(targetPid) && !hasSingletonLock()) {
-              await openAppWithRetry(appBundle, extraArgs);
+              await openAppWithRetry(appBundle, extraArgs, extraEnv);
               outcome = { relaunched: true, staleLockCleared: true };
             }
           }

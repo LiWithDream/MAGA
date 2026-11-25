@@ -156,6 +156,7 @@ async function runDoctor() {
     verboseConversationSteps: agyCfg?.userSettings?.verboseConversationSteps ?? null,
     orchestratorModel: agyCfg?.userSettings?.orchestratorModel ?? null,
     fastIoRuleInstalled: hasFastIo,
+    proxyDiagnostics: collectProxyDiagnostics(),
     usageSummary: {
       daysCount: usage.days.length,
       unread: usage.unread,
@@ -163,6 +164,34 @@ async function runDoctor() {
     },
     baseDoctor,
   };
+}
+
+function collectProxyDiagnostics() {
+  const proxyKeys = ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy'];
+  const shellProxyEnvKeys = proxyKeys.filter((k) => {
+    const v = process.env[k];
+    return typeof v === 'string' && v.trim().length > 0;
+  });
+  let systemProxy = null;
+  let hint = null;
+  if (process.platform === 'darwin') {
+    try {
+      const raw = execFileSync('scutil', ['--proxy'], { encoding: 'utf8', timeout: 1500 });
+      systemProxy = {
+        httpEnabled: /\bHTTPEnable\s*:\s*1\b/.test(raw),
+        httpsEnabled: /\bHTTPSEnable\s*:\s*1\b/.test(raw),
+        socksEnabled: /\bSOCKSEnable\s*:\s*1\b/.test(raw),
+        pacEnabled: /\bProxyAutoConfigEnable\s*:\s*1\b/.test(raw),
+      };
+      const anySysProxy = systemProxy.httpEnabled || systemProxy.httpsEnabled || systemProxy.socksEnabled || systemProxy.pacEnabled;
+      if (shellProxyEnvKeys.length > 0 && !anySysProxy) {
+        hint = 'Shell proxy env vars detected while macOS System Proxy is disabled; MAGA auto-forwards proxy env vars during CDP relaunch, and enabling System Proxy or TUN mode is recommended if Antigravity language_server reports loadCodeAssist: EOF.';
+      }
+    } catch {
+      systemProxy = null;
+    }
+  }
+  return { shellProxyEnvKeys, systemProxy, hint };
 }
 
 const [cmd = 'deploy'] = process.argv.slice(2);

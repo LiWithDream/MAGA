@@ -182,6 +182,18 @@ npm run install-all
 
 ---
 
+## 常见问题与排查（Troubleshooting）
+
+### 遇到 `Error Loading Models` / `loadCodeAssist: EOF`
+
+- **错误根因**：该报错来自 Antigravity 原生后端进程 `language_server` 访问 Google 接口（`daily-cloudcode-pa.googleapis.com`）时 TLS/代理连接意外断开，**并非 MAGA 前端注入逻辑导致**。
+- **建议处理**：
+  1. 在代理客户端（Clash / Mihomo / Surge / V2Ray 等）开启 **TUN（增强）模式**或**系统代理**，并确认 `daily-cloudcode-pa.googleapis.com`（及 `*.googleapis.com`）走稳定节点。
+  2. **兼容增强**：如你习惯从终端附带代理环境变量（`HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` / `NO_PROXY` / `SSL_CERT_FILE` / `NODE_EXTRA_CA_CERTS`）或 `--proxy-*` 启动参数拉起 Antigravity，MAGA 在 macOS 自动补充 `--remote-debugging-port=0` 重拉进程时会自动透传保留这些配置；也可运行 `npm run doctor` 查看 `proxyDiagnostics` 本地代理状态。
+  3. 若希望完全由自己手动管理 `--remote-debugging-port=0` 启动参数而不由守护进程自动重拉，可在运行守护进程时设置环境变量 `ANTI_CLAUDE_NO_CDP_BOOTSTRAP=1`。
+
+---
+
 ## 致谢（Acknowledgements）
 
 MAGA 基于以下优秀的开源项目构建与演进，在此向各上游项目的作者与贡献者致以诚挚感谢，并清晰说明各项目的具体贡献与集成方式：

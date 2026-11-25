@@ -512,6 +512,11 @@ test('worktree UI (Topbar, #agy-wt-menu, Cockpit strip, chat badges) & compiled 
   assert.doesNotMatch(customCss, /:has\(/, 'zero global CSS :has() selectors');
   const recentBranchCssMatch = customCss.match(/#ag-claude-recent-section\s+\.ag-recent-branch\s*\{[^}]*\}/s);
   assert.ok(recentBranchCssMatch && /flex-shrink:\s*0/.test(recentBranchCssMatch[0]), '.ag-recent-branch sets flex-shrink: 0');
+  assert.match(customCss, /:is\(#ag-claude-project-modal,\s*#ag-claude-projects-view\)\s+\.ag-pm-tag/, '.ag-pm-tag is scoped to #ag-claude-projects-view as well');
+  const repoPillsCssMatch = customCss.match(/#ag-claude-projects-view\s+\.ag-pd-repo-pills\s*\{[^}]*\}/s);
+  assert.ok(repoPillsCssMatch && /flex-wrap:\s*nowrap/.test(repoPillsCssMatch[0]), '.ag-pd-repo-pills enforces single-line nowrap');
+  const repoStatusCssMatch = customCss.match(/#ag-claude-projects-view\s+\.ag-pd-repo-status\s*\{[^}]*\}/s);
+  assert.ok(repoStatusCssMatch && /border-radius:\s*999px/.test(repoStatusCssMatch[0]), '.ag-pd-repo-status uses pill radius');
 
   // --- Part A: Direct createProjectsModule interactive flows ---
   const cid = 'conv-ui-11112222';
@@ -713,7 +718,20 @@ test('worktree UI (Topbar, #agy-wt-menu, Cockpit strip, chat badges) & compiled 
     await settle(40);
     const pdView = d.getElementById('ag-claude-projects-view');
     assert.ok(pdView.querySelector('[data-ag-pd-wt-wrap]'), 'mounts Active Worktrees strip');
+    assert.equal(pdView.querySelector('.ag-pd-repo-pills .ag-pd-repo-branch'), null, 'does not duplicate branch text in header when worktree strip is rendered');
+    assert.ok(pdView.querySelector('.ag-pd-repo-pills .ag-pd-repo-clean'), 'renders structured clean pill when working tree is clean');
     assert.equal(pdView.querySelector('.ag-pd-chat-branch')?.textContent.trim(), 'feat/wt-2', 'chat row renders branch micro-badge');
+
+    // Select dirty wt-1 chip -> renders structured dirty pill with diff stats and chevron, no duplicate branch
+    pdView.querySelector(`[data-ag-pd-wt-select="${wt1Path}"]`).click();
+    await settle(30);
+    const dirtyBtn = pdView.querySelector('.ag-pd-repo-dirty-btn');
+    assert.ok(dirtyBtn, 'renders structured dirty status pill button');
+    assert.equal(dirtyBtn.querySelector('.ag-pd-repo-dirty-cnt')?.textContent.trim(), '2 mod');
+    assert.equal(dirtyBtn.querySelector('.ag-pd-diff-add')?.textContent.trim(), '+5');
+    assert.equal(dirtyBtn.querySelector('.ag-pd-diff-del')?.textContent.trim(), '-1');
+    assert.ok(dirtyBtn.querySelector('.ag-pd-repo-chev'), 'renders SVG chevron inside dirty pill');
+    assert.equal(pdView.querySelector('.ag-pd-repo-pills .ag-pd-repo-branch'), null, 'header branch remains omitted when worktree strip is present');
 
     // Select wt-2 chip -> sends worktreePath to readProjectWorkspaceStatus
     pdView.querySelector(`[data-ag-pd-wt-select="${wt2Path}"]`).click();

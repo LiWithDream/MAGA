@@ -560,26 +560,35 @@ export function createProjectWorkspaceUi(ctx) {
     const commits = Array.isArray(data?.recentCommits) ? data.recentCommits.slice(0, 3) : [];
     const dirtyFiles = Array.isArray(data?.dirtyFiles) ? data.dirtyFiles : [];
     const dirtyCount = Number(git?.changedFiles || 0);
+    const wtStripHtml = pHooks.buildCockpitWorktreeStripHtml?.({ project, wsStatus }) || '';
+    const hasWtStrip = Boolean(wtStripHtml);
 
     const extBtnHtml = remoteUrl
       ? `<button type="button" class="ag-pd-repo-ext-btn" data-ag-pd-open-remote="${escapeHtml(remoteUrl)}" title="${escapeHtml(L('在浏览器打开远程仓库：', 'Open remote repo: ') + remoteLabel)}" aria-label="${escapeHtml(L('打开远程仓库', 'Open remote repo'))}">${SVG_PROJ_EXTERNAL}</button>`
       : '';
 
+    const added = Number(git?.added || 0);
+    const deleted = Number(git?.deleted || 0);
+    const diffParts = [];
+    if (added > 0) diffParts.push(`<span class="ag-pd-diff-add">+${added}</span>`);
+    if (deleted > 0) diffParts.push(`<span class="ag-pd-diff-del">-${deleted}</span>`);
+    const diffStatHtml = diffParts.length ? `<span class="ag-pd-repo-diff">${diffParts.join('')}</span>` : '';
+
     const dirtyPillHtml = dirtyCount > 0
-      ? `<button type="button" class="ag-pm-tag ag-pd-repo-dirty ag-pd-repo-dirty-btn" data-ag-pd-toggle-dirty="true" aria-expanded="${pState.pdDirtyExpanded ? 'true' : 'false'}" title="${escapeHtml(L('点击展开或收起未提交文件', 'Click to inspect uncommitted files'))}">${escapeHtml(
-          L(`${dirtyCount} 修改 +${git.added}/-${git.deleted}`, `${dirtyCount} mod +${git.added}/-${git.deleted}`)
-        )} ${pState.pdDirtyExpanded ? '▾' : '▸'}</button>`
-      : `<span class="ag-pm-tag ag-pm-tag-inline">clean</span>`;
+      ? `<button type="button" class="ag-pd-repo-status ag-pd-repo-dirty ag-pd-repo-dirty-btn" data-ag-pd-toggle-dirty="true" aria-expanded="${pState.pdDirtyExpanded ? 'true' : 'false'}" title="${escapeHtml(L('点击展开或收起未提交文件', 'Click to inspect uncommitted files'))}"><span class="ag-pd-repo-dirty-cnt">${escapeHtml(L(`${dirtyCount} 修改`, `${dirtyCount} mod`))}</span>${diffStatHtml}<svg class="ag-pd-repo-chev" width="10" height="10" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M4.5 2.5L8 6L4.5 9.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>`
+      : `<span class="ag-pd-repo-status ag-pd-repo-clean"><span class="ag-pd-repo-clean-dot" aria-hidden="true"></span><span>${escapeHtml(L('干净', 'Clean'))}</span></span>`;
+
+    const branchPillHtml = !hasWtStrip && git?.branch
+      ? `<span class="ag-pd-repo-branch" title="${escapeHtml(git.branch)}">${escapeHtml(git.branch)}</span>`
+      : '';
 
     const rightPills = git
-      ? `<div class="ag-pd-repo-pills">
-          <span class="ag-pm-tag">${escapeHtml(git.branch)}</span>
-          ${dirtyPillHtml}
-          ${extBtnHtml}
-        </div>`
+      ? `<div class="ag-pd-repo-pills">${branchPillHtml}${dirtyPillHtml}${extBtnHtml}</div>`
       : isLoading
-        ? `<span class="ag-pm-tag">${L('读取中…', 'Loading…')}</span>`
-        : extBtnHtml;
+        ? `<div class="ag-pd-repo-pills"><span class="ag-pd-repo-status ag-pd-repo-loading">${L('读取中…', 'Loading…')}</span>${extBtnHtml}</div>`
+        : extBtnHtml
+          ? `<div class="ag-pd-repo-pills">${extBtnHtml}</div>`
+          : '';
 
     let dirtyDrawerHtml = '';
     if (pState.pdDirtyExpanded && dirtyFiles.length > 0) {
@@ -636,8 +645,6 @@ export function createProjectWorkspaceUi(ctx) {
     } else {
       bodyHtml = `<div class="ag-pd-card-muted">${L('当前分支工作区干净，暂无最近提交列表。', 'Clean working tree.')}</div>`;
     }
-
-    const wtStripHtml = pHooks.buildCockpitWorktreeStripHtml?.({ project, wsStatus }) || '';
 
     return `
       <div class="ag-pd-section ag-pd-repo-sec" data-ag-pd-repo-sec="true">

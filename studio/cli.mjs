@@ -26,7 +26,7 @@ import {
   stripStudioBlocksOnly,
 } from './build.mjs';
 import { collectUsageStatsAsync } from './daemon/usage-service.mjs';
-import { readDeployMeta } from './deploy-meta.mjs';
+import { evaluateDeployGuard, readDeployMeta } from './deploy-meta.mjs';
 
 const HOME = homedir();
 const AGENTS_MD = path.join(HOME, '.gemini', 'AGENTS.md');
@@ -228,6 +228,10 @@ const allowNonMainDeploy =
 
 try {
   if (cmd === 'install') {
+    const installGuard = evaluateDeployGuard(REPO_ROOT, { allowNonMain: allowNonMainDeploy });
+    if (!installGuard.allowed) {
+      throw new Error(installGuard.reason);
+    }
     await runAntiClaudeInstall();
     const deployRes = await deployStudio({ allowNonMain: allowNonMainDeploy });
     const rulesRes = syncFastIoRules();

@@ -267,6 +267,10 @@ test('PreToolUse run_command enforces commit, force-push, and --tags guardrails'
       'git switch -c feat/x',
       'git checkout feat/cmd',
       'git switch feat/cmd',
+      'git switch --track origin/feat/cmd',
+      'git switch -t origin/feat/cmd',
+      'git switch -',
+      'git checkout -',
     ]) {
       const res = evaluateHookPayload({
         hookEventName: 'PreToolUse',
@@ -282,6 +286,7 @@ test('PreToolUse run_command enforces commit, force-push, and --tags guardrails'
       'git switch main',
       'git checkout -- README.md',
       'git checkout HEAD -- README.md',
+      'git checkout .',
       `git -C ${wtDir} checkout -b fix/inside-wt`,
       'git worktree add -b fix/x ../wt-x main',
       'MAGA_ALLOW_PRIMARY_CHECKOUT=1 git checkout -b temp/hotfix',

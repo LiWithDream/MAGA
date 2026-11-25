@@ -103,7 +103,8 @@ export function evaluateDeployGuard(repoRoot, { allowNonMain = false, metaPath =
   const provenance = collectGitDeployProvenance(repoRoot);
   const live = readDeployMeta(metaPath);
   const isNonMainBranch = Boolean(provenance.branch && provenance.branch !== 'main' && provenance.branch !== 'master');
-  const needsGuard = provenance.isLinkedWorktree || isNonMainBranch;
+  const needsBranchOrWtGuard = provenance.isLinkedWorktree || isNonMainBranch;
+  const needsGuard = needsBranchOrWtGuard || provenance.dirty;
 
   const liveBranch = live.present && live.meta?.branch ? live.meta.branch : '';
   const liveWorktree = live.present && live.meta?.worktreePath ? live.meta.worktreePath : '';
@@ -112,16 +113,24 @@ export function evaluateDeployGuard(repoRoot, { allowNonMain = false, metaPath =
     : '';
 
   if (needsGuard && !allowNonMain) {
-    const srcDesc = provenance.isLinkedWorktree
-      ? `linked worktree '${provenance.worktreePath}' (branch '${provenance.branch || 'unknown'}')`
-      : `non-main branch '${provenance.branch}'`;
-    const parts = [
-      `Blocked deploy from ${srcDesc}: Antigravity Desktop shares a single live runtime (~/.gemini/antigravity/anti-claude/user/) while the LaunchAgent daemon runs core/daemon.mjs from the primary checkout, so deploying from a feature worktree clobbers other live features and risks UI/daemon split-brain.`,
-    ];
-    if (liveSummary) parts.push(liveSummary);
-    parts.push(
-      `Recommended: run 'npm test' here, merge '${provenance.branch || 'feature'}' into 'main' via --no-ff, and deploy from clean 'main'. For intentional single-feature live preview, pass '--preview' (npm run deploy -- --preview).`
-    );
+    const parts = [];
+    if (needsBranchOrWtGuard) {
+      const srcDesc = provenance.isLinkedWorktree
+        ? `linked worktree '${provenance.worktreePath}' (branch '${provenance.branch || 'unknown'}')`
+        : `non-main branch '${provenance.branch}'`;
+      parts.push(
+        `Blocked deploy from ${srcDesc}: Antigravity Desktop shares a single live runtime (~/.gemini/antigravity/anti-claude/user/) while the LaunchAgent daemon runs core/daemon.mjs from the primary checkout, so deploying from a feature worktree clobbers other live features and risks UI/daemon split-brain.`
+      );
+      if (liveSummary) parts.push(liveSummary);
+      parts.push(
+        `Recommended: run 'npm test' here, merge '${provenance.branch || 'feature'}' into 'main' via --no-ff, and deploy from clean 'main'. For intentional single-feature live preview, pass '--preview' (npm run deploy -- --preview).`
+      );
+    } else {
+      parts.push(
+        `Blocked deploy from dirty primary '${provenance.branch || 'main'}' (${provenance.worktreePath}): commit or isolate uncommitted changes into a worktree before deploying so temporary edits do not leak to desktop runtime (or pass '--force' / '--preview' explicitly).`
+      );
+      if (liveSummary) parts.push(liveSummary);
+    }
     return {
       allowed: false,
       preview: false,
@@ -133,13 +142,16 @@ export function evaluateDeployGuard(repoRoot, { allowNonMain = false, metaPath =
   }
 
   const warnings = [];
-  if (needsGuard) {
+  if (needsBranchOrWtGuard) {
     warnings.push(
       `Preview deploy from '${provenance.branch || 'unknown'}' (${provenance.worktreePath}): LaunchAgent daemon still serves core/daemon.mjs from primary checkout (UI/daemon split-brain risk).`
     );
     if (liveWorktree && normalizeFsPath(liveWorktree) !== normalizeFsPath(provenance.worktreePath)) {
       warnings.push(`Replacing previous live bundle deployed from '${liveBranch || 'unknown'}' (${liveWorktree}).`);
     }
+  }
+  if (provenance.dirty) {
+    warnings.push(`Deploying from dirty working tree at '${provenance.worktreePath}'.`);
   }
 
   return {

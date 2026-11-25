@@ -727,6 +727,9 @@ function analyzePrimaryBranchSwitch(inv) {
         tok === '-C' ||
         tok === '--create' ||
         tok === '--force-create' ||
+        tok === '-t' ||
+        tok === '--track' ||
+        tok.startsWith('--track=') ||
         tok === '--orphan' ||
         tok === '--detach' ||
         tok === '-d' ||
@@ -735,11 +738,11 @@ function analyzePrimaryBranchSwitch(inv) {
       ) {
         return { blocked: true, reason: `creating or detaching branch '${sub} ${tok}' in primary checkout` };
       }
-      if (tok === '--conflict' || tok === '--track') {
+      if (tok === '--conflict') {
         i += 1;
         continue;
       }
-      if (tok.startsWith('-')) continue;
+      if (tok.startsWith('-') && tok !== '-') continue;
       pos.push(tok);
     }
     if (pos.length > 0 && !PROTECTED_BRANCHES.has(pos[0])) {
@@ -755,6 +758,9 @@ function analyzePrimaryBranchSwitch(inv) {
     if (
       tok === '-b' ||
       tok === '-B' ||
+      tok === '-t' ||
+      tok === '--track' ||
+      tok.startsWith('--track=') ||
       tok === '--orphan' ||
       tok === '--detach' ||
       tok === '-d' ||
@@ -768,7 +774,7 @@ function analyzePrimaryBranchSwitch(inv) {
       i += 1;
       continue;
     }
-    if (tok.startsWith('-')) continue;
+    if (tok.startsWith('-') && tok !== '-') continue;
     posBeforeDd.push(tok);
   }
 
@@ -785,7 +791,7 @@ function analyzePrimaryBranchSwitch(inv) {
   if (posBeforeDd.length === 1) {
     try {
       const st = fs.lstatSync(path.resolve(inv.targetDir, first), { throwIfNoEntry: false });
-      if (st && (st.isFile() || st.isSymbolicLink())) return { blocked: false };
+      if (st && (st.isFile() || st.isSymbolicLink() || st.isDirectory())) return { blocked: false };
     } catch {}
   }
 

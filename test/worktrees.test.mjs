@@ -467,6 +467,17 @@ test('deploy-meta provenance, single-desktop deploy guard & standalone studio/wt
     assert.match(driftedGuard.reason || '', /feat\/drifted/);
     gitSync(mainRepo, ['checkout', 'main']);
 
+    // Dirty primary main also blocked unless allowNonMain (--force / --preview)
+    fs.writeFileSync(path.join(mainRepo, 'README.md'), '# Dirty main\n', 'utf8');
+    const dirtyMainGuard = evaluateDeployGuard(mainRepo, { metaPath });
+    assert.equal(dirtyMainGuard.allowed, false);
+    assert.match(dirtyMainGuard.reason || '', /dirty primary/);
+    const dirtyMainForced = evaluateDeployGuard(mainRepo, { allowNonMain: true, metaPath });
+    assert.equal(dirtyMainForced.allowed, true);
+    assert.equal(dirtyMainForced.preview, true);
+    assert.ok(dirtyMainForced.warnings.length >= 1);
+    gitSync(mainRepo, ['checkout', '--', 'README.md']);
+
     const listOut = execFileSync(process.execPath, [wtCliPath, 'list', '--repo', mainRepo], { encoding: 'utf8' });
     const listJson = JSON.parse(listOut);
     assert.equal(listJson.ok, true);

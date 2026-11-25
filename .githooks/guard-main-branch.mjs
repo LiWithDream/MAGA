@@ -1,11 +1,32 @@
 #!/usr/bin/env node
 import { execFileSync } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export const PROTECTED_BRANCHES = new Set(['main', 'master']);
+const SAFE_CID_RE = /^[A-Za-z0-9_-]{6,128}$/;
+const HOOK_RECORD_THROTTLE_MS = 30_000;
+const MUTATING_GIT_SUBCOMMANDS = new Set([
+  'add',
+  'commit',
+  'checkout',
+  'switch',
+  'merge',
+  'rebase',
+  'cherry-pick',
+  'reset',
+  'stash',
+  'restore',
+  'rm',
+  'mv',
+  'apply',
+  'am',
+  'tag',
+  'pull',
+]);
 
 const FILE_EDIT_TOOLS = new Set([
   'edit_file',
@@ -46,7 +67,12 @@ const GIT_GLOBAL_BOOL_FLAGS = new Set([
 ]);
 
 const ENV_ASSIGNMENT_RE = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/;
+const VAR_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const PROTECTED_REFSPEC_RE = /^\+?([^:]*:)?(refs\/heads\/)?(main|master)$/;
+
+function gitExecEnv() {
+  return { ...process.env, GIT_OPTIONAL_LOCKS: '0' };
+}
 
 function expandHome(inputPath) {
   if (!inputPath || typeof inputPath !== 'string') return inputPath;
@@ -81,18 +107,22 @@ export function isInsideDir(targetPath, baseDir) {
   return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
 }
 
-export function splitShellSegments(commandLine) {
+function splitShellSegmentsWithOps(commandLine) {
   if (!commandLine || typeof commandLine !== 'string') return [];
   const segments = [];
   let buf = '';
   let inSingle = false;
   let inDouble = false;
   let escaped = false;
+  let sepBefore = '';
 
-  const flush = () => {
+  const flush = (sepAfter = '') => {
     const trimmed = buf.trim();
-    if (trimmed) segments.push(trimmed);
+    if (trimmed) {
+      segments.push({ text: trimmed, sepBefore, sepAfter });
+    }
     buf = '';
+    sepBefore = sepAfter;
   };
 
   for (let i = 0; i < commandLine.length; i += 1) {
@@ -141,30 +171,61 @@ export function splitShellSegments(commandLine) {
     }
 
     if (ch === ';' || ch === '\n' || ch === '\r') {
-      flush();
+      flush(';');
       continue;
     }
 
     if (ch === '&' && next === '&') {
-      flush();
+      flush('&&');
       i += 1;
       continue;
     }
 
     if (ch === '|') {
-      flush();
-      if (next === '|') i += 1;
+      if (next === '|') {
+        flush('||');
+        i += 1;
+      } else {
+        flush('|');
+      }
       continue;
     }
 
     buf += ch;
   }
 
-  flush();
+  flush('');
   return segments;
 }
 
-export function tokenizeSegment(segment) {
+export function splitShellSegments(commandLine) {
+  return splitShellSegmentsWithOps(commandLine).map((s) => s.text);
+}
+
+function tryExpandDollar(segment, idx, shellVars) {
+  if (!shellVars || shellVars.size === 0) return null;
+  const next = segment[idx + 1];
+  if (!next || next === '(' || next === '`') return null;
+
+  if (next === '{') {
+    const closeIdx = segment.indexOf('}', idx + 2);
+    if (closeIdx === -1) return null;
+    const inner = segment.slice(idx + 2, closeIdx);
+    if (!VAR_NAME_RE.test(inner) || !shellVars.has(inner)) return null;
+    return { value: shellVars.get(inner), nextIndex: closeIdx };
+  }
+
+  if (!/[A-Za-z_]/.test(next)) return null;
+  let end = idx + 2;
+  while (end < segment.length && /[A-Za-z0-9_]/.test(segment[end])) {
+    end += 1;
+  }
+  const name = segment.slice(idx + 1, end);
+  if (!shellVars.has(name)) return null;
+  return { value: shellVars.get(name), nextIndex: end - 1 };
+}
+
+export function tokenizeSegment(segment, shellVars = null) {
   if (!segment || typeof segment !== 'string') return [];
   const tokens = [];
   let current = '';
@@ -216,6 +277,15 @@ export function tokenizeSegment(segment) {
       }
       if (ch === '"') {
         inDouble = false;
+      } else if (ch === '$') {
+        const exp = tryExpandDollar(segment, i, shellVars);
+        if (exp) {
+          current += exp.value;
+          i = exp.nextIndex;
+        } else {
+          current += ch;
+        }
+        hasToken = true;
       } else {
         current += ch;
         hasToken = true;
@@ -237,6 +307,18 @@ export function tokenizeSegment(segment) {
 
     if (ch === '"') {
       inDouble = true;
+      hasToken = true;
+      continue;
+    }
+
+    if (ch === '$') {
+      const exp = tryExpandDollar(segment, i, shellVars);
+      if (exp) {
+        current += exp.value;
+        i = exp.nextIndex;
+      } else {
+        current += ch;
+      }
       hasToken = true;
       continue;
     }
@@ -303,20 +385,44 @@ function parseCommandWrapper(tokens) {
   return { env, cmdTokens: tokens.slice(idx) };
 }
 
-export function extractGitInvocations(commandLine, initialCwd = process.cwd()) {
-  const segments = splitShellSegments(commandLine);
+function extractGitInvocationsDetailed(commandLine, initialCwd = process.cwd()) {
+  const segments = splitShellSegmentsWithOps(commandLine);
   const invocations = [];
+  const shellVars = new Map();
   let currentDir = path.resolve(expandHome(initialCwd) || process.cwd());
   let prevDir = currentDir;
 
   for (const seg of segments) {
-    const rawTokens = tokenizeSegment(seg);
+    const inPipeline = seg.sepBefore === '|' || seg.sepAfter === '|';
+    const rawTokens = tokenizeSegment(seg.text, shellVars);
     if (rawTokens.length === 0) continue;
 
+    // Handle standalone `export KEY=VAL` (only outside pipelines)
+    if (rawTokens[0] === 'export' && rawTokens.length > 1) {
+      if (!inPipeline) {
+        for (const tok of rawTokens.slice(1)) {
+          const m = tok.match(ENV_ASSIGNMENT_RE);
+          if (m) shellVars.set(m[1], m[2]);
+        }
+      }
+      continue;
+    }
+
     const { env, cmdTokens } = parseCommandWrapper(rawTokens);
-    if (cmdTokens.length === 0) continue;
+
+    // Standalone assignment segment (`WT=/path && ...`) feeds later non-pipeline expansions.
+    // Prefix assignments (`WT=/path git -C "$WT"`) do NOT feed expansion because shell expands before assigning.
+    if (cmdTokens.length === 0) {
+      if (!inPipeline) {
+        for (const [k, v] of Object.entries(env)) {
+          shellVars.set(k, v);
+        }
+      }
+      continue;
+    }
 
     if (cmdTokens[0] === 'cd') {
+      if (inPipeline) continue;
       let argIdx = 1;
       if (cmdTokens[argIdx] === '--') argIdx += 1;
       const rawTarget = cmdTokens[argIdx];
@@ -391,7 +497,6 @@ export function extractGitInvocations(commandLine, initialCwd = process.cwd()) {
         continue;
       }
 
-      // Unknown leading git flag; consume and continue scanning for subcommand.
       i += 1;
     }
 
@@ -407,7 +512,11 @@ export function extractGitInvocations(commandLine, initialCwd = process.cwd()) {
     }
   }
 
-  return invocations;
+  return { invocations, finalDir: currentDir };
+}
+
+export function extractGitInvocations(commandLine, initialCwd = process.cwd()) {
+  return extractGitInvocationsDetailed(commandLine, initialCwd).invocations;
 }
 
 export function resolveGitContext(dirPath) {
@@ -429,6 +538,7 @@ export function resolveGitContext(dirPath) {
     topAndGit = execFileSync('git', ['-C', cur, 'rev-parse', '--show-toplevel', '--git-dir'], {
       encoding: 'utf8',
       timeout: 2000,
+      env: gitExecEnv(),
       stdio: ['ignore', 'pipe', 'pipe'],
     });
   } catch {
@@ -446,6 +556,7 @@ export function resolveGitContext(dirPath) {
     const out = execFileSync('git', ['-C', cur, 'symbolic-ref', '--short', 'HEAD'], {
       encoding: 'utf8',
       timeout: 2000,
+      env: gitExecEnv(),
       stdio: ['ignore', 'pipe', 'pipe'],
     }).trim();
     branch = out || null;
@@ -454,7 +565,103 @@ export function resolveGitContext(dirPath) {
   }
 
   const merging = fs.existsSync(path.join(gitDir, 'MERGE_HEAD'));
-  return { topLevel, gitDir, branch, merging };
+  let isLinkedWorktree = false;
+  try {
+    isLinkedWorktree = fs.lstatSync(path.join(topLevel, '.git')).isFile();
+  } catch {}
+  return { topLevel, gitDir, branch, merging, isLinkedWorktree };
+}
+
+function isPrimaryLocalOnlyPath(absPath, topLevel) {
+  if (!absPath || !topLevel) return false;
+  const realTarget = resolveExistingPrefixRealpath(absPath);
+  const realTop = resolveExistingPrefixRealpath(topLevel);
+  if (isInsideDir(realTarget, path.join(realTop, '.agents'))) return true;
+  return (
+    realTarget === path.join(realTop, 'AGENTS.md') ||
+    realTarget === path.join(realTop, 'docs', 'DEVELOPMENT_HISTORY.md')
+  );
+}
+
+function resolveConversationId(payload) {
+  const direct = String(payload?.conversationId || '').trim();
+  if (SAFE_CID_RE.test(direct)) return direct;
+  const artDir = String(payload?.artifactDirectoryPath || '').trim();
+  if (artDir) {
+    const base = path.basename(artDir);
+    if (SAFE_CID_RE.test(base)) return base;
+  }
+  return '';
+}
+
+export function recordConversationWorktree(
+  payload,
+  ctx,
+  { stateDir = path.join(os.homedir(), '.gemini', 'antigravity', 'anti-claude') } = {}
+) {
+  try {
+    if (!ctx || !ctx.topLevel || !ctx.branch || PROTECTED_BRANCHES.has(ctx.branch)) {
+      return { recorded: false, reason: 'not_worktree' };
+    }
+    if (!ctx.isLinkedWorktree) {
+      return { recorded: false, reason: 'not_linked_worktree' };
+    }
+    const cid = resolveConversationId(payload);
+    if (!cid) return { recorded: false, reason: 'missing_cid' };
+
+    const convDir = path.join(stateDir, 'conv-worktrees');
+    const filePath = path.join(convDir, `${cid}.json`);
+
+    try {
+      const st = fs.statSync(filePath, { throwIfNoEntry: false });
+      if (st && st.isFile() && Date.now() - st.mtimeMs < HOOK_RECORD_THROTTLE_MS) {
+        const existing = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+        if (existing?.worktreePath === ctx.topLevel && existing?.branch === ctx.branch) {
+          return { recorded: false, reason: 'throttled', filePath };
+        }
+      }
+    } catch {}
+
+    let repoRoot = ctx.topLevel;
+    try {
+      const commonRaw = execFileSync('git', ['-C', ctx.topLevel, 'rev-parse', '--git-common-dir'], {
+        encoding: 'utf8',
+        timeout: 1200,
+        env: gitExecEnv(),
+        stdio: ['ignore', 'pipe', 'pipe'],
+      }).trim();
+      if (commonRaw) {
+        const absCommon = path.resolve(ctx.topLevel, commonRaw);
+        if (path.basename(absCommon) === '.git') {
+          repoRoot = path.dirname(absCommon);
+        }
+      }
+    } catch {}
+
+    fs.mkdirSync(convDir, { recursive: true });
+    const record = {
+      schema: 1,
+      cid,
+      worktreePath: ctx.topLevel,
+      branch: ctx.branch,
+      repoRoot,
+      source: 'hook',
+      updatedAt: Date.now(),
+    };
+    const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
+    try {
+      fs.writeFileSync(tmp, `${JSON.stringify(record, null, 2)}\n`, 'utf8');
+      fs.renameSync(tmp, filePath);
+    } catch (err) {
+      try {
+        fs.rmSync(tmp, { force: true });
+      } catch {}
+      throw err;
+    }
+    return { recorded: true, filePath, record };
+  } catch {
+    return { recorded: false, reason: 'write_failed' };
+  }
 }
 
 function analyzePushArgs(subArgs) {
@@ -505,18 +712,109 @@ function analyzePushArgs(subArgs) {
   return { isForce, hasTagsFlag, refspecs };
 }
 
-function evaluateRunCommand(commandLine, payload) {
+function analyzePrimaryBranchSwitch(inv) {
+  const args = Array.isArray(inv.subArgs) ? inv.subArgs : [];
+  const sub = inv.subcommand;
+  const ddIdx = args.indexOf('--');
+  const preDd = ddIdx === -1 ? args : args.slice(0, ddIdx);
+
+  if (sub === 'switch') {
+    const pos = [];
+    for (let i = 0; i < preDd.length; i += 1) {
+      const tok = preDd[i];
+      if (
+        tok === '-c' ||
+        tok === '-C' ||
+        tok === '--create' ||
+        tok === '--force-create' ||
+        tok === '-t' ||
+        tok === '--track' ||
+        tok.startsWith('--track=') ||
+        tok === '--orphan' ||
+        tok === '--detach' ||
+        tok === '-d' ||
+        tok.startsWith('-c') ||
+        tok.startsWith('-C')
+      ) {
+        return { blocked: true, reason: `creating or detaching branch '${sub} ${tok}' in primary checkout` };
+      }
+      if (tok === '--conflict') {
+        i += 1;
+        continue;
+      }
+      if (tok.startsWith('-') && tok !== '-') continue;
+      pos.push(tok);
+    }
+    if (pos.length > 0 && !PROTECTED_BRANCHES.has(pos[0])) {
+      return { blocked: true, reason: `switching primary checkout to branch '${pos[0]}'` };
+    }
+    return { blocked: false };
+  }
+
+  // sub === 'checkout'
+  const posBeforeDd = [];
+  for (let i = 0; i < preDd.length; i += 1) {
+    const tok = preDd[i];
+    if (
+      tok === '-b' ||
+      tok === '-B' ||
+      tok === '-t' ||
+      tok === '--track' ||
+      tok.startsWith('--track=') ||
+      tok === '--orphan' ||
+      tok === '--detach' ||
+      tok === '-d' ||
+      tok.startsWith('-b') ||
+      tok.startsWith('-B') ||
+      tok.startsWith('--orphan=')
+    ) {
+      return { blocked: true, reason: `creating or detaching branch 'checkout ${tok}' in primary checkout` };
+    }
+    if (tok === '--conflict' || tok === '--pathspec-from-file' || tok === '-U' || tok === '--unified') {
+      i += 1;
+      continue;
+    }
+    if (tok.startsWith('-') && tok !== '-') continue;
+    posBeforeDd.push(tok);
+  }
+
+  if (ddIdx !== -1) {
+    // `git checkout -- file` or `git checkout <tree-ish> -- file` restores files without switching HEAD
+    if (posBeforeDd.length <= 1) return { blocked: false };
+    return { blocked: true, reason: `unexpected checkout target '${posBeforeDd.join(' ')}' in primary checkout` };
+  }
+
+  if (posBeforeDd.length === 0) return { blocked: false };
+  const first = posBeforeDd[0];
+  if (PROTECTED_BRANCHES.has(first)) return { blocked: false };
+
+  if (posBeforeDd.length === 1) {
+    try {
+      const st = fs.lstatSync(path.resolve(inv.targetDir, first), { throwIfNoEntry: false });
+      if (st && (st.isFile() || st.isSymbolicLink() || st.isDirectory())) return { blocked: false };
+    } catch {}
+  }
+
+  return { blocked: true, reason: `switching primary checkout to '${first}'` };
+}
+
+function evaluateRunCommandDetailed(commandLine, payload) {
   const initialCwd = payload?.cwd || payload?.workspacePaths?.[0] || process.cwd();
-  const invocations = extractGitInvocations(commandLine, initialCwd);
+  const { invocations, finalDir } = extractGitInvocationsDetailed(commandLine, initialCwd);
+  let lastNonProtectedCtx = null;
 
   for (const inv of invocations) {
     if (inv.subcommand === 'push') {
       const { isForce, hasTagsFlag, refspecs } = analyzePushArgs(inv.subArgs);
       if (hasTagsFlag) {
         return {
-          decision: 'deny',
-          reason:
-            "Blocked by MAGA Git Guardrail: never run 'git push --tags' (legacy upstream v2.x/v3.x tags must not be pushed to origin). Push explicit tags instead: git push origin vX.Y.Z.",
+          result: {
+            decision: 'deny',
+            reason:
+              "Blocked by MAGA Git Guardrail: never run 'git push --tags' (legacy upstream v2.x/v3.x tags must not be pushed to origin). Push explicit tags instead: git push origin vX.Y.Z.",
+          },
+          resolvedCtx: null,
+          recordCandidateDir: '',
         };
       }
 
@@ -529,8 +827,12 @@ function evaluateRunCommand(commandLine, payload) {
 
       if (isForce && targetsProtected) {
         return {
-          decision: 'deny',
-          reason: "Blocked by MAGA Git Guardrail: force-pushing to protected branch 'main'/'master' is forbidden.",
+          result: {
+            decision: 'deny',
+            reason: "Blocked by MAGA Git Guardrail: force-pushing to protected branch 'main'/'master' is forbidden.",
+          },
+          resolvedCtx: null,
+          recordCandidateDir: '',
         };
       }
       continue;
@@ -544,79 +846,185 @@ function evaluateRunCommand(commandLine, payload) {
           continue;
         }
         return {
-          decision: 'deny',
-          reason: `Blocked by MAGA Git Guardrail: direct 'git commit' on protected branch '${ctx.branch}' is forbidden. Develop on a feat/*, fix/*, chore/*, or release/* branch (or sibling worktree) and merge back with 'git merge --no-ff'.`,
+          result: {
+            decision: 'deny',
+            reason: `Blocked by MAGA Git Guardrail: direct 'git commit' on protected branch '${ctx.branch}' is forbidden. Develop on a feat/*, fix/*, chore/*, or release/* branch (or sibling worktree) and merge back with 'git merge --no-ff'.`,
+          },
+          resolvedCtx: null,
+          recordCandidateDir: '',
         };
+      }
+      if (!ctx.isLinkedWorktree && !ctx.merging && inv.env.MAGA_ALLOW_MAIN_COMMIT !== '1') {
+        return {
+          result: {
+            decision: 'deny',
+            reason: `Blocked by MAGA Worktree Policy: primary checkout (${ctx.topLevel}) must stay on clean 'main'. Do not commit feature changes here; create an isolated worktree (\`npm run wt:new -- <type>/<slug>\`).`,
+          },
+          resolvedCtx: null,
+          recordCandidateDir: '',
+        };
+      }
+      if (ctx.isLinkedWorktree && ctx.branch && !PROTECTED_BRANCHES.has(ctx.branch)) {
+        lastNonProtectedCtx = ctx;
+      }
+      continue;
+    }
+
+    if (inv.subcommand === 'checkout' || inv.subcommand === 'switch') {
+      const ctx = resolveGitContext(inv.targetDir);
+      if (ctx && !ctx.isLinkedWorktree && inv.env.MAGA_ALLOW_PRIMARY_CHECKOUT !== '1') {
+        const check = analyzePrimaryBranchSwitch(inv);
+        if (check.blocked) {
+          return {
+            result: {
+              decision: 'deny',
+              reason: `Blocked by MAGA Worktree Policy: ${check.reason} is forbidden because primary checkout (${ctx.topLevel}) stays permanently on 'main' as LaunchAgent daemon host. Create an isolated worktree instead: \`npm run wt:new -- <type>/<slug>\`.`,
+            },
+            resolvedCtx: null,
+            recordCandidateDir: '',
+          };
+        }
+      }
+      if (ctx && ctx.isLinkedWorktree && ctx.branch && !PROTECTED_BRANCHES.has(ctx.branch)) {
+        lastNonProtectedCtx = ctx;
+      }
+      continue;
+    }
+
+    if (MUTATING_GIT_SUBCOMMANDS.has(inv.subcommand)) {
+      const ctx = resolveGitContext(inv.targetDir);
+      if (ctx && ctx.isLinkedWorktree && ctx.branch && !PROTECTED_BRANCHES.has(ctx.branch)) {
+        lastNonProtectedCtx = ctx;
       }
     }
   }
 
-  return { decision: 'allow' };
+  return {
+    result: { decision: 'allow' },
+    resolvedCtx: lastNonProtectedCtx,
+    recordCandidateDir: !lastNonProtectedCtx ? finalDir : '',
+  };
 }
 
-export function evaluateHookPayload(payload) {
-  if (!payload || typeof payload !== 'object') return {};
+function evaluateHookPayloadDetailed(payload) {
+  if (!payload || typeof payload !== 'object') {
+    return { result: {}, resolvedCtx: null, recordCandidateDir: '' };
+  }
 
   const eventName = String(payload.hookEventName || '');
   const baseCwd = payload.cwd || payload.workspacePaths?.[0] || process.cwd();
 
   if (eventName === 'SessionStart') {
     const ctx = resolveGitContext(baseCwd);
-    if (ctx && ctx.branch && PROTECTED_BRANCHES.has(ctx.branch)) {
+    if (!ctx) {
+      return { result: {}, resolvedCtx: null, recordCandidateDir: '' };
+    }
+    if (!ctx.isLinkedWorktree) {
+      const msg =
+        ctx.branch && PROTECTED_BRANCHES.has(ctx.branch)
+          ? `[MAGA Worktree Policy] Primary checkout (${ctx.topLevel}) is on protected branch '${ctx.branch}' and doubles as the live LaunchAgent daemon host. Read-only research/review proceeds normally here. Before any code edit, ALWAYS create an isolated sibling worktree (\`npm run wt:new -- <type>/<slug>\`) instead of \`git checkout -b\` or editing here.`
+          : `[MAGA Worktree Policy] Primary checkout (${ctx.topLevel}) is currently drifted onto '${ctx.branch || 'HEAD'}' instead of clean 'main'. Do not edit or commit here; create a sibling worktree (\`npm run wt:new -- <type>/<slug>\`) from 'main' and run tests inside that worktree.`;
       return {
-        injectSteps: [
-          {
-            systemMessage: {
-              systemMessage: `[MAGA Git Guardrail] Current workspace is on protected branch '${ctx.branch}'. Never develop features or fix bugs directly on 'main'. Create a branch (\`git checkout -b feat/<slug>\` / \`fix/<slug>\`) or an isolated sibling worktree (\`git worktree add -b <type>/<slug> ../MAGA-wt/<slug> main\`) before editing files or committing. Direct repo edits and commits on 'main' are blocked by PreToolUse hook.`,
+        result: {
+          injectSteps: [
+            {
+              systemMessage: {
+                systemMessage: msg,
+              },
             },
-          },
-        ],
+          ],
+        },
+        resolvedCtx: null,
+        recordCandidateDir: '',
       };
     }
-    return {};
+    if (ctx.branch && PROTECTED_BRANCHES.has(ctx.branch)) {
+      return {
+        result: {
+          injectSteps: [
+            {
+              systemMessage: {
+                systemMessage: `[MAGA Git Guardrail] Linked worktree (${ctx.topLevel}) is on protected branch '${ctx.branch}'. Switch to a feature/fix branch inside this worktree before editing or committing.`,
+              },
+            },
+          ],
+        },
+        resolvedCtx: null,
+        recordCandidateDir: '',
+      };
+    }
+    return { result: {}, resolvedCtx: null, recordCandidateDir: '' };
   }
 
   if (eventName && eventName !== 'PreToolUse') {
-    return {};
+    return { result: {}, resolvedCtx: null, recordCandidateDir: '' };
   }
 
   const isPreToolUse = eventName === 'PreToolUse' || Boolean(payload.toolCall);
-  const allowResult = isPreToolUse ? { decision: 'allow' } : {};
-
   if (!isPreToolUse) {
-    return {};
+    return { result: {}, resolvedCtx: null, recordCandidateDir: '' };
   }
 
+  const allowResult = { decision: 'allow' };
   const toolName = String(payload.toolCall?.name || '').toLowerCase();
   const args = payload.toolCall?.args && typeof payload.toolCall.args === 'object' ? payload.toolCall.args : {};
 
   if (FILE_EDIT_TOOLS.has(toolName)) {
     const rawPath = args.Path || args.TargetFile || args.path || args.file_path || '';
-    if (!rawPath || typeof rawPath !== 'string') return allowResult;
+    if (!rawPath || typeof rawPath !== 'string') {
+      return { result: allowResult, resolvedCtx: null, recordCandidateDir: '' };
+    }
 
     const absPath = path.resolve(baseCwd, expandHome(rawPath));
     if (payload.artifactDirectoryPath && isInsideDir(absPath, payload.artifactDirectoryPath)) {
-      return allowResult;
+      return { result: allowResult, resolvedCtx: null, recordCandidateDir: '' };
     }
 
     const ctx = resolveGitContext(path.dirname(absPath));
-    if (!ctx || ctx.merging) return allowResult;
+    if (!ctx || ctx.merging) {
+      return { result: allowResult, resolvedCtx: null, recordCandidateDir: '' };
+    }
+
+    if (!ctx.isLinkedWorktree) {
+      if (isPrimaryLocalOnlyPath(absPath, ctx.topLevel)) {
+        return { result: allowResult, resolvedCtx: null, recordCandidateDir: '' };
+      }
+      const onProtected = Boolean(ctx.branch && PROTECTED_BRANCHES.has(ctx.branch));
+      return {
+        result: {
+          decision: 'deny',
+          reason: onProtected
+            ? `Blocked by MAGA Worktree Policy: cannot edit repository files in primary checkout on protected branch '${ctx.branch}' (${ctx.topLevel}). Create an isolated sibling worktree first: \`npm run wt:new -- <type>/<slug>\` (or \`git worktree add -b <type>/<slug> ../MAGA-wt/<slug> main\`).`
+            : `Blocked by MAGA Worktree Policy: primary checkout (${ctx.topLevel}, currently on '${ctx.branch || 'HEAD'}') is reserved for clean 'main' & LaunchAgent daemon hosting. Isolate edits in a sibling worktree: \`npm run wt:new -- <type>/<slug>\`.`,
+        },
+        resolvedCtx: null,
+        recordCandidateDir: '',
+      };
+    }
 
     if (ctx.branch && PROTECTED_BRANCHES.has(ctx.branch)) {
       return {
-        decision: 'deny',
-        reason: `Blocked by MAGA Git Guardrail: cannot edit repository files directly on protected branch '${ctx.branch}' (${ctx.topLevel}). Switch to a feature/fix branch (\`git checkout -b feat/<slug>\` or \`fix/<slug>\`) or create an isolated sibling worktree (\`git worktree add -b <type>/<slug> ../MAGA-wt/<slug> main\`) first.`,
+        result: {
+          decision: 'deny',
+          reason: `Blocked by MAGA Git Guardrail: cannot edit repository files directly on protected branch '${ctx.branch}' (${ctx.topLevel}). Switch to a feature/fix branch inside this worktree first.`,
+        },
+        resolvedCtx: null,
+        recordCandidateDir: '',
       };
     }
-    return allowResult;
+    return { result: allowResult, resolvedCtx: ctx, recordCandidateDir: '' };
   }
 
   if (toolName === 'run_command') {
     const commandLine = String(args.CommandLine || args.command || '');
-    return evaluateRunCommand(commandLine, payload);
+    return evaluateRunCommandDetailed(commandLine, payload);
   }
 
-  return allowResult;
+  return { result: allowResult, resolvedCtx: null, recordCandidateDir: '' };
+}
+
+export function evaluateHookPayload(payload) {
+  return evaluateHookPayloadDetailed(payload).result;
 }
 
 function isDirectExecution() {
@@ -634,8 +1042,13 @@ if (isDirectExecution()) {
   try {
     raw = fs.readFileSync(0, 'utf8').trim();
     const payload = raw ? JSON.parse(raw) : {};
-    const result = evaluateHookPayload(payload);
+    const { result, resolvedCtx, recordCandidateDir } = evaluateHookPayloadDetailed(payload);
     process.stdout.write(`${JSON.stringify(result || {})}\n`);
+
+    if (result?.decision === 'allow') {
+      const ctxToRecord = resolvedCtx || (recordCandidateDir ? resolveGitContext(recordCandidateDir) : null);
+      if (ctxToRecord) recordConversationWorktree(payload, ctxToRecord);
+    }
   } catch {
     const fallback = raw.includes('PreToolUse') ? { decision: 'allow' } : {};
     process.stdout.write(`${JSON.stringify(fallback)}\n`);

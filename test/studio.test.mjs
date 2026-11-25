@@ -2081,6 +2081,8 @@ test('Stage 5: user/src modular decomposition, zero legacy dead code, and MagaKe
     'user/src/modules/projects/native-store.mjs',
     'user/src/modules/projects/modals.mjs',
     'user/src/modules/projects/workspace-ui.mjs',
+    'user/src/modules/projects/conv-topbar.mjs',
+    'user/src/modules/projects/worktree-ui.mjs',
     'user/src/modules/projects/index.mjs',
     'user/src/modules/customizations.mjs',
     'user/src/modules/overview-panel.mjs',

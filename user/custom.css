@@ -1642,6 +1642,7 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) #antigravity\.agentSidePan
 }
 
 #antigravity\.agentSidePanelInputBox #ag-claude-ctx-ring > svg {
+  display: block !important;
   width: 15px !important;
   height: 15px !important;
   transform: rotate(-90deg) !important;

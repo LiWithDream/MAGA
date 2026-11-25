@@ -72,6 +72,40 @@ export function createMetricsQuotaModule(rt) {
   let quotaWarmupDone = false;
   rtState.quotaPopoverOpen = false;
   let selectedQuotaGroupIdx = -1;
+  let lastSyncedQuotaStateSig = '';
+  function syncQuotaStateToDaemon(groups, tierName) {
+    if (!Array.isArray(groups) || groups.length === 0 || typeof window.__agProjectCall !== 'function') return;
+    const readRem = (b) =>
+      b?.remaining?.case === 'remainingFraction' && typeof b.remaining.value === 'number'
+        ? b.remaining.value
+        : typeof b?.remainingFraction === 'number'
+          ? b.remainingFraction
+          : null;
+    const pickPool = (matcher) => {
+      const grp = groups.find((g) => matcher(String(g?.displayName || '')));
+      const buckets = Array.isArray(grp?.buckets) ? grp.buckets : [];
+      const b5h = buckets.find((b) => String(b?.window || '').toLowerCase() === '5h');
+      const bw = buckets.find((b) => String(b?.window || '').toLowerCase() === 'weekly');
+      const r5 = readRem(b5h);
+      const rw = readRem(bw);
+      return {
+        fiveHourRemainingPct: r5 !== null ? Math.round(r5 * 1000) / 10 : null,
+        fiveHourResetSec: b5h?.resetTime?.seconds ? Number(b5h.resetTime.seconds) || null : null,
+        weeklyRemainingPct: rw !== null ? Math.round(rw * 1000) / 10 : null,
+        weeklyResetSec: bw?.resetTime?.seconds ? Number(bw.resetTime.seconds) || null : null,
+      };
+    };
+    const claude = pickPool((n) => /claude|opus|sonnet|gpt/i.test(n));
+    const gemini = pickPool((n) => /^gemini/i.test(n));
+    const sig = `${tierName || ''}|${claude.fiveHourRemainingPct}|${claude.weeklyRemainingPct}|${gemini.fiveHourRemainingPct}|${gemini.weeklyRemainingPct}`;
+    if (sig === lastSyncedQuotaStateSig) return;
+    lastSyncedQuotaStateSig = sig;
+    window.__agProjectCall(
+      'saveQuotaState',
+      { updatedAt: Date.now(), tierName: tierName || '', claude, gemini },
+      3000
+    ).catch(() => {});
+  }
   function persistQuotaSnapshot() {
     if (!Array.isArray(rtState.cachedQuotaGroups) || rtState.cachedQuotaGroups.length === 0) return;
     try {
@@ -1202,6 +1236,7 @@ export function createMetricsQuotaModule(rt) {
         lastQuotaFetchTs = Date.now();
         if (forceRefresh) rtState.lastForceQuotaFetchTs = lastQuotaFetchTs;
         persistQuotaSnapshot();
+        syncQuotaStateToDaemon(rtState.cachedQuotaGroups, rtState.cachedUserTierName);
         if (quotaHoldTimer) {
           cancelLater(quotaHoldTimer);
           quotaHoldTimer = 0;
@@ -1334,6 +1369,16 @@ export function createMetricsQuotaModule(rt) {
         e.stopPropagation();
         selectedQuotaGroupIdx = Number(tabBtn.getAttribute('data-ag-quota-tab')) || 0;
         renderQuotaPopoverBody();
+        return;
+      }
+      const opusBtn = e.target.closest('[data-ag-qp-opus]');
+      if (opusBtn) {
+        e.preventDefault();
+        e.stopPropagation();
+        closeQuotaPopover();
+        if (typeof window.__agyOpusGateTrigger === 'function') {
+          window.__agyOpusGateTrigger('manual');
+        }
         return;
       }
       const jumpBtn = e.target.closest('[data-ag-quota-jump]');
@@ -1503,6 +1548,15 @@ export function createMetricsQuotaModule(rt) {
         .join('');
     }
 
+    const showOpusBtn =
+      typeof window.__agyOpusGateTrigger === 'function' &&
+      window.__agyStudioPrefs?.get?.()?.opusGateMode !== 'off';
+    const opusBtnHtml = showOpusBtn
+      ? `<button type="button" class="ag-qp-opus-btn" data-ag-qp-opus="true" title="${escapeHtml(
+          L('调度 Claude Opus 对当前任务进行架构/风险把关', 'Invoke Claude Opus checkpoint for the current task')
+        )}">✦ Opus</button>`
+      : '';
+
     let otherPoolsHtml = '';
     if (groups.length > 1) {
       const sortBuckets = (list) =>
@@ -1547,10 +1601,13 @@ export function createMetricsQuotaModule(rt) {
     pop.innerHTML = `
       <div class="ag-qp-hdr">
         <span class="ag-qp-tier">${L('套餐使用限额', 'Plan usage')}${tierSuffix}</span>
-        <button type="button" class="ag-qp-all" data-ag-quota-view-all="true">
-          <span>${L('查看全部', 'View all')}</span>
-          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3.5 8h9m0 0L8.8 4.3M12.5 8l-3.7 3.7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        </button>
+        <span class="ag-qp-hdr-actions">
+          ${opusBtnHtml}
+          <button type="button" class="ag-qp-all" data-ag-quota-view-all="true">
+            <span>${L('查看全部', 'View all')}</span>
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3.5 8h9m0 0L8.8 4.3M12.5 8l-3.7 3.7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+        </span>
       </div>
       <div class="ag-qp-item">
         <div class="ag-qp-row">
@@ -1810,6 +1867,9 @@ export function createMetricsQuotaModule(rt) {
 
   function sync() {
     if (rtState.disposed) return;
+    if (rtState.cachedQuotaGroups) {
+      syncQuotaStateToDaemon(rtState.cachedQuotaGroups, rtState.cachedUserTierName);
+    }
     if (FEAT.contextRing || FEAT.overviewPanel) {
       ensureMetricsWrapped();
       syncCompactVisualState(false);

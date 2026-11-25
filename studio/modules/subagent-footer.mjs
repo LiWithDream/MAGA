@@ -249,7 +249,7 @@ export function createSubagentFooterRuntime({ motionThemes, shortenModelName, sh
     const addCtxBtn = leftGroup.querySelector(':scope > button:first-of-type');
     const hasNativeSubChip = Array.from(leftGroup.children).some((ch) => {
       if (ch === addCtxBtn) return false;
-      if (ch.id === MAIN_PILL_ID || ch.id === 'agy-resume-pill') return false;
+      if (ch.id === MAIN_PILL_ID || ch.id === 'agy-resume-pill' || ch.id === 'agy-opus-gate-pill') return false;
       if (ch.id === 'agy-capsule-picker-host' || ch.hasAttribute('data-agy-picker-host')) return false;
       if (ch.getAttribute?.('data-agy-model-wrap') === '1') return false;
       if (ch.id === 'ag-claude-ctx-ring' || ch.id === 'ag-live-metrics-pill') return false;

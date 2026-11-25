@@ -89,6 +89,17 @@ export function bindSettingsRootEvents(root, {
         state.fxPreviewSelectedByModel = buildDefaultPreviewSelectionMap({ 'Gemini 4 Neon': 'high' });
         studioPrefs.patch({ defaultTierByFamily: { 'Gemini 4 Neon': 'high' } });
         flashToast('✓ 已恢复推荐档位', '✓ Tier defaults restored');
+      } else if (act === 'sync-opus-plugin') {
+        if (typeof window.__agProjectCall === 'function') {
+          const res = await window.__agProjectCall('syncOpusGatePlugin', {}, 5000).catch(() => null);
+          if (res?.ok) flashToast('✓ 已同步 Opus Gate 插件', '✓ Opus Gate plugin synced');
+          else flashToast('同步插件失败', 'Plugin sync failed', 'error');
+        }
+      } else if (act === 'trigger-opus-gate') {
+        closeDrawer({ restore: false });
+        if (typeof window.__agyOpusGateTrigger === 'function') {
+          window.__agyOpusGateTrigger('manual');
+        }
       }
       return;
     }
@@ -104,6 +115,11 @@ export function bindSettingsRootEvents(root, {
       } else if (kind === 'base') {
         studioPrefs.setBaseModule(key, nextVal);
         flashToast('✓ 已保存', '✓ Saved');
+      } else if (kind === 'opus-cp') {
+        const curCp = Object.assign({ plan: true, risk: true, debug: true, stop: true }, studioPrefs.get().opusGateCheckpoints || {});
+        curCp[key] = nextVal;
+        studioPrefs.patch({ opusGateCheckpoints: curCp });
+        flashToast('✓ 已保存', '✓ Saved');
       }
       return;
     }
@@ -114,8 +130,18 @@ export function bindSettingsRootEvents(root, {
       const key = segBtn.getAttribute('data-ms-seg-key');
       const val = segBtn.getAttribute('data-ms-seg-val');
       if (kind === 'studio') {
+        const prevMode = studioPrefs.get().opusGateMode;
         studioPrefs.patch({ [key]: val });
+        if (key === 'opusGateMode' && prevMode === 'off' && val !== 'off' && typeof window.__agProjectCall === 'function') {
+          window.__agProjectCall('syncOpusGatePlugin', {}, 5000).catch(() => {});
+        }
         flashToast('✓ 已保存', '✓ Saved');
+      } else if (kind === 'studio-num') {
+        const numVal = Number(val);
+        if (Number.isFinite(numVal)) {
+          studioPrefs.patch({ [key]: numVal });
+          flashToast('✓ 已保存', '✓ Saved');
+        }
       } else if (kind === 'cjk') {
         studioPrefs.setCjkScale(val);
         flashToast('✓ 已保存', '✓ Saved');

@@ -754,6 +754,16 @@ export async function handleProjectRpcRequest(rawPayload, callerEntry = null) {
       const result = collectResumeState(payload);
       return { reqId, result };
     }
+    if (
+      action === 'saveQuotaState' ||
+      action === 'getOpusGateStatus' ||
+      action === 'dismissOpusGateProposal' ||
+      action === 'buildOpusHandoffBrief' ||
+      action === 'syncOpusGatePlugin'
+    ) {
+      const { handleOpusGateRpc } = await import('../../studio/daemon/opus-gate-service.mjs');
+      return { reqId, result: await handleOpusGateRpc(action, payload) };
+    }
     if (action === 'revealFile') {
       const rawTarget = typeof payload?.targetPath === 'string' ? payload.targetPath.trim() : '';
       if (!rawTarget) return { reqId, result: { ok: false, error: 'missing_path' } };

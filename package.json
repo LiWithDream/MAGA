@@ -17,6 +17,7 @@
     "wt:list": "node studio/wt-cli.mjs list",
     "wt:new": "node studio/wt-cli.mjs new",
     "wt:clean": "node studio/wt-cli.mjs clean",
+    "release:pack": "node studio/pack-release.mjs",
     "test": "npm run build:user && node --test 'test/*.test.mjs'"
   },
   "devDependencies": {

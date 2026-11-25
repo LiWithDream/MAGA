@@ -3,7 +3,6 @@
  * Compiles studio/entry.mjs (ESM) + studio/styles/*.css into bounded blocks inside
  * ~/.gemini/antigravity/anti-claude/user/{custom.js,custom.css,config.json}.
  */
-import * as esbuild from 'esbuild';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
@@ -19,9 +18,23 @@ export const REPO_ROOT = path.resolve(__dirname, '..');
 const VENDOR_CAPSULE = path.join(REPO_ROOT, 'vendor', 'agy-capsule');
 const STYLES_DIR = path.join(__dirname, 'styles');
 const ENTRY_FILE = path.join(__dirname, 'entry.mjs');
+export const PREBUILT_STUDIO_ENTRY = path.join(__dirname, 'prebuilt', 'studio-entry.js');
 const USER_ENTRY_FILE = path.join(REPO_ROOT, 'user', 'src', 'entry.mjs');
 const REPO_USER_JS = path.join(REPO_ROOT, 'user', 'custom.js');
 const REPO_USER_CSS = path.join(REPO_ROOT, 'user', 'custom.css');
+
+let _esbuildPromise = null;
+async function loadEsbuild() {
+  if (!_esbuildPromise) {
+    _esbuildPromise = import('esbuild').catch((err) => {
+      _esbuildPromise = null;
+      throw new Error(
+        `esbuild is not installed (${err?.code || err?.message || 'missing'}). Run "npm install" or use a prebuilt release tarball.`
+      );
+    });
+  }
+  return _esbuildPromise;
+}
 const HOME = homedir();
 
 export const STATE_DIR = path.join(HOME, '.gemini', 'antigravity', 'anti-claude');
@@ -106,10 +119,30 @@ function loadUserCapsulePrefs() {
   };
 }
 
-export async function buildUserCustomJs({ writeToRepo = true } = {}) {
+export async function buildUserCustomJs({ writeToRepo = true, allowPrebuilt = false } = {}) {
+  const preferPrebuilt = process.env.MAGA_USE_PREBUILT === '1';
+  if (allowPrebuilt && existsSync(REPO_USER_JS)) {
+    let esbuildMod = null;
+    if (!preferPrebuilt) {
+      try {
+        esbuildMod = await loadEsbuild();
+      } catch {
+        esbuildMod = null;
+      }
+    }
+    if (preferPrebuilt || !esbuildMod) {
+      const code = readFileSync(REPO_USER_JS, 'utf8');
+      if (code.trim()) {
+        new Function('ctx', code);
+        return { code, bytes: Buffer.byteLength(code, 'utf8'), prebuilt: true };
+      }
+    }
+  }
+
   if (!existsSync(USER_ENTRY_FILE)) {
     throw new Error(`Missing user runtime entry point at ${USER_ENTRY_FILE}`);
   }
+  const esbuild = await loadEsbuild();
   const bundled = await esbuild.build({
     entryPoints: [USER_ENTRY_FILE],
     bundle: true,
@@ -132,10 +165,30 @@ export async function buildUserCustomJs({ writeToRepo = true } = {}) {
   if (writeToRepo) {
     writeFileSync(REPO_USER_JS, code, 'utf8');
   }
-  return { code, bytes: Buffer.byteLength(code, 'utf8') };
+  return { code, bytes: Buffer.byteLength(code, 'utf8'), prebuilt: false };
 }
 
-export async function buildStudioBundle() {
+export async function compileStudioCoreIife() {
+  const esbuild = await loadEsbuild();
+  const bundled = await esbuild.build({
+    entryPoints: [ENTRY_FILE],
+    bundle: true,
+    write: false,
+    format: 'iife',
+    platform: 'browser',
+    target: ['chrome126'],
+    minify: false,
+    keepNames: false,
+    legalComments: 'none',
+  });
+  const compiledJs = (bundled.outputFiles?.[0]?.text || '').trim();
+  if (!compiledJs) {
+    throw new Error('esbuild produced an empty bundle for studio/entry.mjs');
+  }
+  return compiledJs;
+}
+
+export async function buildStudioBundle({ allowPrebuilt = true } = {}) {
   const imp = (file) => import(pathToFileURL(path.join(VENDOR_CAPSULE, file)).href);
   const [{ AGENT_ENTRY_CSS }, { EFFORT_BAR_CSS }] = await Promise.all([
     imp('agent_entry.mjs'),
@@ -163,30 +216,36 @@ export async function buildStudioBundle() {
     agentEntryCss: AGENT_ENTRY_CSS,
   });
 
-  const bundled = await esbuild.build({
-    entryPoints: [ENTRY_FILE],
-    bundle: true,
-    write: false,
-    format: 'iife',
-    platform: 'browser',
-    target: ['chrome126'],
-    minify: false,
-    keepNames: false,
-    legalComments: 'none',
-    define: {
-      __STUDIO_DEFAULT_PREFS__: JSON.stringify(DEFAULT_PREFS),
-      __STUDIO_PREFS__: JSON.stringify(prefs),
-      __STUDIO_LABELS__: JSON.stringify(labelsByLang),
-      __PICKER_SHADOW_CSS__: JSON.stringify(shadowCss),
-    },
-  });
-
-  const compiledJs = bundled.outputFiles?.[0]?.text || '';
-  if (!compiledJs.trim()) {
-    throw new Error('esbuild produced an empty bundle for studio/entry.mjs');
+  let coreIife = '';
+  const preferPrebuilt = process.env.MAGA_USE_PREBUILT === '1';
+  if (allowPrebuilt && existsSync(PREBUILT_STUDIO_ENTRY)) {
+    let canUseEsbuild = !preferPrebuilt;
+    if (canUseEsbuild) {
+      try {
+        await loadEsbuild();
+      } catch {
+        canUseEsbuild = false;
+      }
+    }
+    if (!canUseEsbuild) {
+      coreIife = readFileSync(PREBUILT_STUDIO_ENTRY, 'utf8').trim();
+    }
+  }
+  if (!coreIife) {
+    coreIife = await compileStudioCoreIife();
   }
 
-  const jsBlock = `${JS_BEGIN}\n${compiledJs.trim()}\n${JS_END}\n`;
+  const wrappedJs = [
+    '(function() {',
+    `const __STUDIO_DEFAULT_PREFS__ = ${JSON.stringify(DEFAULT_PREFS)};`,
+    `const __STUDIO_PREFS__ = ${JSON.stringify(prefs)};`,
+    `const __STUDIO_LABELS__ = ${JSON.stringify(labelsByLang)};`,
+    `const __PICKER_SHADOW_CSS__ = ${JSON.stringify(shadowCss)};`,
+    coreIife,
+    '})();',
+  ].join('\n');
+
+  const jsBlock = `${JS_BEGIN}\n${wrappedJs}\n${JS_END}\n`;
 
   // Fail fast if generated JS has any syntax issue before touching live files
   new Function('ctx', jsBlock);
@@ -256,7 +315,7 @@ export async function deployStudio({ allowNonMain = false, metaPath } = {}) {
     throw new Error(guard.reason);
   }
 
-  await buildUserCustomJs({ writeToRepo: true });
+  await buildUserCustomJs({ writeToRepo: true, allowPrebuilt: true });
   const { jsBlock, cssBlock, prefs } = await buildStudioBundle();
 
   let baseJs = existsSync(REPO_USER_JS) ? readFileSync(REPO_USER_JS, 'utf8') : readFileSync(TARGET_CUSTOM_JS, 'utf8');

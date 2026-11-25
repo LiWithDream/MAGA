@@ -8,10 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Git Worktree UI, Per-Conversation Tracking & `wt` CLI (`user/src/modules/projects/worktree-ui.mjs`, `user/src/modules/projects/conv-topbar.mjs`, `studio/wt-cli.mjs`, `studio/deploy-meta.mjs`, `core/daemon/git-exec.mjs`)**: Manage sibling worktrees from the Projects Cockpit strip, track per-conversation worktrees with live branch/dirty pills, create/clean worktrees via `npm run wt:new` / `wt:clean`, and enforce single-desktop deploy provenance.
+- **Quota-Guarded Claude Opus Gate (`studio/daemon/opus-gate-service.mjs`, `studio/modules/opus-gate-pill.mjs`, `studio/plugin/maga-opus-gate/`)**: Added semi-auto (`✦ 请 Opus 把关` dock pill) and quota-guarded auto Claude Opus checkpoints (`plan` / `risk` / `debug` / `stop`), plus Claude/GPT dual-pool quota tracking across Overview and project usage cards.
+- **History-Aware Project AI Chat Suggestions & Redesigned Repo Header (`core/daemon/project-suggestions.mjs`, `user/src/modules/projects/suggestions-ui.mjs`, `user/src/modules/projects/workspace-ui.mjs`)**: Added optional Gemini 3.8 Flash follow-up prompt pills with cold-start context handoff and redesigned single-line repository status pills.
+- **Zero-Dependency Release Packager & One-Line Installer (`install.sh`, `uninstall.sh`, `studio/pack-release.mjs`, `docs/INSTALL_AGENT.md`)**: Added prebuilt browser bundle support (`studio/prebuilt/studio-entry.js` + `user/custom.js`), `npm run release:pack` tarball + SHA-256 emitter, `--dry-run` safe `install.sh` / `uninstall.sh` with automatic `npm install` fallback for fresh clones, and an Ask-Agent installation guide.
 - **Proxy Diagnostics in `npm run doctor` (`studio/cli.mjs`)**: Added non-blocking `proxyDiagnostics` reporting (active proxy env key names without exposing values, plus macOS `scutil --proxy` status and troubleshooting hint when shell proxy vars are set without System Proxy).
 
 ### Fixed
 - **macOS CDP Auto-Relaunch Proxy & TLS Compatibility (`core/daemon/cdp-bootstrap.mjs`)**: Preserve allowlisted proxy/TLS environment variables (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`, `GRPC_PROXY_EXP`, `SSL_CERT_FILE`, `SSL_CERT_DIR`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, and lowercase variants) via `/usr/bin/open --env` and space-separated `--proxy-*` CLI flags across macOS cold-boot CDP relaunches without logging secrets or persisting credential-bearing URLs to `relaunch-intent.json`.
+- **Fresh-Clone Installer Dependency Gap**: Fixed fresh-clone installs failing with `ERR_MODULE_NOT_FOUND: esbuild` when `node_modules` had not yet been installed.
 
 ## [1.1.0] - 2026-11-25
 

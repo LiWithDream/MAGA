@@ -3,7 +3,14 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { execFile } from 'node:child_process';
+import {
+  execGitAsync,
+  normalizeNumstatPath,
+  parseNumstatPerFile,
+  parseNumstatZ,
+  parsePorcelainDirtyFiles,
+  readOverviewGitStatusAsync,
+} from './git-exec.mjs';
 import {
   ALLOWED_AGENT_TOOLS,
   GLOBAL_AGENTS_DIR,
@@ -207,83 +214,11 @@ function prettifyConnectorName(rawId) {
   return spaced ? spaced.charAt(0).toUpperCase() + spaced.slice(1) : s;
 }
 
-const overviewGitCache = new Map();
-const overviewGitInFlight = new Map();
 const projectWorkspaceCache = new Map();
 const projectWorkspaceInFlight = new Map();
 const commitDetailCache = new Map();
 
-export function normalizeNumstatPath(rawPath) {
-  const s = String(rawPath || '').trim();
-  if (!s) return '';
-  const braceM = s.match(/^(.*?)\{([^{}]*?)\s*=>\s*([^{}]*?)\}(.*)$/);
-  if (braceM) {
-    return `${braceM[1]}${braceM[3].trim()}${braceM[4]}`.replace(/\/{2,}/g, '/');
-  }
-  const arrowIdx = s.indexOf(' => ');
-  if (arrowIdx !== -1) {
-    return s.slice(arrowIdx + 4).trim();
-  }
-  return s;
-}
-
-export function parseNumstatZ(numstatZ) {
-  const entries = [];
-  if (!numstatZ) return entries;
-  const parts = String(numstatZ).split('\0');
-  for (let i = 0; i < parts.length; i += 1) {
-    const raw = parts[i].replace(/^(?:\r?\n)+/, '');
-    if (!raw) continue;
-    const cols = raw.split('\t');
-    if (cols.length < 3) continue;
-    const a = parseInt(cols[0], 10);
-    const d = parseInt(cols[1], 10);
-    const added = Number.isFinite(a) ? a : 0;
-    const deleted = Number.isFinite(d) ? d : 0;
-    let filePath = cols.slice(2).join('\t');
-    if (filePath === '' && i + 2 < parts.length) {
-      // git --numstat -z encodes renames/copies as "<added>\t<deleted>\t\0<old>\0<new>\0"
-      filePath = parts[i + 2];
-      i += 2;
-    }
-    if (!filePath) continue;
-    entries.push({ path: filePath, added, deleted });
-  }
-  return entries;
-}
-
-function parseNumstatPerFile(numstatZ) {
-  const map = new Map();
-  for (const entry of parseNumstatZ(numstatZ)) {
-    const prev = map.get(entry.path) || { added: 0, deleted: 0 };
-    prev.added += entry.added;
-    prev.deleted += entry.deleted;
-    map.set(entry.path, prev);
-  }
-  return map;
-}
-
-function parsePorcelainDirtyFiles(porcelainZ, numstatMap) {
-  const files = [];
-  if (!porcelainZ) return files;
-  const entries = String(porcelainZ).split('\0');
-  for (let i = 0; i < entries.length && files.length < 30; i += 1) {
-    const rec = entries[i];
-    if (!rec || rec.length < 4) continue;
-    const xy = rec.slice(0, 2);
-    const filePath = rec.slice(3);
-    if (!filePath) continue;
-    if (xy.includes('R') || xy.includes('C')) i += 1;
-    let status = 'M';
-    if (xy === '??') status = '?';
-    else if (xy.includes('D')) status = 'D';
-    else if (xy.includes('A')) status = 'A';
-    else if (xy.includes('R')) status = 'R';
-    const stat = numstatMap.get(filePath) || { added: 0, deleted: 0 };
-    files.push({ path: filePath, status, added: stat.added, deleted: stat.deleted });
-  }
-  return files;
-}
+export { normalizeNumstatPath, parseNumstatZ, readOverviewGitStatusAsync };
 
 export async function readGitCommitDetailAsync(rawDir, rawHash) {
   const absDir = resolveLocalProjectDir(rawDir);
@@ -319,86 +254,10 @@ export async function readGitCommitDetailAsync(rawDir, rawHash) {
   return res;
 }
 
-function execGitAsync(absDir, args, timeoutMs = 1200) {
-  return new Promise((resolve) => {
-    execFile(
-      'git',
-      ['-C', absDir, ...args],
-      { timeout: timeoutMs, maxBuffer: 256 * 1024, encoding: 'utf8' },
-      (err, stdout) => {
-        if (err) resolve(null);
-        else resolve(String(stdout || ''));
-      }
-    );
-  });
-}
-
-function parseNumstatOutput(numstatZ) {
-  let added = 0;
-  let deleted = 0;
-  for (const entry of parseNumstatZ(numstatZ)) {
-    added += entry.added;
-    deleted += entry.deleted;
-  }
-  return { added, deleted };
-}
-
-export async function readOverviewGitStatusAsync(absDir) {
-  const now = Date.now();
-  const cached = overviewGitCache.get(absDir);
-  if (cached && now - cached.ts < 5000) return cached.git;
-  if (overviewGitInFlight.has(absDir)) return overviewGitInFlight.get(absDir);
-
-  const task = (async () => {
-    let git = null;
-    try {
-      const [statusOut, headNumstat] = await Promise.all([
-        execGitAsync(absDir, ['status', '--porcelain=v2', '--branch'], 1200),
-        execGitAsync(absDir, ['diff', 'HEAD', '--numstat', '-z'], 1200)
-      ]);
-      if (statusOut !== null) {
-        let branch = '';
-        let changedFiles = 0;
-        for (const line of statusOut.split(/\r?\n/)) {
-          if (!line) continue;
-          if (line.startsWith('# branch.head ')) {
-            const rawHead = line.slice('# branch.head '.length).trim();
-            branch = rawHead === '(detached)' ? 'HEAD' : rawHead;
-          } else if (!line.startsWith('#')) {
-            changedFiles += 1;
-          }
-        }
-        if (branch) {
-          let numstatZ = headNumstat;
-          if (numstatZ === null && changedFiles > 0) {
-            const [unstaged, staged] = await Promise.all([
-              execGitAsync(absDir, ['diff', '--numstat', '-z'], 1000),
-              execGitAsync(absDir, ['diff', '--cached', '--numstat', '-z'], 1000)
-            ]);
-            numstatZ = `${unstaged || ''}\0${staged || ''}`;
-          }
-          const { added, deleted } = parseNumstatOutput(numstatZ);
-          git = { branch, added, deleted, changedFiles };
-        }
-      }
-    } catch {
-      git = null;
-    }
-    setBounded(overviewGitCache, absDir, { ts: Date.now(), git }, 32);
-    return git;
-  })().finally(() => {
-    overviewGitInFlight.delete(absDir);
-  });
-
-  overviewGitInFlight.set(absDir, task);
-  return task;
-}
-
 export async function readProjectWorkspaceStatusAsync(rawDir, { force = false } = {}) {
   const absDir = resolveLocalProjectDir(rawDir);
   if (!absDir) return { ok: false, error: 'invalid_project_dir' };
   if (force) {
-    overviewGitCache.delete(absDir);
     projectWorkspaceCache.delete(absDir);
   }
   const now = Date.now();
@@ -415,7 +274,7 @@ export async function readProjectWorkspaceStatusAsync(rawDir, { force = false } 
     let dirtyFiles = [];
     try {
       const [gitRes, logOut, tagOut, remoteOut, porcelainZ] = await Promise.all([
-        readOverviewGitStatusAsync(absDir),
+        readOverviewGitStatusAsync(absDir, { force }),
         execGitAsync(absDir, ['log', '-n', '3', '--format=%h%x1f%H%x1f%s%x1f%cr'], 1000),
         execGitAsync(absDir, ['describe', '--tags', '--abbrev=0'], 800),
         execGitAsync(absDir, ['config', '--get', 'remote.origin.url'], 800),

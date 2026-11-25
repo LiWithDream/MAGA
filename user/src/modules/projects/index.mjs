@@ -5,6 +5,8 @@ import { createProjectSharedContext } from './shared.mjs';
 import { createProjectMentionsMedia } from './mentions-media.mjs';
 import { createProjectNativeStore } from './native-store.mjs';
 import { createProjectModals } from './modals.mjs';
+import { createProjectWorkspaceUi } from './workspace-ui.mjs';
+import { createConvProjectTopbar } from './conv-topbar.mjs';
 
 export function createProjectsModule(rt, modelApi) {
   const ctx = createProjectSharedContext(rt, modelApi);
@@ -58,6 +60,7 @@ export function createProjectsModule(rt, modelApi) {
   const nativeStore = createProjectNativeStore(ctx);
   const mentionsMedia = createProjectMentionsMedia(ctx);
   const modals = createProjectModals(ctx);
+  const workspaceUi = createProjectWorkspaceUi(ctx);
 
   const {
     clearNewProjectWatcher,
@@ -104,6 +107,24 @@ export function createProjectsModule(rt, modelApi) {
     openProjectScheduledModal,
     renderProjectScheduledModal,
   } = modals;
+
+  const {
+    emitProjectsEvent,
+    fetchProjectWorkspaceStatus,
+    bindProjectWorkspaceEvents,
+    formatInstructionsPreview,
+    buildTopbarHtml,
+    buildProjectHeroHtml,
+    buildWorkspacePulseSectionHtml,
+    buildQuickActionsStripHtml,
+    buildQuickStartersHtml,
+    buildRecentsHeaderHtml,
+    buildProjectsGridViewHtml,
+    buildDetailChatsHtml,
+    buildDetailFilesHtml,
+    buildDetailScheduledHtml,
+    buildFolderMenuHtml,
+  } = workspaceUi;
 
   function positionProjectsOverlay() {
     if (!pState.projectsViewEl || !rtState.projectsViewOpen) return;
@@ -278,6 +299,23 @@ export function createProjectsModule(rt, modelApi) {
     }
   }
 
+  const convTopbar = createConvProjectTopbar({
+    FEAT,
+    L,
+    rtState,
+    pState,
+    escapeHtml,
+    later,
+    getActiveCascadeId,
+    decodeFileUriToPath,
+    formatShortHomePath,
+    resolveProjectsStoreAndBindings,
+    collectNativeProjects,
+    openProjectsView: (...args) => openProjectsView(...args),
+    startNewChatInProject: (...args) => startNewChatInProject(...args),
+    showProjectsFloatingNotice: (...args) => showProjectsFloatingNotice(...args),
+  });
+
   function closeProjectsView(opts = {}) {
     clearNewProjectWatcher();
     closeProjectActionMenu();
@@ -288,12 +326,18 @@ export function createProjectsModule(rt, modelApi) {
     if (!keepCustModal) closeProjectsModal();
     pState.projectFolderDropdownOpen = false;
     pState.projectFolderSearch = '';
+    pState.pdDirtyExpanded = false;
+    pState.pdExpandedCommitHash = '';
+    pState.pdBreadcrumbMenuOpen = false;
     rtState.projectsViewOpen = false;
     projectsOpenedPathname = '';
     if (pState.projectsViewEl) {
       pState.projectsViewEl.setAttribute('data-open', 'false');
     }
+    emitProjectsEvent('agy:projects-rendered');
+    if (typeof window !== 'undefined') window.__agyMagaKernel?.markDirty?.(['composer'], false);
     updateProjectsNavActiveVisual();
+    convTopbar.sync();
   }
 
   function isNativeModalDialogOpen() {
@@ -303,7 +347,7 @@ export function createProjectsModule(rt, modelApi) {
         !el ||
         !el.isConnected ||
         el.closest(
-          '#ag-claude-project-modal, #ag-claude-projects-view, #ag-claude-quota-popover, #ag-recent-row-menu, #ag-project-action-menu'
+          '#ag-claude-project-modal, #ag-claude-projects-view, #ag-claude-quota-popover, #ag-recent-row-menu, #ag-project-action-menu, #agy-conv-project-menu'
         )
       ) {
         continue;
@@ -342,6 +386,10 @@ export function createProjectsModule(rt, modelApi) {
     }
     if (pState.pdModelMenuOpen && !t.closest('#ag-pd-model-menu, #ag-pd-model-btn')) {
       closePdModelMenu();
+    }
+    if (pState.pdBreadcrumbMenuOpen && !t.closest('.ag-pd-crumb-wrap')) {
+      pState.pdBreadcrumbMenuOpen = false;
+      renderProjectsView();
     }
     if (pState.projectFolderDropdownOpen && !t.closest('[data-ag-pd-folder-menu], [data-ag-pd-folder-toggle]')) {
       pState.projectFolderDropdownOpen = false;
@@ -399,6 +447,11 @@ export function createProjectsModule(rt, modelApi) {
       closeProjectsModal();
     } else if (isNativeModalDialogOpen()) {
       return;
+    } else if (pState.pdBreadcrumbMenuOpen) {
+      e.preventDefault();
+      e.stopPropagation();
+      pState.pdBreadcrumbMenuOpen = false;
+      renderProjectsView();
     } else if (pState.projectFolderDropdownOpen) {
       e.preventDefault();
       e.stopPropagation();
@@ -766,6 +819,16 @@ export function createProjectsModule(rt, modelApi) {
     later(trySubmit, 110);
   }
 
+  function startNewChatInProjectById(projectId) {
+    if (!projectId) return;
+    const proj = collectNativeProjects().find((p) => p.id === projectId);
+    if (proj) startNewChatInProject(proj);
+  }
+
+  function syncConvProjectTopbar() {
+    convTopbar.sync();
+  }
+
   function ensureProjectsViewEl() {
     if (pState.projectsViewEl && pState.projectsViewEl.isConnected) return pState.projectsViewEl;
     const el = document.createElement('section');
@@ -778,9 +841,34 @@ export function createProjectsModule(rt, modelApi) {
     return el;
   }
 
-  function renderProjectDetailView(el, project) {
+  function enterProjectWorkspace(proj) {
+    if (!proj) return;
+    pState.activeProjectId = proj.id;
+    pState.projectChatSearchQuery = '';
+    pState.pdDirtyExpanded = false;
+    pState.pdExpandedCommitHash = '';
+    pState.pdBreadcrumbMenuOpen = false;
+    pState.projectSelectedFolderPath = '';
+    renderProjectsView();
+    if (proj.dirPath) fetchProjectWorkspaceStatus(proj.dirPath);
+    if (proj.dirPath && typeof window.__agProjectCall === 'function') {
+      const prevSig = JSON.stringify(pState.projectsContextMap[proj.dirPath] || null);
+      window.__agProjectCall('readContext', { dirPath: proj.dirPath }, 8000).then((fresh) => {
+        if (!rtState.disposed && fresh && fresh.ok) {
+          pState.projectsContextMap[proj.dirPath] = fresh;
+          if (rtState.projectsViewOpen && pState.activeProjectId === proj.id && JSON.stringify(fresh) !== prevSig) {
+            renderProjectsView();
+          }
+        }
+      });
+    }
+  }
+
+  function renderProjectDetailView(el, project, allProjects = []) {
     const hasLocalDir = Boolean(project.dirPath);
     const ctx = hasLocalDir ? pState.projectsContextMap[project.dirPath] : null;
+    const wsStatus = hasLocalDir ? pState.projectsWorkspaceStatusMap[project.dirPath] || null : null;
+    const isLoadingWs = Boolean(hasLocalDir && pState.projectsWorkspaceBusyDirs.has(project.dirPath));
     const instructions = ctx && typeof ctx.instructions === 'string' ? ctx.instructions.trim() : '';
     const files = ctx && Array.isArray(ctx.files) ? ctx.files : [];
     const extraFolders = ctx && Array.isArray(ctx.extraFolders) ? ctx.extraFolders : [];
@@ -802,142 +890,38 @@ export function createProjectsModule(rt, modelApi) {
 
     const modelParts = formatProjectComposerModelParts(buildReduxModelSelectorApi() || discoverModelSelectorApi());
 
-    const chatsHtml = project.chats.length
-      ? project.chats
-          .map((c) => {
-            const statusDot = c.waiting
-              ? `<span class="ag-pd-dot ag-pd-dot-wait" title="${escapeHtml(L('待确认', 'Waiting'))}"></span>`
-              : c.running
-                ? `<span class="ag-pd-dot ag-pd-dot-run" title="${escapeHtml(L('运行中', 'Running'))}"></span>`
-                : '';
-            const pinBadge = c.pinned
-              ? `<span class="ag-pd-chat-pin" title="${escapeHtml(L('已置顶', 'Pinned'))}">${RECENT_PIN_SVG}</span>`
-              : '';
-            const timeTxt = c.lastSec ? formatProjectTimeAgo(c.lastSec) : '';
-            return `<button type="button" class="ag-pd-chat-row" draggable="true" data-ag-pd-chat="${escapeHtml(c.id)}" data-ag-pd-chat-title="${escapeHtml(c.title)}">
-              <div class="ag-pd-chat-main">
-                <span class="ag-pd-chat-title">${statusDot}${pinBadge}${escapeHtml(c.title)}</span>
-              </div>
-              <span class="ag-pd-chat-time">${escapeHtml(timeTxt)}</span>
-            </button>`;
-          })
-          .join('')
-      : `<div class="ag-pd-chat-empty">${L(
-          '这个项目下还没有历史对话，在上方输入内容即可直接开始第一场对话。',
-          'No conversations in this project yet. Start one above.'
-        )}</div>`;
+    const chatQueryRaw = pState.projectChatSearchQuery || '';
+    const chatsHtml = buildDetailChatsHtml({
+      project,
+      hasLocalDir,
+      wsStatus,
+      instructions,
+      filesCount: files.length,
+      chatQueryRaw,
+      formatProjectTimeAgo,
+    });
 
     const agentsFilePath = hasLocalDir ? `${String(project.dirPath).replace(/[\\/]+$/, '')}/AGENTS.md` : '';
-    const instBodyHtml = instructions
-      ? `<div class="ag-pd-inst-preview">${escapeHtml(instructions)}</div>`
+    const instPreview = instructions ? formatInstructionsPreview(instructions) : null;
+    const instBodyHtml = instPreview
+      ? instPreview.html
       : `<div class="ag-pd-card-muted">${L(
           '编写项目指令，保存后直接生成或更新项目根目录下的 AGENTS.md',
           'Write project instructions — saved directly to root AGENTS.md'
         )}</div>`;
 
-    const filesBodyHtml = files.length
-      ? `<div class="ag-pd-file-list">${files
-          .map((f) => {
-            const modeTag = f.inlined
-              ? `<span class="ag-pm-tag ag-pm-tag-inline">${L('自动内联', 'Inline')}</span>`
-              : `<span class="ag-pm-tag">${L('按需读取', 'On-demand')}</span>`;
-            return `<div class="ag-pd-file-row" draggable="true" data-ag-pd-drag-file="${escapeHtml(f.absPath || '')}">
-              <button type="button" class="ag-pd-file-name" data-ag-pd-reveal-file="${escapeHtml(f.absPath || '')}" title="${escapeHtml(f.absPath || f.name)}">${escapeHtml(f.name)}</button>
-              <span class="ag-pd-file-meta">${modeTag}<span>${escapeHtml(f.sizeText || '')}</span></span>
-              <button type="button" class="ag-pd-file-del" data-ag-pd-rm-file="${escapeHtml(f.relPath)}" aria-label="${escapeHtml(L('移除文件', 'Remove file'))}">×</button>
-            </div>`;
-          })
-          .join('')}</div>`
-      : `<div class="ag-pd-card-muted">${L(
-          '尚未添加参考文件。点右上角 + 或直接把文件拖到这里。',
-          'No context added yet. Click + or drop files here.'
-        )}</div>`;
-
+    const filesBodyHtml = buildDetailFilesHtml({ files });
     const scheduledTasks = ctx && Array.isArray(ctx.scheduledTasks) ? ctx.scheduledTasks : [];
-    const formatSchedFreq = (t) => {
-      const f = String((t && t.frequency) || 'manual');
-      if (f === 'manual') return L('手动', 'Manual');
-      if (f === 'hourly') return `${L('每小时', 'Hourly')} :${String(t.minute || 0).padStart(2, '0')}`;
-      if (f === 'daily') return `${L('每天', 'Daily')} ${t.time || '09:00'}`;
-      if (f === 'weekdays') return `${L('工作日', 'Weekdays')} ${t.time || '09:00'}`;
-      if (f === 'weekly') {
-        const dowsZh = ['日', '一', '二', '三', '四', '五', '六'];
-        const dowsEn = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-        const rawDow = Number(t.dayOfWeek);
-        const idx = Number.isFinite(rawDow) ? Math.min(6, Math.max(0, rawDow)) : 1;
-        return `${L(`每周${dowsZh[idx]}`, `Weekly ${dowsEn[idx]}`)} ${t.time || '09:00'}`;
-      }
-      return t.customCron || 'Cron';
-    };
-    const hasSyncedCron = scheduledTasks.some((t) => t && t.frequency !== 'manual');
-    const scheduledBodyHtml = scheduledTasks.length
-      ? `<div class="ag-pd-sched-list">${scheduledTasks
-          .map((t) => {
-            const freqLabel = formatSchedFreq(t);
-            const isAuto = t.frequency && t.frequency !== 'manual';
-            return `<div class="ag-pd-sched-row" data-ag-pd-sched-id="${escapeHtml(t.id)}">
-              <button type="button" class="ag-pd-sched-main" data-ag-pd-edit-sched="${escapeHtml(t.id)}" title="${escapeHtml(t.description || t.name)}">
-                <div class="ag-pd-sched-top">
-                  <span class="ag-pd-sched-name">${escapeHtml(t.name)}</span>
-                  <span class="ag-pm-tag${isAuto ? ' ag-pm-tag-inline' : ''}">${escapeHtml(freqLabel)}</span>
-                </div>
-                ${t.description ? `<div class="ag-pd-sched-desc">${escapeHtml(t.description)}</div>` : ''}
-              </button>
-              <button type="button" class="ag-pd-sched-run" data-ag-pd-run-sched="${escapeHtml(t.id)}" title="${escapeHtml(L('立即运行一次', 'Run now'))}" aria-label="${escapeHtml(L('立即运行', 'Run now'))}">▶</button>
-              <button type="button" class="ag-pd-file-del" data-ag-pd-del-sched="${escapeHtml(t.id)}" aria-label="${escapeHtml(L('删除定时任务', 'Delete scheduled task'))}">×</button>
-            </div>`;
-          })
-          .join('')}</div>${
-          hasSyncedCron
-            ? `<button type="button" class="ag-pd-sched-auto-link" data-ag-pd-open-automations="true">${L(
-                '在「自动化任务」中启用与管理 ↗',
-                'Enable & manage in Automations ↗'
-              )}</button>`
-            : ''
-        }`
-      : `<div class="ag-pd-card-muted">${L(
-          '为这个项目设置定期自动执行的任务。',
-          'Set up recurring tasks for this project.'
-        )}</div>`;
-
-    const fq = pState.projectFolderSearch.trim().toLowerCase();
-    const filteredFolders = allFolders.filter(
-      (f) => !fq || f.name.toLowerCase().includes(fq) || f.absPath.toLowerCase().includes(fq)
-    );
-    const folderMenuHtml = pState.projectFolderDropdownOpen
-      ? `<div class="ag-pd-folder-menu" data-ag-pd-folder-menu="true">
-          <div class="ag-pd-fm-search">
-            ${SVG_PROJ_SEARCH_ICON}
-            <input id="ag-pd-fm-search-input" type="search" value="${escapeHtml(pState.projectFolderSearch)}" placeholder="${escapeHtml(L('搜索文件夹…', 'Search folders…'))}" />
-          </div>
-          <div class="ag-pd-fm-list">${filteredFolders
-            .map((fld) => {
-              const isSelected = fld.absPath === activeFolder.absPath;
-              return `<div class="ag-pd-fm-item" data-selected="${isSelected ? 'true' : 'false'}" data-ag-pd-select-folder="${escapeHtml(fld.absPath)}">
-                <span class="ag-pd-fm-icon">${SVG_PROJ_FOLDER_OPEN}</span>
-                <div class="ag-pd-fm-text">
-                  <div class="ag-pd-fm-name">${escapeHtml(fld.name)}${fld.primary ? ` <span class="ag-pd-fm-badge">${L('主目录', 'Primary')}</span>` : ''}</div>
-                  <div class="ag-pd-fm-path">${escapeHtml(fld.absPath)}</div>
-                </div>
-                ${
-                  fld.primary
-                    ? ''
-                    : `<button type="button" class="ag-pd-file-del" data-ag-pd-rm-folder="${escapeHtml(fld.absPath)}" aria-label="${escapeHtml(L('移除文件夹', 'Remove folder'))}">×</button>`
-                }
-              </div>`;
-            })
-            .join('')}</div>
-          <div class="ag-pd-fm-divider"></div>
-          <button type="button" class="ag-pd-fm-add" data-ag-pd-add-folder="true">
-            ${SVG_PROJ_FOLDER_ADD}
-            <span>${L('添加文件夹', 'Add folder')}</span>
-          </button>
-        </div>`
-      : '';
+    const scheduledBodyHtml = buildDetailScheduledHtml({ scheduledTasks });
+    const folderMenuHtml = buildFolderMenuHtml({ allFolders, activeFolder });
 
     const prevFmSearch = el.querySelector('#ag-pd-fm-search-input');
     const hadFmFocus = prevFmSearch && document.activeElement === prevFmSearch;
     const fmSelStart = hadFmFocus ? prevFmSearch.selectionStart : null;
+
+    const prevChatSearch = el.querySelector('#ag-pd-chat-search');
+    const hadChatSearchFocus = prevChatSearch && document.activeElement === prevChatSearch;
+    const chatSelStart = hadChatSearchFocus ? prevChatSearch.selectionStart : null;
 
     const prevComp = el.getAttribute('data-ag-pd-proj-id') === project.id ? el.querySelector('#ag-pd-composer-input') : null;
     const hadCompFocus = Boolean(prevComp && document.activeElement === prevComp);
@@ -950,25 +934,33 @@ export function createProjectsModule(rt, modelApi) {
     const savedDraft = pState.projectComposerDrafts.get(project.id) || '';
     el.setAttribute('data-ag-pd-proj-id', project.id);
 
+    const topbarHtml = buildTopbarHtml({ project, allProjects });
+    const heroHtml = buildProjectHeroHtml({
+      project,
+      wsStatus,
+      hasLocalDir,
+      shortPath: hasLocalDir ? formatShortHomePath(project.dirPath) : '',
+    });
+    const repoSectionHtml = buildWorkspacePulseSectionHtml({
+      project,
+      hasLocalDir,
+      wsStatus,
+      isLoading: isLoadingWs,
+    });
+    const quickStripHtml = buildQuickActionsStripHtml({
+      project,
+      hasLocalDir,
+      wsStatus,
+      instructions,
+    });
+    const pdChatIds = (Array.isArray(project.chats) ? project.chats : []).map((c) => c && c.id).filter(Boolean);
+
     el.innerHTML = `
-      <div class="ag-pd-topbar">
-        <nav class="ag-pd-breadcrumb" aria-label="Breadcrumb">
-          <button type="button" class="ag-pd-crumb-root" data-ag-pd-back="true">${L('项目', 'Projects')}</button>
-          <span class="ag-pd-crumb-sep">/</span>
-          <span class="ag-pd-crumb-cur">${escapeHtml(project.name)}</span>
-        </nav>
-      </div>
+      ${topbarHtml}
       <div class="ag-pd-shell">
-        <div class="ag-pd-title-row">
-          <h1 class="ag-pd-title">${escapeHtml(project.name)}</h1>
-          ${
-            !project.isBuiltin
-              ? `<button type="button" class="ag-pd-more-btn" data-ag-pd-proj-menu="true" aria-label="${escapeHtml(L('项目操作', 'Project options'))}" title="${escapeHtml(L('更多操作', 'More options'))}">${RECENT_MORE_SVG}</button>`
-              : ''
-          }
-        </div>
         <div class="ag-pd-columns">
           <div class="ag-pd-left">
+            ${heroHtml}
             <div class="ag-pd-composer-anchor">
               <div class="ag-pd-composer-wrap">
                 <div class="ag-pd-composer-box" data-ag-pd-composer-box="true">
@@ -1015,8 +1007,10 @@ export function createProjectsModule(rt, modelApi) {
               <div id="ag-pd-mention-popover" class="ag-pd-mention-popover" role="listbox" data-open="false"></div>
             </div>
 
+            ${quickStripHtml}
+
             <div class="ag-pd-recents">
-              <div class="ag-pd-recents-hdr">${L('最近对话', 'Recents')}</div>
+              ${buildRecentsHeaderHtml({ totalCount: project.chats.length, query: chatQueryRaw })}
               <div class="ag-pd-chat-list">${chatsHtml}</div>
             </div>
           </div>
@@ -1025,7 +1019,9 @@ export function createProjectsModule(rt, modelApi) {
             <div class="ag-pd-sidecard">
               <div class="ag-pd-section"${hasLocalDir ? ' data-ag-pd-inst-sec="true"' : ''}>
                 <div class="ag-pd-sec-hdr">
-                  <span class="ag-pd-sec-title">${L('项目指令', 'Instructions')} <span class="ag-pd-sec-file-tag"${agentsFilePath ? ` title="${escapeHtml(agentsFilePath)}"` : ''}>AGENTS.md</span></span>
+                  <span class="ag-pd-sec-title">${L('项目指令', 'Instructions')} <span class="ag-pd-sec-file-tag"${agentsFilePath ? ` title="${escapeHtml(agentsFilePath)}"` : ''}>AGENTS.md</span>${
+                    instPreview ? `<span class="ag-pd-sec-file-tag">${instPreview.lineCount} ${L('行', 'L')}</span>` : ''
+                  }</span>
                   ${
                     hasLocalDir
                       ? `<button type="button" class="ag-pd-sec-btn" data-ag-pd-edit-inst="true" aria-label="${escapeHtml(L('编辑 AGENTS.md', 'Edit AGENTS.md'))}">${
@@ -1040,6 +1036,8 @@ export function createProjectsModule(rt, modelApi) {
                     : `<div class="ag-pd-card-muted">${L('该分组无对应本地文件夹，暂不支持写入项目级 AGENTS.md。', 'Virtual container without a local folder.')}</div>`
                 }
               </div>
+
+              ${repoSectionHtml}
 
               <div class="ag-pd-section${hasLocalDir ? ' ag-pd-drop-sec' : ''}"${hasLocalDir ? ' data-ag-pd-ctx-drop="true"' : ''}>
                 <div class="ag-pd-sec-hdr">
@@ -1073,6 +1071,7 @@ export function createProjectsModule(rt, modelApi) {
                 }
               </div>
             </div>
+            <div id="agy-pd-usage-slot" data-maga-own="1" data-ag-pd-proj-id="${escapeHtml(project.id)}" data-ag-pd-chat-ids="${escapeHtml(pdChatIds.join(','))}"></div>
           </aside>
         </div>
       </div>
@@ -1086,12 +1085,27 @@ export function createProjectsModule(rt, modelApi) {
         closeProjectActionMenu();
         closePdMentionMenu();
         pState.activeProjectId = null;
+        pState.projectChatSearchQuery = '';
         pState.projectFolderDropdownOpen = false;
         pState.projectFolderSearch = '';
         pState.projectSelectedFolderPath = '';
+        pState.pdDirtyExpanded = false;
+        pState.pdExpandedCommitHash = '';
+        pState.pdBreadcrumbMenuOpen = false;
         renderProjectsView();
       });
     }
+
+    bindProjectWorkspaceEvents({
+      el,
+      project,
+      hadChatSearchFocus,
+      chatSelStart,
+      onSwitchProject: (nextId) => {
+        const nextProj = (allProjects || []).find((p) => p.id === nextId);
+        if (nextProj) enterProjectWorkspace(nextProj);
+      },
+    });
 
     const pdTitleRow = el.querySelector('.ag-pd-title-row');
     if (pdTitleRow && !project.isBuiltin) {
@@ -1209,7 +1223,7 @@ export function createProjectsModule(rt, modelApi) {
         compInput.style.height = `${Math.min(180, Math.max(48, compInput.scrollHeight))}px`;
       };
       syncSend();
-      if (hadCompFocus && !hadFmFocus) {
+      if (hadCompFocus && !hadFmFocus && !hadChatSearchFocus) {
         compInput.focus();
         if (typeof compSelStart === 'number' && typeof compSelEnd === 'number') {
           try {
@@ -1217,6 +1231,22 @@ export function createProjectsModule(rt, modelApi) {
           } catch {}
         }
       }
+      el.querySelectorAll('[data-ag-pd-starter-prompt]').forEach((btn) => {
+        btn.addEventListener('click', (e) => {
+          const tpl = btn.getAttribute('data-ag-pd-starter-prompt') || '';
+          compInput.value = tpl;
+          syncSend();
+          if (e.shiftKey) {
+            dispatchPrompt();
+            return;
+          }
+          compInput.focus();
+          const len = compInput.value.length;
+          try {
+            compInput.setSelectionRange(len, len);
+          } catch {}
+        });
+      });
       if (pState.pdMentionState.open && pState.pdMentionState.projectId === project.id) {
         renderPdMentionPopover();
       }
@@ -1486,87 +1516,25 @@ export function createProjectsModule(rt, modelApi) {
     if (pState.activeProjectId) {
       const target = allProjects.find((p) => p.id === pState.activeProjectId);
       if (target) {
-        renderProjectDetailView(el, target);
+        renderProjectDetailView(el, target, allProjects);
+        emitProjectsEvent('agy:projects-rendered');
+        if (typeof window !== 'undefined') window.__agyMagaKernel?.markDirty?.(['composer'], false);
         return;
       }
       pState.activeProjectId = null;
     }
     el.removeAttribute('data-ag-pd-proj-id');
 
-    const q = pState.projectsSearchQuery.trim().toLowerCase();
-    const filtered = allProjects
-      .filter((p) => !q || p.name.toLowerCase().includes(q) || p.shortPath.toLowerCase().includes(q))
-      .sort((a, b) => {
-        if (pState.projectsSortMode === 'name') return a.name.localeCompare(b.name, 'zh-Hans-CN');
-        const ctxA = a.dirPath ? pState.projectsContextMap[a.dirPath] : null;
-        const ctxB = b.dirPath ? pState.projectsContextMap[b.dirPath] : null;
-        const tA = Math.max(
-          a.lastSec * 1000,
-          Number(pState.projectsNativeMtimeMap[a.id] || 0),
-          ctxA ? Number(ctxA.lastModifiedMs || 0) : 0
-        );
-        const tB = Math.max(
-          b.lastSec * 1000,
-          Number(pState.projectsNativeMtimeMap[b.id] || 0),
-          ctxB ? Number(ctxB.lastModifiedMs || 0) : 0
-        );
-        return tB - tA || a.name.localeCompare(b.name, 'zh-Hans-CN');
-      });
-
-    const cardsHtml = filtered.length
-      ? filtered
-          .map((p) => {
-            const ctx = p.dirPath ? pState.projectsContextMap[p.dirPath] : null;
-            const nativeProjMs = Number(pState.projectsNativeMtimeMap[p.id] || 0);
-            const ctxActivityMs = ctx ? Math.max(Number(ctx.lastModifiedMs || 0), Number(ctx.dirMtimeMs || 0)) : 0;
-            const effectiveSec = p.lastSec || Math.floor(Math.max(nativeProjMs, ctxActivityMs) / 1000);
-            const timeLabel = effectiveSec ? formatProjectTimeAgo(effectiveSec) : L('刚刚', 'now');
-            const chatLabel = FEAT.i18n
-              ? `${p.chatCount} 个对话`
-              : `${p.chatCount} ${p.chatCount === 1 ? 'chat' : 'chats'}`;
-            const metaText = `${timeLabel} · ${chatLabel}`;
-            const moreBtnHtml = !p.isBuiltin
-              ? `<button type="button" class="ag-proj-card-more" data-ag-proj-menu="${escapeHtml(p.id)}" aria-label="${escapeHtml(L('项目操作', 'Project options'))}" title="${escapeHtml(L('更多操作', 'More options'))}">${RECENT_MORE_SVG}</button>`
-              : '';
-            const metaTitleAttr = p.shortPath ? ` title="${escapeHtml(p.shortPath)}"` : '';
-            return `<article class="ag-proj-card" data-ag-proj-id="${escapeHtml(p.id)}" tabindex="0">
-              <div class="ag-proj-card-head">
-                <div class="ag-proj-card-title">${escapeHtml(p.name)}</div>
-                ${moreBtnHtml}
-              </div>
-              <div class="ag-proj-card-foot">
-                <span class="ag-proj-card-meta"${metaTitleAttr}>${escapeHtml(metaText)}</span>
-              </div>
-            </article>`;
-          })
-          .join('')
-      : `<div class="ag-proj-empty">${
-          q
-            ? L(`没有匹配「${escapeHtml(pState.projectsSearchQuery)}」的项目`, `No projects matching "${escapeHtml(pState.projectsSearchQuery)}"`)
-            : L('还没有本地项目文件夹，点击右上角「新建项目」添加一个吧。', 'No local project folders yet. Click "New project" to add one.')
-        }</div>`;
-
-    const sortLabel = pState.projectsSortMode === 'recent' ? L('最近活跃', 'Recent') : L('按名称', 'Name');
     const prevSearchEl = el.querySelector('#ag-proj-search-input');
     const hadSearchFocus = prevSearchEl && document.activeElement === prevSearchEl;
     const selStart = hadSearchFocus ? prevSearchEl.selectionStart : null;
 
-    el.innerHTML = `
-      <div class="ag-proj-shell">
-        <header class="ag-proj-header">
-          <h1 class="ag-proj-heading">${L('项目', 'Projects')}</h1>
-          <div class="ag-proj-header-controls">
-            <label class="ag-proj-search-wrap">
-              ${SVG_PROJ_SEARCH_ICON}
-              <input id="ag-proj-search-input" type="search" value="${escapeHtml(pState.projectsSearchQuery)}" placeholder="${escapeHtml(L('搜索项目…', 'Search projects…'))}" />
-            </label>
-            <button type="button" class="ag-proj-sort-btn" data-ag-proj-sort="true" title="${escapeHtml(L('切换排序方式', 'Toggle sort order'))}">⇅ ${escapeHtml(sortLabel)}</button>
-            <button type="button" class="ag-proj-new-btn" data-ag-proj-new="true">${L('新建项目', 'New project')}</button>
-          </div>
-        </header>
-        <div class="ag-proj-grid">${cardsHtml}</div>
-      </div>
-    `;
+    el.innerHTML = buildProjectsGridViewHtml({
+      allProjects,
+      FEAT,
+      RECENT_MORE_SVG,
+      formatProjectTimeAgo,
+    });
 
     const searchInput = el.querySelector('#ag-proj-search-input');
     if (searchInput) {
@@ -1587,7 +1555,12 @@ export function createProjectsModule(rt, modelApi) {
     const sortBtn = el.querySelector('[data-ag-proj-sort]');
     if (sortBtn) {
       sortBtn.addEventListener('click', () => {
-        pState.projectsSortMode = pState.projectsSortMode === 'recent' ? 'name' : 'recent';
+        pState.projectsSortMode =
+          pState.projectsSortMode === 'recent'
+            ? 'usage'
+            : pState.projectsSortMode === 'usage'
+              ? 'name'
+              : 'recent';
         renderProjectsView();
       });
     }
@@ -1598,21 +1571,7 @@ export function createProjectsModule(rt, modelApi) {
     }
 
     const byId = new Map(allProjects.map((p) => [p.id, p]));
-    const enterProject = (proj) => {
-      pState.activeProjectId = proj.id;
-      renderProjectsView();
-      if (proj.dirPath && typeof window.__agProjectCall === 'function') {
-        const prevSig = JSON.stringify(pState.projectsContextMap[proj.dirPath] || null);
-        window.__agProjectCall('readContext', { dirPath: proj.dirPath }, 8000).then((fresh) => {
-          if (!rtState.disposed && fresh && fresh.ok) {
-            pState.projectsContextMap[proj.dirPath] = fresh;
-            if (rtState.projectsViewOpen && pState.activeProjectId === proj.id && JSON.stringify(fresh) !== prevSig) {
-              renderProjectsView();
-            }
-          }
-        });
-      }
-    };
+    const enterProject = (proj) => enterProjectWorkspace(proj);
 
     el.querySelectorAll('.ag-proj-card').forEach((card) => {
       const proj = byId.get(card.getAttribute('data-ag-proj-id'));
@@ -1646,26 +1605,60 @@ export function createProjectsModule(rt, modelApi) {
         }
       });
     });
+    emitProjectsEvent('agy:projects-rendered');
+    if (typeof window !== 'undefined') window.__agyMagaKernel?.markDirty?.(['composer'], false);
   }
 
 
+  const onProjectsUsageUpdated = (e) => {
+    if (rtState.disposed) return;
+    const next = e?.detail?.byProject;
+    if (!next || typeof next !== 'object') return;
+    Object.assign(pState.projectsUsageMap, next);
+    if (rtState.projectsViewOpen && !pState.activeProjectId && pState.projectsSortMode === 'usage') {
+      renderProjectsView();
+    }
+  };
+  let projectsUsageListenerBound = false;
+
   function openProjectsView(targetProjectId) {
+    if (!projectsUsageListenerBound) {
+      projectsUsageListenerBound = true;
+      window.addEventListener('agy:projects-usage-updated', onProjectsUsageUpdated);
+    }
     rtState.projectsViewOpen = true;
     projectsOpenedPathname = String((window.location && window.location.pathname) || '');
     pState.activeProjectId = typeof targetProjectId === 'string' && targetProjectId ? targetProjectId : null;
+    pState.projectChatSearchQuery = '';
     pState.projectSelectedFolderPath = '';
+    pState.pdDirtyExpanded = false;
+    pState.pdExpandedCommitHash = '';
+    pState.pdBreadcrumbMenuOpen = false;
+    convTopbar.teardown();
     ensureProjectsSidebarObserver();
     const el = ensureProjectsViewEl();
-    renderProjectsView();
     positionProjectsOverlay();
     el.setAttribute('data-open', 'true');
+    renderProjectsView();
     updateProjectsNavActiveVisual();
-    refreshProjectsContexts(collectNativeProjects());
+    const nativeProjects = collectNativeProjects();
+    refreshProjectsContexts(nativeProjects);
+    if (pState.activeProjectId) {
+      const target = nativeProjects.find((p) => p.id === pState.activeProjectId);
+      if (target && target.dirPath) fetchProjectWorkspaceStatus(target.dirPath);
+    }
   }
 
   function toggleProjectsView() {
     if (rtState.projectsViewOpen && pState.activeProjectId) {
       pState.activeProjectId = null;
+      pState.projectChatSearchQuery = '';
+      pState.pdDirtyExpanded = false;
+      pState.pdExpandedCommitHash = '';
+      pState.pdBreadcrumbMenuOpen = false;
+      pState.projectFolderDropdownOpen = false;
+      pState.projectFolderSearch = '';
+      pState.projectSelectedFolderPath = '';
       renderProjectsView();
     } else if (rtState.projectsViewOpen) {
       closeProjectsView();
@@ -1676,6 +1669,7 @@ export function createProjectsModule(rt, modelApi) {
 
   function refreshProjectsLanguageUi() {
     updateProjectsNavActiveVisual();
+    convTopbar.sync();
     if (rtState.projectsViewOpen) renderProjectsView();
     if (pState.projectMenuState) renderProjectActionMenu();
     if (rtState.projectsModalState) {
@@ -1686,7 +1680,15 @@ export function createProjectsModule(rt, modelApi) {
   }
 
   function teardownProjectsWorkspace(opts = {}) {
+    convTopbar.teardown();
     closeProjectsView({ forceCloseAllModals: Boolean(opts.forceCloseAllModals) });
+    if (projectsUsageListenerBound) {
+      window.removeEventListener('agy:projects-usage-updated', onProjectsUsageUpdated);
+      projectsUsageListenerBound = false;
+    }
+    pState.pdCommitDetailMap = {};
+    pState.pdCommitBusyKey = '';
+    pState.projectsUsageMap = {};
     pState.projectMgmtSvcRef = null;
     pState.cascadeRpcSvcRef = null;
     pState.projectComposerMentions.clear();
@@ -1696,6 +1698,8 @@ export function createProjectsModule(rt, modelApi) {
     pState.optimisticallyDeletedProjectIds.clear();
     pState.optimisticallyArchivedProjectIds.clear();
     pState.optimisticProjectNames.clear();
+    pState.projectsWorkspaceBusyDirs.clear();
+    pState.projectChatSearchQuery = '';
     const btn = document.getElementById('ag-claude-projects-nav-btn');
     if (btn) btn.remove();
     if (pState.projectsViewEl) {
@@ -1719,16 +1723,21 @@ export function createProjectsModule(rt, modelApi) {
   }
 
   function onProjectsNavRouteChange() {
-    if (!rtState.projectsViewOpen) return;
-    const curPath = String((window.location && window.location.pathname) || '');
-    const curSearch = String((window.location && window.location.search) || '');
-    if (curPath !== projectsOpenedPathname || /(?:^|[?&])settingsOpen=true(?:&|$)/i.test(curSearch)) {
-      closeProjectsView();
+    if (rtState.projectsViewOpen) {
+      const curPath = String((window.location && window.location.pathname) || '');
+      const curSearch = String((window.location && window.location.search) || '');
+      if (curPath !== projectsOpenedPathname || /(?:^|[?&])settingsOpen=true(?:&|$)/i.test(curSearch)) {
+        closeProjectsView();
+      }
     }
+    convTopbar.sync();
   }
 
-
   function syncProjectsWorkspace() {
+    if (!projectsUsageListenerBound) {
+      projectsUsageListenerBound = true;
+      window.addEventListener('agy:projects-usage-updated', onProjectsUsageUpdated);
+    }
     syncSidebarHideNativeProjects();
     syncCustomizationsEnhancement();
     if (!FEAT.projects) {
@@ -1740,6 +1749,7 @@ export function createProjectsModule(rt, modelApi) {
     if (rtState.projectsViewOpen) {
       onProjectsNavRouteChange();
     }
+    convTopbar.sync();
     const autoBtn = document.querySelector('[data-testid="automations-button"]');
     if (!autoBtn || !autoBtn.parentElement) return;
     let navBtn = document.getElementById('ag-claude-projects-nav-btn');
@@ -1788,10 +1798,15 @@ export function createProjectsModule(rt, modelApi) {
     closeProjectsModal,
     showProjectsFloatingNotice,
     startNewChatInProject,
+    appendDroppedMentionsToPdComposer,
   });
 
   function dispose() {
     pState.projectComposerDrafts.clear();
+    if (projectsUsageListenerBound) {
+      window.removeEventListener('agy:projects-usage-updated', onProjectsUsageUpdated);
+      projectsUsageListenerBound = false;
+    }
     teardownProjectsWorkspace({ forceCloseAllModals: true });
     if (sharedModalEscBound) {
       document.removeEventListener('keydown', onSharedModalEscKeyDown, true);
@@ -1810,6 +1825,8 @@ export function createProjectsModule(rt, modelApi) {
     resolveProjectsStoreAndBindings,
     collectNativeProjects,
     openConversationFromProject,
+    startNewChatInProjectById,
+    syncConvProjectTopbar,
     showProjectsFloatingNotice,
     openProjectInstructionsModal,
     openProjectsView,

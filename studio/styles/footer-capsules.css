@@ -116,6 +116,40 @@ html[data-agy-panel-handoff^="ov-to-aux"] [data-testid="overview-panel-overlay-b
   pointer-events: none !important;
 }
 
+/* ==========================================================================
+ * Conversation Overlay Scrollbar Positioning, Track Bounds & Bottom Limit
+ * - Keeps vertical scrollbar integrated with the conversation pane (left of
+ *   Overview in sibling/gutter mode) instead of floating to the right of Overview
+ * - Enforces strict top/bottom track bounds with clipping and top alignment
+ * - Removes excessive 75cqh bottom blank spacer on the latest turn
+ * ========================================================================== */
+[data-testid="conversation-view"] [data-autoscroll-overlay-host] > [data-testid="overlay-scrollbar"][data-orientation="vertical"] {
+  right: calc(var(--overview-panel-reserve, 0px) + var(--overview-panel-gutter-reserve, 0px) + 4px) !important;
+  transition: opacity 150ms ease-out, right 500ms var(--ease-expo-out) !important;
+}
+
+[data-testid="conversation-view"].no-transitions [data-autoscroll-overlay-host] > [data-testid="overlay-scrollbar"][data-orientation="vertical"] {
+  transition: opacity 150ms ease-out !important;
+}
+
+[data-autoscroll-overlay-host] > [data-testid="overlay-scrollbar"][data-orientation="vertical"] {
+  top: 6px !important;
+  bottom: 8px !important;
+  overflow: hidden !important;
+  align-items: flex-start !important;
+  box-sizing: border-box !important;
+  border-radius: 999px !important;
+}
+
+[data-autoscroll-overlay-host] > [data-testid="overlay-scrollbar"][data-orientation="vertical"] > [data-testid="overlay-scrollbar-thumb"] {
+  max-height: 100% !important;
+  flex-shrink: 0 !important;
+}
+
+[data-testid="autoscroll-viewport"] div.flex.items-start[style*="75cqh"] {
+  min-height: 0 !important;
+}
+
 @media (prefers-reduced-motion: reduce) {
   [data-testid="aux-pane-split"][data-split-transition="opening"] > div:last-child > div:first-child,
   [data-testid="subagent-tab-conversation"][data-agy-sub-switching="1"] {
@@ -124,6 +158,9 @@ html[data-agy-panel-handoff^="ov-to-aux"] [data-testid="overview-panel-overlay-b
   [data-testid="aux-pane-split"][data-split-transition="closing"] > div:last-child > div:first-child,
   html[data-agy-panel-handoff="ov-to-aux-closing"] .animate-overview-panel {
     transition: none !important;
+  }
+  [data-testid="conversation-view"] [data-autoscroll-overlay-host] > [data-testid="overlay-scrollbar"][data-orientation="vertical"] {
+    transition: opacity 150ms ease-out !important;
   }
 }
 
@@ -135,12 +172,16 @@ html[data-agy-motion="reduced"] html[data-agy-panel-handoff="ov-to-aux-closing"]
 html[data-agy-motion="reduced"] .agy-composer-footer * {
   transition-duration: 80ms !important;
 }
+html[data-agy-motion="reduced"] [data-testid="conversation-view"] [data-autoscroll-overlay-host] > [data-testid="overlay-scrollbar"][data-orientation="vertical"] {
+  transition: opacity 150ms ease-out, right 160ms var(--ease-expo-out) !important;
+}
 
 html[data-agy-motion="off"] [data-testid="aux-pane-split"][data-split-transition="opening"] > div:last-child > div:first-child,
 html[data-agy-motion="off"] [data-testid="subagent-tab-conversation"][data-agy-sub-switching="1"],
 html[data-agy-motion="off"] #agy-main-subagent-pill .agy-sub-live-dot,
 html[data-agy-motion="off"] #agy-ov-usage-card *,
-html[data-agy-motion="off"] .agy-composer-footer * {
+html[data-agy-motion="off"] .agy-composer-footer *,
+html[data-agy-motion="off"] [data-testid="conversation-view"] [data-autoscroll-overlay-host] > [data-testid="overlay-scrollbar"][data-orientation="vertical"] {
   animation: none !important;
   transition: none !important;
 }

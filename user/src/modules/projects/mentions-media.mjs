@@ -577,10 +577,16 @@ export function createProjectMentionsMedia(ctx) {
           .replace(/  +/g, ' ');
         compInput.value = nextVal;
         mMap.delete(tok);
-        compInput.dispatchEvent(new Event('input', { bubbles: true }));
+        dispatchInputEvent(compInput);
         compInput.focus();
       });
     });
+  }
+
+  function dispatchInputEvent(el) {
+    if (!el) return;
+    const EvCtor = (typeof window !== 'undefined' && window.Event) || Event;
+    el.dispatchEvent(new EvCtor('input', { bubbles: true }));
   }
 
   function getProjectMediaList(projectId, create = false) {
@@ -735,7 +741,7 @@ export function createProjectMentionsMedia(ctx) {
     try {
       compInput.setSelectionRange(nextCaret, nextCaret);
     } catch {}
-    compInput.dispatchEvent(new Event('input', { bubbles: true }));
+    dispatchInputEvent(compInput);
   }
 
   function movePdMentionSelection(delta) {
@@ -817,7 +823,7 @@ export function createProjectMentionsMedia(ctx) {
       try {
         compInput.setSelectionRange(nextCaret, nextCaret);
       } catch {}
-      compInput.dispatchEvent(new Event('input', { bubbles: true }));
+      dispatchInputEvent(compInput);
       return;
     }
 
@@ -840,7 +846,7 @@ export function createProjectMentionsMedia(ctx) {
     try {
       compInput.setSelectionRange(nextCaret, nextCaret);
     } catch {}
-    compInput.dispatchEvent(new Event('input', { bubbles: true }));
+    dispatchInputEvent(compInput);
   }
 
   function appendDroppedMentionsToPdComposer(project, compInput, items) {
@@ -867,7 +873,7 @@ export function createProjectMentionsMedia(ctx) {
     try {
       compInput.setSelectionRange(curVal.length, curVal.length);
     } catch {}
-    compInput.dispatchEvent(new Event('input', { bubbles: true }));
+    dispatchInputEvent(compInput);
   }
 
   const PD_INLINE_URL_RE = /(?<![\w./@-])(?:https?:\/\/|www\.)[^\s<>"'`]*[^\s<>"'`.,;:!?)\]}]/g;

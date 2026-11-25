@@ -265,7 +265,7 @@ export function buildPickerShadowCss({ effortBarCss, agentEntryCss }) {
 }
 .dk-model-options::-webkit-scrollbar { display: none; }
 .dk-model-options:has(> .agy-effort) { min-width: min(228px, calc(100vw - 12px)); }
-.dk-model-options > :is(.agy-effort, .dk-orch-slot) { contain: inline-size; }
+.dk-model-options > :is(.agy-effort, .dk-orch-slot, [role="status"]) { contain: inline-size; }
 .dk-model-options > .agy-effort { margin: 6px 0 2px; }
 ${effortBarCss}
 ${agentEntryCss}
@@ -369,8 +369,53 @@ ${agentEntryCss}
   white-space: normal;
   overflow-wrap: break-word;
 }
-.dk-model-options [role="status"] { padding: 6px 8px 2px; color: #e06c75; font-size: 12px; }
-.dk-model-options [role="status"]:empty { display: none; }
+@keyframes dkStatusIn {
+  from {
+    opacity: 0;
+    transform: translate3d(0, -2px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+.dk-model-options > [role="status"] {
+  box-sizing: border-box;
+  width: 100%;
+  margin-top: 6px;
+  padding: 5px 8px;
+  border-radius: 8px;
+  color: color-mix(in srgb, #dc2626 80%, var(--foreground, #991b1b));
+  background: color-mix(in srgb, #ef4444 10%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, #ef4444 24%, transparent);
+  font-size: 11.5px;
+  font-weight: 500;
+  line-height: 1.35;
+  text-align: center;
+  overflow-wrap: anywhere;
+  animation: dkStatusIn 140ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.dk-model-options > [role="status"]::before {
+  content: '';
+  display: inline-block;
+  width: 5.5px;
+  height: 5.5px;
+  margin-right: 6px;
+  border-radius: 50%;
+  vertical-align: 1px;
+  background: #ef4444;
+  box-shadow: 0 0 0 2px color-mix(in srgb, #ef4444 22%, transparent);
+}
+.dk-model-options > [role="status"][data-tone="muted"] {
+  color: color-mix(in srgb, #d97706 78%, var(--foreground, #92400e));
+  background: color-mix(in srgb, #f59e0b 13%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, #f59e0b 32%, transparent);
+}
+.dk-model-options > [role="status"][data-tone="muted"]::before {
+  background: #f59e0b;
+  box-shadow: 0 0 0 2px color-mix(in srgb, #f59e0b 24%, transparent);
+}
+.dk-model-options > [role="status"]:empty { display: none; }
 
 /* Sleek 18px effort slider & refined Orchestrator proportions */
 .dk-orch-slot { margin: 5px 0 2px !important; }
@@ -465,7 +510,8 @@ ${agentEntryCss}
   }
   .dk-model-options:popover-open,
   .dk-model-sub:popover-open,
-  .dk-model-tiers:popover-open {
+  .dk-model-tiers:popover-open,
+  .dk-model-options > [role="status"] {
     animation: none !important;
   }
 }
@@ -522,7 +568,8 @@ export function createCapsulePickerRuntime({
   const NATIVE_STYLE_CSS = [
     '.agy-composer-footer button[data-deck-model-bubble="hidden"],',
     '#antigravity\\.agentSidePanelInputBox button[data-deck-model-bubble="hidden"],',
-    `.agy-composer-footer > div:first-child > [${MODEL_WRAP_ATTR}="1"] {`,
+    `.agy-composer-footer > div:first-child > [${MODEL_WRAP_ATTR}="1"],`,
+    `#ag-claude-projects-view .ag-pd-composer-right > [${MODEL_WRAP_ATTR}="1"] {`,
     '  position: absolute !important; width: 0 !important; min-width: 0 !important; max-width: 0 !important;',
     '  height: 0 !important; overflow: hidden !important; padding: 0 !important; margin: 0 !important;',
     '  border: 0 !important; opacity: 0 !important; pointer-events: none !important;',
@@ -564,7 +611,11 @@ export function createCapsulePickerRuntime({
       const isSide = Boolean(el.closest('[data-side-panel-composer], [data-testid="subagent-tab-composer"]'));
       const view = el.closest('[data-testid="conversation-view"]');
       if (!isSide && !view && !el.closest('[data-testid="agent-input-box"]')?.closest('[data-media-drop-scope]')) continue;
-      results.push({ el, isSide });
+      results.push({ el, isSide, isProjectDetail: false });
+    }
+    const pdRight = document.querySelector('#ag-claude-projects-view[data-open="true"] .ag-pd-composer-right');
+    if (pdRight && pdRight.querySelector('button[data-ag-pd-model-trigger="true"]') && isVisibleFast(pdRight)) {
+      results.push({ el: pdRight, isSide: false, isProjectDetail: true });
     }
     return results;
   }
@@ -622,8 +673,10 @@ export function createCapsulePickerRuntime({
     });
   }
 
-  function ensureHostFor(footerLeft, isSide) {
-    const trigger = footerLeft.querySelector('button[data-testid="model-selector-trigger"]');
+  function ensureHostFor(footerLeft, isSide, isProjectDetail = false) {
+    const trigger =
+      footerLeft.querySelector('button[data-testid="model-selector-trigger"]') ||
+      footerLeft.querySelector('button[data-ag-pd-model-trigger="true"]');
     if (!trigger) return null;
 
     let modelWrap = trigger;
@@ -639,9 +692,10 @@ export function createCapsulePickerRuntime({
       let rootEl = existing?.shadowRoot?.getElementById('deck-metrics-strip') || null;
       if (!hostEl) {
         hostEl = document.createElement('span');
-        if (!isSide && !document.getElementById(HOST_ID)) hostEl.id = HOST_ID;
+        if (!isSide && !isProjectDetail && !document.getElementById(HOST_ID)) hostEl.id = HOST_ID;
         markOwn(hostEl);
         setAttr(hostEl, HOST_ATTR, '1');
+        if (isProjectDetail) setAttr(hostEl, 'data-agy-pd-picker-host', '1');
         setAttr(hostEl, 'data-ag-i18n-ignore', '1');
         setAttr(hostEl, 'data-no-drag', '');
         hostEl.style.display = 'contents';
@@ -838,11 +892,13 @@ export function createCapsulePickerRuntime({
       if (!activeSet.has(prevFooter)) teardownInstance(prevFooter);
     }
 
-    for (const { el: footerLeft, isSide } of eligible) {
-      const inst = ensureHostFor(footerLeft, isSide);
+    for (const { el: footerLeft, isSide, isProjectDetail } of eligible) {
+      const inst = ensureHostFor(footerLeft, isSide, isProjectDetail);
       if (!inst || !inst.rootEl) continue;
 
-      const trigger = footerLeft.querySelector('button[data-testid="model-selector-trigger"]');
+      const trigger =
+        footerLeft.querySelector('button[data-testid="model-selector-trigger"]') ||
+        footerLeft.querySelector('button[data-ag-pd-model-trigger="true"]');
       const triggerText = trigger ? (trigger.textContent || '').trim() : '';
       let panelOpen = false;
       try {

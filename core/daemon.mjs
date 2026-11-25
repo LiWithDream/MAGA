@@ -44,7 +44,8 @@ import {
   collectOverviewSnapshotAsync,
   createLocalAgent,
   createLocalSkill,
-  readOverviewGitStatusAsync
+  readOverviewGitStatusAsync,
+  readProjectWorkspaceStatusAsync
 } from './daemon/overview-skills.mjs';
 import {
   HOST_IDENTITY_PROBE_EXPR,
@@ -95,6 +96,7 @@ export {
   createLocalSkill,
   createLocalAgent,
   readOverviewGitStatusAsync,
+  readProjectWorkspaceStatusAsync,
   collectOverviewSnapshot,
   collectOverviewSnapshotAsync,
   isAllowedOrigin,

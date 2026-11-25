@@ -27,6 +27,8 @@ import {
   deleteProjectScheduledTask,
   getRegisteredProjectDirs,
   isPathInsideDir,
+  normalizeGitRemoteUrl,
+  openExternalUrl,
   pickLocalFilesNative,
   pickLocalFolderNative,
   readProjectContext,
@@ -207,6 +209,115 @@ function prettifyConnectorName(rawId) {
 
 const overviewGitCache = new Map();
 const overviewGitInFlight = new Map();
+const projectWorkspaceCache = new Map();
+const projectWorkspaceInFlight = new Map();
+const commitDetailCache = new Map();
+
+export function normalizeNumstatPath(rawPath) {
+  const s = String(rawPath || '').trim();
+  if (!s) return '';
+  const braceM = s.match(/^(.*?)\{([^{}]*?)\s*=>\s*([^{}]*?)\}(.*)$/);
+  if (braceM) {
+    return `${braceM[1]}${braceM[3].trim()}${braceM[4]}`.replace(/\/{2,}/g, '/');
+  }
+  const arrowIdx = s.indexOf(' => ');
+  if (arrowIdx !== -1) {
+    return s.slice(arrowIdx + 4).trim();
+  }
+  return s;
+}
+
+export function parseNumstatZ(numstatZ) {
+  const entries = [];
+  if (!numstatZ) return entries;
+  const parts = String(numstatZ).split('\0');
+  for (let i = 0; i < parts.length; i += 1) {
+    const raw = parts[i].replace(/^(?:\r?\n)+/, '');
+    if (!raw) continue;
+    const cols = raw.split('\t');
+    if (cols.length < 3) continue;
+    const a = parseInt(cols[0], 10);
+    const d = parseInt(cols[1], 10);
+    const added = Number.isFinite(a) ? a : 0;
+    const deleted = Number.isFinite(d) ? d : 0;
+    let filePath = cols.slice(2).join('\t');
+    if (filePath === '' && i + 2 < parts.length) {
+      // git --numstat -z encodes renames/copies as "<added>\t<deleted>\t\0<old>\0<new>\0"
+      filePath = parts[i + 2];
+      i += 2;
+    }
+    if (!filePath) continue;
+    entries.push({ path: filePath, added, deleted });
+  }
+  return entries;
+}
+
+function parseNumstatPerFile(numstatZ) {
+  const map = new Map();
+  for (const entry of parseNumstatZ(numstatZ)) {
+    const prev = map.get(entry.path) || { added: 0, deleted: 0 };
+    prev.added += entry.added;
+    prev.deleted += entry.deleted;
+    map.set(entry.path, prev);
+  }
+  return map;
+}
+
+function parsePorcelainDirtyFiles(porcelainZ, numstatMap) {
+  const files = [];
+  if (!porcelainZ) return files;
+  const entries = String(porcelainZ).split('\0');
+  for (let i = 0; i < entries.length && files.length < 30; i += 1) {
+    const rec = entries[i];
+    if (!rec || rec.length < 4) continue;
+    const xy = rec.slice(0, 2);
+    const filePath = rec.slice(3);
+    if (!filePath) continue;
+    if (xy.includes('R') || xy.includes('C')) i += 1;
+    let status = 'M';
+    if (xy === '??') status = '?';
+    else if (xy.includes('D')) status = 'D';
+    else if (xy.includes('A')) status = 'A';
+    else if (xy.includes('R')) status = 'R';
+    const stat = numstatMap.get(filePath) || { added: 0, deleted: 0 };
+    files.push({ path: filePath, status, added: stat.added, deleted: stat.deleted });
+  }
+  return files;
+}
+
+export async function readGitCommitDetailAsync(rawDir, rawHash) {
+  const absDir = resolveLocalProjectDir(rawDir);
+  if (!absDir) return { ok: false, error: 'invalid_project_dir' };
+  const hash = String(rawHash || '').trim();
+  if (!/^[0-9a-f]{4,40}$/i.test(hash)) return { ok: false, error: 'invalid_commit_hash' };
+  const cacheKey = `${absDir}:${hash.toLowerCase()}`;
+  const cached = commitDetailCache.get(cacheKey);
+  if (cached) return cached;
+
+  const commitRev = `${hash}^{commit}`;
+  const [metaOut, statOut] = await Promise.all([
+    execGitAsync(absDir, ['show', '--no-patch', '--format=%H%x1f%h%x1f%an%x1f%ad%x1f%s%x1f%b', '--date=short', commitRev], 1200),
+    execGitAsync(absDir, ['show', '--numstat', '-z', '--format=', commitRev], 1200)
+  ]);
+  if (!metaOut) return { ok: false, error: 'commit_not_found' };
+  const [fullHash = '', shortHash = hash, author = '', date = '', subject = '', body = ''] = metaOut.split('\x1f');
+  if (!fullHash.trim()) return { ok: false, error: 'commit_not_found' };
+
+  const allFiles = parseNumstatZ(statOut);
+  const res = {
+    ok: true,
+    fullHash: fullHash.trim(),
+    hash: shortHash.trim(),
+    author: author.trim(),
+    date: date.trim(),
+    subject: subject.trim(),
+    body: body.trim().slice(0, 600),
+    files: allFiles.slice(0, 30),
+    totalFiles: allFiles.length
+  };
+  setBounded(commitDetailCache, cacheKey, res, 64);
+  return res;
+}
 
 function execGitAsync(absDir, args, timeoutMs = 1200) {
   return new Promise((resolve) => {
@@ -222,19 +333,12 @@ function execGitAsync(absDir, args, timeoutMs = 1200) {
   });
 }
 
-function parseNumstatOutput(numstat) {
+function parseNumstatOutput(numstatZ) {
   let added = 0;
   let deleted = 0;
-  if (!numstat) return { added, deleted };
-  for (const line of numstat.split(/\r?\n/)) {
-    if (!line) continue;
-    const parts = line.split('\t');
-    if (parts.length >= 2) {
-      const a = parseInt(parts[0], 10);
-      const d = parseInt(parts[1], 10);
-      if (Number.isFinite(a)) added += a;
-      if (Number.isFinite(d)) deleted += d;
-    }
+  for (const entry of parseNumstatZ(numstatZ)) {
+    added += entry.added;
+    deleted += entry.deleted;
   }
   return { added, deleted };
 }
@@ -250,7 +354,7 @@ export async function readOverviewGitStatusAsync(absDir) {
     try {
       const [statusOut, headNumstat] = await Promise.all([
         execGitAsync(absDir, ['status', '--porcelain=v2', '--branch'], 1200),
-        execGitAsync(absDir, ['diff', 'HEAD', '--numstat'], 1200)
+        execGitAsync(absDir, ['diff', 'HEAD', '--numstat', '-z'], 1200)
       ]);
       if (statusOut !== null) {
         let branch = '';
@@ -265,15 +369,15 @@ export async function readOverviewGitStatusAsync(absDir) {
           }
         }
         if (branch) {
-          let numstatText = headNumstat;
-          if (numstatText === null && changedFiles > 0) {
+          let numstatZ = headNumstat;
+          if (numstatZ === null && changedFiles > 0) {
             const [unstaged, staged] = await Promise.all([
-              execGitAsync(absDir, ['diff', '--numstat'], 1000),
-              execGitAsync(absDir, ['diff', '--cached', '--numstat'], 1000)
+              execGitAsync(absDir, ['diff', '--numstat', '-z'], 1000),
+              execGitAsync(absDir, ['diff', '--cached', '--numstat', '-z'], 1000)
             ]);
-            numstatText = `${unstaged || ''}\n${staged || ''}`;
+            numstatZ = `${unstaged || ''}\0${staged || ''}`;
           }
-          const { added, deleted } = parseNumstatOutput(numstatText);
+          const { added, deleted } = parseNumstatOutput(numstatZ);
           git = { branch, added, deleted, changedFiles };
         }
       }
@@ -287,6 +391,106 @@ export async function readOverviewGitStatusAsync(absDir) {
   });
 
   overviewGitInFlight.set(absDir, task);
+  return task;
+}
+
+export async function readProjectWorkspaceStatusAsync(rawDir, { force = false } = {}) {
+  const absDir = resolveLocalProjectDir(rawDir);
+  if (!absDir) return { ok: false, error: 'invalid_project_dir' };
+  if (force) {
+    overviewGitCache.delete(absDir);
+    projectWorkspaceCache.delete(absDir);
+  }
+  const now = Date.now();
+  const cached = projectWorkspaceCache.get(absDir);
+  if (!force && cached && now - cached.ts < 8000) return cached.data;
+  if (projectWorkspaceInFlight.has(absDir)) return projectWorkspaceInFlight.get(absDir);
+
+  const task = (async () => {
+    let git = null;
+    const recentCommits = [];
+    let latestTag = null;
+    let remoteUrl = '';
+    let remoteLabel = '';
+    let dirtyFiles = [];
+    try {
+      const [gitRes, logOut, tagOut, remoteOut, porcelainZ] = await Promise.all([
+        readOverviewGitStatusAsync(absDir),
+        execGitAsync(absDir, ['log', '-n', '3', '--format=%h%x1f%H%x1f%s%x1f%cr'], 1000),
+        execGitAsync(absDir, ['describe', '--tags', '--abbrev=0'], 800),
+        execGitAsync(absDir, ['config', '--get', 'remote.origin.url'], 800),
+        execGitAsync(absDir, ['status', '--porcelain=v1', '-z'], 1200)
+      ]);
+      git = gitRes || null;
+      if (logOut) {
+        for (const line of logOut.split(/\r?\n/)) {
+          if (!line.trim()) continue;
+          const [hash = '', fullHash = '', subject = '', relTime = ''] = line.split('\x1f');
+          if (hash) {
+            recentCommits.push({
+              hash: hash.trim(),
+              fullHash: fullHash.trim() || hash.trim(),
+              subject: subject.trim(),
+              relTime: relTime.trim()
+            });
+          }
+        }
+      }
+      if (tagOut && tagOut.trim()) latestTag = tagOut.trim();
+      const parsedRemote = normalizeGitRemoteUrl(remoteOut);
+      if (parsedRemote) {
+        remoteUrl = parsedRemote.url;
+        remoteLabel = parsedRemote.label;
+      }
+      if (porcelainZ) {
+        let numstatZ = await execGitAsync(absDir, ['diff', 'HEAD', '--numstat', '-z'], 1200);
+        if (numstatZ === null) {
+          const [unstaged, staged] = await Promise.all([
+            execGitAsync(absDir, ['diff', '--numstat', '-z'], 1000),
+            execGitAsync(absDir, ['diff', '--cached', '--numstat', '-z'], 1000)
+          ]);
+          numstatZ = `${unstaged || ''}\0${staged || ''}`;
+        }
+        dirtyFiles = parsePorcelainDirtyFiles(porcelainZ, parseNumstatPerFile(numstatZ));
+      }
+    } catch {}
+
+    let pkgVersion = null;
+    let scripts = [];
+    try {
+      const pkgPath = path.join(absDir, 'package.json');
+      const st = fs.statSync(pkgPath, { throwIfNoEntry: false });
+      if (st && st.isFile() && st.size > 0 && st.size < 65536) {
+        const pkg = readJsonOrFallback(pkgPath, null);
+        if (pkg && typeof pkg === 'object') {
+          if (typeof pkg.version === 'string' && pkg.version.trim()) pkgVersion = pkg.version.trim();
+          if (pkg.scripts && typeof pkg.scripts === 'object' && !Array.isArray(pkg.scripts)) {
+            scripts = Object.keys(pkg.scripts).slice(0, 16);
+          }
+        }
+      }
+    } catch {}
+
+    const data = {
+      ok: true,
+      dirPath: absDir,
+      git,
+      recentCommits,
+      latestTag,
+      pkgVersion,
+      scripts,
+      remoteUrl,
+      remoteLabel,
+      dirtyFiles,
+      fetchedAt: Date.now()
+    };
+    setBounded(projectWorkspaceCache, absDir, { ts: Date.now(), data }, 32);
+    return data;
+  })().finally(() => {
+    projectWorkspaceInFlight.delete(absDir);
+  });
+
+  projectWorkspaceInFlight.set(absDir, task);
   return task;
 }
 
@@ -574,6 +778,17 @@ export async function handleProjectRpcRequest(rawPayload, callerEntry = null) {
     }
     if (action === 'readContext') {
       return { reqId, result: readProjectContext(payload.dirPath) };
+    }
+    if (action === 'readProjectWorkspaceStatus') {
+      const result = await readProjectWorkspaceStatusAsync(payload?.dirPath, { force: Boolean(payload?.force) });
+      return { reqId, result };
+    }
+    if (action === 'readGitCommitDetail') {
+      const result = await readGitCommitDetailAsync(payload?.dirPath, payload?.hash);
+      return { reqId, result };
+    }
+    if (action === 'openExternalUrl') {
+      return { reqId, result: openExternalUrl(payload?.url) };
     }
     if (action === 'saveContext') {
       return { reqId, result: saveProjectContext(payload) };

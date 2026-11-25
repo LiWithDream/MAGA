@@ -459,6 +459,109 @@ function readProjectScheduledTasks(dirPath, rawMeta, extraFolders = []) {
   return tasks;
 }
 
+function readQuickGitMeta(dirPath) {
+  let gitBranch = '';
+  let remoteUrl = '';
+  let remoteLabel = '';
+  try {
+    const dotGit = path.join(dirPath, '.git');
+    const st = fs.statSync(dotGit, { throwIfNoEntry: false });
+    if (!st) return { gitBranch, remoteUrl, remoteLabel };
+    let gitDir = dotGit;
+    if (st.isFile()) {
+      const link = readTextOrEmpty(dotGit).match(/^gitdir:\s*(.+)$/im);
+      if (link && link[1]) gitDir = path.resolve(dirPath, link[1].trim());
+    }
+    const headRaw = readTextOrEmpty(path.join(gitDir, 'HEAD')).trim();
+    const refM = headRaw.match(/^ref:\s*refs\/heads\/(.+)$/);
+    if (refM && refM[1]) gitBranch = refM[1].trim();
+    else if (/^[0-9a-f]{7,40}$/i.test(headRaw)) gitBranch = headRaw.slice(0, 7);
+
+    let cfgPath = path.join(gitDir, 'config');
+    if (!fs.existsSync(cfgPath)) {
+      const commonRaw = readTextOrEmpty(path.join(gitDir, 'commondir')).trim();
+      if (commonRaw) cfgPath = path.join(path.resolve(gitDir, commonRaw), 'config');
+    }
+    const cfgRaw = readTextOrEmpty(cfgPath);
+    if (cfgRaw) {
+      const secM = cfgRaw.match(/\[remote\s+"origin"\]([\s\S]*?)(?=\n\[|$)/);
+      if (secM && secM[1]) {
+        const urlM = secM[1].match(/^\s*url\s*=\s*(.+)$/m);
+        if (urlM && urlM[1]) {
+          const parsed = normalizeGitRemoteUrl(urlM[1]);
+          if (parsed) {
+            remoteUrl = parsed.url;
+            remoteLabel = parsed.label;
+          }
+        }
+      }
+    }
+  } catch {}
+  return { gitBranch, remoteUrl, remoteLabel };
+}
+
+export function normalizeGitRemoteUrl(raw) {
+  const s = String(raw || '').trim();
+  if (!s || /[\r\n\0\s]/.test(s)) return null;
+  let candidate = '';
+  const scpM = s.match(/^(?:[A-Za-z0-9._-]+@)?([A-Za-z0-9.-]+):([^/].+)$/);
+  if (scpM && !/^[a-zA-Z]+:\/\//.test(s)) {
+    candidate = `https://${scpM[1]}/${scpM[2].replace(/^\/+/, '')}`;
+  } else if (/^(?:ssh|git):\/\//i.test(s)) {
+    const protoM = s.match(/^(?:ssh|git):\/\/(?:[^/@]+@)?([^/:]+)(?::\d+)?\/(.+)$/i);
+    if (protoM) candidate = `https://${protoM[1]}/${protoM[2].replace(/^\/+/, '')}`;
+  } else if (/^https?:\/\//i.test(s)) {
+    candidate = s;
+  } else {
+    return null;
+  }
+  try {
+    const u = new URL(candidate);
+    if (u.protocol !== 'https:' && u.protocol !== 'http:') return null;
+    const cleanPath = u.pathname.replace(/\.git$/i, '').replace(/\/+$/, '');
+    const href = `${u.protocol}//${u.host}${cleanPath}`;
+    const trimmed = cleanPath.replace(/^\/+/, '');
+    const hostLower = u.hostname.toLowerCase();
+    const label =
+      trimmed && (hostLower === 'github.com' || hostLower === 'gitlab.com' || hostLower === 'bitbucket.org')
+        ? trimmed
+        : trimmed
+          ? `${u.host}/${trimmed}`
+          : u.host;
+    return { url: href, label };
+  } catch {
+    return null;
+  }
+}
+
+export function openExternalUrl(rawUrl) {
+  const s = String(rawUrl || '').trim();
+  if (!s || /[\r\n\0]/.test(s)) return { ok: false, error: 'invalid_url' };
+  let parsed;
+  try {
+    parsed = new URL(s);
+  } catch {
+    return { ok: false, error: 'invalid_url' };
+  }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+    return { ok: false, error: 'unsupported_protocol' };
+  }
+  if (!parsed.hostname || /^https?:\/\/\//i.test(s)) {
+    return { ok: false, error: 'invalid_url' };
+  }
+  const href = parsed.href;
+  if (process.platform === 'darwin') {
+    execFile('open', [href], () => {});
+    return { ok: true, url: href };
+  }
+  if (process.platform === 'win32') {
+    execFile('rundll32.exe', ['url.dll,FileProtocolHandler', href], () => {});
+    return { ok: true, url: href };
+  }
+  execFile('xdg-open', [href], () => {});
+  return { ok: true, url: href };
+}
+
 export function readProjectContext(rawDir) {
   const dirPath = resolveLocalProjectDir(rawDir);
   if (!dirPath) return { ok: false, error: 'invalid_directory' };
@@ -519,6 +622,7 @@ export function readProjectContext(rawDir) {
   }
 
   const scheduledTasks = readProjectScheduledTasks(dirPath, rawMeta, extraFolders);
+  const quickGit = readQuickGitMeta(dirPath);
 
   return {
     ok: true,
@@ -530,7 +634,10 @@ export function readProjectContext(rawDir) {
     hasAgentsMd,
     hasOtherAgentsMd: false,
     lastModifiedMs,
-    dirMtimeMs
+    dirMtimeMs,
+    gitBranch: quickGit.gitBranch,
+    remoteUrl: quickGit.remoteUrl,
+    remoteLabel: quickGit.remoteLabel
   };
 }
 

@@ -83,6 +83,15 @@ function pairStamp(path) {
   };
 }
 
+const sumBucketTokens = (bucket) => (bucket ? COUNTERS.reduce((sum, key) => sum + (bucket[key] || 0), 0) : 0);
+
+function totalTokensOfSummary(summary) {
+  if (!summary) return 0;
+  let total = sumBucketTokens(summary.undated);
+  for (const day of summary.days || []) total += sumBucketTokens(day);
+  return total;
+}
+
 // Usage over every conversation database on disk. A database is read again only after it
 // changed, and the event loop gets a turn between reads so polls keep being answered.
 export function createUsageHistory({
@@ -127,6 +136,7 @@ export function createUsageHistory({
               // Only cache if .db and non-empty -wal stayed unchanged during the read.
               files.set(path, {
                 key: before.key,
+                cid: conversationId,
                 requests: requests.map(req => (req.source ? req : { ...req, source: path })),
               });
               changed = true;
@@ -152,6 +162,75 @@ export function createUsageHistory({
     }
     return { ...totals, unread };
   }
+  function summarizeForIds(ids = []) {
+    const idSet = new Set(
+      (Array.isArray(ids) ? ids : []).map(id => (typeof id === 'string' ? id.trim() : '')).filter(Boolean)
+    );
+    const globalTotalTokens = totalTokensOfSummary(totals);
+    if (!idSet.size) {
+      return {
+        days: [],
+        undated: { requests: 0, uncached: 0, cacheRead: 0, cacheWrite: 0, output: 0 },
+        globalTotalTokens,
+        byChat: {},
+      };
+    }
+    const perCidReqs = new Map();
+    const ordered = [...files.entries()]
+      .filter(([, file]) => idSet.has(file.cid))
+      .sort(byKey)
+      .flatMap(([, file]) => {
+        const list = perCidReqs.get(file.cid);
+        if (list) list.push(...file.requests);
+        else perCidReqs.set(file.cid, file.requests.slice());
+        return file.requests;
+      });
+    const byChat = {};
+    for (const cid of idSet) {
+      const reqs = perCidReqs.get(cid);
+      if (!reqs || !reqs.length) {
+        byChat[cid] = { totalTokens: 0, requests: 0 };
+        continue;
+      }
+      const chatSum = summarizeUsage(reqs);
+      byChat[cid] = {
+        totalTokens: totalTokensOfSummary(chatSum),
+        requests: (chatSum.undated?.requests || 0) + chatSum.days.reduce((n, d) => n + (d.requests || 0), 0),
+      };
+    }
+    return { ...summarizeUsage(ordered), globalTotalTokens, byChat };
+  }
+  function summarizeGroups(groups = {}) {
+    const byCid = new Map();
+    for (const [, file] of [...files.entries()].sort(byKey)) {
+      const list = byCid.get(file.cid);
+      if (list) list.push(file.requests);
+      else byCid.set(file.cid, [file.requests]);
+    }
+    const byProject = {};
+    for (const [projectId, rawIds] of Object.entries(groups || {})) {
+      const seenIds = new Set();
+      const reqs = [];
+      for (const raw of Array.isArray(rawIds) ? rawIds : []) {
+        const cid = typeof raw === 'string' ? raw.trim() : '';
+        if (!cid || seenIds.has(cid)) continue;
+        seenIds.add(cid);
+        const chunks = byCid.get(cid);
+        if (chunks) {
+          for (const chunk of chunks) reqs.push(...chunk);
+        }
+      }
+      if (!reqs.length) {
+        byProject[projectId] = { totalTokens: 0, requests: 0 };
+        continue;
+      }
+      const sum = summarizeUsage(reqs);
+      const requests =
+        (sum.undated?.requests || 0) + sum.days.reduce((count, day) => count + (day.requests || 0), 0);
+      byProject[projectId] = { totalTokens: totalTokensOfSummary(sum), requests };
+    }
+    return { globalTotalTokens: totalTokensOfSummary(totals), byProject };
+  }
   return {
     // Concurrent callers share one scan.
     read(options = {}) {
@@ -159,5 +238,7 @@ export function createUsageHistory({
       scanning ??= scan(extra).finally(() => { scanning = null; });
       return scanning;
     },
+    summarizeForIds,
+    summarizeGroups,
   };
 }

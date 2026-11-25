@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -14,8 +15,11 @@ import {
   shortenModelName,
 } from '../studio/modules/capsule-picker.mjs';
 import { createFooterUnifiedRuntime } from '../studio/modules/footer-unified.mjs';
+import { createProjectUsageRuntime } from '../studio/modules/project-usage.mjs';
 import { createResumeBannerRuntime } from '../studio/modules/resume-banner.mjs';
+import { clampOverlayScrollbar, createScrollbarClampRuntime } from '../studio/modules/scrollbar-clamp.mjs';
 import { createSubagentFooterRuntime } from '../studio/modules/subagent-footer.mjs';
+import { createUsageHistory } from '../vendor/agy-capsule/usage_history.mjs';
 import { collectResumeState } from '../studio/daemon/resume-detector.mjs';
 import { createStudioPrefsRuntime } from '../studio/modules/studio-prefs.mjs';
 import { OWN_HOST_IDS, OWN_ATTR, setAttr, setLeafText } from '../studio/core/dom.mjs';
@@ -2076,6 +2080,7 @@ test('Stage 5: user/src modular decomposition, zero legacy dead code, and MagaKe
     'user/src/modules/projects/mentions-media.mjs',
     'user/src/modules/projects/native-store.mjs',
     'user/src/modules/projects/modals.mjs',
+    'user/src/modules/projects/workspace-ui.mjs',
     'user/src/modules/projects/index.mjs',
     'user/src/modules/customizations.mjs',
     'user/src/modules/overview-panel.mjs',
@@ -2176,4 +2181,1435 @@ test('Stage 5: user/src modular decomposition, zero legacy dead code, and MagaKe
     }
     win.close();
   }
+});
+
+test('capsule-picker mounts MAGA capsule in Project Detail composer, uses downward popover near top, and tears down on close', async () => {
+  const { syncModelPicker: realSyncModelPicker } = await import(
+    pathToFileURL(path.join(REPO, 'vendor', 'agy-capsule', 'model_picker.mjs')).href
+  );
+  const env = makeMockDomEnv({ pathname: '/projects', lang: 'en', width: 1200 });
+  await withGlobals(env, () => {
+    const pv = env.createEl('section');
+    pv.id = 'ag-claude-projects-view';
+    pv.setAttribute('data-open', 'true');
+    const right = env.createEl('div');
+    right.className = 'ag-pd-composer-right';
+    right.checkVisibility = () => true;
+    const pdBtn = env.createEl('button');
+    pdBtn.id = 'ag-pd-model-btn';
+    pdBtn.setAttribute('data-ag-pd-model-trigger', 'true');
+    pdBtn.textContent = 'Claude Opus 5.5 Medium';
+    const sendBtn = env.createEl('button');
+    sendBtn.className = 'ag-pd-send-btn';
+    right.append(pdBtn, sendBtn);
+    pv.append(right);
+    env.doc.body.append(pv);
+
+    const origCreate = env.doc.createElement;
+    env.doc.createElement = (tag) => {
+      const el = origCreate(tag);
+      el.attachShadow = () => {
+        const sr = origCreate('shadow-root');
+        sr.getElementById = (id) => sr.querySelector(`#${id}`);
+        el.shadowRoot = sr;
+        return sr;
+      };
+      return el;
+    };
+
+    const picker = createCapsulePickerRuntime({
+      prefs: {
+        modelEffortPicker: true,
+        showEffortBar: true,
+        customizeModelList: true,
+        hiddenModels: ['Gemini 4 Argon'],
+        claudeTheme: 'matrix',
+      },
+      labelsByLang: {
+        en: { modelEffortPicker: 'Enhanced model capsule', effortLevel: 'Effort level' },
+        'zh-CN': { modelEffortPicker: '优化模型胶囊', effortLevel: '思考强度' },
+      },
+      shadowCss: '',
+      syncModelPicker: (root) => {
+        if (!root.querySelector('button.dk-pill[data-el="modelPicker"]')) {
+          const btn = env.createEl('button');
+          btn.className = 'dk-pill';
+          btn.setAttribute('data-el', 'modelPicker');
+          const tw = env.createEl('span');
+          tw.className = 'dk-mp-text';
+          tw.textContent = pdBtn.textContent;
+          btn.append(tw);
+          root.append(btn);
+        }
+      },
+      effortEffects: () => ({ applySidecarPrefs() {} }),
+      motionThemes,
+      shortenModelName,
+      shortenEffortBadge,
+    });
+
+    picker.sync(() => {});
+    const host = right.querySelector('[data-agy-pd-picker-host="1"]');
+    assert.ok(host?.shadowRoot, 'Project Detail composer mounts shadow capsule host');
+    assert.equal(host.id || '', '', 'Project Detail host must not claim main composer HOST_ID');
+    assert.equal(pdBtn.getAttribute('data-agy-model-wrap'), '1', 'native #ag-pd-model-btn wrapped for hiding');
+    const capBtn = host.shadowRoot.querySelector('button.dk-pill[data-el="modelPicker"]');
+    assert.equal(capBtn?.querySelector('.dk-mp-name')?.textContent, 'Claude Opus 5.5 Medium');
+
+    // Closing Projects view must tear down the Project Detail capsule cleanly and unwrap #ag-pd-model-btn
+    pv.setAttribute('data-open', 'false');
+    picker.sync(() => {});
+    assert.equal(right.querySelector('[data-agy-pd-picker-host="1"]'), null, 'capsule torn down on close');
+    assert.equal(pdBtn.getAttribute('data-agy-model-wrap'), null, 'native button unwrapped on close');
+    picker.dispose();
+  });
+
+  // Also verify vendor/agy-capsule/model_picker.mjs resolves getProjectModelSelector & opens downward when spaceAbove < 380
+  const { JSDOM } = await import('jsdom');
+  const dom = new JSDOM(
+    '<!doctype html><html><body><div id="ag-claude-projects-view" data-open="true"><div class="ag-pd-composer-right"><button id="ag-pd-model-btn" data-ag-pd-model-trigger="true">Orchestrator</button></div></div></body></html>',
+    { url: 'http://127.0.0.1/', pretendToBeVisual: true }
+  );
+  const w = dom.window;
+  const d = w.document;
+  const keys = ['window', 'document', 'innerWidth', 'innerHeight', 'localStorage'];
+  const prev = new Map(keys.map((k) => [k, Object.getOwnPropertyDescriptor(globalThis, k)]));
+  globalThis.window = w;
+  globalThis.document = d;
+  globalThis.innerWidth = 1280;
+  globalThis.innerHeight = 900;
+  globalThis.localStorage = w.localStorage;
+  try {
+    let selectedModel = { label: 'Claude Opus 5.5 (Medium)', value: 201, modelId: 'claude-opus-5-5' };
+    const modelOptions = [
+      { label: 'Gemini 4 Argon (Low)', value: 101, modelId: 'g4-argon' },
+      selectedModel,
+      { label: 'Claude Opus 5.5 (High)', value: 202, modelId: 'claude-opus-5-5' },
+    ];
+    w.__agClaudeUxBridge = {
+      getProjectModelSelector: () => ({
+        isReduxFallback: true,
+        modelOptions,
+        selectedModel,
+        setSelectedModel: (o) => { selectedModel = o; },
+      }),
+    };
+    const root = d.createElement('div');
+    const right = d.querySelector('.ag-pd-composer-right');
+    right.prepend(root);
+    realSyncModelPicker(
+      root,
+      right,
+      {
+        modelEffortPicker: true,
+        showEffortBar: true,
+        customizeModelList: true,
+        hiddenModels: ['Gemini 4 Argon'],
+        claudeTheme: 'matrix',
+      },
+      { modelEffortPicker: 'Enhanced model capsule', effortLevel: 'Effort level' },
+      () => right
+    );
+    const btn = root.querySelector('button.dk-pill[data-el="modelPicker"]');
+    const panel = root.querySelector('.dk-model-options');
+    assert.ok(btn && panel, 'model_picker mounts pill & options popover for Project Detail trigger');
+    const visibleModels = [...root.querySelectorAll('.dk-model-row')].map((r) => r.dataset.family);
+    assert.equal(visibleModels.includes('Gemini 4 Argon'), false, 'hiddenModels filter applies in Project Detail');
+    assert.equal(visibleModels.includes('Claude Opus 5.5'), true);
+
+    btn.getBoundingClientRect = () => ({ left: 500, right: 640, top: 240, bottom: 266, width: 140, height: 26 });
+    const ev = new w.Event('beforetoggle');
+    ev.newState = 'open';
+    panel.dispatchEvent(ev);
+    assert.equal(panel.style.top, '272px', 'opens downward when button sits in upper half of Project Detail');
+    assert.equal(panel.style.bottom, 'auto');
+    root._modelPicker?.dispose();
+  } finally {
+    for (const k of keys) {
+      const desc = prev.get(k);
+      if (desc) Object.defineProperty(globalThis, k, desc);
+      else delete globalThis[k];
+    }
+    w.close();
+  }
+});
+
+test('readProjectWorkspaceStatusAsync & handleProjectRpcRequest return Git commits/branch/version/dirty/remote safely and reject unsafe dirs', async () => {
+  const { readProjectWorkspaceStatusAsync, readGitCommitDetailAsync, handleProjectRpcRequest } = await import(
+    pathToFileURL(path.join(REPO, 'core', 'daemon', 'overview-skills.mjs')).href
+  );
+  const { normalizeGitRemoteUrl, openExternalUrl } = await import(
+    pathToFileURL(path.join(REPO, 'core', 'daemon', 'projects.mjs')).href
+  );
+  const direct = await readProjectWorkspaceStatusAsync(REPO, { force: true });
+  assert.equal(direct.ok, true);
+  assert.equal(direct.dirPath, REPO);
+  assert.equal(direct.pkgVersion, '1.1.0');
+  assert.ok(Array.isArray(direct.scripts) && direct.scripts.includes('test'));
+  assert.ok(direct.git && direct.git.branch, 'detects live git branch');
+  assert.ok(Array.isArray(direct.recentCommits) && direct.recentCommits.length >= 1);
+  assert.ok(direct.recentCommits[0].hash && direct.recentCommits[0].fullHash && direct.recentCommits[0].subject);
+  assert.ok(Array.isArray(direct.dirtyFiles));
+  assert.match(direct.remoteUrl || '', /github\.com\/LiWithDream\/MAGA/i);
+  assert.ok(typeof direct.latestTag === 'string' && direct.latestTag.startsWith('v'));
+
+  const detailOk = await readGitCommitDetailAsync(REPO, direct.recentCommits[0].hash);
+  assert.equal(detailOk.ok, true);
+  assert.equal(detailOk.fullHash, direct.recentCommits[0].fullHash);
+  assert.ok(Array.isArray(detailOk.files));
+  const detailBad = await readGitCommitDetailAsync(REPO, 'bad;rm');
+  assert.equal(detailBad.ok, false);
+  assert.equal(detailBad.error, 'invalid_commit_hash');
+
+  assert.deepEqual(normalizeGitRemoteUrl('git@github.com:LiWithDream/MAGA.git'), {
+    url: 'https://github.com/LiWithDream/MAGA',
+    label: 'LiWithDream/MAGA',
+  });
+  assert.equal(openExternalUrl('file:///etc/passwd').ok, false);
+
+  const rpcOk = await handleProjectRpcRequest(
+    JSON.stringify({
+      reqId: 'ws-1',
+      action: 'readProjectWorkspaceStatus',
+      payload: { dirPath: REPO },
+    })
+  );
+  assert.equal(rpcOk?.reqId, 'ws-1');
+  assert.equal(rpcOk?.result?.ok, true);
+  assert.equal(rpcOk?.result?.pkgVersion, '1.1.0');
+
+  const unsafeEtc = await readProjectWorkspaceStatusAsync('/etc');
+  assert.equal(unsafeEtc.ok, false);
+  assert.equal(unsafeEtc.error, 'invalid_project_dir');
+  const unsafeRoot = await readProjectWorkspaceStatusAsync('/');
+  assert.equal(unsafeRoot.ok, false);
+});
+
+test('Projects Cockpit renders left Hero, interactive Git dirty/commit drawers, remote links, Quick Actions, Switcher & 3-state Grid sort', async () => {
+  const { JSDOM } = await import('jsdom');
+  const { createProjectsModule } = await import(
+    pathToFileURL(path.join(REPO, 'user', 'src', 'modules', 'projects', 'index.mjs')).href
+  );
+
+  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
+    url: 'http://127.0.0.1/',
+    pretendToBeVisual: true,
+  });
+  const w = dom.window;
+  const d = w.document;
+  const keys = ['window', 'document', 'location', 'requestAnimationFrame', 'cancelAnimationFrame'];
+  const prev = new Map(keys.map((k) => [k, Object.getOwnPropertyDescriptor(globalThis, k)]));
+  globalThis.window = w;
+  globalThis.document = d;
+  globalThis.location = w.location;
+  globalThis.requestAnimationFrame = w.requestAnimationFrame.bind(w);
+  globalThis.cancelAnimationFrame = w.cancelAnimationFrame.bind(w);
+
+  try {
+    const mockState = {
+      sidebarProjects: {
+        projects: [
+          { id: 'proj-maga', name: 'MAGA', folderUris: ['file:///tmp/maga-repo'] },
+          { id: 'proj-remote', name: 'RemoteRepo', folderUris: [], remoteUrl: 'https://github.com/LiWithDream/MAGA' },
+        ],
+      },
+      trajectorySummaries: {
+        summaries: {},
+        indexes: { byProject: { 'proj-maga': [], 'proj-remote': [] } },
+      },
+    };
+    const rpcCalls = [];
+    const sampleCtx = {
+      ok: true,
+      dirPath: '/tmp/maga-repo',
+      gitBranch: 'main',
+      remoteUrl: 'https://github.com/LiWithDream/MAGA',
+      remoteLabel: 'LiWithDream/MAGA',
+      instructions: '# MAGA — Project Rules\n\n> Core note\n\n**Single** root `MagaKernel` observer only.',
+      files: [{ name: 'CHANGELOG.md', relPath: 'CHANGELOG.md', absPath: '/tmp/maga-repo/CHANGELOG.md', inlined: true, sizeText: '1.2 KB' }],
+      extraFolders: [],
+      scheduledTasks: [],
+      lastModifiedMs: Date.now(),
+    };
+    w.__agProjectCall = async (action, payload) => {
+      rpcCalls.push({ action, payload });
+      if (action === 'listContexts') {
+        const contexts = {};
+        for (const p of payload.paths || []) contexts[p] = { ...sampleCtx, dirPath: p };
+        return { ok: true, contexts, projectMtimes: {} };
+      }
+      if (action === 'readContext') {
+        return { ...sampleCtx, dirPath: payload.dirPath };
+      }
+      if (action === 'readProjectWorkspaceStatus') {
+        return {
+          ok: true,
+          dirPath: payload.dirPath,
+          git: { branch: 'main', changedFiles: 2, added: 14, deleted: 3 },
+          remoteUrl: 'https://github.com/LiWithDream/MAGA',
+          remoteLabel: 'LiWithDream/MAGA',
+          dirtyFiles: [{ path: 'studio/entry.mjs', status: 'M', added: 5, deleted: 1 }],
+          recentCommits: [
+            { hash: 'abc1234', fullHash: 'abc1234567890abcdef1234567890', subject: 'feat: Projects Cockpit UI', relTime: '2 hours ago' },
+          ],
+          latestTag: 'v1.0.0',
+          pkgVersion: '1.1.0',
+          scripts: ['test', 'deploy', 'doctor'],
+          fetchedAt: Date.now(),
+        };
+      }
+      if (action === 'readGitCommitDetail') {
+        return {
+          ok: true,
+          fullHash: 'abc1234567890abcdef1234567890',
+          hash: 'abc1234',
+          author: 'Dev',
+          date: '2026-11-25',
+          subject: 'feat: Projects Cockpit UI',
+          body: 'Detailed notes',
+          files: [{ path: 'user/custom.css', added: 10, deleted: 2 }],
+          totalFiles: 1,
+        };
+      }
+      if (action === 'openExternalUrl') return { ok: true, url: payload.url };
+      if (action === 'revealFile') return { ok: true };
+      return { ok: false };
+    };
+
+    const escapeHtml = (s) =>
+      String(s ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    const rt = {
+      FEAT: { projects: true, i18n: false },
+      L: (_zh, en) => en,
+      state: { disposed: false },
+      frame: (cb) => setTimeout(cb, 0),
+      later: (cb, ms) => setTimeout(cb, ms),
+      escapeHtml,
+      setLeafText: (el, txt) => { if (el) el.textContent = txt; },
+      syncAttrTargetSet: () => {},
+      hooks: {
+        activeReactFiber: () => null,
+        findSidebarBindings: () => ({ store: { getState: () => mockState }, router: null }),
+        isSidebarVisibleSummary: () => true,
+        isSummaryPinned: () => false,
+        protoSeconds: (v) => Number(v?.seconds || 0),
+      },
+    };
+    const modelApi = {
+      displayEffortLabel: (e) => e,
+      buildReduxModelSelectorApi: () => null,
+      discoverModelSelectorApi: () => null,
+      buildModelCatalog: () => ({ primaryFamilies: [], moreFamilies: [] }),
+      pickVariantForFamily: () => null,
+      formatProjectComposerModelParts: () => ({ name: 'Orchestrator', effort: 'Neon High' }),
+      syncProjectDetailModelTrigger: () => {},
+      applyModelSelectionOption: () => {},
+    };
+
+    const projMod = createProjectsModule(rt, modelApi);
+    projMod.openProjectsView('proj-maga');
+    await new Promise((r) => setTimeout(r, 35));
+
+    const view = d.getElementById('ag-claude-projects-view');
+    // Streamlined layout: Hero sits inside .ag-pd-left, `...` menu sits in topbar, no redundant copy/refresh icons
+    assert.ok(view.querySelector('.ag-pd-left .ag-pd-hero'), 'Hero Header sits inside .ag-pd-left so right rail starts at top');
+    assert.ok(view.querySelector('.ag-pd-topbar [data-ag-pd-proj-menu]'), 'More menu button moved to topbar');
+    assert.equal(view.querySelector('[data-ag-pd-copy-path]'), null, 'omits redundant copy button');
+    assert.equal(view.querySelector('[data-ag-pd-refresh-ws]'), null, 'omits redundant refresh button');
+    assert.equal(view.querySelector('.ag-pd-ver-badge')?.textContent, 'v1.0.0');
+    assert.match(view.querySelector('.ag-pd-meta-git')?.textContent || '', /main.*2 modified/);
+    assert.ok(view.querySelector('[data-ag-pd-open-finder]'), 'path chip acts as Open in Finder trigger');
+
+    // Interactive dirty drawer + mention dirty file
+    view.querySelector('[data-ag-pd-toggle-dirty]').click();
+    assert.ok(view.querySelector('[data-ag-pd-dirty-drawer]'), 'expands dirty files drawer');
+    view.querySelector('[data-ag-pd-mention-rel="studio/entry.mjs"]').click();
+    assert.match(d.getElementById('ag-pd-composer-input').value, /@\[entry\.mjs\]/, 'mentions dirty file into composer');
+
+    // Interactive commit row expands commit detail + Remote Commit link
+    view.querySelector('[data-ag-pd-commit-hash="abc1234"]').click();
+    await new Promise((r) => setTimeout(r, 25));
+    const cDetail = view.querySelector('[data-ag-pd-commit-detail="abc1234"]');
+    assert.ok(cDetail, 'expands commit detail inline');
+    assert.match(cDetail.textContent, /user\/custom\.css/);
+    assert.ok(
+      cDetail.querySelector('[data-ag-pd-open-remote="https://github.com/LiWithDream/MAGA/commit/abc1234567890abcdef1234567890"]'),
+      'renders Remote commit URL'
+    );
+
+    // Clean Markdown preview (at most 3 body lines)
+    const instRich = view.querySelector('.ag-pd-inst-rich');
+    assert.ok(instRich, 'renders structured Instructions preview');
+    assert.equal(/\*\*|`|# /.test(instRich.textContent), false, 'strips raw markdown syntax');
+
+    // Empty-state Quick Starters fill composer
+    const starters = view.querySelectorAll('.ag-pd-ready-card [data-ag-pd-starter-prompt]');
+    assert.equal(starters.length, 4, 'renders 4 starter tiles when empty');
+    starters[0].click();
+    assert.equal(view.querySelector('[data-ag-pd-send]').disabled, false, 'enables send button');
+
+    // Populate 4 conversations: quick strip + search filter + breadcrumb switcher -> Remote project external URL
+    mockState.trajectorySummaries.indexes.byProject['proj-maga'] = ['c1', 'c2', 'c3', 'c4'];
+    mockState.trajectorySummaries.summaries = {
+      c1: { summary: 'Fix picker regression', lastModifiedTime: { seconds: 400 } },
+      c2: { summary: 'Refactor MagaKernel loops', lastModifiedTime: { seconds: 300 } },
+      c3: { summary: 'Release v1.1.0 changelog', lastModifiedTime: { seconds: 200 } },
+      c4: { summary: 'Update README images', lastModifiedTime: { seconds: 100 } },
+    };
+    projMod.openProjectsView('proj-maga');
+    assert.ok(view.querySelector('.ag-pd-quick-strip'), 'renders single-row quick actions strip when project has chats');
+    assert.ok(view.querySelector('[data-ag-pd-chat-usage="c1"]'), 'renders per-chat usage badge placeholder');
+
+    const searchEl = d.getElementById('ag-pd-chat-search');
+    assert.ok(searchEl, 'renders #ag-pd-chat-search when >= 4 conversations exist');
+    assert.equal(view.querySelectorAll('.ag-pd-chat-row').length, 4);
+    searchEl.value = 'kernel';
+    searchEl.dispatchEvent(new w.Event('input', { bubbles: true }));
+    assert.equal(view.querySelectorAll('.ag-pd-chat-row').length, 1);
+
+    // Breadcrumb project switcher -> RemoteRepo -> click remote link triggers openExternalUrl
+    view.querySelector('[data-ag-pd-crumb-toggle]').click();
+    assert.ok(view.querySelector('.ag-pd-crumb-menu'), 'opens breadcrumb project switcher');
+    view.querySelector('[data-ag-pd-crumb-select="proj-remote"]').click();
+    await new Promise((r) => setTimeout(r, 20));
+    const remoteBtn = view.querySelector('.ag-pd-meta-remote[data-ag-pd-open-remote]');
+    assert.ok(remoteBtn, 'renders clickable remote repo chip for remote project');
+    remoteBtn.click();
+    assert.ok(
+      rpcCalls.some((c) => c.action === 'openExternalUrl' && c.payload?.url === 'https://github.com/LiWithDream/MAGA'),
+      'clicking remote chip invokes openExternalUrl'
+    );
+
+    // Back to Grid & test 3-state sorting (Recent -> Usage -> Name)
+    view.querySelector('[data-ag-pd-back]').click();
+    w.dispatchEvent(
+      new w.CustomEvent('agy:projects-usage-updated', {
+        detail: {
+          byProject: {
+            'proj-maga': { totalTokens: 5000, requests: 2 },
+            'proj-remote': { totalTokens: 90000, requests: 10 },
+          },
+        },
+      })
+    );
+    const sortBtn = view.querySelector('[data-ag-proj-sort]');
+    assert.match(sortBtn.textContent, /Recent/);
+    sortBtn.click();
+    assert.match(view.querySelector('[data-ag-proj-sort]').textContent, /Usage/);
+    const cardsInUsageOrder = [...view.querySelectorAll('.ag-proj-card')].map((c) => c.getAttribute('data-ag-proj-id'));
+    assert.deepEqual(cardsInUsageOrder, ['proj-remote', 'proj-maga'], 'Usage sort puts higher-token project first');
+
+    projMod.dispose();
+  } finally {
+    for (const k of keys) {
+      const desc = prev.get(k);
+      if (desc) Object.defineProperty(globalThis, k, desc);
+      else delete globalThis[k];
+    }
+    w.close();
+  }
+});
+
+test('Stage 6: createUsageHistory summarizeForIds and summarizeGroups aggregate per-project usage in memory', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'maga-usage-hist-'));
+  try {
+    for (const cid of ['c1', 'c2', 'c3']) {
+      writeFileSync(path.join(dir, `${cid}.db`), `${cid}-sqlite-stub`);
+    }
+    let readCalls = 0;
+    const tToday = new Date();
+    tToday.setHours(10, 0, 0, 0);
+    const todayMs = tToday.getTime();
+    const byCid = {
+      c1: [
+        { id: 'r1', at: todayMs, model: 'Claude Opus 4.6 (High)', uncached: 100, cacheRead: 900, cacheWrite: 200, output: 300 },
+        { id: 'dup', at: todayMs, model: 'Claude Opus 4.6 (High)', uncached: 50, cacheRead: 0, cacheWrite: 0, output: 50 },
+      ],
+      c2: [
+        { id: 'dup', at: todayMs, model: 'Claude Opus 4.6 (High)', uncached: 200, cacheRead: 1000, cacheWrite: 100, output: 200 },
+      ],
+      c3: [
+        { id: 'r3', at: todayMs, model: 'Gemini 3.1 Pro (Medium)', uncached: 400, cacheRead: 600, cacheWrite: 0, output: 500 },
+      ],
+    };
+    const history = createUsageHistory({
+      directories: [dir],
+      recentMs: 0,
+      readRequests: (dbPath) => {
+        readCalls += 1;
+        const cid = path.basename(dbPath, '.db');
+        return byCid[cid] || [];
+      },
+    });
+
+    const base = await history.read();
+    assert.equal(readCalls, 3, 'initial scan reads each conversation DB once');
+    assert.equal(base.days.length, 1);
+
+    // Query subsets without triggering extra disk reads
+    const sub = history.summarizeForIds(['c1', 'c2']);
+    assert.equal(readCalls, 3, 'summarizeForIds uses cached request rows only');
+    assert.equal(sub.globalTotalTokens, 4500, 'globalTotalTokens sums deduplicated total across all DBs (1500+1500+1500)');
+    assert.equal(sub.days[0].requests, 2, 'deduplicates shared dup request between c1 and c2');
+    assert.equal(sub.byChat.c1.totalTokens, 1600, 'per-chat breakdown retains c1 total');
+    assert.equal(sub.byChat.c2.totalTokens, 1500, 'per-chat breakdown retains c2 total');
+    assert.equal(
+      sub.days[0].uncached + sub.days[0].cacheRead + sub.days[0].cacheWrite + sub.days[0].output,
+      3000
+    );
+
+    const empty = history.summarizeForIds([]);
+    assert.equal(empty.days.length, 0);
+    assert.equal(empty.globalTotalTokens, 4500);
+    assert.deepEqual(empty.byChat, {});
+
+    const grouped = history.summarizeGroups({
+      pA: ['c1', 'c2'],
+      pB: ['c3'],
+      pEmpty: [],
+    });
+    assert.equal(readCalls, 3, 'summarizeGroups executes purely in memory');
+    assert.deepEqual(grouped.byProject, {
+      pA: { totalTokens: 3000, requests: 2 },
+      pB: { totalTokens: 1500, requests: 1 },
+      pEmpty: { totalTokens: 0, requests: 0 },
+    });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('Stage 6: createProjectUsageRuntime renders detail usage card, hero badge, and grid badges', async () => {
+  const { JSDOM } = await import('jsdom');
+  const dNow = new Date();
+  const todayStr = `${dNow.getFullYear()}-${String(dNow.getMonth() + 1).padStart(2, '0')}-${String(dNow.getDate()).padStart(2, '0')}`;
+  const dom = new JSDOM(
+    `<!doctype html><html><body lang="en">
+      <section id="ag-claude-projects-view" data-open="true">
+        <div class="ag-pd-hero"><span id="agy-pd-hero-usage" class="ag-pd-meta-chip ag-pd-meta-usage" hidden></span></div>
+        <button class="ag-pd-chat-row" data-ag-pd-chat="c1"><span class="ag-pd-chat-usage" data-ag-pd-chat-usage="c1" hidden></span></button>
+        <aside class="ag-pd-right">
+          <div id="agy-pd-usage-slot" data-maga-own="1" data-ag-pd-proj-id="p-empty" data-ag-pd-chat-ids=""></div>
+        </aside>
+      </section>
+    </body></html>`,
+    { url: 'http://127.0.0.1/' }
+  );
+  const w = dom.window;
+  const d = w.document;
+  const keys = ['window', 'document', 'location', 'localStorage', 'CustomEvent'];
+  const prev = new Map(keys.map((k) => [k, Object.getOwnPropertyDescriptor(globalThis, k)]));
+  globalThis.window = w;
+  globalThis.document = d;
+  globalThis.location = w.location;
+  globalThis.localStorage = w.localStorage;
+  globalThis.CustomEvent = w.CustomEvent;
+
+  try {
+    const rpcCalls = [];
+    w.__agProjectCall = async (action, payload) => {
+      rpcCalls.push({ action, payload });
+      if (action === 'getUsageStats' && payload?.projectGroups) {
+        return {
+          ok: true,
+          generatedAt: Date.now(),
+          globalTotalTokens: 30000,
+          byProject: {
+            p1: { totalTokens: 15000, requests: 8 },
+            p2: { totalTokens: 0, requests: 0 },
+          },
+        };
+      }
+      if (action === 'getUsageStats' && Array.isArray(payload?.conversationIds)) {
+        return {
+          ok: true,
+          generatedAt: Date.now(),
+          globalTotalTokens: 30000,
+          unread: 0,
+          conversationCount: payload.conversationIds.length,
+          byChat: {
+            c1: { totalTokens: 12300, requests: 5 },
+          },
+          undated: { requests: 0, uncached: 0, cacheRead: 0, cacheWrite: 0, output: 0 },
+          days: [
+            {
+              date: todayStr,
+              requests: 8,
+              uncached: 2000,
+              cacheRead: 10000,
+              cacheWrite: 1000,
+              output: 2000,
+              models: [
+                {
+                  name: 'Claude Opus 4.6 (High)',
+                  requests: 8,
+                  uncached: 2000,
+                  cacheRead: 10000,
+                  cacheWrite: 1000,
+                  output: 2000,
+                },
+              ],
+            },
+          ],
+        };
+      }
+      return { ok: false };
+    };
+
+    const studioPrefs = {
+      get: () => ({ overviewUsageDefaultPeriod: 'day' }),
+      subscribe: () => () => {},
+    };
+    const projUsage = createProjectUsageRuntime({ motionThemes: () => motionThemes, studioPrefs });
+
+    // Case A: empty project renders compact empty state with zero RPC calls
+    projUsage.sync();
+    assert.equal(rpcCalls.length, 0, 'empty project skips daemon getUsageStats call');
+    const cardA = d.getElementById('agy-pd-usage-card');
+    assert.ok(cardA, 'mounts #agy-pd-usage-card');
+    assert.equal(cardA.getAttribute('data-empty'), 'true');
+    assert.equal(d.getElementById('agy-pd-hero-usage').hidden, true);
+
+    // Case B: project with conversations fetches filtered stats & renders charts + hero pill
+    const slot = d.getElementById('agy-pd-usage-slot');
+    slot.setAttribute('data-ag-pd-proj-id', 'p-maga');
+    slot.setAttribute('data-ag-pd-chat-ids', 'c1,c2');
+    w.dispatchEvent(new w.CustomEvent('agy:projects-rendered'));
+    await new Promise((r) => setTimeout(r, 20));
+
+    assert.equal(rpcCalls.length, 1);
+    assert.deepEqual(rpcCalls[0].payload.conversationIds, ['c1', 'c2']);
+    const cardB = d.getElementById('agy-pd-usage-card');
+    assert.equal(cardB.getAttribute('data-empty'), 'false');
+    assert.equal(cardB.querySelectorAll('.agy-usage-kpi').length, 3);
+    assert.equal(cardB.querySelectorAll('.agy-usage-model-row').length, 1);
+    assert.match(cardB.querySelector('.agy-usage-share-tag')?.textContent || '', /50%/);
+    const heroBadge = d.getElementById('agy-pd-hero-usage');
+    assert.equal(heroBadge.hidden, false);
+    assert.match(heroBadge.textContent, /15\.0k/);
+    const chatUsageBadge = d.querySelector('[data-ag-pd-chat-usage="c1"]');
+    assert.equal(chatUsageBadge.hidden, false, 'populates per-chat usage badge');
+    assert.equal(chatUsageBadge.textContent, '12.3k');
+
+    // Period switching (Day -> Week)
+    const weekBtn = cardB.querySelector('[data-agy-usage-period="week"]');
+    weekBtn.click();
+    assert.equal(cardB.querySelector('.agy-usage-chart')?.getAttribute('data-period'), 'week');
+
+    // Case C: Projects Grid batched lookup + usage update event
+    let gridEventDetail = null;
+    w.addEventListener('agy:projects-usage-updated', (ev) => {
+      gridEventDetail = ev.detail;
+    });
+    const view = d.getElementById('ag-claude-projects-view');
+    view.innerHTML = `<div class="ag-proj-grid">
+      <article class="ag-proj-card" data-ag-proj-id="p1" data-ag-proj-chat-ids="c1,c2">
+        <span class="ag-proj-card-usage" data-ag-proj-usage-badge="p1" hidden></span>
+      </article>
+      <article class="ag-proj-card" data-ag-proj-id="p2" data-ag-proj-chat-ids="">
+        <span class="ag-proj-card-usage" data-ag-proj-usage-badge="p2" hidden></span>
+      </article>
+    </div>`;
+    w.dispatchEvent(new w.CustomEvent('agy:projects-rendered'));
+    await new Promise((r) => setTimeout(r, 20));
+
+    assert.equal(rpcCalls.length, 2);
+    assert.deepEqual(rpcCalls[1].payload.projectGroups, { p1: ['c1', 'c2'], p2: [] });
+    const badge1 = view.querySelector('[data-ag-proj-usage-badge="p1"]');
+    const badge2 = view.querySelector('[data-ag-proj-usage-badge="p2"]');
+    assert.equal(badge1.hidden, false);
+    assert.equal(badge1.textContent, '15.0k');
+    assert.equal(badge2.hidden, true);
+    assert.equal(gridEventDetail?.byProject?.p1?.totalTokens, 15000);
+
+    projUsage.dispose();
+  } finally {
+    for (const k of keys) {
+      const desc = prev.get(k);
+      if (desc) Object.defineProperty(globalThis, k, desc);
+      else delete globalThis[k];
+    }
+    w.close();
+  }
+});
+
+test('capsule picker isolates [role="status"] inline-size and soft-intercepts locked/busy model clicks without 3s error', async () => {
+  const pickerCssSrc = readFileSync(path.join(REPO, 'studio', 'modules', 'capsule-picker.mjs'), 'utf8');
+  assert.match(
+    pickerCssSrc,
+    /\.dk-model-options\s*>\s*:is\([^)]*\[role="status"\][^)]*\)\s*\{\s*contain:\s*inline-size;/,
+    'status banner must be inline-size contained so error/busy text never widens the capsule popover'
+  );
+  assert.match(
+    pickerCssSrc,
+    /\.dk-model-options\s*>\s*\[role="status"\]\[data-tone="muted"\]/,
+    'muted tone style exists for busy notice'
+  );
+
+  const { syncModelPicker: realSyncModelPicker } = await import(
+    pathToFileURL(path.join(REPO, 'vendor', 'agy-capsule', 'model_picker.mjs')).href
+  );
+  const { JSDOM } = await import('jsdom');
+  const dom = new JSDOM(
+    '<!doctype html><html data-ag-ux-lang="zh-CN"><body><div id="ag-claude-projects-view" data-open="true"><div class="ag-pd-composer-right"><button id="ag-pd-model-btn" data-ag-pd-model-trigger="true" aria-disabled="true">Gemini 4 Carbon (High)</button></div></div></body></html>',
+    { url: 'http://127.0.0.1/', pretendToBeVisual: true }
+  );
+  const w = dom.window;
+  const d = w.document;
+  const keys = ['window', 'document', 'innerWidth', 'innerHeight', 'localStorage'];
+  const prev = new Map(keys.map((k) => [k, Object.getOwnPropertyDescriptor(globalThis, k)]));
+  globalThis.window = w;
+  globalThis.document = d;
+  globalThis.innerWidth = 1280;
+  globalThis.innerHeight = 900;
+  globalThis.localStorage = w.localStorage;
+  try {
+    let chooseCalls = 0;
+    const modelA = { label: 'Gemini 4 Carbon (High)', value: 1, modelId: 'g4-carbon-high' };
+    const modelB = { label: 'Gemini 4 Neon (High)', value: 2, modelId: 'g4-neon-high' };
+    w.__agClaudeUxBridge = {
+      getProjectModelSelector: () => ({
+        modelOptions: [modelA, modelB],
+        selectedModel: modelA,
+        lockedReason: 'Model cannot be changed while the agent is running',
+        setSelectedModel: () => { chooseCalls += 1; },
+      }),
+    };
+    const root = d.createElement('div');
+    const right = d.querySelector('.ag-pd-composer-right');
+    right.prepend(root);
+    realSyncModelPicker(
+      root,
+      right,
+      { modelEffortPicker: true, showEffortBar: false },
+      { modelEffortPicker: '优化模型胶囊' },
+      () => right
+    );
+    const panel = root.querySelector('.dk-model-options');
+    const status = panel.querySelector('[role="status"]');
+    const neonRow = [...panel.querySelectorAll('button.dk-model-row')].find((r) => r.dataset.label === modelB.label);
+    assert.ok(neonRow, 'target model row rendered');
+    neonRow.click();
+    await new Promise((r) => setTimeout(r, 10));
+
+    assert.equal(chooseCalls, 0, 'does not invoke host setSelectedModel while locked');
+    assert.equal(status.dataset.tone, 'muted', 'uses subtle muted tone instead of red error');
+    assert.equal(status.textContent, '生成中，完成后可切换', 'shows concise localized busy hint immediately');
+
+    // Closing popover clears the transient status immediately
+    const closeEv = new w.Event('beforetoggle');
+    closeEv.newState = 'closed';
+    panel.dispatchEvent(closeEv);
+    assert.equal(status.textContent, '', 'closing popover clears status text');
+    assert.equal(status.dataset.tone, undefined, 'closing popover clears tone attribute');
+
+    root._modelPicker?.dispose();
+  } finally {
+    for (const k of keys) {
+      const desc = prev.get(k);
+      if (desc) Object.defineProperty(globalThis, k, desc);
+      else delete globalThis[k];
+    }
+    w.close();
+  }
+});
+
+test('Project Detail Redux-only model selector (no native trigger in DOM) preserves standalone Orchestrator dock instead of flat Orchestrator (Carbon/Neon) rows', async () => {
+  const { createModelApi } = await import(
+    pathToFileURL(path.join(REPO, 'user', 'src', 'core', 'model-api.mjs')).href
+  );
+  const { syncModelPicker: realSyncModelPicker } = await import(
+    pathToFileURL(path.join(REPO, 'vendor', 'agy-capsule', 'model_picker.mjs')).href
+  );
+  const { JSDOM } = await import('jsdom');
+  const dom = new JSDOM(
+    '<!doctype html><html><body><div id="ag-claude-projects-view" data-open="true"><div class="ag-pd-composer-right"><button id="ag-pd-model-btn" data-ag-pd-model-trigger="true">Gemini 4 Neon High</button></div></div></body></html>',
+    { url: 'http://127.0.0.1/', pretendToBeVisual: true }
+  );
+  const w = dom.window;
+  const d = w.document;
+  const keys = ['window', 'document', 'innerWidth', 'innerHeight', 'localStorage'];
+  const prev = new Map(keys.map((k) => [k, Object.getOwnPropertyDescriptor(globalThis, k)]));
+  globalThis.window = w;
+  globalThis.document = d;
+  globalThis.innerWidth = 1280;
+  globalThis.innerHeight = 900;
+  globalThis.localStorage = w.localStorage;
+  try {
+    const dispatched = [];
+    const reduxStore = {
+      getState: () => ({
+        userStatus: {
+          cascadeModelConfigData: {
+            clientModelConfigs: [
+              { label: 'Gemini 4 Neon (High)', modelId: 'gemini-4-neon-high', modelOrAlias: { choice: { value: 1532 } } },
+              { label: 'Gemini 4 Neon (Medium)', modelId: 'gemini-4-neon-medium', modelOrAlias: { choice: { value: 1533 } } },
+              { label: 'Gemini 4 Carbon (High)', modelId: 'gemini-4-carbon-high', modelOrAlias: { choice: { value: 1427 } } },
+              { label: 'Gemini 4 Carbon (Medium)', modelId: 'gemini-4-carbon-medium', modelOrAlias: { choice: { value: 1437 } } },
+              { label: 'Gemini 4 Hydrogen (High)', modelId: 'gemini-4-hydrogen-high', modelOrAlias: { choice: { value: 1525 } } },
+              { label: 'Claude Opus 5.5 (High)', modelId: 'claude-opus-5-5-high', modelOrAlias: { choice: { value: 1402 } } },
+              { label: 'Orchestrator (Neon)', modelId: 'gemini-pro-orchestrator-neon', modelOrAlias: { choice: { value: 1537 } } },
+              { label: 'Orchestrator (Carbon)', modelId: 'gemini-pro-orchestrator', modelOrAlias: { choice: { value: 1667 } } },
+              { label: 'Orchestrator (Argon)', modelId: 'gemini-pro-orchestrator-argon', modelOrAlias: { choice: { value: 1681 } } },
+            ],
+            clientModelSorts: [
+              {
+                name: 'Recommended',
+                groups: [
+                  {
+                    groupName: '',
+                    modelLabels: [
+                      'Gemini 4 Neon (High)',
+                      'Gemini 4 Neon (Medium)',
+                      'Gemini 4 Carbon (High)',
+                      'Gemini 4 Carbon (Medium)',
+                      'Gemini 4 Hydrogen (High)',
+                      'Orchestrator (Neon)',
+                      'Orchestrator (Carbon)',
+                      'Orchestrator (Argon)',
+                      'Claude Opus 5.5 (High)',
+                    ],
+                  },
+                ],
+              },
+            ],
+            defaultOverrideModelConfig: { modelOrAlias: { choice: { value: 1532 } } },
+          },
+        },
+        modelSelection: {
+          default: { model: 1532 },
+          orchestratorByConversation: {},
+        },
+      }),
+      dispatch: (act) => dispatched.push(act),
+    };
+    const modelApi = createModelApi({
+      L: (_zh, en) => en,
+      later: (fn) => fn(),
+      state: { disposed: false },
+      hooks: { resolveProjectsStoreAndBindings: () => ({ store: reduxStore }) },
+    });
+    const pdBtn = d.getElementById('ag-pd-model-btn');
+    assert.equal(d.querySelector('button[data-testid="model-selector-trigger"]'), null, 'no native trigger in DOM');
+
+    w.__agClaudeUxBridge = {
+      getProjectModelSelector: (btn) => modelApi.discoverModelSelectorApi(btn),
+      getOrchestratorPrefModel: () => modelApi.getOrchestratorPrefModel(),
+    };
+    const root = d.createElement('div');
+    const right = d.querySelector('.ag-pd-composer-right');
+    right.prepend(root);
+    realSyncModelPicker(
+      root,
+      right,
+      { modelEffortPicker: true, showEffortBar: true },
+      { modelEffortPicker: 'Enhanced model capsule', effortLevel: 'Effort level' },
+      () => right
+    );
+    const panel = root.querySelector('.dk-model-options');
+    const rowFamilies = [...panel.querySelectorAll('button.dk-model-row')].map((r) => r.dataset.family);
+    const orchSlot = panel.querySelector('.dk-orch-slot');
+
+    assert.equal(orchSlot.hidden, false, 'standalone Orchestrator dock toggle is visible even without native trigger');
+    assert.equal(
+      rowFamilies.some((f) => /orchestrator/i.test(f)),
+      false,
+      `Orchestrator (Carbon/Neon/Argon) must not leak into flat model rows, got: ${JSON.stringify(rowFamilies)}`
+    );
+    assert.deepEqual(
+      rowFamilies,
+      ['Gemini 4 Neon', 'Gemini 4 Carbon', 'Gemini 4 Hydrogen (High)', 'Claude Opus 5.5 (High)'],
+      'model list stays clean and preserves standalone families'
+    );
+
+    root._modelPicker?.dispose();
+    modelApi.dispose();
+  } finally {
+    for (const k of keys) {
+      const desc = prev.get(k);
+      if (desc) Object.defineProperty(globalThis, k, desc);
+      else delete globalThis[k];
+    }
+    w.close();
+  }
+});
+
+test('Remote/cloud native trigger (orchestratorPick undefined, static Orchestrator (Neon/Carbon/Argon) options) folds into standalone Orchestrator dock and switches cleanly', async () => {
+  const { syncModelPicker: realSyncModelPicker } = await import(
+    pathToFileURL(path.join(REPO, 'vendor', 'agy-capsule', 'model_picker.mjs')).href
+  );
+  const { JSDOM } = await import('jsdom');
+  const dom = new JSDOM(
+    '<!doctype html><html><body><div class="footer"><button data-testid="model-selector-trigger">Orchestrator (Neon)</button></div></body></html>',
+    { url: 'http://127.0.0.1/', pretendToBeVisual: true }
+  );
+  const w = dom.window;
+  const d = w.document;
+  const keys = ['window', 'document', 'innerWidth', 'innerHeight', 'localStorage', 'requestAnimationFrame'];
+  const prev = new Map(keys.map((k) => [k, Object.getOwnPropertyDescriptor(globalThis, k)]));
+  globalThis.window = w;
+  globalThis.document = d;
+  globalThis.innerWidth = 1280;
+  globalThis.innerHeight = 900;
+  globalThis.localStorage = w.localStorage;
+  globalThis.requestAnimationFrame = (cb) => setTimeout(cb, 0);
+  try {
+    const modelOptions = [
+      { label: 'Gemini 4 Neon (High)', value: 1532, modelId: 'gemini-4-neon-high' },
+      { label: 'Gemini 4 Neon (Medium)', value: 1533, modelId: 'gemini-4-neon-medium' },
+      { label: 'Gemini 4 Carbon (High)', value: 1427, modelId: 'gemini-4-carbon-high' },
+      { label: 'Gemini 4 Carbon (Medium)', value: 1437, modelId: 'gemini-4-carbon-medium' },
+      { label: 'Gemini 4 Hydrogen (High)', value: 1525, modelId: 'gemini-4-hydrogen-high' },
+      { label: 'Claude Opus 5.5 (High)', value: 1402, modelId: 'claude-opus-5-5-high' },
+      { label: 'Orchestrator (Neon)', value: 1537, modelId: 'gemini-pro-orchestrator-neon' },
+      { label: 'Orchestrator (Carbon)', value: 1667, modelId: 'gemini-pro-orchestrator' },
+      { label: 'Orchestrator (Argon)', value: 1681, modelId: 'gemini-pro-orchestrator-argon' },
+    ];
+    let selectedModel = modelOptions[6]; // Orchestrator (Neon)
+    const selectedCalls = [];
+    const selectorObj = {
+      get selectedModel() { return selectedModel; },
+      modelOptions,
+      groups: [{ options: modelOptions }],
+      orchestratorPick: undefined,
+      orchestratorPlanners: [],
+      bestOfNConfig: { isBestOfNEnabled: false },
+      setSelectedModel(opt) {
+        selectedCalls.push(opt.label);
+        selectedModel = opt;
+      },
+    };
+    const trig = d.querySelector('button[data-testid="model-selector-trigger"]');
+    trig.__reactFiber$test = {
+      memoizedProps: { placement: 'top-start', conversationId: undefined },
+      return: { memoizedProps: { value: selectorObj }, return: null },
+    };
+    const footer = d.querySelector('.footer');
+    const root = d.createElement('div');
+    footer.prepend(root);
+    realSyncModelPicker(
+      root,
+      footer,
+      { modelEffortPicker: true, showEffortBar: true },
+      { modelEffortPicker: 'Enhanced model capsule', effortLevel: 'Effort level' },
+      () => footer
+    );
+
+    const panel = root.querySelector('.dk-model-options');
+    const rowFamilies = [...panel.querySelectorAll('button.dk-model-row')].map((r) => r.dataset.family);
+    const orchSlot = panel.querySelector('.dk-orch-slot');
+    const orchBtn = orchSlot.querySelector('button');
+
+    assert.equal(orchSlot.hidden, false, 'Orchestrator dock toggle is visible for static remote variants');
+    assert.equal(orchBtn.getAttribute('aria-checked'), 'true', 'Orchestrator dock shows ON when Orchestrator (Neon) is selected');
+    assert.equal(panel.querySelector('.agy-effort'), null, 'omits blank single-tier Effort bar for static remote Orchestrator');
+    assert.equal(
+      rowFamilies.some((f) => /orchestrator/i.test(f)),
+      false,
+      `Static Orchestrator (Neon/Carbon/Argon) must not appear as flat rows, got: ${JSON.stringify(rowFamilies)}`
+    );
+
+    // Clicking Carbon while Orchestrator is ON switches directly to native static Orchestrator (Carbon)
+    const carbonRow = [...panel.querySelectorAll('button.dk-model-row')].find((r) => r.dataset.family === 'Gemini 4 Carbon');
+    assert.ok(carbonRow, 'Gemini 4 Carbon row exists');
+    carbonRow.click();
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(selectedCalls.at(-1), 'Orchestrator (Carbon)', 'clicking Carbon while Orchestrator ON picks Orchestrator (Carbon)');
+
+    // Toggling Orchestrator OFF switches to standalone Gemini 4 Carbon (Medium) and reveals Effort bar
+    orchBtn.click();
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(selectedCalls.at(-1), 'Gemini 4 Carbon (Medium)', 'toggling Orchestrator OFF switches to standalone Carbon');
+    assert.ok(panel.querySelector('.agy-effort'), 'Effort bar appears once switched to standalone multi-tier Carbon');
+
+    // Toggling Orchestrator back ON switches back to Orchestrator (Carbon)
+    orchBtn.click();
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(selectedCalls.at(-1), 'Orchestrator (Carbon)', 'toggling Orchestrator ON re-selects Orchestrator (Carbon)');
+
+    root._modelPicker?.dispose();
+  } finally {
+    for (const k of keys) {
+      const desc = prev.get(k);
+      if (desc) Object.defineProperty(globalThis, k, desc);
+      else delete globalThis[k];
+    }
+    w.close();
+  }
+});
+
+test('footer-capsules.css positions conversation scrollbar left of Overview, bounds track, and removes 75cqh bottom spacer', () => {
+  const css = readFileSync(FOOTER_CSS_PATH, 'utf8');
+  assert.equal(css.includes(':has('), false, 'footer-capsules.css must contain zero :has() rules');
+  assert.ok(
+    css.includes('right: calc(var(--overview-panel-reserve, 0px) + var(--overview-panel-gutter-reserve, 0px) + 4px) !important;'),
+    'scrollbar right offset tracks Overview reserve & gutter reserve'
+  );
+  assert.ok(css.includes('top: 6px !important;') && css.includes('bottom: 8px !important;'), 'track vertical insets set');
+  assert.ok(css.includes('overflow: hidden !important;') && css.includes('align-items: flex-start !important;'), 'track clips and top-aligns thumb');
+  assert.match(
+    css,
+    /\[data-testid="autoscroll-viewport"\]\s+div\.flex\.items-start\[style\*="75cqh"\]\s*\{[\s\S]*?min-height:\s*0\s*!important;/,
+    'clears excessive 75cqh bottom blank-space min-height on latest turn'
+  );
+});
+
+test('scrollbar-clamp clamps thumb geometry, overscroll bounds, and ScrollTimeline keyframes without extra MutationObserver', async () => {
+  const { JSDOM } = await import('jsdom');
+  const dom = new JSDOM(
+    `<!doctype html><html><body>
+      <div data-testid="conversation-view">
+        <div data-autoscroll-overlay-host="true">
+          <div data-testid="autoscroll-viewport"></div>
+          <div data-testid="overlay-scrollbar" data-orientation="vertical">
+            <div data-testid="overlay-scrollbar-thumb" style="width: 6px; height: 280px; transform: translate(0px, 600px);"></div>
+          </div>
+        </div>
+      </div>
+    </body></html>`,
+    { url: 'http://127.0.0.1/', pretendToBeVisual: true }
+  );
+  const w = dom.window;
+  const d = w.document;
+  const keys = ['window', 'document', 'MutationObserver', 'requestAnimationFrame', 'cancelAnimationFrame'];
+  const prev = new Map(keys.map((k) => [k, Object.getOwnPropertyDescriptor(globalThis, k)]));
+
+  let observerCreations = 0;
+  class CountingMutationObserver {
+    constructor() { observerCreations += 1; }
+    observe() {}
+    disconnect() {}
+    takeRecords() { return []; }
+  }
+  let nextRafId = 1;
+  const rafQueue = new Map();
+  const cancelledRafIds = [];
+  globalThis.window = w;
+  globalThis.document = d;
+  globalThis.MutationObserver = CountingMutationObserver;
+  globalThis.requestAnimationFrame = (cb) => {
+    const id = nextRafId++;
+    rafQueue.set(id, cb);
+    return id;
+  };
+  globalThis.cancelAnimationFrame = (id) => {
+    cancelledRafIds.push(id);
+    rafQueue.delete(id);
+  };
+  const flushRaf = () => {
+    const pending = Array.from(rafQueue.entries());
+    rafQueue.clear();
+    for (const [, cb] of pending) cb(0);
+  };
+
+  try {
+    const vp = d.querySelector('[data-testid="autoscroll-viewport"]');
+    const track = d.querySelector('[data-testid="overlay-scrollbar"]');
+    const thumb = d.querySelector('[data-testid="overlay-scrollbar-thumb"]');
+
+    let vpScrollTop = 1000;
+    Object.defineProperties(vp, {
+      clientHeight: { value: 600, configurable: true },
+      scrollHeight: { value: 2400, configurable: true },
+      scrollTop: { get: () => vpScrollTop, set: (v) => { vpScrollTop = v; }, configurable: true },
+    });
+    Object.defineProperty(track, 'clientHeight', { value: 586, configurable: true });
+
+    let latestKeyframes = [
+      { transform: 'translate(0px, 0px)' },
+      { transform: 'translate(0px, 720px)' },
+    ];
+    thumb.getAnimations = () => [{
+      effect: {
+        getKeyframes: () => latestKeyframes,
+        setKeyframes: (kfs) => { latestKeyframes = kfs; },
+      },
+    }];
+
+    // Direct clamp checks normal, negative overscroll, and positive overscroll
+    // expected thumbH = round((600/2400)*586) = 147, maxOffset = 586 - 147 = 439
+    assert.equal(clampOverlayScrollbar(track, vp), true);
+    assert.equal(thumb.style.height, '147px');
+    // ratio = 1000 / 1800 -> round(439 * 1000/1800) = 244
+    assert.equal(thumb.style.transform, 'translate(0px, 244px)');
+    assert.equal(latestKeyframes[1].transform, 'translate(0px, 439px)');
+
+    vpScrollTop = -120;
+    clampOverlayScrollbar(track, vp);
+    assert.match(thumb.style.transform, /^translate\(0px(?:,\s*0px)?\)$/);
+
+    vpScrollTop = 9999;
+    clampOverlayScrollbar(track, vp);
+    assert.equal(thumb.style.transform, 'translate(0px, 439px)');
+
+    // Runtime binds via MagaKernel read/write lifecycle, reacts to scroll, creates 0 MutationObservers, and disposes cleanly
+    vpScrollTop = 900;
+    const rt = createScrollbarClampRuntime();
+    const pairs = rt.read();
+    assert.equal(pairs.length, 1);
+
+    thumb.style.transform = 'translate(0px, 999px)';
+    rt.write(null, pairs);
+    assert.equal(thumb.style.transform, 'translate(0px, 220px)');
+
+    // Simulate native i2b mutating thumb synchronously on rapid scroll/pointermove; RAF coalesces into 1 callback
+    vpScrollTop = 1800;
+    vp.dispatchEvent(new w.Event('scroll'));
+    track.dispatchEvent(new w.Event('pointermove'));
+    vp.dispatchEvent(new w.Event('scroll'));
+    assert.equal(rafQueue.size, 1, 'rapid scroll/pointermove events coalesce into a single RAF callback');
+    thumb.style.transform = 'translate(0px, 850px)';
+    flushRaf();
+    assert.equal(thumb.style.transform, 'translate(0px, 439px)');
+    assert.equal(observerCreations, 0, 'scrollbar-clamp must create zero MutationObserver instances');
+
+    // Pending RAF handle is cancelled cleanly on dispose
+    vpScrollTop = 0;
+    vp.dispatchEvent(new w.Event('scroll'));
+    assert.equal(rafQueue.size, 1, 'scroll queues a RAF callback');
+    rt.dispose();
+    assert.equal(cancelledRafIds.length, 1, 'dispose cancels pending RAF handle');
+    assert.equal(rafQueue.size, 0, 'RAF queue is cleared after dispose');
+    thumb.style.transform = 'translate(0px, 999px)';
+    vp.dispatchEvent(new w.Event('scroll'));
+    flushRaf();
+    assert.equal(thumb.style.transform, 'translate(0px, 999px)', 'listeners removed after dispose');
+  } finally {
+    for (const k of keys) {
+      const desc = prev.get(k);
+      if (desc) Object.defineProperty(globalThis, k, desc);
+      else delete globalThis[k];
+    }
+    w.close();
+  }
+});
+
+test('project-usage.mjs re-renders detail card & hero badge on zh <-> en UI language switch', async () => {
+  const { JSDOM } = await import('jsdom');
+  const dNow = new Date();
+  const todayStr = `${dNow.getFullYear()}-${String(dNow.getMonth() + 1).padStart(2, '0')}-${String(dNow.getDate()).padStart(2, '0')}`;
+  const dom = new JSDOM(
+    `<!doctype html><html data-ag-ux-lang="zh-CN"><body>
+      <section id="ag-claude-projects-view" data-open="true">
+        <div class="ag-pd-hero"><span id="agy-pd-hero-usage" data-maga-own="1" class="ag-pd-meta-chip ag-pd-meta-usage" hidden></span></div>
+        <aside class="ag-pd-right">
+          <div id="agy-pd-usage-slot" data-maga-own="1" data-ag-pd-proj-id="p-lang" data-ag-pd-chat-ids="c1"></div>
+        </aside>
+      </section>
+    </body></html>`,
+    { url: 'http://127.0.0.1/' }
+  );
+  const w = dom.window;
+  const d = w.document;
+  const keys = ['window', 'document', 'location', 'localStorage', 'CustomEvent'];
+  const prev = new Map(keys.map((k) => [k, Object.getOwnPropertyDescriptor(globalThis, k)]));
+  globalThis.window = w;
+  globalThis.document = d;
+  globalThis.location = w.location;
+  globalThis.localStorage = w.localStorage;
+  globalThis.CustomEvent = w.CustomEvent;
+
+  try {
+    w.__agProjectCall = async (action) => {
+      if (action === 'getUsageStats') {
+        return {
+          ok: true,
+          generatedAt: Date.now(),
+          globalTotalTokens: 10000,
+          unread: 0,
+          conversationCount: 1,
+          byChat: { c1: { totalTokens: 5000, requests: 2 } },
+          undated: { requests: 0, uncached: 0, cacheRead: 0, cacheWrite: 0, output: 0 },
+          days: [
+            {
+              date: todayStr,
+              requests: 2,
+              uncached: 1000,
+              cacheRead: 3000,
+              cacheWrite: 0,
+              output: 1000,
+              models: [{ name: 'Gemini 4 Neon (High)', requests: 2, uncached: 1000, cacheRead: 3000, cacheWrite: 0, output: 1000 }],
+            },
+          ],
+        };
+      }
+      return { ok: false };
+    };
+    const studioPrefs = { get: () => ({ overviewUsageDefaultPeriod: 'day' }), subscribe: () => () => {} };
+    const projUsage = createProjectUsageRuntime({ motionThemes: () => motionThemes, studioPrefs });
+
+    projUsage.sync();
+    await new Promise((r) => setTimeout(r, 20));
+    const card = d.getElementById('agy-pd-usage-card');
+    const hero = d.getElementById('agy-pd-hero-usage');
+    assert.match(card.querySelector('.ag-ov-hdr-toggle')?.textContent || '', /项目用量/);
+    assert.match(hero.textContent || '', /用量/);
+
+    d.documentElement.setAttribute('data-ag-ux-lang', 'en');
+    projUsage.sync();
+    assert.match(card.querySelector('.ag-ov-hdr-toggle')?.textContent || '', /Project Usage/);
+    assert.match(hero.textContent || '', /Usage/);
+
+    d.documentElement.setAttribute('data-ag-ux-lang', 'zh-CN');
+    projUsage.sync();
+    assert.match(card.querySelector('.ag-ov-hdr-toggle')?.textContent || '', /项目用量/);
+    assert.match(hero.textContent || '', /用量/);
+
+    projUsage.dispose();
+  } finally {
+    for (const k of keys) {
+      const desc = prev.get(k);
+      if (desc) Object.defineProperty(globalThis, k, desc);
+      else delete globalThis[k];
+    }
+    w.close();
+  }
+});
+
+test('overview-usage.css places #agy-pd-usage-card compact chart override after shared :is() plot rule', () => {
+  const usageCss = readFileSync(path.join(REPO, 'studio', 'styles', 'overview-usage.css'), 'utf8');
+  const sharedPlotRe = /:is\(#ag-claude-ov-sections #agy-ov-usage-card,\s*#ag-claude-projects-view #agy-pd-usage-card\)\s*\.agy-usage-plot\s*\{[^}]*height:\s*78px/;
+  const pdCompactRe = /#ag-claude-projects-view #agy-pd-usage-card \.agy-usage-plot\s*\{\s*height:\s*62px;\s*\}/;
+  const sharedMatch = sharedPlotRe.exec(usageCss);
+  const pdMatch = pdCompactRe.exec(usageCss);
+  assert.ok(sharedMatch, 'shared plot rule exists');
+  assert.ok(pdMatch, 'project detail compact 62px plot override exists');
+  assert.ok(pdMatch.index > sharedMatch.index, 'compact 62px override must come after shared 78px rule with equal specificity');
+});
+
+test('normalizeNumstatPath preserves directory prefixes and openExternalUrl rejects invalid URLs', async () => {
+  const { normalizeNumstatPath } = await import(
+    pathToFileURL(path.join(REPO, 'core', 'daemon', 'overview-skills.mjs')).href
+  );
+  const { openExternalUrl } = await import(
+    pathToFileURL(path.join(REPO, 'core', 'daemon', 'projects.mjs')).href
+  );
+
+  assert.equal(normalizeNumstatPath('src/{a.js => b.js}'), 'src/b.js');
+  assert.equal(normalizeNumstatPath('src/{ => sub}/a.js'), 'src/sub/a.js');
+  assert.equal(normalizeNumstatPath('src/{sub => }/a.js'), 'src/a.js');
+  assert.equal(normalizeNumstatPath('{old => new}/index.mjs'), 'new/index.mjs');
+  assert.equal(normalizeNumstatPath('old/x.js => new/x.js'), 'new/x.js');
+  assert.equal(normalizeNumstatPath('studio/core/dom.mjs'), 'studio/core/dom.mjs');
+
+  assert.equal(openExternalUrl('javascript:alert(1)').ok, false);
+  assert.equal(openExternalUrl('file:///etc/passwd').ok, false);
+  assert.equal(openExternalUrl('http:///missing-host').ok, false);
+  assert.equal(openExternalUrl('').ok, false);
+});
+
+test('model-api.mjs invalidates cachedNativeMeta when Redux cascadeModelConfigData changes', async () => {
+  const { createModelApi } = await import(
+    pathToFileURL(path.join(REPO, 'user', 'src', 'core', 'model-api.mjs')).href
+  );
+  const { JSDOM } = await import('jsdom');
+  const dom = new JSDOM(
+    `<!doctype html><html><body>
+      <button data-testid="model-selector-trigger">Gemini 4 Neon (High)</button>
+      <button id="ag-pd-model-btn" data-ag-pd-model-trigger="true">Gemini 4 Neon High</button>
+    </body></html>`,
+    { url: 'http://127.0.0.1/' }
+  );
+  const w = dom.window;
+  const d = w.document;
+  const keys = ['window', 'document'];
+  const prev = new Map(keys.map((k) => [k, Object.getOwnPropertyDescriptor(globalThis, k)]));
+  globalThis.window = w;
+  globalThis.document = d;
+
+  try {
+    const accountAState = {
+      userStatus: {
+        cascadeModelConfigData: {
+          clientModelConfigs: [
+            { label: 'Gemini 4 Neon (High)', modelId: 'gemini-4-neon-high', modelOrAlias: { choice: { value: 1532 } } },
+            { label: 'Orchestrator (Neon)', modelId: 'gemini-pro-orchestrator-neon', modelOrAlias: { choice: { value: 1537 } } },
+          ],
+          clientModelSorts: [{ groups: [{ groupName: 'Account A Group', modelLabels: ['Gemini 4 Neon (High)'] }] }],
+          defaultOverrideModelConfig: { modelOrAlias: { choice: { value: 1532 } } },
+        },
+      },
+      modelSelection: { default: { model: 1532 }, orchestratorByConversation: {} },
+    };
+    const accountBState = {
+      userStatus: {
+        cascadeModelConfigData: {
+          clientModelConfigs: [
+            { label: 'Claude Opus 5.5 (High)', modelId: 'claude-opus-5-5-high', modelOrAlias: { choice: { value: 2402 } } },
+            { label: 'Orchestrator (Carbon)', modelId: 'gemini-pro-orchestrator', modelOrAlias: { choice: { value: 2667 } } },
+          ],
+          clientModelSorts: [{ groups: [{ groupName: 'Account B Group', modelLabels: ['Claude Opus 5.5 (High)'] }] }],
+          defaultOverrideModelConfig: { modelOrAlias: { choice: { value: 2402 } } },
+        },
+      },
+      modelSelection: { default: { model: 2402 }, orchestratorByConversation: {} },
+    };
+
+    let activeState = accountAState;
+    const reduxStore = {
+      getState: () => activeState,
+      dispatch: () => {},
+    };
+    const nativeBtn = d.querySelector('button[data-testid="model-selector-trigger"]');
+    const pdBtn = d.getElementById('ag-pd-model-btn');
+    nativeBtn.__reactFiber$test = {
+      memoizedProps: {
+        value: {
+          selectedModel: { label: 'Gemini 4 Neon (High)', value: 1532, modelId: 'gemini-4-neon-high' },
+          modelOptions: [
+            { label: 'Gemini 4 Neon (High)', value: 1532, modelId: 'gemini-4-neon-high' },
+            { label: 'Orchestrator (Neon)', value: 1537, modelId: 'gemini-pro-orchestrator-neon' },
+          ],
+          groups: [{ title: 'Account A Group', options: [{ label: 'Gemini 4 Neon (High)', value: 1532 }] }],
+          orchestratorPlanners: [{ label: 'Account A Planner (High)', value: 9001, modelId: 'acc-a-planner' }],
+          orchestratorDefaultPlanner: { label: 'Account A Planner (High)', value: 9001, modelId: 'acc-a-planner' },
+          setSelectedModel: () => {},
+        },
+      },
+      return: null,
+    };
+
+    const modelApi = createModelApi({
+      L: (_zh, en) => en,
+      later: (fn) => fn(),
+      state: { disposed: false },
+      hooks: { resolveProjectsStoreAndBindings: () => ({ store: reduxStore }) },
+    });
+
+    // Populate cachedNativeMeta while Account A is active
+    const apiA = modelApi.discoverModelSelectorApi(nativeBtn);
+    assert.equal(apiA.groups[0].title, 'Account A Group');
+
+    // Switch account in Redux & remove native trigger from DOM (Project Detail fallback)
+    nativeBtn.remove();
+    activeState = accountBState;
+
+    const pdApiB = modelApi.discoverModelSelectorApi(pdBtn);
+    assert.deepEqual(
+      pdApiB.groups.map((g) => g.title),
+      ['Account B Group'],
+      'discoverModelSelectorApi invalidates stale Account A groups after Redux config change'
+    );
+    assert.equal(
+      pdApiB.orchestratorDefaultPlanner?.label,
+      'Claude Opus 5.5 (High)',
+      'discoverModelSelectorApi invalidates stale Account A default planner'
+    );
+    assert.equal(
+      pdApiB.orchestratorPlanners?.some((p) => p.label === 'Account A Planner (High)'),
+      false,
+      'stale Account A planner does not leak into Account B'
+    );
+
+    const rxApiB = modelApi.buildReduxModelSelectorApi();
+    assert.equal(rxApiB.orchestratorDefaultPlanner?.label, 'Claude Opus 5.5 (High)');
+
+    modelApi.dispose();
+  } finally {
+    for (const k of keys) {
+      const desc = prev.get(k);
+      if (desc) Object.defineProperty(globalThis, k, desc);
+      else delete globalThis[k];
+    }
+    w.close();
+  }
+});
+
+test('conv-topbar.mjs handles malformed percent-encoding in /c/%E0%A4%A without throwing', async () => {
+  const { createConvProjectTopbar } = await import(
+    pathToFileURL(path.join(REPO, 'user', 'src', 'modules', 'projects', 'conv-topbar.mjs')).href
+  );
+  const { JSDOM } = await import('jsdom');
+  const dom = new JSDOM(
+    `<!doctype html><html><body>
+      <div class="@container/titlebar">
+        <div></div>
+        <div data-testid="titlebar-service-announcement-slot"></div>
+      </div>
+    </body></html>`,
+    { url: 'http://127.0.0.1/c/%E0%A4%A' }
+  );
+  const w = dom.window;
+  const d = w.document;
+  const keys = ['window', 'document'];
+  const prev = new Map(keys.map((k) => [k, Object.getOwnPropertyDescriptor(globalThis, k)]));
+  globalThis.window = w;
+  globalThis.document = d;
+
+  try {
+    let curPathname = '/c/%E0%A4%A';
+    const summaries = {
+      '%E0%A4%A': { projectId: 'p1' },
+    };
+    const topbar = createConvProjectTopbar({
+      FEAT: { projects: true, i18n: false },
+      L: (_zh, en) => en,
+      rtState: { disposed: false, projectsViewOpen: false },
+      pState: { projectsContextMap: {}, projectsWorkspaceStatusMap: {} },
+      escapeHtml: (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'),
+      later: (fn) => fn(),
+      getActiveCascadeId: () => '',
+      decodeFileUriToPath: (u) => u,
+      formatShortHomePath: (p) => p,
+      resolveProjectsStoreAndBindings: () => ({
+        store: { getState: () => ({ trajectorySummaries: { summaries } }) },
+        bindings: { router: { state: { location: { pathname: curPathname } } } },
+      }),
+      collectNativeProjects: () => [{ id: 'p1', name: 'Demo', dirPath: '/tmp/demo', chats: [], isRemote: false }],
+      openProjectsView: () => {},
+      startNewChatInProject: () => {},
+      showProjectsFloatingNotice: () => {},
+    });
+
+    assert.doesNotThrow(() => topbar.sync(), 'malformed %E0%A4%A route must not throw');
+    const bar = d.getElementById('agy-conv-project-bar');
+    assert.ok(bar, 'falls back to raw conversation id and renders topbar');
+    assert.match(bar.textContent || '', /Demo/);
+
+    curPathname = '/c/%E0%A4%A-unknown';
+    assert.doesNotThrow(() => topbar.sync(), 'malformed %E0%A4%A route with no matching summary must not throw');
+    assert.equal(d.getElementById('agy-conv-project-bar'), null);
+
+    topbar.teardown();
+  } finally {
+    for (const k of keys) {
+      const desc = prev.get(k);
+      if (desc) Object.defineProperty(globalThis, k, desc);
+      else delete globalThis[k];
+    }
+    w.close();
+  }
+});
+
+test('readGitCommitDetailAsync rejects tree/blob hashes via ^{commit} and parseNumstatZ handles -z renames and special paths', async () => {
+  const { readGitCommitDetailAsync, parseNumstatZ } = await import(
+    pathToFileURL(path.join(REPO, 'core', 'daemon', 'overview-skills.mjs')).href
+  );
+  const treeHash = execFileSync('git', ['-C', REPO, 'rev-parse', 'HEAD^{tree}'], { encoding: 'utf8' }).trim();
+  const blobHash = execFileSync('git', ['-C', REPO, 'rev-parse', 'HEAD:package.json'], { encoding: 'utf8' }).trim();
+
+  const treeRes = await readGitCommitDetailAsync(REPO, treeHash);
+  assert.equal(treeRes.ok, false, 'tree hash must be rejected by ^{commit}');
+  assert.equal(treeRes.error, 'commit_not_found');
+
+  const blobRes = await readGitCommitDetailAsync(REPO, blobHash);
+  assert.equal(blobRes.ok, false, 'blob hash must be rejected by ^{commit}');
+  assert.equal(blobRes.error, 'commit_not_found');
+
+  const sampleZ =
+    '\n12\t3\tsrc/中文 file.js\0' +
+    '5\t1\t\0docs/old name.md\0docs/new "quoted" name.md\0' +
+    '\r\n-\t-\tassets/logo final.png\0' +
+    '\0' +
+    '7\t2\t\0src/{old}/a.mjs\0src/new dir/a.mjs\0';
+  assert.deepEqual(parseNumstatZ(sampleZ), [
+    { path: 'src/中文 file.js', added: 12, deleted: 3 },
+    { path: 'docs/new "quoted" name.md', added: 5, deleted: 1 },
+    { path: 'assets/logo final.png', added: 0, deleted: 0 },
+    { path: 'src/new dir/a.mjs', added: 7, deleted: 2 },
+  ]);
 });

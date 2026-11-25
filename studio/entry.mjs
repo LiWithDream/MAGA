@@ -8,7 +8,9 @@ import { createMagaKernel } from './core/kernel.mjs';
 import { createCapsulePickerRuntime, shortenEffortBadge, shortenModelName } from './modules/capsule-picker.mjs';
 import { createFooterUnifiedRuntime } from './modules/footer-unified.mjs';
 import { createOverviewUsageRuntime } from './modules/overview-usage.mjs';
+import { createProjectUsageRuntime } from './modules/project-usage.mjs';
 import { createResumeBannerRuntime } from './modules/resume-banner.mjs';
+import { createScrollbarClampRuntime } from './modules/scrollbar-clamp.mjs';
 import { createStudioPrefsRuntime } from './modules/studio-prefs.mjs';
 import { createStudioSettingsRuntime } from './modules/studio-settings.mjs';
 import { createSubagentFooterRuntime } from './modules/subagent-footer.mjs';
@@ -66,7 +68,9 @@ import { motionThemes } from '../vendor/agy-capsule/motion_themes.mjs';
   });
 
   const usage = createOverviewUsageRuntime({ motionThemes, studioPrefs });
+  const projectUsage = createProjectUsageRuntime({ motionThemes, studioPrefs });
   const resumeBanner = createResumeBannerRuntime({ studioPrefs });
+  const scrollbarClamp = createScrollbarClampRuntime();
   const subagentFooter = createSubagentFooterRuntime({ motionThemes, shortenModelName, shortenEffortBadge, studioPrefs });
   const studioSettings = createStudioSettingsRuntime({
     studioPrefs,
@@ -102,6 +106,7 @@ import { motionThemes } from '../vendor/agy-capsule/motion_themes.mjs';
 
   kernel.register({ id: 'subagent-footer', ...subagentFooter });
   kernel.register({ id: 'resume-banner', ...resumeBanner });
+  kernel.register({ id: 'scrollbar-clamp', ...scrollbarClamp });
   kernel.register({
     id: 'capsule-picker',
     topics: picker.topics,
@@ -111,6 +116,7 @@ import { motionThemes } from '../vendor/agy-capsule/motion_themes.mjs';
   });
   kernel.register({ id: 'footer-unified', ...footer });
   kernel.register({ id: 'overview-usage', ...usage });
+  kernel.register({ id: 'project-usage', ...projectUsage });
   kernel.register({ id: 'studio-settings', ...studioSettings });
 
   const offPrefsSync = studioPrefs.subscribe((_, reason) => {

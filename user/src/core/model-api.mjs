@@ -14,6 +14,8 @@ export function createModelApi(rt) {
   let cachedPrefStore = null;
   let prefStoreUnsub = null;
   let cachedExecutorRoleBaseIds = null;
+  let cachedOrchestratorRoleBaseIds = null;
+  let cachedNativeMeta = null;
   let executorRolesFetchInFlight = false;
   let executorRolesLastTryTs = 0;
 
@@ -132,14 +134,114 @@ export function createModelApi(rt) {
     return planners[0];
   }
 
-  function buildReduxModelSelectorApi() {
+  function matchModelBaseId(modelId, baseIds) {
+    if (typeof modelId !== 'string' || !modelId || !Array.isArray(baseIds) || !baseIds.length) return false;
+    const lower = modelId.toLowerCase();
+    return baseIds.some((base) => {
+      const b = String(base || '').trim().toLowerCase();
+      return Boolean(b && (lower === b || lower.startsWith(`${b}-`)));
+    });
+  }
+
+  function synthesizeReduxOrchestratorPlanners(modelOptions, orchOpts) {
+    if (!Array.isArray(modelOptions) || !modelOptions.length) return [];
+    if (!Array.isArray(orchOpts) || !orchOpts.length) return [];
+    const usableNonOrch = modelOptions.filter((o) => o && !o.disabled && !isOrchestratorModelOpt(o));
+    if (!usableNonOrch.length) return [];
+
+    // 1. Prefer cached native planner list re-bound to fresh Redux option objects
+    if (cachedNativeMeta && Array.isArray(cachedNativeMeta.orchestratorPlanners) && cachedNativeMeta.orchestratorPlanners.length) {
+      const byVal = new Map();
+      const byLabel = new Map();
+      for (const o of usableNonOrch) {
+        if (o.value !== undefined && !byVal.has(o.value)) byVal.set(o.value, o);
+        if (o.label && !byLabel.has(o.label)) byLabel.set(o.label, o);
+      }
+      const rebound = [];
+      const seen = new Set();
+      for (const p of cachedNativeMeta.orchestratorPlanners) {
+        if (!p) continue;
+        const hit = (p.value !== undefined && byVal.get(p.value)) || (p.label && byLabel.get(p.label)) || null;
+        if (hit && !seen.has(hit)) {
+          seen.add(hit);
+          rebound.push(hit);
+        }
+      }
+      if (rebound.length) return rebound;
+    }
+
+    // 2. Exact match from Mendel orchestrator-model-roles.orchestrators
+    ensureOrchestratorRolesLoaded();
+    if (Array.isArray(cachedOrchestratorRoleBaseIds) && cachedOrchestratorRoleBaseIds.length) {
+      const byMendel = usableNonOrch.filter((o) => matchModelBaseId(o.modelId, cachedOrchestratorRoleBaseIds));
+      if (byMendel.length) return byMendel;
+    }
+
+    // 3. Cold-start deterministic fallback before async Mendel resolves:
+    //    match family tokens advertised by Orchestrator (<Family>) entries + Claude Opus,
+    //    while excluding known executors (Hydrogen / Flash / Sonnet / GPT-OSS / Mendel executors).
+    const advertisedTokens = new Set();
+    for (const o of orchOpts) {
+      const m = String(o.label || '').match(/\(([^)]+)\)/);
+      if (m && m[1]) advertisedTokens.add(m[1].trim().toLowerCase());
+      const idMatch = String(o.modelId || '').match(/^gemini-pro-orchestrator-(.+)$/i);
+      if (idMatch && idMatch[1]) advertisedTokens.add(idMatch[1].trim().toLowerCase());
+    }
+    const isLikelyExecutor = (o) =>
+      matchModelBaseId(o.modelId, cachedExecutorRoleBaseIds) ||
+      /\b(hydrogen|flash|sonnet|gpt-oss)\b/i.test(`${o.modelId || ''} ${o.label || ''}`);
+    const inferred = usableNonOrch.filter((o) => {
+      if (isLikelyExecutor(o)) return false;
+      const hay = `${o.modelId || ''} ${o.label || ''}`.toLowerCase();
+      if (/\bopus\b/.test(hay)) return true;
+      for (const tok of advertisedTokens) {
+        if (tok && hay.includes(tok)) return true;
+      }
+      return false;
+    });
+    return inferred.length ? inferred : usableNonOrch.filter((o) => !isLikelyExecutor(o));
+  }
+
+  function getReduxCascadeConfigData() {
     try {
       const resolver = hooks.resolveProjectsStoreAndBindings;
       const { store } = typeof resolver === 'function' ? resolver() : { store: null };
-      if (!store || typeof store.getState !== 'function') return null;
+      if (!store || typeof store.getState !== 'function') return { store: null, st: null, cfgData: null };
       const st = store.getState();
-      const rawCfgs =
-        (st && st.userStatus && st.userStatus.cascadeModelConfigData && st.userStatus.cascadeModelConfigData.clientModelConfigs) || [];
+      const cfgData = (st && st.userStatus && st.userStatus.cascadeModelConfigData) || null;
+      return { store, st, cfgData };
+    } catch {
+      return { store: null, st: null, cfgData: null };
+    }
+  }
+
+  function computeReduxOptionsSignature(cfgData) {
+    if (!cfgData || typeof cfgData !== 'object') return '';
+    const rawCfgs = Array.isArray(cfgData.clientModelConfigs) ? cfgData.clientModelConfigs : [];
+    const labels = [];
+    for (const c of rawCfgs) {
+      if (c && c.label) labels.push(String(c.label));
+    }
+    const overrideVal = cfgData.defaultOverrideModelConfig?.modelOrAlias?.choice?.value;
+    if (!labels.length && overrideVal === undefined) return '';
+    return `${overrideVal === undefined ? '' : String(overrideVal)}|${labels.join('\x1f')}`;
+  }
+
+  function invalidateNativeMetaIfReduxChanged(cfgData, hasStore = true) {
+    if (!hasStore) return '';
+    const sig = computeReduxOptionsSignature(cfgData);
+    if (cachedNativeMeta && cachedNativeMeta.reduxSig !== sig) {
+      cachedNativeMeta = null;
+    }
+    return sig;
+  }
+
+  function buildReduxModelSelectorApi() {
+    try {
+      const { store, st, cfgData } = getReduxCascadeConfigData();
+      if (!store) return null;
+      invalidateNativeMetaIfReduxChanged(cfgData, true);
+      const rawCfgs = (cfgData && cfgData.clientModelConfigs) || [];
       if (!Array.isArray(rawCfgs) || rawCfgs.length === 0) return null;
       const modelOptions = [];
       for (const c of rawCfgs) {
@@ -150,6 +252,8 @@ export function createModelApi(rt) {
           value: val,
           modelId: c.modelId || '',
           disabled: Boolean(c.disabled),
+          tagTitle: typeof c.tagTitle === 'string' ? c.tagTitle : '',
+          tagDescription: typeof c.tagDescription === 'string' ? c.tagDescription : '',
         });
       }
       if (!modelOptions.length) return null;
@@ -177,12 +281,47 @@ export function createModelApi(rt) {
         modelOptions.find((m) => !m.disabled) ||
         modelOptions[0];
       const orchMap = (st && st.modelSelection && st.modelSelection.orchestratorByConversation) || {};
-      const draftOrchModel = orchMap[''] !== undefined ? orchMap[''] : 0;
+      const hasDraftOrchPick = orchMap[''] !== undefined;
+      const draftOrchModel = hasDraftOrchPick ? orchMap[''] : 0;
+
+      // Build groups in native shape ({ title, options }) so model_picker always resolves hostRoot
+      const optByLabel = new Map(modelOptions.map((o) => [o.label, o]));
+      const rawSortGroups = cfgData && Array.isArray(cfgData.clientModelSorts) ? cfgData.clientModelSorts[0]?.groups : null;
+      const reduxGroups =
+        Array.isArray(rawSortGroups) && rawSortGroups.length
+          ? rawSortGroups
+              .map((g) => ({
+                title: g && typeof g.groupName === 'string' ? g.groupName : '',
+                options: (Array.isArray(g && g.modelLabels) ? g.modelLabels : [])
+                  .map((lbl) => optByLabel.get(lbl))
+                  .filter(Boolean),
+              }))
+              .filter((g) => g.options.length > 0)
+          : [{ title: '', options: modelOptions }];
+      const orchOpts = modelOptions.filter((o) => !o.disabled && isOrchestratorModelOpt(o));
+      const orchestratorPlanners = synthesizeReduxOrchestratorPlanners(modelOptions, orchOpts);
+      const overrideVal = cfgData?.defaultOverrideModelConfig?.modelOrAlias?.choice?.value;
+      const cachedDef = cachedNativeMeta?.orchestratorDefaultPlanner;
+      const orchestratorDefaultPlanner =
+        (cachedDef &&
+          orchestratorPlanners.find(
+            (p) =>
+              (cachedDef.value !== undefined && p.value === cachedDef.value) ||
+              (cachedDef.label && p.label === cachedDef.label)
+          )) ||
+        (overrideVal !== undefined && orchestratorPlanners.find((p) => p.value === overrideVal)) ||
+        orchestratorPlanners[0] ||
+        null;
+
       return {
         isReduxFallback: true,
+        hasDraftOrchPick,
         modelOptions,
         customModels,
         selectedModel,
+        groups: reduxGroups,
+        ...(orchestratorPlanners.length ? { orchestratorPlanners } : {}),
+        ...(orchestratorDefaultPlanner ? { orchestratorDefaultPlanner } : {}),
         open: false,
         setIsOpen: () => {},
         orchestratorPick: {
@@ -211,7 +350,29 @@ export function createModelApi(rt) {
     }
   }
 
+  function snapshotNativeMeta(nativeApi) {
+    if (!nativeApi || typeof nativeApi !== 'object') return;
+    const hasGroups = Array.isArray(nativeApi.groups) && nativeApi.groups.length > 0;
+    const hasPlanners = Array.isArray(nativeApi.orchestratorPlanners) && nativeApi.orchestratorPlanners.length > 0;
+    if (!hasGroups && !hasPlanners && !Array.isArray(nativeApi.modelOptions)) return;
+    const { store, cfgData } = getReduxCascadeConfigData();
+    const reduxSig = store ? computeReduxOptionsSignature(cfgData) : cachedNativeMeta?.reduxSig || '';
+    const prev = cachedNativeMeta && cachedNativeMeta.reduxSig === reduxSig ? cachedNativeMeta : {};
+    cachedNativeMeta = {
+      reduxSig,
+      groups: hasGroups ? nativeApi.groups : prev.groups,
+      modelSorts: Array.isArray(nativeApi.modelSorts) && nativeApi.modelSorts.length ? nativeApi.modelSorts : prev.modelSorts,
+      bestOfNConfig: nativeApi.bestOfNConfig ?? prev.bestOfNConfig,
+      orchestratorPlanners: hasPlanners ? nativeApi.orchestratorPlanners : prev.orchestratorPlanners,
+      orchestratorPlannerIndex: nativeApi.orchestratorPlannerIndex ?? prev.orchestratorPlannerIndex,
+      orchestratorDefaultPlanner: nativeApi.orchestratorDefaultPlanner || prev.orchestratorDefaultPlanner || null,
+      modelOptions: Array.isArray(nativeApi.modelOptions) && nativeApi.modelOptions.length ? nativeApi.modelOptions : prev.modelOptions,
+    };
+  }
+
   function discoverModelSelectorApi(btnEl) {
+    const { store: reduxStore, cfgData: reduxCfgData } = getReduxCascadeConfigData();
+    invalidateNativeMetaIfReduxChanged(reduxCfgData, Boolean(reduxStore));
     const isProjectTrigger = Boolean(btnEl && btnEl.hasAttribute && btnEl.hasAttribute('data-ag-pd-model-trigger'));
     const nativeBtn = document.querySelector('button[data-testid="model-selector-trigger"]');
     const isValidApi = (obj) =>
@@ -220,8 +381,13 @@ export function createModelApi(rt) {
       if (!btn) return null;
       const fk = Object.keys(btn).find((k) => k.startsWith('__reactFiber$'));
       let f = fk ? btn[fk] : null;
+      if (f && f.alternate) {
+        let root = f;
+        while (root.return) root = root.return;
+        if (root.stateNode && root.stateNode.current && root !== root.stateNode.current) f = f.alternate;
+      }
       let fallback = null;
-      for (let i = 0; i < 28 && f; i++, f = f.return) {
+      for (let i = 0; i < 40 && f; i++, f = f.return) {
         const p = f.memoizedProps;
         if (!p) continue;
         if (isValidApi(p.value)) return p.value;
@@ -231,16 +397,65 @@ export function createModelApi(rt) {
     };
 
     if (isProjectTrigger) {
-      const reduxApi = buildReduxModelSelectorApi();
       const nativeApi = readNativeApi(nativeBtn);
+      if (nativeApi) snapshotNativeMeta(nativeApi);
+      const reduxApi = buildReduxModelSelectorApi();
       if (reduxApi) {
+        const metaSrc = nativeApi || cachedNativeMeta;
+        const enrichOptions = (baseOptions, refOptions) => {
+          if (!Array.isArray(refOptions) || !refOptions.length) return baseOptions;
+          const refByVal = new Map();
+          const refByLabel = new Map();
+          for (const opt of refOptions) {
+            if (!opt) continue;
+            if (opt.value !== undefined && !refByVal.has(opt.value)) refByVal.set(opt.value, opt);
+            if (opt.label && !refByLabel.has(opt.label)) refByLabel.set(opt.label, opt);
+          }
+          return baseOptions.map((opt) => {
+            const nat =
+              (opt.value !== undefined && refByVal.get(opt.value)) ||
+              (opt.label && refByLabel.get(opt.label)) ||
+              null;
+            return nat
+              ? {
+                  ...opt,
+                  tagTitle: typeof nat.tagTitle === 'string' ? nat.tagTitle : opt.tagTitle || '',
+                  tagDescription: typeof nat.tagDescription === 'string' ? nat.tagDescription : opt.tagDescription || '',
+                  isDisabled: Boolean(nat.isDisabled),
+                  isAvailable: nat.isAvailable !== false,
+                  isHidden: Boolean(nat.isHidden),
+                }
+              : opt;
+          });
+        };
+        const enrichedOptions = metaSrc ? enrichOptions(reduxApi.modelOptions, metaSrc.modelOptions) : reduxApi.modelOptions;
+        const mergedGroups =
+          (Array.isArray(nativeApi?.groups) && nativeApi.groups.length && nativeApi.groups) ||
+          (Array.isArray(cachedNativeMeta?.groups) && cachedNativeMeta.groups.length && cachedNativeMeta.groups) ||
+          reduxApi.groups;
+        const mergedPlanners =
+          (Array.isArray(nativeApi?.orchestratorPlanners) && nativeApi.orchestratorPlanners.length && nativeApi.orchestratorPlanners) ||
+          reduxApi.orchestratorPlanners;
+        const mergedDefaultPlanner =
+          nativeApi?.orchestratorDefaultPlanner ||
+          reduxApi.orchestratorDefaultPlanner ||
+          cachedNativeMeta?.orchestratorDefaultPlanner ||
+          null;
+        const mergedModelSorts =
+          (Array.isArray(nativeApi?.modelSorts) && nativeApi.modelSorts.length && nativeApi.modelSorts) ||
+          cachedNativeMeta?.modelSorts;
+        const mergedBestOfN = nativeApi?.bestOfNConfig ?? cachedNativeMeta?.bestOfNConfig;
+
         if (nativeApi) {
           const reduxPick = reduxApi.orchestratorPick;
           const nativePick = nativeApi.orchestratorPick;
+          const mergedPickModel = reduxApi.hasDraftOrchPick
+            ? reduxPick?.model ?? 0
+            : (reduxPick && reduxPick.model) || (nativePick && nativePick.model) || 0;
           const mergedPick =
             (reduxPick && typeof reduxPick.select === 'function') || (nativePick && typeof nativePick.select === 'function')
               ? {
-                  model: (reduxPick && reduxPick.model) || (nativePick && nativePick.model) || 0,
+                  model: mergedPickModel,
                   select: (val) => {
                     try {
                       if (reduxPick && typeof reduxPick.select === 'function') reduxPick.select(val);
@@ -248,14 +463,21 @@ export function createModelApi(rt) {
                     try {
                       if (nativePick && typeof nativePick.select === 'function') nativePick.select(val);
                     } catch {}
+                    later(() => {
+                      syncProjectDetailModelTrigger();
+                    }, 20);
                   },
                 }
               : undefined;
           return {
             ...reduxApi,
-            orchestratorPlanners: nativeApi.orchestratorPlanners,
-            orchestratorPlannerIndex: nativeApi.orchestratorPlannerIndex,
-            orchestratorDefaultPlanner: nativeApi.orchestratorDefaultPlanner,
+            modelOptions: enrichedOptions,
+            groups: mergedGroups,
+            ...(mergedModelSorts ? { modelSorts: mergedModelSorts } : {}),
+            ...(mergedBestOfN ? { bestOfNConfig: mergedBestOfN } : {}),
+            ...(mergedPlanners ? { orchestratorPlanners: mergedPlanners } : {}),
+            orchestratorPlannerIndex: nativeApi.orchestratorPlannerIndex ?? cachedNativeMeta?.orchestratorPlannerIndex,
+            ...(mergedDefaultPlanner ? { orchestratorDefaultPlanner: mergedDefaultPlanner } : {}),
             ...(mergedPick ? { orchestratorPick: mergedPick } : {}),
             setSelectedModel: (opt) => {
               reduxApi.setSelectedModel(opt);
@@ -265,10 +487,41 @@ export function createModelApi(rt) {
               try {
                 nativeApi.setSelectedModel(match || opt);
               } catch {}
+              later(() => {
+                syncProjectDetailModelTrigger();
+              }, 20);
             },
           };
         }
-        return reduxApi;
+        const origOrchSelect = reduxApi.orchestratorPick?.select;
+        return {
+          ...reduxApi,
+          modelOptions: enrichedOptions,
+          groups: mergedGroups,
+          ...(mergedModelSorts ? { modelSorts: mergedModelSorts } : {}),
+          ...(mergedBestOfN ? { bestOfNConfig: mergedBestOfN } : {}),
+          ...(mergedPlanners ? { orchestratorPlanners: mergedPlanners } : {}),
+          ...(mergedDefaultPlanner ? { orchestratorDefaultPlanner: mergedDefaultPlanner } : {}),
+          ...(origOrchSelect
+            ? {
+                orchestratorPick: {
+                  ...reduxApi.orchestratorPick,
+                  select: (val) => {
+                    origOrchSelect(val);
+                    later(() => {
+                      syncProjectDetailModelTrigger();
+                    }, 20);
+                  },
+                },
+              }
+            : {}),
+          setSelectedModel: (opt) => {
+            reduxApi.setSelectedModel(opt);
+            later(() => {
+              syncProjectDetailModelTrigger();
+            }, 20);
+          },
+        };
       }
       if (nativeApi) return nativeApi;
       return null;
@@ -276,7 +529,10 @@ export function createModelApi(rt) {
 
     if (btnEl && btnEl.matches && btnEl.matches('button[data-testid="model-selector-trigger"]')) {
       const ownApi = readNativeApi(btnEl);
-      if (ownApi) return ownApi;
+      if (ownApi) {
+        snapshotNativeMeta(ownApi);
+        return ownApi;
+      }
       return buildReduxModelSelectorApi();
     }
     const candidates = [];
@@ -601,9 +857,12 @@ export function createModelApi(rt) {
   function ensureOrchestratorRolesLoaded() {
     if (typeof window === 'object' && window && Array.isArray(window.__ag_test_executor_roles)) {
       cachedExecutorRoleBaseIds = window.__ag_test_executor_roles.filter((s) => typeof s === 'string');
+      if (Array.isArray(window.__ag_test_orchestrator_roles)) {
+        cachedOrchestratorRoleBaseIds = window.__ag_test_orchestrator_roles.filter((s) => typeof s === 'string');
+      }
       return;
     }
-    if (Array.isArray(cachedExecutorRoleBaseIds)) return;
+    if (Array.isArray(cachedExecutorRoleBaseIds) && Array.isArray(cachedOrchestratorRoleBaseIds)) return;
     const now = Date.now();
     if (executorRolesFetchInFlight || now - executorRolesLastTryTs < 3000) return;
 
@@ -647,8 +906,18 @@ export function createModelApi(rt) {
           const rawStr = hit && hit.payload && hit.payload.value;
           if (typeof rawStr === 'string' && rawStr) {
             const parsed = JSON.parse(rawStr);
+            let rolesChanged = false;
             if (parsed && Array.isArray(parsed.executors) && parsed.executors.every((s) => typeof s === 'string')) {
               cachedExecutorRoleBaseIds = parsed.executors.slice();
+              rolesChanged = true;
+            }
+            if (parsed && Array.isArray(parsed.orchestrators) && parsed.orchestrators.every((s) => typeof s === 'string')) {
+              cachedOrchestratorRoleBaseIds = parsed.orchestrators.slice();
+              rolesChanged = true;
+            }
+            if (rolesChanged) {
+              try { syncProjectDetailModelTrigger(); } catch {}
+              try { if (typeof hooks.scheduleSync === 'function') hooks.scheduleSync('composer'); } catch {}
             }
           }
         })
@@ -665,6 +934,15 @@ export function createModelApi(rt) {
     return Array.isArray(cachedExecutorRoleBaseIds) ? cachedExecutorRoleBaseIds.slice() : null;
   }
 
+  function getOrchestratorPrefModel() {
+    try {
+      const ps = discoverPrefStore();
+      return ps?.getState?.()?.getPrefValue?.('orchestratorModel');
+    } catch {
+      return undefined;
+    }
+  }
+
   function dispose() {
     if (prefStoreUnsub) {
       try {
@@ -674,6 +952,8 @@ export function createModelApi(rt) {
     }
     cachedPrefStore = null;
     cachedExecutorRoleBaseIds = null;
+    cachedOrchestratorRoleBaseIds = null;
+    cachedNativeMeta = null;
     executorRolesFetchInFlight = false;
     executorRolesLastTryTs = 0;
   }
@@ -700,6 +980,7 @@ export function createModelApi(rt) {
     extractLsClientCandidate,
     ensureOrchestratorRolesLoaded,
     getExecutorBaseIds,
+    getOrchestratorPrefModel,
     dispose,
   };
 }

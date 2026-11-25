@@ -1,5 +1,5 @@
 /* ==========================================================================
- * Internalized Token Usage Card in Right Overview Panel (#agy-ov-usage-card)
+ * Internalized Token Usage Cards (#agy-ov-usage-card & #agy-pd-usage-card)
  * Sleek baseline-anchored slim bars (Day / Week / Month) + instant floating tooltip
  * ========================================================================== */
 
@@ -7,20 +7,138 @@
   contain: layout style;
 }
 
-#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-hdr-right {
+#ag-claude-projects-view #agy-pd-usage-card {
+  --ag-ov-fg: #1F1E1D;
+  --ag-ov-muted: #6E6D68;
+  --ag-ov-border: rgba(31, 30, 29, 0.09);
+  --ag-ov-card: #FFFFFF;
+  --ag-ov-hover: rgba(31, 30, 29, 0.055);
+  --agy-pill-bg: rgba(31, 30, 29, 0.045);
+  --agy-pill-bg-hover: rgba(31, 30, 29, 0.085);
+  contain: layout style;
+  border-radius: 16px;
+  border: 1px solid rgba(31, 30, 29, 0.1);
+  background-color: #FFFFFF;
+  padding: 11px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  color: var(--ag-ov-fg);
+}
+
+:is(html[data-ag-theme-mode="dark"], html.dark, body.dark) #ag-claude-projects-view #agy-pd-usage-card {
+  --ag-ov-fg: #FAF9F5;
+  --ag-ov-muted: #9A9994;
+  --ag-ov-border: rgba(255, 255, 255, 0.09);
+  --ag-ov-card: #282826;
+  --ag-ov-hover: rgba(255, 255, 255, 0.07);
+  --agy-pill-bg: rgba(255, 255, 255, 0.055);
+  --agy-pill-bg-hover: rgba(255, 255, 255, 0.1);
+  background-color: #282826;
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+#ag-claude-projects-view #agy-pd-usage-card[data-empty="true"] {
+  gap: 6px;
+}
+
+#ag-claude-projects-view #agy-pd-usage-card .ag-ov-card-hdr {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 20px;
+}
+
+#ag-claude-projects-view #agy-pd-usage-card .ag-ov-hdr-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: none;
+  background: transparent;
+  padding: 0;
+  color: var(--ag-ov-fg);
+  font-size: 13.5px;
+  font-weight: 500;
+  line-height: 1.25;
+  cursor: pointer;
+}
+
+#ag-claude-projects-view #agy-pd-usage-card .ag-ov-chev {
+  color: var(--ag-ov-muted);
+  transition: transform 150ms ease;
+  flex-shrink: 0;
+}
+
+#ag-claude-projects-view #agy-pd-usage-card .ag-ov-chev[data-open="true"] {
+  transform: rotate(90deg);
+}
+
+#ag-claude-projects-view #agy-pd-usage-card .ag-ov-muted {
+  color: var(--ag-ov-muted);
+  font-size: 11.5px;
+}
+
+#ag-claude-projects-view #agy-pd-usage-card .ag-ov-tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+#ag-claude-projects-view #agy-pd-usage-card .ag-ov-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  color: var(--ag-ov-muted);
+  cursor: pointer;
+  padding: 0;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+#ag-claude-projects-view #agy-pd-usage-card .ag-ov-icon-btn:hover {
+  background-color: var(--ag-ov-hover);
+  color: var(--ag-ov-fg);
+}
+
+#ag-claude-projects-view #agy-pd-usage-card .ag-ov-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+:is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-hdr-right {
   display: inline-flex;
   align-items: center;
   gap: 5px;
   min-width: 0;
 }
 
-#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-kpi-grid {
+:is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-share-pill {
+  padding: 1px 5px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  line-height: 1.35;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  background-color: rgba(47, 117, 195, 0.1);
+  color: #2F75C3;
+}
+
+:is(html[data-ag-theme-mode="dark"], html.dark, body.dark) #ag-claude-projects-view #agy-pd-usage-card .agy-usage-share-pill {
+  background-color: rgba(96, 165, 250, 0.14);
+  color: #7BB7F8;
+}
+
+:is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-kpi-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 5px;
 }
 
-#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-kpi {
+:is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-kpi {
   display: flex;
   flex-direction: column;
   gap: 1px;
@@ -32,19 +150,19 @@
   transition: background-color 130ms ease, border-color 130ms ease;
 }
 
-#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-kpi:hover {
+:is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-kpi:hover {
   background-color: var(--agy-pill-bg-hover, rgba(128, 128, 128, 0.11));
   border-color: color-mix(in srgb, var(--ag-ov-fg) 18%, var(--ag-ov-border));
 }
 
-#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-kpi-lbl {
+:is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-kpi-lbl {
   font-size: 10.5px;
   line-height: 1.25;
   color: var(--ag-ov-muted);
   white-space: nowrap;
 }
 
-#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-kpi-val {
+:is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-kpi-val {
   font-size: 12.5px;
   font-weight: 600;
   line-height: 1.3;
@@ -53,14 +171,14 @@
   white-space: nowrap;
 }
 
-#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-toolbar {
+:is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 6px;
 }
 
-#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-seg {
+:is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-seg {
   display: inline-flex;
   align-items: center;
   padding: 2px;
@@ -70,7 +188,7 @@
   gap: 1px;
 }
 
-#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-seg button {
+:is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-seg button {
   border: none;
   background: transparent;
   color: var(--ag-ov-muted);
@@ -83,25 +201,25 @@
   transition: background-color 120ms ease, color 120ms ease;
 }
 
-#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-seg button[aria-pressed="true"] {
+:is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-seg button[aria-pressed="true"] {
   background-color: color-mix(in srgb, var(--ag-ov-fg) 12%, var(--ag-ov-card));
   color: var(--ag-ov-fg);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.14);
 }
 
-html:not([data-ag-theme-mode="dark"]) body:not(.dark) #ag-claude-ov-sections #agy-ov-usage-card .agy-usage-seg button[aria-pressed="true"] {
+html:not([data-ag-theme-mode="dark"]) body:not(.dark) :is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-seg button[aria-pressed="true"] {
   background-color: #FFFFFF;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
 }
 
-#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-nav {
+:is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-nav {
   display: inline-flex;
   align-items: center;
   gap: 3px;
   min-width: 0;
 }
 
-#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-nav button {
+:is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-nav button {
   border: none;
   background: transparent;
   color: var(--ag-ov-muted);
@@ -117,17 +235,17 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) #ag-claude-ov-sections #ag
   padding: 0;
 }
 
-#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-nav button:hover:not(:disabled) {
+:is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-nav button:hover:not(:disabled) {
   background-color: var(--ag-ov-hover);
   color: var(--ag-ov-fg);
 }
 
-#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-nav button:disabled {
+:is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-nav button:disabled {
   opacity: 0.32;
   cursor: default;
 }
 
-#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-range {
+:is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-range {
   font-size: 11px;
   color: var(--ag-ov-muted);
   font-variant-numeric: tabular-nums;
@@ -139,12 +257,12 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) #ag-claude-ov-sections #ag
  * Consistent slim width across Day (14), Week (12), and Month (12) views.
  * ========================================================================== */
 
-#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-chart {
+:is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-chart {
   position: relative;
   padding: 6px 2px 0;
 }
 
-#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-chart-meta {
+:is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-chart-meta {
   display: flex;
   align-items: center;
   justify-content: flex-end;
@@ -152,7 +270,7 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) #ag-claude-ov-sections #ag
   margin-bottom: 2px;
 }
 
-#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-ymax {
+:is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-ymax {
   font-size: 9.5px;
   line-height: 1;
   color: var(--ag-ov-muted);
@@ -160,13 +278,21 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) #ag-claude-ov-sections #ag
   font-variant-numeric: tabular-nums;
 }
 
-#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-plot {
+:is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-plot {
   position: relative;
   height: 78px;
 }
 
+#ag-claude-projects-view #agy-pd-usage-card .agy-usage-chart {
+  padding-top: 2px;
+}
+
+#ag-claude-projects-view #agy-pd-usage-card .agy-usage-plot {
+  height: 62px;
+}
+
 /* Subtle horizontal 100% / 50% / 0% reference lines */
-#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-grid {
+:is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-grid {
   position: absolute;
   inset: 0 0 16px 0;
   pointer-events: none;
@@ -175,17 +301,17 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) #ag-claude-ov-sections #ag
   justify-content: space-between;
 }
 
-#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-grid-line {
+:is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-grid-line {
   width: 100%;
   border-top: 1px dashed color-mix(in srgb, var(--ag-ov-border) 85%, transparent);
 }
 
-#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-grid-line.is-base {
+:is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-grid-line.is-base {
   border-top-style: solid;
   border-top-color: color-mix(in srgb, var(--ag-ov-fg) 14%, transparent);
 }
 
-#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-bars {
+:is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-bars {
   position: relative;
   z-index: 1;
   display: flex;
@@ -194,7 +320,7 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) #ag-claude-ov-sections #ag
   height: 100%;
 }
 
-#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-bar {
+:is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-bar {
   flex: 1 1 0;
   min-width: 0;
   display: flex;
@@ -205,17 +331,17 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) #ag-claude-ov-sections #ag
   transition: opacity 140ms ease, background-color 140ms ease;
 }
 
-#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-bars:hover .agy-usage-bar {
+:is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-bars:hover .agy-usage-bar {
   opacity: 0.48;
 }
 
-#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-bars:hover .agy-usage-bar:hover,
-#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-bars:hover .agy-usage-bar[data-agy-active="1"] {
+:is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-bars:hover .agy-usage-bar:hover,
+:is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-bars:hover .agy-usage-bar[data-agy-active="1"] {
   opacity: 1;
   background-color: color-mix(in srgb, var(--ag-ov-fg) 6%, transparent);
 }
 
-#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-bar-track {
+:is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-bar-track {
   flex: 1 1 0;
   width: 100%;
   display: flex;
@@ -226,7 +352,7 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) #ag-claude-ov-sections #ag
 }
 
 /* Slim capped column width so Week & Month bars stay elegant and never look chunky */
-#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-bar-stack {
+:is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-bar-stack {
   display: flex;
   flex-direction: column-reverse;
   width: 100%;
@@ -237,25 +363,25 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) #ag-claude-ov-sections #ag
   transition: transform 140ms ease, filter 140ms ease;
 }
 
-#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-chart[data-period="week"] .agy-usage-bar-stack,
-#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-chart[data-period="month"] .agy-usage-bar-stack {
+:is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-chart[data-period="week"] .agy-usage-bar-stack,
+:is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-chart[data-period="month"] .agy-usage-bar-stack {
   max-width: 12px;
 }
 
-#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-bar:hover .agy-usage-bar-stack,
-#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-bar[data-agy-active="1"] .agy-usage-bar-stack {
+:is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-bar:hover .agy-usage-bar-stack,
+:is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-bar[data-agy-active="1"] .agy-usage-bar-stack {
   filter: brightness(1.08);
   transform: scaleX(1.08);
 }
 
-#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-bar-stack > i {
+:is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-bar-stack > i {
   display: block;
   width: 100%;
   font-style: normal;
 }
 
 /* Subtle resting baseline tick for zero-usage slots (replaces heavy empty grey blocks) */
-#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-bar-zero {
+:is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-bar-zero {
   width: 100%;
   max-width: 8px;
   height: 2.5px;
@@ -264,11 +390,11 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) #ag-claude-ov-sections #ag
   transition: background-color 140ms ease;
 }
 
-#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-bar:hover .agy-usage-bar-zero {
+:is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-bar:hover .agy-usage-bar-zero {
   background-color: color-mix(in srgb, var(--ag-ov-muted) 55%, transparent);
 }
 
-#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-bar-x {
+:is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-bar-x {
   margin-top: 4px;
   height: 12px;
   font-size: 9.5px;
@@ -280,14 +406,14 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) #ag-claude-ov-sections #ag
   transition: color 120ms ease;
 }
 
-#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-bar:hover .agy-usage-bar-x,
-#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-bar[data-agy-active="1"] .agy-usage-bar-x {
+:is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-bar:hover .agy-usage-bar-x,
+:is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-bar[data-agy-active="1"] .agy-usage-bar-x {
   color: var(--ag-ov-fg);
   font-weight: 500;
 }
 
 /* Per-model breakdown rows */
-#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-models {
+:is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-models {
   display: flex;
   flex-direction: column;
   gap: 5px;
@@ -295,7 +421,7 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) #ag-claude-ov-sections #ag
   border-top: 1px solid var(--ag-ov-border);
 }
 
-#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-model-row {
+:is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-model-row {
   display: flex;
   flex-direction: column;
   gap: 3px;
@@ -306,11 +432,11 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) #ag-claude-ov-sections #ag
   transition: background-color 120ms ease;
 }
 
-#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-model-row:hover {
+:is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-model-row:hover {
   background-color: var(--ag-ov-hover);
 }
 
-#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-model-top {
+:is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-model-top {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -319,7 +445,7 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) #ag-claude-ov-sections #ag
   line-height: 1.3;
 }
 
-#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-model-left {
+:is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-model-left {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -327,14 +453,14 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) #ag-claude-ov-sections #ag
   flex: 1 1 auto;
 }
 
-#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-dot {
+:is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-dot {
   width: 6px;
   height: 6px;
   border-radius: 50%;
   flex-shrink: 0;
 }
 
-#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-model-name {
+:is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-model-name {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -343,7 +469,7 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) #ag-claude-ov-sections #ag
   font-weight: 450;
 }
 
-#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-model-right {
+:is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-model-right {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -351,18 +477,18 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) #ag-claude-ov-sections #ag
   font-variant-numeric: tabular-nums;
 }
 
-#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-model-share {
+:is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-model-share {
   font-size: 10.5px;
   color: var(--ag-ov-muted);
 }
 
-#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-model-tok {
+:is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-model-tok {
   font-size: 11.5px;
   font-weight: 500;
   color: var(--ag-ov-fg);
 }
 
-#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-model-track {
+:is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-model-track {
   height: 3px;
   width: 100%;
   border-radius: 999px;
@@ -370,13 +496,13 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) #ag-claude-ov-sections #ag
   overflow: hidden;
 }
 
-#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-model-fill {
+:is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-model-fill {
   height: 100%;
   border-radius: 999px;
   opacity: 0.88;
 }
 
-#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-foot {
+:is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-foot {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -386,10 +512,10 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) #ag-claude-ov-sections #ag
   font-variant-numeric: tabular-nums;
 }
 
-#ag-claude-ov-sections #agy-ov-usage-card .agy-usage-empty {
+:is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-empty {
   font-size: 11.5px;
   color: var(--ag-ov-muted);
-  padding: 4px 0;
+  padding: 2px 0;
 }
 
 /* ==========================================================================

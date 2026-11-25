@@ -98,6 +98,8 @@ import { createSettingsHostModule } from './modules/settings-host.mjs';
     resolveProjectsStoreAndBindings: projects.resolveProjectsStoreAndBindings,
     collectNativeProjects: projects.collectNativeProjects,
     openConversationFromProject: projects.openConversationFromProject,
+    startNewChatInProjectById: projects.startNewChatInProjectById,
+    syncConvProjectTopbar: projects.syncConvProjectTopbar,
     showProjectsFloatingNotice: projects.showProjectsFloatingNotice,
     openProjectInstructionsModal: projects.openProjectInstructionsModal,
     openProjectsView: projects.openProjectsView,
@@ -372,6 +374,12 @@ import { createSettingsHostModule } from './modules/settings-host.mjs';
     },
     getExecutorBaseIds() {
       return modelApi.getExecutorBaseIds();
+    },
+    getProjectModelSelector(pdBtn) {
+      return modelApi.discoverModelSelectorApi(pdBtn);
+    },
+    getOrchestratorPrefModel() {
+      return modelApi.getOrchestratorPrefModel();
     },
   };
 

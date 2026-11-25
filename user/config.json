@@ -21,7 +21,7 @@
     "claudeUxFolderStatus": true,
     "claudeUxRecentSection": false,
     "claudeUxProjects": true,
-    "claudeUxHideSidebarProjects": true,
+    "claudeUxHideSidebarProjects": false,
     "claudeUxCustomizations": true,
     "claudeUxCodeFold": true,
     "claudeUxOverviewPanel": true

@@ -38,6 +38,14 @@ export function createProjectSharedContext(rt, modelApi) {
       '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M8 3.2v9.6M3.2 8h9.6"/></svg>',
     SVG_PROJ_EDIT:
       '<svg width="13.5" height="13.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11.2 2.4a1.4 1.4 0 0 1 2 2L5.5 12.1 2.7 13l.9-2.8 7.6-7.8Z"/></svg>',
+    SVG_PROJ_GIT_BRANCH:
+      '<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="4.5" cy="3.5" r="1.5"/><circle cx="4.5" cy="12.5" r="1.5"/><circle cx="11.5" cy="5.5" r="1.5"/><path d="M4.5 5v6M11.5 7c0 2.2-2.2 3.2-7 3.2"/></svg>',
+    SVG_PROJ_COPY:
+      '<svg width="13.5" height="13.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.6"/><path d="M10.5 5.5V3.9A1.4 1.4 0 0 0 9.1 2.5H3.9A1.4 1.4 0 0 0 2.5 3.9v5.2a1.4 1.4 0 0 0 1.4 1.4h1.6"/></svg>',
+    SVG_PROJ_REFRESH:
+      '<svg width="13.5" height="13.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.2 7.4a5.2 5.2 0 1 0-1.1 4.1"/><path d="M13.5 3.8v3.7H9.8"/></svg>',
+    SVG_PROJ_EXTERNAL:
+      '<svg width="13.5" height="13.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6.5 3.2H3.8A1.3 1.3 0 0 0 2.5 4.5v7.7a1.3 1.3 0 0 0 1.3 1.3h7.7a1.3 1.3 0 0 0 1.3-1.3V9.5"/><path d="M9.5 2.5h4v4M13.3 2.7L7.5 8.5"/></svg>',
     RECENT_PIN_SVG: hooks.RECENT_PIN_SVG || '',
     RECENT_MORE_SVG: hooks.RECENT_MORE_SVG || '',
     RECENT_FOLDER_SVG: hooks.RECENT_FOLDER_SVG || '',
@@ -97,6 +105,15 @@ export function createProjectSharedContext(rt, modelApi) {
     optimisticallyArchivedProjectIds: new Map(),
     optimisticProjectNames: new Map(),
     projectsContextQueueByDir: new Map(),
+    projectsWorkspaceStatusMap: {},
+    projectsWorkspaceBusyDirs: new Set(),
+    projectChatSearchQuery: '',
+    pdDirtyExpanded: false,
+    pdExpandedCommitHash: '',
+    pdCommitDetailMap: {},
+    pdCommitBusyKey: '',
+    pdBreadcrumbMenuOpen: false,
+    projectsUsageMap: {},
   };
 
   const pHooks = Object.create(null);

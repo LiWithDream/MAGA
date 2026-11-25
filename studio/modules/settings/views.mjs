@@ -114,7 +114,7 @@ export function renderL1(p, base, catalog, { studioPrefs, state, L }) {
   const wsSummary = `${
     p.overviewUsageEnabled ? L('用量开', 'Usage on') : L('用量关', 'Usage off')
   } · ${
-    base.modules?.claudeUxHideSidebarProjects !== false ? L('最近对话', 'Recents') : L('原生分组', 'Native')
+    base.modules?.claudeUxHideSidebarProjects === true ? L('最近对话', 'Recents') : L('原生分组', 'Native')
   }`;
 
   const motionLabels = { full: L('完整', 'Full'), reduced: L('精简', 'Reduced'), off: L('关闭', 'Off') };
@@ -471,7 +471,7 @@ export function renderL2Workspace(p, base, { L }) {
 
       <div class="agy-ms-sec-hdr">${esc(L('侧边栏与工作区页面', 'Sidebar & Pages'))}</div>
       <div class="agy-ms-card">
-        ${renderSwitchRow('claudeUxHideSidebarProjects', 'base', L('侧栏统一「最近对话」', 'Unified Sidebar Recents'), L('合并原生项目与普通对话分组，统一按最近时间混排显示', 'Replaces split Projects/Chats with a single chronological Recents list'), base.modules?.claudeUxHideSidebarProjects !== false)}
+        ${renderSwitchRow('claudeUxHideSidebarProjects', 'base', L('侧栏统一「最近对话」', 'Unified Sidebar Recents'), L('合并原生项目与普通对话分组，统一按最近时间混排显示', 'Replaces split Projects/Chats with a single chronological Recents list'), base.modules?.claudeUxHideSidebarProjects === true)}
         ${renderSwitchRow('claudeUxProjects', 'base', L('项目工作区 (Projects)', 'Projects Workspace'), L('启用 Claude 风格项目卡片墙、本地 AGENTS 指令与上下文文件管理', 'Enables Claude-style Projects workspace, AGENTS.md & context files'), base.modules?.claudeUxProjects !== false)}
         ${renderSwitchRow('claudeUxCustomizations', 'base', L('技能与自定义页优化', 'Customizations Layout & Import'), L('增强「技能与自定义」页分类标签与本地技能快捷导入', 'Adds category tabs and quick local skill import'), base.modules?.claudeUxCustomizations !== false)}
       </div>`;

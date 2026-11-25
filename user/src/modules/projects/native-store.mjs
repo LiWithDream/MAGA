@@ -43,6 +43,86 @@ export function createProjectNativeStore(ctx) {
     return p.replace(/^\/Users\/[^/]+/, '~').replace(/^\/home\/[^/]+/, '~').replace(/^[A-Za-z]:\\Users\\[^\\]+/i, '~');
   }
 
+  function normalizeRemoteGitUrl(raw) {
+    const s = String(raw || '').trim();
+    if (!s || /[\r\n\0\s]/.test(s) || /^file:\/\//i.test(s)) return null;
+    let candidate = '';
+    const scpM = s.match(/^(?:[A-Za-z0-9._-]+@)?([A-Za-z0-9.-]+):([^/].+)$/);
+    if (scpM && !/^[a-zA-Z]+:\/\//.test(s)) {
+      candidate = `https://${scpM[1]}/${scpM[2].replace(/^\/+/, '')}`;
+    } else if (/^(?:ssh|git):\/\//i.test(s)) {
+      const protoM = s.match(/^(?:ssh|git):\/\/(?:[^/@]+@)?([^/:]+)(?::\d+)?\/(.+)$/i);
+      if (protoM) candidate = `https://${protoM[1]}/${protoM[2].replace(/^\/+/, '')}`;
+    } else if (/^https?:\/\//i.test(s)) {
+      candidate = s;
+    } else {
+      return null;
+    }
+    try {
+      const u = new URL(candidate);
+      if (u.protocol !== 'https:' && u.protocol !== 'http:') return null;
+      const cleanPath = u.pathname.replace(/\.git$/i, '').replace(/\/+$/, '');
+      const href = `${u.protocol}//${u.host}${cleanPath}`;
+      const trimmed = cleanPath.replace(/^\/+/, '');
+      const hostLower = u.hostname.toLowerCase();
+      const label =
+        trimmed && (hostLower === 'github.com' || hostLower === 'gitlab.com' || hostLower === 'bitbucket.org')
+          ? trimmed
+          : trimmed
+            ? `${u.host}/${trimmed}`
+            : u.host;
+      return { remoteUrl: href, remoteLabel: label };
+    } catch {
+      return null;
+    }
+  }
+
+  function extractProjectRemoteInfo(rawProj, rawRecord = null) {
+    const tryValue = (val) => {
+      if (!val) return null;
+      if (typeof val === 'string') return normalizeRemoteGitUrl(val);
+      if (typeof val !== 'object') return null;
+      for (const key of ['remoteUrl', 'repoUrl', 'repositoryUrl', 'gitUrl', 'githubUrl', 'htmlUrl', 'url', 'uri', 'cloneUrl', 'sshUrl']) {
+        if (typeof val[key] === 'string') {
+          const hit = normalizeRemoteGitUrl(val[key]);
+          if (hit) return hit;
+        }
+      }
+      if (typeof val.owner === 'string' && typeof (val.repo || val.name) === 'string') {
+        const slug = `${val.owner.trim()}/${String(val.repo || val.name).trim()}`;
+        const hit = normalizeRemoteGitUrl(`https://github.com/${slug}`);
+        if (hit) return hit;
+      }
+      if (typeof val.githubRepo === 'string' && /^[^/\s]+\/[^/\s]+$/.test(val.githubRepo.trim())) {
+        const hit = normalizeRemoteGitUrl(`https://github.com/${val.githubRepo.trim()}`);
+        if (hit) return hit;
+      }
+      return null;
+    };
+
+    const uris = Array.isArray(rawProj?.folderUris) ? rawProj.folderUris : [];
+    for (const u of uris) {
+      const hit = normalizeRemoteGitUrl(u);
+      if (hit) return hit;
+    }
+    const directHit = tryValue(rawProj);
+    if (directHit) return directHit;
+
+    const rec = rawRecord || null;
+    const recHit = tryValue(rec);
+    if (recHit) return recHit;
+
+    const resources = Array.isArray(rec?.projectResources?.resources) ? rec.projectResources.resources : [];
+    for (const r of resources) {
+      if (!r || typeof r !== 'object') continue;
+      for (const nested of [r, r.gitRepo, r.repository, r.remoteRepo, r.githubRepository, r.gitFolder, r.repo]) {
+        const hit = tryValue(nested);
+        if (hit) return hit;
+      }
+    }
+    return { remoteUrl: '', remoteLabel: '' };
+  }
+
   function formatProjectTimeAgo(sec) {
     const s = Number(sec) || 0;
     if (!s) return '';
@@ -574,6 +654,7 @@ export function createProjectNativeStore(ctx) {
     const presentRawIds = new Set();
     const out = [];
     const nowArchMs = Date.now();
+    const pm = resolveProjectManagementService();
     for (const p of rawProjects) {
       if (!p || !p.id) continue;
       presentRawIds.add(p.id);
@@ -592,7 +673,10 @@ export function createProjectNativeStore(ctx) {
       if (!rawName || rawName === 'swarm/swarm_board' || p.id === 'outside-of-project') continue;
       const isCliProject = p.id === 'default-cli-project';
       const uris = Array.isArray(p.folderUris) ? p.folderUris : [];
-      const dirPath = uris.length ? decodeFileUriToPath(uris[0]) : '';
+      const firstLocalUri = uris.find((u) => /^file:\/\//i.test(String(u || '').trim()) || (typeof u === 'string' && u.startsWith('/')));
+      const dirPath = firstLocalUri ? decodeFileUriToPath(firstLocalUri) : '';
+      const rawRec = !dirPath && !uris.some((u) => /^https?:\/\//i.test(String(u || ''))) ? getRawNativeProjectRecord(p.id, pm) : null;
+      const remoteInfo = isCliProject ? { remoteUrl: '', remoteLabel: '' } : extractProjectRemoteInfo(p, rawRec);
       const optName = pState.optimisticProjectNames.get(p.id);
       if (optName && optName === rawName) pState.optimisticProjectNames.delete(p.id);
       const name = isCliProject ? L('CLI 项目', 'CLI Project') : optName || rawName;
@@ -601,7 +685,10 @@ export function createProjectNativeStore(ctx) {
         name,
         dirPath,
         shortPath: formatShortHomePath(dirPath),
-        isVirtual: !dirPath,
+        remoteUrl: remoteInfo.remoteUrl,
+        remoteLabel: remoteInfo.remoteLabel,
+        isRemote: Boolean(!dirPath && remoteInfo.remoteUrl),
+        isVirtual: !dirPath && !remoteInfo.remoteUrl,
         isCliProject,
         isBuiltin: isCliProject
       };

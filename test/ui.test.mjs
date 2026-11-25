@@ -991,7 +991,7 @@ test('projects workspace: 3-level Claude Projects flow (grid -> detail page with
       <div data-testid="project-header" data-project-label="Quotation">Quotation</div>
     </div>
   `;
-  const h = mount(html);
+  const h = mount(html, { modules: { claudeUxHideSidebarProjects: true } });
   const navigated = [];
   const storeState = {
     userStatus: {
@@ -1310,7 +1310,7 @@ test('unified sidebar Recents: mixes project & standalone chats without 8-item c
       </div>
     </div>
   `;
-  const h = mount(html);
+  const h = mount(html, { modules: { claudeUxHideSidebarProjects: true } });
   const nowSec = Math.floor(Date.now() / 1000);
   const summaries = {};
   for (let i = 1; i <= 10; i++) {
@@ -1574,5 +1574,199 @@ test('customizations layout enhancement: mounts category tabs, frames skills lis
   assert.equal(h.doc.getElementById('ag-cust-cat-bar'), null);
   assert.equal(h.doc.getElementById('ag-cust-skill-actions'), null);
   assert.equal(h.doc.getElementById('ag-cust-agent-actions'), null);
+  h.close();
+});
+
+
+test('project <-> conversation relationship: sidebar project pills, filter chips, stream/grouped dual-view, and active conversation topbar breadcrumb', { skip }, async () => {
+  const html = `
+    <div class="bg-sidebar">
+      <div class="flex flex-col gap-1.5">
+        <a data-testid="new-conversation-button" href="/">New chat</a>
+        <button data-testid="automations-button" class="agy-button">Automations</button>
+        <a href="/customizations" class="agy-button">Skills &amp; Customizations</a>
+      </div>
+      <div class="sb-grand flex-1 min-h-0 overflow-y-auto flex flex-col">
+        <div class="sb-parent w-full relative flex-1">
+          <div data-testid="conversation-list-sidebar">
+            <div class="w-full relative" style="height: 160px;">
+              <div data-index="0" style="position: absolute; transform: translateY(0px);"><div data-testid="section-header"><span>Projects</span><button data-testid="sidebar-add-project-button"></button></div></div>
+              <div data-index="1" style="position: absolute; transform: translateY(40px);"><div data-testid="section-header">Conversations</div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="main-pane">
+      <div class="flex w-full min-w-0 items-center justify-between overflow-hidden @container/titlebar">
+        <div id="native-tb-left" class="agy-layout-vars flex items-center gap-1 min-w-0 pl-2">
+          <div class="flex items-center min-w-0">
+            <nav aria-label="Breadcrumb"><ol>
+              <li id="native-proj-crumb"><a href="/?project=proj-maga" aria-label="Project: MAGA">MAGA</a><span>/</span></li>
+              <li id="native-conv-crumb"><span role="button" aria-label="Conversation: Greeting">Greeting And Casual Conversation</span></li>
+            </ol></nav>
+          </div>
+        </div>
+        <div data-testid="titlebar-service-announcement-slot" class="flex-1 min-w-0"></div>
+        <div data-testid="pane-titlebar-toolbar" class="flex items-center"></div>
+      </div>
+      <div id="antigravity.agentSidePanelInputBox"><textarea></textarea></div>
+    </div>
+  `;
+
+  const h = mount(html);
+  h.window.history.pushState(null, '', '/c/aaaa1111-2222-3333-4444-555555555555');
+  const nowSec = Math.floor(Date.now() / 1000);
+  const storeState = {
+    sidebarProjects: {
+      projects: [
+        { id: 'proj-maga', name: 'MAGA', folderUris: ['file:///Users/demo/Developer/MAGA'] },
+        { id: 'proj-docs', name: 'PaperKit', folderUris: ['file:///Users/demo/Research/PaperKit'] },
+      ],
+    },
+    trajectorySummaries: {
+      summaries: {
+        'aaaa1111-2222-3333-4444-555555555555': {
+          annotations: { title: 'Greeting And Casual Conversation' },
+          lastModifiedTime: { seconds: nowSec - 30 },
+          trajectoryMetadata: { projectId: 'proj-maga' },
+          status: 1,
+        },
+        'bbbb1111-2222-3333-4444-555555555555': {
+          annotations: { title: 'Workspace Folder Matched Chat' },
+          lastModifiedTime: { seconds: nowSec - 90 },
+          workspaces: [{ workspaceFolderAbsoluteUri: 'file:///Users/demo/Research/PaperKit' }],
+          status: 1,
+        },
+        'cccc1111-2222-3333-4444-555555555555': {
+          annotations: { title: 'Standalone General Question' },
+          lastModifiedTime: { seconds: nowSec - 180 },
+          trajectoryMetadata: { projectId: 'outside-of-project' },
+          status: 1,
+        },
+      },
+    },
+  };
+
+  const navigated = [];
+  const dispatched = [];
+  const rpcCalls = [];
+  h.window.__agProjectCall = async (action, payload) => {
+    rpcCalls.push({ action, payload });
+    if (action === 'readContext' || action === 'listContexts') {
+      return {
+        ok: true,
+        gitBranch: 'main',
+        instructions: '# MAGA Rules',
+        files: [],
+        extraFolders: [],
+        scheduledTasks: [],
+        contexts: {
+          '/Users/demo/Developer/MAGA': { ok: true, gitBranch: 'main', instructions: '# MAGA Rules', files: [], extraFolders: [], scheduledTasks: [] },
+        },
+      };
+    }
+    if (action === 'readProjectWorkspaceStatus') {
+      return { ok: true, isGit: true, branch: 'main', commits: [], dirtyFiles: [], changedFiles: 0, added: 0, deleted: 0 };
+    }
+    return { ok: true };
+  };
+
+  const routerLoc = { pathname: '/c/aaaa1111-2222-3333-4444-555555555555', search: {} };
+  const sb = h.doc.querySelector('[data-testid="conversation-list-sidebar"]');
+  sb.firstElementChild.__reactFiber$sb = {
+    memoizedProps: {
+      sidebarStore: {
+        getState: () => storeState,
+        dispatch: (act) => dispatched.push(act),
+        subscribe: () => () => {},
+      },
+      sidebarRouter: {
+        state: { location: routerLoc },
+        navigate: (arg) => {
+          navigated.push(arg);
+          if (arg && typeof arg.to === 'string') {
+            routerLoc.pathname = arg.to.replace('$cascadeId', (arg.params && arg.params.cascadeId) || '');
+            routerLoc.search = arg.search || {};
+            const qs = routerLoc.search.project ? `?project=${encodeURIComponent(routerLoc.search.project)}` : '';
+            h.window.history.pushState(null, '', `${routerLoc.pathname}${qs}`);
+          }
+        },
+      },
+      sidebarActions: {
+        updateConversationAnnotations: async () => {},
+        deleteCascadeTrajectory: async () => {},
+      },
+    },
+  };
+
+  h.window.__t.syncStepStream();
+  await settle(h);
+  await h.microtasks();
+
+  /* 1. Native sidebar split stays preserved by default (claudeUxHideSidebarProjects defaults to false) */
+  assert.equal(h.doc.getElementById('ag-claude-recent-section'), null, 'preserves native Projects/Conversations sidebar split by default');
+
+  /* 2. Active Conversation Topbar mounts directly with [MAGA] capsule (no redundant Projects / prefix) */
+  const topbar = h.doc.getElementById('agy-conv-project-bar');
+  assert.ok(topbar, 'mounts #agy-conv-project-bar for project-owned conversation');
+  assert.equal(topbar.parentElement.id, 'native-tb-left', 'attaches inside native titlebar left slot');
+  assert.equal(topbar.parentElement.firstElementChild, topbar, 'mounts before native conversation title breadcrumb');
+  assert.equal(topbar.querySelector('.ag-cpb-root'), null, 'omits redundant Projects root text');
+  assert.equal(topbar.firstElementChild.classList.contains('ag-cpb-proj-capsule'), true, 'starts directly with project capsule');
+  assert.equal(h.doc.getElementById('native-proj-crumb').getAttribute('data-maga-hide-native-proj-crumb'), '1', 'deduplicates native redundant project breadcrumb segment');
+  assert.equal(h.doc.getElementById('native-conv-crumb').hasAttribute('data-maga-hide-native-proj-crumb'), false, 'preserves native inline conversation title editor');
+  assert.equal(topbar.getAttribute('data-maga-own'), '1', 'marks bar with data-maga-own for single-observer safety');
+  assert.equal(topbar.querySelector('.ag-cpb-proj-name').textContent, 'MAGA');
+  assert.equal(topbar.querySelector('.ag-cpb-git')?.textContent.trim(), 'main', 'renders warmed Git branch chip');
+  assert.ok(topbar.querySelector('[data-ag-cpb-act="new-chat"]'), 'renders + New chat in project button');
+
+  /* 3. Switcher menu opens on document.body (immune to titlebar overflow-hidden) */
+  topbar.querySelector('[data-ag-cpb-act="toggle-menu"]').click();
+  const cpbMenu = h.doc.getElementById('agy-conv-project-menu');
+  assert.ok(cpbMenu && cpbMenu.parentElement === h.doc.body, 'mounts switcher dropdown as body portal');
+  assert.equal(cpbMenu.querySelectorAll('[data-ag-cpb-pick-proj]').length, 2, 'lists both native projects');
+  h.doc.dispatchEvent(new h.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  assert.equal(h.doc.getElementById('agy-conv-project-menu'), null, 'Escape closes switcher dropdown');
+
+  /* 4. Clicking [MAGA] capsule opens Project Detail Cockpit & hides conversation topbar; toggling Projects nav back restores it */
+  topbar.querySelector('[data-ag-cpb-act="open-project"]').click();
+  await settle(h);
+  const pdView = h.doc.getElementById('ag-claude-projects-view');
+  assert.equal(pdView?.getAttribute('data-open'), 'true', 'clicking project capsule opens Project Cockpit');
+  assert.equal(h.doc.getElementById('agy-conv-project-bar'), null, 'hides conversation topbar while Projects Cockpit overlay is open');
+
+  // Toggle Projects nav button twice (detail -> grid -> close) to return to conversation
+  h.doc.getElementById('ag-claude-projects-nav-btn').click();
+  h.doc.getElementById('ag-claude-projects-nav-btn').click();
+  await settle(h);
+  assert.equal(pdView?.getAttribute('data-open'), 'false', 'closing Projects Cockpit returns to conversation');
+  assert.ok(h.doc.getElementById('agy-conv-project-bar'), 'conversation topbar restores when closing Projects Cockpit');
+
+  /* Clicking + New chat in topbar navigates to /?project=proj-maga and renders New draft badge in topbar */
+  h.doc.querySelector('#agy-conv-project-bar [data-ag-cpb-act="new-chat"]').click();
+  h.window.__t.syncStepStream();
+  await settle(h);
+  assert.ok(
+    dispatched.some((a) => a.type === 'newConvoResourceSelector/setLastSelectedProject' && a.payload === 'proj-maga'),
+    'sets lastSelectedProject in Redux when starting new chat from topbar'
+  );
+  const draftBar = h.doc.getElementById('agy-conv-project-bar');
+  assert.ok(draftBar && draftBar.querySelector('.ag-cpb-draft-tag'), 'shows project breadcrumb + New draft badge on /?project=proj-maga');
+
+  /* Navigating to standalone conversation removes #agy-conv-project-bar cleanly */
+  routerLoc.pathname = '/c/cccc1111-2222-3333-4444-555555555555';
+  routerLoc.search = {};
+  h.window.history.pushState(null, '', '/c/cccc1111-2222-3333-4444-555555555555');
+  h.window.__t.syncStepStream();
+  await settle(h);
+  assert.equal(h.doc.getElementById('agy-conv-project-bar'), null, 'hides #agy-conv-project-bar on standalone non-project conversation');
+  assert.equal(h.doc.getElementById('native-proj-crumb').hasAttribute('data-maga-hide-native-proj-crumb'), false, 'restores native breadcrumb attributes when bar unmounts');
+
+  /* Clean disposal */
+  h.cleanups.forEach((fn) => fn());
+  assert.equal(h.doc.getElementById('ag-claude-recent-section'), null);
+  assert.equal(h.doc.getElementById('agy-conv-project-bar'), null);
+  assert.equal(h.doc.getElementById('agy-conv-project-menu'), null);
   h.close();
 });

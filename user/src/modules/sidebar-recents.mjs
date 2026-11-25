@@ -924,12 +924,24 @@ export function createSidebarRecentsModule(rt) {
     return { host, container: host && host.parentElement };
   }
 
-  function resolveSummaryProjectInfo(summary, projectLabels, state) {
+  function resolveSummaryProjectInfo(id, summary, projectLabels, state) {
     const meta = (summary && summary.trajectoryMetadata) || {};
-    const pid = String(meta.projectId || (summary && summary.projectId) || '');
+    let pid = String(meta.projectId || (summary && summary.projectId) || '');
+    if ((!pid || pid === 'outside-of-project') && id && state) {
+      const byProject = state.trajectorySummaries && state.trajectorySummaries.indexes && state.trajectorySummaries.indexes.byProject;
+      if (byProject && typeof byProject === 'object') {
+        for (const [candPid, rawIds] of Object.entries(byProject)) {
+          if (!candPid || candPid === 'outside-of-project') continue;
+          if (hasIndexKey(rawIds, id)) {
+            pid = candPid;
+            break;
+          }
+        }
+      }
+    }
+    const rawProjects = (state && state.sidebarProjects && state.sidebarProjects.projects) || [];
     if (pid && pid !== 'outside-of-project') {
       if (projectLabels && projectLabels.has(pid)) return { id: pid, name: projectLabels.get(pid) };
-      const rawProjects = (state && state.sidebarProjects && state.sidebarProjects.projects) || [];
       const found = rawProjects.find((p) => p && p.id === pid);
       if (found) {
         const nm = found.id === 'default-cli-project' ? L('CLI 项目', 'CLI Project') : String(found.name || '').trim();
@@ -941,7 +953,6 @@ export function createSidebarRecentsModule(rt) {
     }
     const wsUri = (meta.workspaceUris && meta.workspaceUris[0]) || '';
     if (wsUri) {
-      const rawProjects = (state && state.sidebarProjects && state.sidebarProjects.projects) || [];
       const found = rawProjects.find((p) => p && Array.isArray(p.folderUris) && p.folderUris.includes(wsUri));
       if (found && found.id && found.id !== 'outside-of-project') {
         const nm = found.id === 'default-cli-project' ? L('CLI 项目', 'CLI Project') : String(found.name || '').trim();
@@ -1220,7 +1231,7 @@ export function createSidebarRecentsModule(rt) {
       const title = rawTitle ? String(rawTitle) : L('新对话', 'New conversation');
       const updatedAt = Math.max(protoSeconds(summary.lastModifiedTime), protoSeconds(summary.createdTime));
       const priority = status && status.kind === 'pending' ? 3 : status && status.kind === 'running' ? 2 : 1;
-      const projInfo = resolveSummaryProjectInfo(summary, bindings.projectLabels, state);
+      const projInfo = resolveSummaryProjectInfo(id, summary, bindings.projectLabels, state);
       list.push({
         id,
         title,
@@ -1264,6 +1275,7 @@ export function createSidebarRecentsModule(rt) {
           ev.preventDefault();
           ev.stopPropagation();
           closeRecentRowMenu();
+          if (rtState.projectsViewOpen) closeProjectsView();
           triggerNewConversationFromSidebar(findSidebarBindings() || bindings);
           return;
         }
@@ -1325,6 +1337,7 @@ export function createSidebarRecentsModule(rt) {
           const cid = row.getAttribute('data-ag-recent-id');
           if (recentRenamingId && recentRenamingId === cid) return;
           closeRecentRowMenu();
+          if (rtState.projectsViewOpen) closeProjectsView();
           const curBindings = findSidebarBindings() || bindings;
           navigateSidebarConversation(cid, curBindings);
           scheduleSidebarSync();
@@ -1334,7 +1347,7 @@ export function createSidebarRecentsModule(rt) {
         if (
           ev.target &&
           ev.target.closest &&
-          ev.target.closest('[data-ag-recent-pin], [data-ag-recent-menu], [data-ag-recent-rename-input]')
+          ev.target.closest('[data-ag-recent-pin], [data-ag-recent-menu], [data-ag-recent-rename-input], [data-ag-recent-open-proj]')
         ) {
           ev.preventDefault();
           return;
@@ -1528,6 +1541,7 @@ export function createSidebarRecentsModule(rt) {
     const hasFocus = typeof document.hasFocus === 'function' ? document.hasFocus() : true;
     syncFolderStatusBadges(bindings, state, activeId, hasFocus);
     syncRecentSection(bindings, state, activeId, hasFocus);
+    hooks.syncConvProjectTopbar?.();
   }
 
   const onWindowSidebarEvent = () => scheduleSidebarSync();

@@ -24,37 +24,74 @@ export function resolveInheritedLabel(groupItems, selectedLabel) {
 
 export function readPickerState(trigger) {
   if (!trigger) return null;
-  const key = Object.keys(trigger).find(key => key.startsWith('__reactFiber$'));
-  let fiber = trigger[key];
-  if (!fiber) return null;
-  if (fiber.alternate) {
-    let root = fiber;
-    while (root.return) root = root.return;
-    if (root.stateNode?.current && root !== root.stateNode.current) fiber = fiber.alternate;
-  }
-
   let hasOwner = false, conversationId, selector, legacyProvider, options, plannerPreference;
-  for (let node = fiber; node; node = node.return) {
-    const props = node.memoizedProps;
-    if (!props || typeof props !== 'object') continue;
-    if (!hasOwner && 'placement' in props && 'conversationId' in props) {
+
+  if (trigger.hasAttribute?.('data-ag-pd-model-trigger')) {
+    const projectSelector = typeof window !== 'undefined'
+      ? window.__agClaudeUxBridge?.getProjectModelSelector?.(trigger)
+      : null;
+    if (projectSelector && typeof projectSelector.setSelectedModel === 'function' &&
+        projectSelector.selectedModel && Array.isArray(projectSelector.modelOptions)) {
       hasOwner = true;
-      conversationId = props.conversationId;
+      conversationId = '__project_detail__';
+      selector = projectSelector;
+      const nativeTrigger = document.querySelector('button[data-testid="model-selector-trigger"]');
+      if (nativeTrigger) {
+        const nk = Object.keys(nativeTrigger).find(k => k.startsWith('__reactFiber$'));
+        let nf = nk ? nativeTrigger[nk] : null;
+        if (nf?.alternate) {
+          let root = nf;
+          while (root.return) root = root.return;
+          if (root.stateNode?.current && root !== root.stateNode.current) nf = nf.alternate;
+        }
+        for (; nf; nf = nf.return) {
+          const p = nf.memoizedProps;
+          if (!p || typeof p !== 'object') continue;
+          if (typeof p.value?.onDidChange === 'function' && typeof p.value?.getState === 'function') {
+            const pref = p.value.getState()?.getPrefValue?.('orchestratorModel');
+            if (pref !== undefined) { plannerPreference = pref; break; }
+          }
+        }
+      }
+      if (plannerPreference === undefined && typeof window !== 'undefined') {
+        try {
+          const bridgedPref = window.__agClaudeUxBridge?.getOrchestratorPrefModel?.();
+          if (bridgedPref !== undefined) plannerPreference = bridgedPref;
+        } catch {}
+      }
     }
-    const candidate = props.value && typeof props.value === 'object' ? props.value : props;
-    if (!selector && typeof candidate.setSelectedModel === 'function' &&
-        candidate.selectedModel && typeof candidate.selectedModel === 'object' &&
-        Array.isArray(candidate.modelOptions)) {
-      selector = candidate;
+  } else {
+    const key = Object.keys(trigger).find(key => key.startsWith('__reactFiber$'));
+    let fiber = trigger[key];
+    if (!fiber) return null;
+    if (fiber.alternate) {
+      let root = fiber;
+      while (root.return) root = root.return;
+      if (root.stateNode?.current && root !== root.stateNode.current) fiber = fiber.alternate;
     }
-    if (selector?.orchestratorPick && plannerPreference === undefined &&
-        typeof props.value?.onDidChange === 'function' && typeof props.value?.getState === 'function') {
-      plannerPreference = props.value.getState()?.getPrefValue?.('orchestratorModel');
-    }
-    if (!options) options = props.modelOptions ?? props.value?.modelOptions;
-    if (!legacyProvider && typeof props.value?.getModelConfigForConversation === 'function' &&
-        typeof props.value?.setModelConfigByLabelForConversation === 'function') {
-      legacyProvider = props.value;
+
+    for (let node = fiber; node; node = node.return) {
+      const props = node.memoizedProps;
+      if (!props || typeof props !== 'object') continue;
+      if (!hasOwner && 'placement' in props && 'conversationId' in props) {
+        hasOwner = true;
+        conversationId = props.conversationId;
+      }
+      const candidate = props.value && typeof props.value === 'object' ? props.value : props;
+      if (!selector && typeof candidate.setSelectedModel === 'function' &&
+          candidate.selectedModel && typeof candidate.selectedModel === 'object' &&
+          Array.isArray(candidate.modelOptions)) {
+        selector = candidate;
+      }
+      if (selector?.orchestratorPick && plannerPreference === undefined &&
+          typeof props.value?.onDidChange === 'function' && typeof props.value?.getState === 'function') {
+        plannerPreference = props.value.getState()?.getPrefValue?.('orchestratorModel');
+      }
+      if (!options) options = props.modelOptions ?? props.value?.modelOptions;
+      if (!legacyProvider && typeof props.value?.getModelConfigForConversation === 'function' &&
+          typeof props.value?.setModelConfigByLabelForConversation === 'function') {
+        legacyProvider = props.value;
+      }
     }
   }
 
@@ -111,6 +148,9 @@ export function readPickerState(trigger) {
   if (selector) {
     if (!hasOwner) return null;
     const scopeId = typeof conversationId === 'string' && conversationId ? conversationId : '__new__';
+    const lockedReason = typeof selector.lockedReason === 'string' && selector.lockedReason.trim()
+      ? selector.lockedReason.trim()
+      : '';
     const byLabel = usable(selector.modelOptions);
     let selected = selector.selectedModel?.label;
     if (!byLabel.has(selected)) return null;
@@ -171,7 +211,7 @@ export function readPickerState(trigger) {
       const { labels, items, families } = summarize(displayOptions, extraDisabled.filter(opt => !isOrchestrator(opt)));
       if (orchestrator.active) selected = orchestrator.current ?? 'Orchestrator';
       return {
-        conversationId: scopeId, labels: [...labels, ...plannerChoices.keys()], items, families, selected, orchestrator,
+        conversationId: scopeId, labels: [...labels, ...plannerChoices.keys()], items, families, selected, orchestrator, lockedReason,
         choose(label) {
           const planner = plannerChoices.get(label);
           if (planner) {
@@ -183,6 +223,105 @@ export function readPickerState(trigger) {
         },
       };
     }
+    const staticOrchOpts = !selector.bestOfNConfig?.isBestOfNEnabled
+      ? [...byLabel.values()].filter(isOrchestrator)
+      : [];
+    if (staticOrchOpts.length) {
+      // Remote/cloud projects disable dynamic orchestratorPick and expose static
+      // Orchestrator (<Family>) entries directly in modelOptions. Fold them into the
+      // same standalone Orchestrator dock toggle while calling setSelectedModel faithfully.
+      const standaloneByFamily = new Map();
+      for (const opt of byLabel.values()) {
+        if (isOrchestrator(opt)) continue;
+        const m = tierRe.exec(opt.label);
+        const famName = m ? m[1].trim() : opt.label;
+        let list = standaloneByFamily.get(famName);
+        if (!list) { list = []; standaloneByFamily.set(famName, list); }
+        list.push({ opt, tier: m ? m[2] : null });
+      }
+      const matchFamilyForOrch = opt => {
+        const labelTok = /\(([^)]+)\)/.exec(opt.label)?.[1]?.trim().toLowerCase() || '';
+        const idTok = /^gemini-pro-orchestrator-(.+)$/i.exec(opt.modelId || '')?.[1]?.trim().toLowerCase() || '';
+        for (const tok of [labelTok, idTok]) {
+          if (!tok) continue;
+          const esc = tok.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          const re = new RegExp(`\\b${esc}\\b`, 'i');
+          for (const famName of standaloneByFamily.keys()) {
+            if (re.test(famName)) return famName;
+          }
+        }
+        return null;
+      };
+      const defaultStandaloneFor = famName => {
+        const list = standaloneByFamily.get(famName) || [];
+        if (!list.length) return null;
+        const want = /\bneon\b/i.test(famName) ? 'high' : 'medium';
+        return (
+          list.find(x => x.tier && x.tier.toLowerCase() === want)?.opt ||
+          list.find(x => x.tier && x.tier.toLowerCase() === 'high')?.opt ||
+          list.find(x => x.tier && x.tier.toLowerCase() === 'medium')?.opt ||
+          list[0].opt
+        );
+      };
+      const planners = [];
+      const plannerChoices = new Map();
+      const targets = Object.create(null);
+      const seenFam = new Set();
+      const staticLabel = famName => 'Orchestrator → ' + famName;
+      for (const orchOpt of staticOrchOpts) {
+        const famName = matchFamilyForOrch(orchOpt);
+        if (!famName || seenFam.has(famName)) continue;
+        seenFam.add(famName);
+        const pLabel = staticLabel(famName);
+        planners.push({ name: famName, items: [{ label: pLabel, tier: null }] });
+        plannerChoices.set(pLabel, orchOpt);
+        for (const { opt } of standaloneByFamily.get(famName) || []) {
+          targets[opt.label] = pLabel;
+        }
+      }
+      if (planners.length) {
+        const activeOrch = isOrchestrator(selectedOption) ? selectedOption : null;
+        const activeFam = activeOrch ? matchFamilyForOrch(activeOrch) : null;
+        const activeStandalone = activeFam ? defaultStandaloneFor(activeFam) : null;
+        const currentLabel = activeFam ? staticLabel(activeFam) : staticLabel(planners[0].name);
+        const orchestrator = {
+          planners,
+          current: currentLabel,
+          active: Boolean(activeOrch),
+          standalone: activeStandalone ? activeStandalone.label : null,
+          targets,
+          staticMode: true,
+        };
+        const isZhUi = /^zh\b/i.test(document.documentElement?.getAttribute?.('data-ag-ux-lang') || '');
+        const displayOptions = new Map();
+        for (const [label, opt] of byLabel) {
+          if (!isOrchestrator(opt)) displayOptions.set(label, opt);
+          else if (!displayOptions.has('Orchestrator')) displayOptions.set('Orchestrator', {
+            tagTitle: opt.tagTitle,
+            tagDescription: isZhUi
+              ? '将常规执行步骤分流至轻量模型，保持规划品质并节省 Token。'
+              : 'Offloads routine steps to a faster executor.',
+          });
+        }
+        const { labels, items, families } = summarize(displayOptions, extraDisabled.filter(opt => !isOrchestrator(opt)));
+        if (orchestrator.active) selected = orchestrator.current;
+        return {
+          conversationId: scopeId,
+          labels: [...labels, ...plannerChoices.keys()],
+          items,
+          families,
+          selected,
+          orchestrator,
+          lockedReason,
+          choose(label) {
+            const mapped = plannerChoices.get(label);
+            if (mapped) return selector.setSelectedModel(mapped);
+            const option = label === 'Orchestrator' ? staticOrchOpts[0] : displayOptions.get(label);
+            if (option) return selector.setSelectedModel(option);
+          },
+        };
+      }
+    }
     const { labels, items, families } = summarize(byLabel, extraDisabled);
     return {
       conversationId: scopeId,
@@ -190,6 +329,7 @@ export function readPickerState(trigger) {
       items,
       families,
       selected,
+      lockedReason,
       choose(label) {
         const option = byLabel.get(label);
         if (!option) return;
@@ -232,7 +372,10 @@ export function syncModelPicker(root, footer, prefsOrEnabled, labels, findFooter
     : null;
   const previous = root._modelPicker;
   if (!enabled && !previous) return;
-  const trigger = enabled && footer.querySelector('button[data-testid="model-selector-trigger"]');
+  const trigger = enabled && (
+    footer.querySelector('button[data-testid="model-selector-trigger"]') ||
+    footer.querySelector('button[data-ag-pd-model-trigger="true"]')
+  );
   const read = () => {
     let next;
     try { next = readPickerState(trigger); } catch { return null; }
@@ -355,7 +498,21 @@ export function syncModelPicker(root, footer, prefsOrEnabled, labels, findFooter
     el.insertAdjacentHTML('beforeend', SVG_DOWN);
   };
 
-  let signature, pending = null, expiry;
+  let signature, pending = null, expiry, statusTimer = null;
+  const setStatus = (msg = '', tone = 'error', autoClearMs = 0) => {
+    clearTimeout(statusTimer);
+    statusTimer = null;
+    status.textContent = msg;
+    if (msg) status.dataset.tone = tone;
+    else delete status.dataset.tone;
+    if (msg && autoClearMs > 0) {
+      statusTimer = setTimeout(() => {
+        statusTimer = null;
+        status.textContent = '';
+        delete status.dataset.tone;
+      }, autoClearMs);
+    }
+  };
   let queuedEffort = null;
   let currentCaption = resolveCaption(labels);
   let currentUnconfirmed = resolveUnconfirmed(labels);
@@ -601,7 +758,8 @@ export function syncModelPicker(root, footer, prefsOrEnabled, labels, findFooter
     if (panel.matches(':popover-open')) panel.hidePopover();
   };
   const isCurrent = () => findFooterLeft() === footer && trigger.isConnected &&
-    footer.querySelector('button[data-testid="model-selector-trigger"]') === trigger;
+    (footer.querySelector('button[data-testid="model-selector-trigger"]') === trigger ||
+     footer.querySelector('button[data-ag-pd-model-trigger="true"]') === trigger);
 
   const tintEffort = (node, group, label) => {
     if (!node) return;
@@ -656,6 +814,8 @@ export function syncModelPicker(root, footer, prefsOrEnabled, labels, findFooter
     },
     dispose() {
       clearTimeout(expiry);
+      clearTimeout(statusTimer);
+      statusTimer = null;
       offEffortTheme?.();
       close();
       orchestratorControl.dispose();
@@ -690,7 +850,7 @@ export function syncModelPicker(root, footer, prefsOrEnabled, labels, findFooter
       if (pending && (next.selected === pending || (pending === 'Orchestrator' && next.orchestrator?.active))) {
         clearTimeout(expiry);
         pending = null;
-        status.textContent = '';
+        setStatus('');
         if (!currentEffortCaption) close();
         const queued = queuedEffort;
         queuedEffort = null;
@@ -758,7 +918,11 @@ export function syncModelPicker(root, footer, prefsOrEnabled, labels, findFooter
       const activePlanner = next.orchestrator?.active && groups.find(group => group.planners)
         ?.planners.find(planner => planner.items.some(item => item.label === next.selected));
       const selectedInList = currentEffortCaption && next.orchestrator?.active ? next.orchestrator.standalone : next.selected;
-      const effortGroup = currentEffortCaption && (activePlanner || groups.find(group => group.items.some(item => item.label === next.selected)));
+      const effortGroup = currentEffortCaption && (
+        activePlanner
+          ? (activePlanner.isMultiTier || activePlanner.items.some(item => item.tier !== null) ? activePlanner : null)
+          : groups.find(group => group.items.some(item => item.label === next.selected))
+      );
       lastEffortGroup = effortGroup || null;
       if (selectedInList && effortGroup?.isMultiTier) rememberedEffort.set(effortGroup.name, selectedInList);
       tintEffort(button.querySelector('.dk-mp-effort'), effortGroup, next.selected);
@@ -781,7 +945,7 @@ export function syncModelPicker(root, footer, prefsOrEnabled, labels, findFooter
         disabled: orchDisabled,
         ariaDisabled: orchDisabled || pending !== null,
         checked: next.orchestrator?.active === true,
-        modelName: effortGroup?.name || next.selected,
+        modelName: activePlanner?.name || effortGroup?.name || next.selected,
       });
       if (effortGroup) {
         if (!effortBar) {
@@ -947,6 +1111,11 @@ export function syncModelPicker(root, footer, prefsOrEnabled, labels, findFooter
     }
     if (source === 'switch') {
       label = currentEffortCaption && switchTarget(current);
+      if (current.orchestrator?.staticMode && current.orchestrator.active && label) {
+        const famMatch = tierRe.exec(label);
+        const rem = famMatch ? rememberedEffort.get(famMatch[1].trim()) : null;
+        if (rem && current.labels.includes(rem)) label = rem;
+      }
       if (!label) return;
     } else if (source === 'model' && currentEffortCaption && current.orchestrator?.active) {
       // Keep routing through Orchestrator only when the chosen model and tier are supported.
@@ -960,14 +1129,29 @@ export function syncModelPicker(root, footer, prefsOrEnabled, labels, findFooter
       if (!currentEffortCaption) close();
       return;
     }
+    const lockedReason = current.lockedReason ||
+      (trigger.disabled || trigger.getAttribute('aria-disabled') === 'true' ? 'locked' : '');
+    if (lockedReason) {
+      const isZh = /^zh\b/i.test(document.documentElement?.getAttribute?.('data-ag-ux-lang') || '') ||
+        /[\u4e00-\u9fff]/.test(currentCaption);
+      const busyMsg = isZh ? '生成中，完成后可切换' : 'Busy — switch after reply';
+      const msg = lockedReason === 'locked' || /running|busy|generat/i.test(lockedReason)
+        ? busyMsg
+        : lockedReason;
+      setStatus(msg, 'muted', 2600);
+      if (fromEffort && effortBar && lastEffortGroup) {
+        effortBar.refresh(lastEffortGroup, current.selected, null, currentEffortCaption, currentEffortOptions);
+      }
+      return;
+    }
     pending = label;
-    status.textContent = '';
+    setStatus('');
     picker.refresh(current, currentCaption, currentUnconfirmed);
     const fail = () => {
       if (root._modelPicker !== picker || pending !== label) return;
       pending = null;
       queuedEffort = null;
-      status.textContent = currentUnconfirmed;
+      setStatus(currentUnconfirmed, 'error', 4000);
       const next = read();
       if (next && next.conversationId === picker.id) picker.refresh(next, currentCaption, currentUnconfirmed);
       else picker.dispose();
@@ -987,14 +1171,24 @@ export function syncModelPicker(root, footer, prefsOrEnabled, labels, findFooter
   };
 
   panel.addEventListener('beforetoggle', event => {
-    if (event.newState !== 'open') { hideTip(); hideSub(); orchestratorControl.setOpen(false); effortBar?.setOpen(false); return; }
+    if (event.newState !== 'open') { setStatus(''); hideTip(); hideSub(); orchestratorControl.setOpen(false); effortBar?.setOpen(false); return; }
     picker.sync();
     if (root._modelPicker !== picker) return;
     const rect = button.getBoundingClientRect();
     const estWidth = Math.min(320, innerWidth - 12);
+    const spaceAbove = rect.top - 12;
+    const spaceBelow = innerHeight - rect.bottom - 12;
+    const openDown = spaceAbove < 380 && spaceBelow > spaceAbove;
     panel.style.left = Math.max(6, Math.min(rect.left, innerWidth - estWidth - 6)) + 'px';
-    panel.style.bottom = Math.max(6, innerHeight - rect.top + 6) + 'px';
-    panel.style.maxHeight = Math.max(48, rect.top - 12) + 'px';
+    if (openDown) {
+      panel.style.top = Math.round(rect.bottom + 6) + 'px';
+      panel.style.bottom = 'auto';
+      panel.style.maxHeight = Math.max(120, Math.floor(spaceBelow)) + 'px';
+    } else {
+      panel.style.top = 'auto';
+      panel.style.bottom = Math.max(6, Math.round(innerHeight - rect.top + 6)) + 'px';
+      panel.style.maxHeight = Math.max(48, Math.floor(spaceAbove)) + 'px';
+    }
     orchestratorControl.setOpen(true);
     effortBar?.setOpen(true);
   });

@@ -80,7 +80,7 @@ export function createStudioPrefsRuntime({ initialPrefs, defaultPrefs, effortEff
     i18n: false,
     claudeUxStepUnfold: false,
     claudeUxCodeFold: true,
-    claudeUxHideSidebarProjects: true,
+    claudeUxHideSidebarProjects: false,
     claudeUxContextRing: true,
     claudeUxProjects: true,
     claudeUxCustomizations: true,

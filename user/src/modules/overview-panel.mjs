@@ -29,6 +29,7 @@ export function createOverviewPanelModule(rt, metricsQuota) {
   const showProjectsFloatingNotice = (...args) => hooks.showProjectsFloatingNotice?.(...args);
   const openProjectInstructionsModal = (...args) => hooks.openProjectInstructionsModal?.(...args);
   const openConversationFromProject = (...args) => hooks.openConversationFromProject?.(...args);
+  const openProjectsView = (...args) => hooks.openProjectsView?.(...args);
 
   /* ==========================================================================
    * 11. Enhanced Right Overview Panel (`claudeUxOverviewPanel`)
@@ -270,7 +271,11 @@ export function createOverviewPanelModule(rt, metricsQuota) {
     const action = actionEl.getAttribute('data-ag-ov-action');
     const ws = resolveActiveOverviewWorkspace(true);
 
-    if (action === 'finder') {
+    if (action === 'open-project') {
+      if (ws.project && ws.project.id && FEAT.projects) {
+        openProjectsView(ws.project.id);
+      }
+    } else if (action === 'finder') {
       if (ws.dirPath && typeof window.__agProjectCall === 'function') {
         window.__agProjectCall('revealFile', { targetPath: ws.dirPath, dirPath: ws.dirPath, openFolder: true }, 5000);
       }
@@ -425,11 +430,18 @@ export function createOverviewPanelModule(rt, metricsQuota) {
             ${buildOvChevronSvg(ovCollapseState.environment)}
             <span>${L('工作环境', 'Environment')}</span>
           </button>
-          ${
-            ws.dirPath
-              ? `<button type="button" class="ag-ov-hdr-action" data-ag-ov-action="finder">Finder ↗</button>`
-              : ''
-          }
+          <div class="ag-ov-hdr-actions">
+            ${
+              ws.project && ws.project.id && FEAT.projects
+                ? `<button type="button" class="ag-ov-hdr-action" data-ag-ov-action="open-project">${L('项目页 ↗', 'Project ↗')}</button>`
+                : ''
+            }
+            ${
+              ws.dirPath
+                ? `<button type="button" class="ag-ov-hdr-action" data-ag-ov-action="finder">Finder ↗</button>`
+                : ''
+            }
+          </div>
         </div>
         ${
           ovCollapseState.environment

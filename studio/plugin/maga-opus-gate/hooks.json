@@ -2,7 +2,7 @@
   "maga-opus-gate": {
     "PostToolUse": [
       {
-        "matcher": "run_command|edit_file|write_file",
+        "matcher": "run_command|edit_file|write_file|exit_plan_mode",
         "hooks": [
           {
             "type": "command",

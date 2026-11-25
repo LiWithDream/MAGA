@@ -848,30 +848,15 @@ export async function handleProjectRpcRequest(rawPayload, callerEntry = null) {
       const result = collectResumeState(payload);
       return { reqId, result };
     }
-    if (action === 'saveQuotaState') {
-      const { saveQuotaState } = await import('../../studio/daemon/opus-gate-service.mjs');
-      const result = saveQuotaState(payload);
-      return { reqId, result };
-    }
-    if (action === 'getOpusGateStatus') {
-      const { getOpusGateStatus } = await import('../../studio/daemon/opus-gate-service.mjs');
-      const result = getOpusGateStatus(payload);
-      return { reqId, result };
-    }
-    if (action === 'dismissOpusGateProposal') {
-      const { dismissOpusGateProposal } = await import('../../studio/daemon/opus-gate-service.mjs');
-      const result = dismissOpusGateProposal(payload);
-      return { reqId, result };
-    }
-    if (action === 'buildOpusHandoffBrief') {
-      const { buildOpusHandoffBrief } = await import('../../studio/daemon/opus-gate-service.mjs');
-      const result = await buildOpusHandoffBrief(payload);
-      return { reqId, result };
-    }
-    if (action === 'syncOpusGatePlugin') {
-      const { syncOpusGatePlugin } = await import('../../studio/daemon/opus-gate-service.mjs');
-      const result = syncOpusGatePlugin(payload);
-      return { reqId, result };
+    if (
+      action === 'saveQuotaState' ||
+      action === 'getOpusGateStatus' ||
+      action === 'dismissOpusGateProposal' ||
+      action === 'buildOpusHandoffBrief' ||
+      action === 'syncOpusGatePlugin'
+    ) {
+      const { handleOpusGateRpc } = await import('../../studio/daemon/opus-gate-service.mjs');
+      return { reqId, result: await handleOpusGateRpc(action, payload) };
     }
     if (action === 'revealFile') {
       const rawTarget = typeof payload?.targetPath === 'string' ? payload.targetPath.trim() : '';

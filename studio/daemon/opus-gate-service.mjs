@@ -1,8 +1,8 @@
 /**
  * Daemon-side Opus Gate Service:
  * - Persists sanitized dual-pool quota snapshots (`quota-state.json`) synced from UI
- * - Reads/dismisses hook-published Opus checkpoint proposals (`opus-gate-state.json`)
- * - Builds compact, token-minimal Swarm & Standalone Handoff briefs
+ * - Reads/CAS-dismisses per-conversation Opus checkpoint proposals (`opus-gate-proposals/<cid>.json`)
+ * - Builds compact, evidence-first Swarm & Standalone Handoff briefs
  * - Idempotently syncs/removes the native `maga-opus-gate` Antigravity plugin
  */
 import { execFile } from 'node:child_process';
@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   GLOBAL_PLUGINS_DIR,
-  OPUS_GATE_STATE_FILE,
+  OPUS_GATE_PROPOSALS_DIR,
   QUOTA_STATE_FILE,
   REPO_ROOT,
   readJsonOrFallback,
@@ -21,7 +21,10 @@ import { resolveLocalProjectDir } from '../../core/daemon/projects.mjs';
 
 const SAFE_CID_RE = /^[A-Za-z0-9_-]{4,128}$/;
 const PROPOSAL_TTL_MS = 30 * 60 * 1000;
-const MAX_GATE_CONVERSATIONS = 24;
+const MAX_PROPOSAL_FILES = 32;
+const MAX_PROPOSAL_AGE_MS = 24 * 60 * 60 * 1000;
+const MAX_DIFF_SNIPPET_LINES = 250;
+const MAX_DIFF_SNIPPET_CHARS = 12_000;
 const PLUGIN_NAME = 'maga-opus-gate';
 const PLUGIN_FILES = [
   'plugin.json',
@@ -30,6 +33,14 @@ const PLUGIN_FILES = [
   'skills/opus-gate/SKILL.md',
   'hooks/gate-check.mjs',
 ];
+
+export const OPUS_GATE_ACTIONS = new Set([
+  'saveQuotaState',
+  'getOpusGateStatus',
+  'dismissOpusGateProposal',
+  'buildOpusHandoffBrief',
+  'syncOpusGatePlugin',
+]);
 
 function clampPct(val) {
   if (val === null || val === undefined || val === '') return null;
@@ -57,6 +68,22 @@ function sanitizePool(rawPool, includeResets = false) {
   return base;
 }
 
+function sanitizeInlineText(str, maxLen = 220) {
+  return String(str || '')
+    .replace(/`/g, "'")
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/[\u0000-\u001F\u007F]/g, '')
+    .trim()
+    .slice(0, maxLen);
+}
+
+function sanitizePathSafe(str) {
+  return String(str || '')
+    .replace(/[`'"\r\n\t\u0000-\u001F\u007F]/g, '')
+    .replace(/[^\w./@:+-]/g, '_')
+    .slice(0, 220);
+}
+
 export function sanitizeQuotaState(raw) {
   const src = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
   return {
@@ -82,30 +109,65 @@ export function saveQuotaState(payload, opts = {}) {
   return { ok: true, quotaState: next };
 }
 
-export function loadOpusGateState(opts = {}) {
-  const gateFile = opts.gateStateFile || OPUS_GATE_STATE_FILE;
-  const raw = readJsonOrFallback(gateFile, null);
-  const convs =
-    raw && typeof raw.conversations === 'object' && !Array.isArray(raw.conversations)
-      ? raw.conversations
-      : {};
-  return { schema: 1, conversations: convs };
+function getProposalsDir(opts = {}) {
+  return opts.proposalsDir || OPUS_GATE_PROPOSALS_DIR;
 }
 
-export function saveOpusGateState(nextState, opts = {}) {
-  const gateFile = opts.gateStateFile || OPUS_GATE_STATE_FILE;
-  const rawConvs =
-    nextState && typeof nextState.conversations === 'object' && !Array.isArray(nextState.conversations)
-      ? nextState.conversations
-      : {};
-  const entries = Object.entries(rawConvs)
-    .filter(([cid, v]) => SAFE_CID_RE.test(cid) && v && typeof v === 'object')
-    .sort((a, b) => Number(a[1]?.ts || 0) - Number(b[1]?.ts || 0))
-    .slice(-MAX_GATE_CONVERSATIONS);
-  const cleaned = { schema: 1, conversations: Object.fromEntries(entries) };
-  fs.mkdirSync(path.dirname(gateFile), { recursive: true });
-  writeAtomicUtf8(gateFile, `${JSON.stringify(cleaned, null, 2)}\n`);
-  return cleaned;
+function getProposalFilePath(cid, opts = {}) {
+  const safe = typeof cid === 'string' ? cid.trim() : '';
+  if (!SAFE_CID_RE.test(safe)) return '';
+  return path.join(getProposalsDir(opts), `${path.basename(safe)}.json`);
+}
+
+function pruneProposalsDir(dir) {
+  try {
+    if (!dir || !fs.existsSync(dir)) return;
+    const now = Date.now();
+    const alive = [];
+    for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (!ent.isFile() || !ent.name.endsWith('.json')) continue;
+      const full = path.join(dir, ent.name);
+      try {
+        const st = fs.statSync(full);
+        if (now - st.mtimeMs > MAX_PROPOSAL_AGE_MS) {
+          fs.rmSync(full, { force: true });
+        } else {
+          alive.push({ full, mtimeMs: st.mtimeMs });
+        }
+      } catch {}
+    }
+    if (alive.length > MAX_PROPOSAL_FILES) {
+      alive.sort((a, b) => a.mtimeMs - b.mtimeMs);
+      for (const item of alive.slice(0, alive.length - MAX_PROPOSAL_FILES)) {
+        try {
+          fs.rmSync(item.full, { force: true });
+        } catch {}
+      }
+    }
+  } catch {}
+}
+
+export function readOpusGateProposal(cid, opts = {}) {
+  const filePath = getProposalFilePath(cid, opts);
+  if (!filePath) return null;
+  const raw = readJsonOrFallback(filePath, null);
+  return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : null;
+}
+
+export function writeOpusGateProposal(cid, proposal, opts = {}) {
+  const filePath = getProposalFilePath(cid, opts);
+  if (!filePath || !proposal || typeof proposal !== 'object') return false;
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  writeAtomicUtf8(filePath, `${JSON.stringify(proposal, null, 2)}\n`);
+  pruneProposalsDir(path.dirname(filePath));
+  return true;
+}
+
+function readActiveProposal(cid, opts = {}, now = Date.now()) {
+  const entry = readOpusGateProposal(cid, opts);
+  if (!entry || entry.dismissed === true) return null;
+  if (now - Number(entry.ts || 0) >= PROPOSAL_TTL_MS) return null;
+  return entry;
 }
 
 function getPluginTargetDir(opts = {}) {
@@ -146,14 +208,7 @@ export function getOpusGateStatus(payload = {}, opts = {}) {
   const pluginDir = getPluginTargetDir(opts);
   const pluginInstalled = isOpusGatePluginInstalled(opts);
   const quotaState = loadQuotaState(opts);
-  const gateState = loadOpusGateState(opts);
-  let proposal = null;
-  if (cid && SAFE_CID_RE.test(cid)) {
-    const entry = gateState.conversations[cid];
-    if (entry && entry.dismissed !== true && now - Number(entry.ts || 0) < PROPOSAL_TTL_MS) {
-      proposal = entry;
-    }
-  }
+  const proposal = cid && SAFE_CID_RE.test(cid) ? readActiveProposal(cid, opts, now) : null;
   return { ok: true, pluginInstalled, pluginDir, quotaState, proposal };
 }
 
@@ -162,16 +217,27 @@ export function dismissOpusGateProposal(payload = {}, opts = {}) {
   if (!cid || !SAFE_CID_RE.test(cid)) {
     return { ok: false, error: 'invalid_cascade_id' };
   }
-  const state = loadOpusGateState(opts);
-  const cur = state.conversations[cid] && typeof state.conversations[cid] === 'object' ? state.conversations[cid] : {};
-  state.conversations[cid] = {
-    ...cur,
-    dismissed: true,
-    dismissedDiffHash: typeof payload?.diffHash === 'string' ? payload.diffHash : cur.diffHash || '',
-    ts: Number(cur.ts || Date.now()),
-  };
-  saveOpusGateState(state, opts);
-  return { ok: true, cascadeId: cid };
+  const cur = readOpusGateProposal(cid, opts);
+  if (!cur) {
+    return { ok: true, cascadeId: cid, matched: false };
+  }
+  const expectedHash = typeof payload?.diffHash === 'string' ? payload.diffHash.trim() : '';
+  const expectedTs = Number(payload?.ts || 0);
+  if (expectedHash && cur.diffHash && cur.diffHash !== expectedHash) {
+    if (!expectedTs || Number(cur.ts || 0) !== expectedTs) {
+      return { ok: true, cascadeId: cid, matched: false };
+    }
+  }
+  writeOpusGateProposal(
+    cid,
+    {
+      ...cur,
+      dismissed: true,
+      dismissedDiffHash: cur.diffHash || expectedHash || '',
+    },
+    opts
+  );
+  return { ok: true, cascadeId: cid, matched: true };
 }
 
 function execGitBriefAsync(absDir, args) {
@@ -179,7 +245,12 @@ function execGitBriefAsync(absDir, args) {
     execFile(
       'git',
       ['-C', absDir, ...args],
-      { timeout: 1500, maxBuffer: 128 * 1024, encoding: 'utf8' },
+      {
+        timeout: 1500,
+        maxBuffer: 192 * 1024,
+        env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
+        encoding: 'utf8',
+      },
       (err, stdout) => resolve(err ? '' : String(stdout || '').trim())
     );
   });
@@ -189,45 +260,83 @@ function resolveOpusModelIdForTier(tier) {
   return tier === 'medium' ? 'claude-opus-5-5-medium' : 'claude-opus-5-5-high';
 }
 
-export async function buildOpusHandoffBrief(payload = {}, opts = {}) {
-  const cid = typeof payload?.cascadeId === 'string' ? payload.cascadeId.trim() : '';
-  const rawKind = typeof payload?.kind === 'string' ? payload.kind.trim().toLowerCase() : '';
-  const note = typeof payload?.note === 'string' ? payload.note.trim().slice(0, 500) : '';
-  const prefs = opts.studioPrefs || loadStudioPrefs(opts);
-  const quotaState = loadQuotaState(opts);
-  const gateState = loadOpusGateState(opts);
-  const prop = cid && SAFE_CID_RE.test(cid) ? gateState.conversations[cid] || null : null;
-
-  const kind = rawKind || prop?.kind || 'review';
+function computeRecommendedTier(prefs, quotaState, kind) {
+  if (kind === 'stop') return 'medium';
   const claude5h = quotaState?.claude?.fiveHourRemainingPct ?? null;
   const preferredTier = prefs?.opusGatePreferredTier === 'medium' ? 'medium' : 'high';
   const min5h = Number(prefs?.opusGateMinQuota5hPct ?? 20);
-  const recommendedTier =
-    prop?.recommendedTier ||
-    (preferredTier === 'high' && (claude5h === null || claude5h >= min5h + 15) ? 'high' : 'medium');
+  return preferredTier === 'high' && (claude5h === null || claude5h >= min5h + 15) ? 'high' : 'medium';
+}
+
+function resolveVerifiedWorkspaceDir(candidate, allowAnyDir = false) {
+  const s = typeof candidate === 'string' ? candidate.trim() : '';
+  if (!s) return '';
+  return resolveLocalProjectDir(s) || (allowAnyDir && fs.existsSync(s) ? path.resolve(s) : '');
+}
+
+function boundDiffSnippet(rawDiff) {
+  if (!rawDiff) return '';
+  const lines = String(rawDiff).split(/\r?\n/).slice(0, MAX_DIFF_SNIPPET_LINES);
+  let joined = lines.join('\n');
+  if (joined.length > MAX_DIFF_SNIPPET_CHARS) {
+    joined = `${joined.slice(0, MAX_DIFF_SNIPPET_CHARS)}\n... [truncated]`;
+  }
+  return joined.replace(/```/g, "'''");
+}
+
+export async function buildOpusHandoffBrief(payload = {}, opts = {}) {
+  const cid = typeof payload?.cascadeId === 'string' ? payload.cascadeId.trim() : '';
+  const rawKind = typeof payload?.kind === 'string' ? payload.kind.trim().toLowerCase() : '';
+  const note = sanitizeInlineText(payload?.note || '', 500);
+  const now = Number(opts.now) > 0 ? Number(opts.now) : Date.now();
+  const prefs = opts.studioPrefs || loadStudioPrefs(opts);
+  const quotaState = loadQuotaState(opts);
+  const prop = cid && SAFE_CID_RE.test(cid) ? readActiveProposal(cid, opts, now) : null;
+
+  const kind = rawKind || prop?.kind || 'review';
+  const recommendedTier = computeRecommendedTier(prefs, quotaState, kind);
   const recommendedModelId = resolveOpusModelIdForTier(recommendedTier);
 
-  const rawDir = typeof payload?.dirPath === 'string' ? payload.dirPath.trim() : '';
-  const absDir = rawDir ? resolveLocalProjectDir(rawDir) || (opts.allowAnyDir && fs.existsSync(rawDir) ? path.resolve(rawDir) : '') : '';
+  const absDir =
+    resolveVerifiedWorkspaceDir(prop?.worktreeRoot, opts.allowAnyDir) ||
+    resolveVerifiedWorkspaceDir(payload?.dirPath, opts.allowAnyDir) ||
+    '';
+
+  const safeHighRisk = Array.isArray(prop?.highRiskFiles)
+    ? prop.highRiskFiles.map((f) => sanitizePathSafe(f)).filter(Boolean).slice(0, 8)
+    : [];
+  const safePlanFiles = Array.isArray(prop?.planFiles)
+    ? prop.planFiles.map((f) => sanitizePathSafe(f)).filter(Boolean).slice(0, 5)
+    : [];
 
   let statusText = '';
   let diffStat = '';
+  let diffSnippet = '';
   if (absDir) {
-    [statusText, diffStat] = await Promise.all([
+    const safeRelPaths = safeHighRisk.filter((p) => !path.isAbsolute(p) && !p.startsWith('..'));
+    const diffArgs = safeRelPaths.length
+      ? ['diff', '-U3', '--', ...safeRelPaths]
+      : ['diff', '-U3'];
+    [statusText, diffStat, diffSnippet] = await Promise.all([
       execGitBriefAsync(absDir, ['status', '--short']),
       execGitBriefAsync(absDir, ['diff', '--stat']),
+      execGitBriefAsync(absDir, diffArgs),
     ]);
   }
 
   const scopeLines = [];
-  if (absDir) scopeLines.push(`- Workspace: \`${absDir}\``);
-  scopeLines.push(`- Gate Kind: \`${kind}\` (target tier: \`${recommendedModelId}\`)`);
-  if (prop?.reason) scopeLines.push(`- Trigger Reason: ${prop.reason}`);
-  if (Array.isArray(prop?.highRiskFiles) && prop.highRiskFiles.length > 0) {
-    scopeLines.push(`- High-Risk Files: ${prop.highRiskFiles.slice(0, 8).map((f) => `\`${f}\``).join(', ')}`);
+  if (absDir) scopeLines.push(`- Active Worktree: \`${sanitizePathSafe(absDir)}\``);
+  scopeLines.push(`- Gate Kind: \`${sanitizeInlineText(kind, 32)}\` (target tier: \`${recommendedModelId}\`)`);
+  if (prop?.reason) scopeLines.push(`- Trigger Reason: ${sanitizeInlineText(prop.reason, 220)}`);
+  if (safeHighRisk.length > 0) {
+    scopeLines.push(`- High-Risk Files: ${safeHighRisk.map((f) => `\`${f}\``).join(', ')}`);
+  }
+  if (safePlanFiles.length > 0) {
+    scopeLines.push(`- Plan / Design Artifacts: ${safePlanFiles.map((f) => `\`${f}\``).join(', ')}`);
   }
   if (Number(prop?.consecutiveErrors) > 0) {
-    scopeLines.push(`- Consecutive Tool Errors: ${prop.consecutiveErrors}${prop.lastErrorSig ? ` (${prop.lastErrorSig})` : ''}`);
+    const safeSig = prop?.lastErrorSig ? ` (${sanitizeInlineText(prop.lastErrorSig, 160)})` : '';
+    scopeLines.push(`- Consecutive Tool Errors: ${prop.consecutiveErrors}${safeSig}`);
   }
   if (note) scopeLines.push(`- User Note: ${note}`);
   if (statusText) {
@@ -236,20 +345,24 @@ export async function buildOpusHandoffBrief(payload = {}, opts = {}) {
   if (diffStat) {
     scopeLines.push(`- Diff Summary:\n\`\`\`text\n${diffStat.split(/\r?\n/).slice(0, 20).join('\n')}\n\`\`\``);
   }
+  const boundedDiff = boundDiffSnippet(diffSnippet);
+  if (boundedDiff) {
+    scopeLines.push(`- Diff Snippet (<= ${MAX_DIFF_SNIPPET_LINES} lines):\n\`\`\`diff\n${boundedDiff}\n\`\`\``);
+  }
   const scopeBlock = scopeLines.join('\n');
 
   const swarmPrompt = [
-    `[MAGA Opus Gate · ${kind}] Please load the \`opus-gate\` skill and delegate a compact, read-only Claude Opus (${recommendedTier}) checkpoint review via \`swarm\`.`,
-    `- Only use \`fork: "coordinator"\` if \`${kind}\` is \`debug\` escalation; otherwise keep context compact.`,
-    `- Instruct \`opus-gate\` to inspect read-only and post \`@coordinator [done]\` with Verdict (\`APPROVE\` / \`REVISE\` / \`HOLD\`) and P0/P1/P2 findings (\`file:line\`).`,
+    `[MAGA Opus Gate · ${sanitizeInlineText(kind, 32)}] Please load the \`opus-gate\` skill and delegate a compact, read-only Claude Opus (${recommendedTier}) checkpoint review via \`swarm\`.`,
+    `- Only use \`fork: "coordinator"\` if \`${sanitizeInlineText(kind, 32)}\` is \`debug\` escalation; otherwise omit \`fork\` to keep context compact.`,
+    `- Instruct \`opus-gate\` to inspect read-only using batched parallel reads/checks within **<= 3 turns**, keep output under **500 words**, and post \`@coordinator [done]\` with Verdict (\`APPROVE\` / \`REVISE\` / \`HOLD\`) and P0/P1/P2 findings (\`file:line\`).`,
     '',
     '### Gate Context',
     scopeBlock,
   ].join('\n');
 
   const handoffPrompt = [
-    `Perform a focused, high-signal Claude Opus architecture & code review (${kind} checkpoint).`,
-    'Inspect read-only first and provide concrete, actionable findings.',
+    `Perform a focused, high-signal Claude Opus architecture & code review (${sanitizeInlineText(kind, 32)} checkpoint).`,
+    'Inspect read-only first using batched parallel reads/checks (<= 3 turns) and keep the final report under 500 words.',
     '',
     '### Context & Scope',
     scopeBlock,
@@ -271,4 +384,21 @@ export async function buildOpusHandoffBrief(payload = {}, opts = {}) {
     swarmPrompt,
     handoffPrompt,
   };
+}
+
+export async function handleOpusGateRpc(action, payload = {}, opts = {}) {
+  switch (action) {
+    case 'saveQuotaState':
+      return saveQuotaState(payload, opts);
+    case 'getOpusGateStatus':
+      return getOpusGateStatus(payload, opts);
+    case 'dismissOpusGateProposal':
+      return dismissOpusGateProposal(payload, opts);
+    case 'buildOpusHandoffBrief':
+      return buildOpusHandoffBrief(payload, opts);
+    case 'syncOpusGatePlugin':
+      return syncOpusGatePlugin(payload, opts);
+    default:
+      return { ok: false, error: 'unknown_opus_gate_action' };
+  }
 }

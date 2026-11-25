@@ -3,6 +3,31 @@
  */
 import { PREVIEW_SAMPLE_GROUPS, buildDefaultPreviewSelectionMap } from './constants.mjs';
 
+export function loadAiSuggestionsConfigIfNeeded(state, viewName, onLoaded) {
+  if (!state || (viewName !== 'workspace' && viewName !== 'workspace-ai-suggestions')) return;
+  if (state.aiSuggestionsCfg || state.aiSuggestionsLoading) return;
+  if (typeof window?.__agProjectCall !== 'function') return;
+  state.aiSuggestionsLoading = true;
+  Promise.resolve(window.__agProjectCall('getProjectSuggestionsConfig', {}, 4000))
+    .then((res) => {
+      state.aiSuggestionsLoading = false;
+      if (res && res.ok) {
+        state.aiSuggestionsCfg = res;
+        onLoaded?.();
+      }
+    })
+    .catch(() => {
+      state.aiSuggestionsLoading = false;
+    });
+}
+
+function readAiSuggestionsInputs(root) {
+  const apiKey = root.querySelector('[data-ms-ai-input="apiKey"]')?.value?.trim() || '';
+  const model = root.querySelector('[data-ms-ai-input="model"]')?.value?.trim() || '';
+  const baseUrl = root.querySelector('[data-ms-ai-input="baseUrl"]')?.value?.trim() || '';
+  return { apiKey, model, baseUrl };
+}
+
 export function bindSettingsRootEvents(root, {
   studioPrefs,
   state,
@@ -100,6 +125,71 @@ export function bindSettingsRootEvents(root, {
         if (typeof window.__agyOpusGateTrigger === 'function') {
           window.__agyOpusGateTrigger('manual');
         }
+      } else if (act === 'ai-sugg-save' && typeof window.__agProjectCall === 'function') {
+        const { apiKey, model, baseUrl } = readAiSuggestionsInputs(root);
+        const res = await window.__agProjectCall('saveProjectSuggestionsConfig', { apiKey, model, baseUrl }, 5000).catch(() => null);
+        if (res?.ok) {
+          state.aiSuggestionsCfg = res;
+          state.aiSuggestionsTestStatus = null;
+          renderActiveHost(true);
+          flashToast('✓ 已保存 API 配置', '✓ API config saved');
+        } else {
+          flashToast('保存配置失败', 'Failed to save config', 'error');
+        }
+      } else if (act === 'ai-sugg-clear-key' && typeof window.__agProjectCall === 'function') {
+        const res = await window.__agProjectCall('saveProjectSuggestionsConfig', { clearApiKey: true }, 5000).catch(() => null);
+        if (res?.ok) {
+          state.aiSuggestionsCfg = res;
+          state.aiSuggestionsTestStatus = null;
+          renderActiveHost(true);
+          flashToast('✓ 已清除 API Key', '✓ API key cleared');
+        } else {
+          flashToast('清除失败', 'Failed to clear key', 'error');
+        }
+      } else if (act === 'ai-sugg-test' && typeof window.__agProjectCall === 'function') {
+        const { apiKey, model, baseUrl } = readAiSuggestionsInputs(root);
+        const isZh = document.documentElement?.getAttribute?.('data-ag-ux-lang') === 'zh';
+        state.aiSuggestionsTestStatus = {
+          busy: true,
+          ok: false,
+          message: isZh ? '正在测试连接…' : 'Testing connection…',
+        };
+        renderActiveHost(true);
+        const res = await window.__agProjectCall('testProjectSuggestionsConfig', { apiKey, model, baseUrl }, 15000).catch(() => null);
+        if (res?.ok) {
+          state.aiSuggestionsTestStatus = {
+            busy: false,
+            ok: true,
+            message: isZh
+              ? `✓ 连接成功 (${res.model} · ${res.latencyMs || 0}ms)`
+              : `✓ Connected (${res.model} · ${res.latencyMs || 0}ms)`,
+          };
+          flashToast('✓ 连接测试成功', '✓ Connection ok');
+        } else {
+          const errCode = res?.error || 'request_failed';
+          state.aiSuggestionsTestStatus = {
+            busy: false,
+            ok: false,
+            message: isZh ? `连接失败：${errCode}` : `Connection failed: ${errCode}`,
+          };
+          flashToast('连接测试失败', 'Connection failed', 'error');
+        }
+        renderActiveHost(true);
+      }
+      return;
+    }
+
+    const aiPresetBtn = target.closest('[data-ms-ai-model-preset]');
+    if (aiPresetBtn && typeof window.__agProjectCall === 'function') {
+      const presetModel = aiPresetBtn.getAttribute('data-ms-ai-model-preset') || '';
+      const modelInput = root.querySelector('[data-ms-ai-input="model"]');
+      if (modelInput && presetModel) modelInput.value = presetModel;
+      const res = await window.__agProjectCall('saveProjectSuggestionsConfig', { model: presetModel }, 5000).catch(() => null);
+      if (res?.ok) {
+        state.aiSuggestionsCfg = res;
+        state.aiSuggestionsTestStatus = null;
+        renderActiveHost(true);
+        flashToast('✓ 已切换模型', '✓ Model updated');
       }
       return;
     }
@@ -120,6 +210,13 @@ export function bindSettingsRootEvents(root, {
         curCp[key] = nextVal;
         studioPrefs.patch({ opusGateCheckpoints: curCp });
         flashToast('✓ 已保存', '✓ Saved');
+      } else if (kind === 'ai-sugg' && typeof window.__agProjectCall === 'function') {
+        const res = await window.__agProjectCall('saveProjectSuggestionsConfig', { [key]: nextVal }, 5000).catch(() => null);
+        if (res?.ok) {
+          state.aiSuggestionsCfg = res;
+          renderActiveHost(true);
+          flashToast('✓ 已保存', '✓ Saved');
+        }
       }
       return;
     }

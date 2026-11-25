@@ -124,6 +124,8 @@ export function createProjectSharedContext(rt, modelApi) {
     pdWtCreateOpenByProj: {},
     pdWtConfirmRemovePath: '',
     pdWtBusyKey: '',
+    projectSuggestionsMap: {},
+    projectSuggestionsBusyDirs: new Set(),
   };
 
   const pHooks = Object.create(null);

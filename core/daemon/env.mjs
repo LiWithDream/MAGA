@@ -47,6 +47,11 @@ export const UI_PREFS_FILE = path.join(STATE_DIR, 'ui-prefs.json');
 export const STUDIO_PREFS_FILE = path.join(STATE_DIR, 'studio-prefs.json');
 export const QUOTA_STATE_FILE = path.join(STATE_DIR, 'quota-state.json');
 export const OPUS_GATE_PROPOSALS_DIR = path.join(STATE_DIR, 'opus-gate-proposals');
+export const PROJECT_SUGGESTIONS_CONFIG_FILE = path.join(STATE_DIR, 'project-suggestions-config.json');
+export const PROJECT_SUGGESTIONS_CACHE_DIR = path.join(STATE_DIR, 'project-suggestions-cache');
+export const ANTIGRAVITY_BRAIN_DIR = path.resolve(
+  process.env.ANTI_CLAUDE_BRAIN_DIR || path.join(HOME, '.gemini', 'antigravity', 'brain')
+);
 export const BASE_CONFIG_FILE = path.join(STATE_DIR, 'base', 'config.json');
 export const PROJECTS_REGISTRY_FILE = path.join(STATE_DIR, 'projects-registry.json');
 export const CORE_BASE_CSS_FILE = path.join(CORE_DIR, 'base.css');

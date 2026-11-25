@@ -20,7 +20,7 @@ import {
   buildDefaultPreviewSelectionMap,
   esc,
 } from './settings/constants.mjs';
-import { bindSettingsRootEvents } from './settings/events.mjs';
+import { bindSettingsRootEvents, loadAiSuggestionsConfigIfNeeded } from './settings/events.mjs';
 import { createFxPreviewController } from './settings/preview.mjs';
 import {
   getViewMeta,
@@ -29,6 +29,7 @@ import {
   renderL2Models,
   renderL2Stream,
   renderL2Workspace,
+  renderL3AiSuggestions,
   renderL3HiddenModels,
   renderL3ModelTiers,
   renderL3OpusGate,
@@ -63,6 +64,9 @@ export function createStudioSettingsRuntime({
     fxPreviewActiveModel: 'Gemini 4 Neon',
     fxPreviewSelectedByModel: buildDefaultPreviewSelectionMap(studioPrefs?.get?.()?.defaultTierByFamily),
     fxPreviewOrchOn: true,
+    aiSuggestionsCfg: null,
+    aiSuggestionsLoading: false,
+    aiSuggestionsTestStatus: null,
   };
 
   const isZh = () => isZhUi();
@@ -290,6 +294,7 @@ export function createStudioSettingsRuntime({
     const base = studioPrefs.getBaseState();
     const catalog = studioPrefs.getModelCatalog();
     const cur = currentView();
+    loadAiSuggestionsConfigIfNeeded(state, cur.view, () => renderActiveHost(true));
     const meta = getViewMeta(cur.view, L);
     const viewCtx = {
       studioPrefs,
@@ -307,6 +312,7 @@ export function createStudioSettingsRuntime({
     else if (cur.view === 'models-opus-gate') bodyHtml = renderL3OpusGate(p, viewCtx);
     else if (cur.view === 'stream') bodyHtml = renderL2Stream(p, base, viewCtx);
     else if (cur.view === 'workspace') bodyHtml = renderL2Workspace(p, base, viewCtx);
+    else if (cur.view === 'workspace-ai-suggestions') bodyHtml = renderL3AiSuggestions(state, viewCtx);
     else if (cur.view === 'appearance') bodyHtml = renderL2Appearance(p, base, viewCtx);
 
     const canBack = viewStack.length > 1;

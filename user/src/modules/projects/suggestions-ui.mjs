@@ -7,7 +7,7 @@ export function createProjectSuggestionsController(ctx) {
   const { FEAT, L, rtState, pState, pHooks } = ctx;
 
   function buildChatsBriefInput(project) {
-    return (Array.isArray(project?.chats) ? project.chats : []).slice(0, 5).map((c) => ({
+    return (Array.isArray(project?.chats) ? project.chats : []).slice(0, 8).map((c) => ({
       id: c?.id || '',
       title: c?.title || '',
       updatedAt: Number(c?.updatedAt) || 0,
@@ -30,7 +30,7 @@ export function createProjectSuggestionsController(ctx) {
     const lang = FEAT.i18n ? 'zh' : 'en';
     const chats = buildChatsBriefInput(project);
     Promise.resolve(
-      window.__agProjectCall('getProjectSuggestions', { dirPath, chats, lang, cacheOnly: false, force }, 22000)
+      window.__agProjectCall('getProjectSuggestions', { dirPath, chats, lang, cacheOnly: false, force }, 30000)
     )
       .then((res) => {
         pState.projectSuggestionsBusyDirs.delete(dirPath);

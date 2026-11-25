@@ -177,15 +177,14 @@ export function buildPickerShadowCss({ effortBarCss, agentEntryCss }) {
   display: inline-block;
 }
 
-#deck-metrics-strip[data-dock-tier="tight"] button.dk-pill[data-el="modelPicker"],
-#deck-metrics-strip[data-dock-tier="icon"] button.dk-pill[data-el="modelPicker"] {
+#deck-metrics-strip[data-dock-tier="tight"] button.dk-pill[data-el="modelPicker"] {
   padding: 0 5.5px 0 6.5px;
   gap: 4.5px;
-}
-#deck-metrics-strip[data-dock-tier="tight"] button.dk-pill[data-el="modelPicker"] {
   max-width: min(11.5em, 100%);
 }
 #deck-metrics-strip[data-dock-tier="icon"] button.dk-pill[data-el="modelPicker"] {
+  padding: 0 6.5px;
+  gap: 4.5px;
   max-width: min(8.5em, 100%);
 }
 #deck-metrics-strip[data-dock-tier="tight"] button.dk-pill[data-el="modelPicker"] .dk-mp-name,
@@ -809,7 +808,7 @@ export function createCapsulePickerRuntime({
     }
 
     setAttr(btn, 'data-is-orch', isOrch ? '1' : '0');
-    setAttr(btn, 'data-has-effort', effortText.length > 0 ? '1' : '0');
+    setAttr(btn, 'data-has-effort', effortShort.length > 0 ? '1' : '0');
 
     const fullTitle = `${modelName}${effortText ? ` · ${effortText}` : ''}`.trim();
     if (fullTitle && btn.title !== fullTitle) {

@@ -213,6 +213,7 @@ export function createFooterUnifiedRuntime({ onTierChange, kernel } = {}) {
 
     const ring = footer.querySelector('#ag-claude-ctx-ring');
     const ringHasRatio = ring?.getAttribute('data-agy-has-ratio') || '';
+    const ringHasTight = ring?.getAttribute('data-agy-has-tight') || '';
     const ringCompacting = ring?.getAttribute('data-agy-ctx-compacting') || '';
     const ringFullText = ring?.querySelector('.agy-ctx-full')?.textContent || '';
 
@@ -254,6 +255,7 @@ export function createFooterUnifiedRuntime({ onTierChange, kernel } = {}) {
       modelOrch,
       modelEffort,
       ringHasRatio,
+      ringHasTight,
       ringCompacting,
       ringFullText,
       spdHidden,
@@ -285,19 +287,22 @@ export function createFooterUnifiedRuntime({ onTierChange, kernel } = {}) {
     const m = title.match(/\((\d+(?:\.\d+)?)%/);
     if (m) pct = parseFloat(m[1]);
     let pm = null;
-    if (!Number.isFinite(pct) && pop) {
+    if (!Number.isFinite(pct) && ratioText && pop && pop.getAttribute('data-open') === 'true') {
       const pctEl = pop.querySelector('.ag-qp-item .ag-qp-pct');
       pm = (pctEl?.textContent || '').match(/(\d+(?:\.\d+)?)%/);
       if (pm) pct = parseFloat(pm[1]);
     }
     const arc = ring.querySelector('.ag-ctx-ring-arc');
     let hasArcPct = false;
-    if (!Number.isFinite(pct)) {
+    if (!Number.isFinite(pct) && cState !== 'compacted') {
       const offset = parseFloat(arc?.style?.strokeDashoffset || '');
       if (Number.isFinite(offset)) {
         const circ = 2 * Math.PI * 7;
-        pct = Math.max(0, Math.min(100, Math.round((1 - offset / circ) * 100)));
-        hasArcPct = arc?.style?.strokeOpacity !== '0';
+        const arcPct = Math.max(0, Math.min(100, Math.round((1 - offset / circ) * 100)));
+        if (arc?.style?.strokeOpacity !== '0' && arcPct > 0) {
+          pct = arcPct;
+          hasArcPct = true;
+        }
       }
     }
 
@@ -309,13 +314,14 @@ export function createFooterUnifiedRuntime({ onTierChange, kernel } = {}) {
       fullText = isZh ? '压缩中…' : 'Compacting…';
       tightText = '';
     } else {
-      fullText = ratioText;
       const hasPctSource = Boolean(ratioText || m || pm || hasArcPct);
       tightText = hasPctSource && Number.isFinite(pct)
         ? `${Math.round(pct)}%`
         : (ratioText ? ratioText.split('/')[0].trim() : '');
+      fullText = ratioText || tightText;
     }
     const hasRatio = Boolean(fullText || tightText);
+    const hasTight = Boolean(tightText);
     const tier = isCompacting || cState === 'compacted'
       ? null
       : (!Number.isFinite(pct) || pct < 60 ? 'cool' : pct >= 75 ? 'crit' : 'warn');
@@ -330,13 +336,14 @@ export function createFooterUnifiedRuntime({ onTierChange, kernel } = {}) {
       fullText,
       tightText,
       hasRatio,
+      hasTight,
       tier,
     };
   }
 
   function writeContextData(ctx) {
     if (!ctx || !ctx.ring) return;
-    const { ring, pop, ovCtxCard, ratioText, isCompacting, compactingAttr, fullText, tightText, hasRatio, tier } = ctx;
+    const { ring, pop, ovCtxCard, ratioText, isCompacting, compactingAttr, fullText, tightText, hasRatio, hasTight, tier } = ctx;
     markOwn(ring);
     lastRatioText = ratioText;
 
@@ -365,8 +372,9 @@ export function createFooterUnifiedRuntime({ onTierChange, kernel } = {}) {
 
     if (ratioSpan.hidden !== !hasRatio) ratioSpan.hidden = !hasRatio;
     setAttr(ring, 'data-agy-has-ratio', hasRatio ? 'true' : null);
+    setAttr(ring, 'data-agy-has-tight', hasTight ? '1' : '0');
 
-    if (!isCompacting && pop && ratioText) simplifyPopoverReset(pop, ratioText);
+    if (!isCompacting && pop && ratioText && pop.getAttribute('data-open') === 'true') simplifyPopoverReset(pop, ratioText);
     setAttr(ring, 'data-agy-ctx-tier', tier);
     if (pop) setAttr(pop, 'data-agy-ctx-tier', tier);
     if (ovCtxCard) setAttr(ovCtxCard, 'data-agy-ctx-tier', tier);
@@ -582,6 +590,7 @@ export function createFooterUnifiedRuntime({ onTierChange, kernel } = {}) {
       ring.removeAttribute('data-agy-ctx-tier');
       ring.removeAttribute('data-agy-ctx-compacting');
       ring.removeAttribute('data-agy-has-ratio');
+      ring.removeAttribute('data-agy-has-tight');
       ring.querySelector('.agy-ctx-ratio')?.remove();
     }
     document.getElementById('ag-claude-quota-popover')?.removeAttribute('data-agy-ctx-tier');
@@ -590,6 +599,7 @@ export function createFooterUnifiedRuntime({ onTierChange, kernel } = {}) {
     if (pill) {
       pill.removeAttribute('data-agy-motion');
       pill.removeAttribute('data-agy-speed-tier');
+      pill.removeAttribute('data-agy-has-speed-num');
       pill.removeAttribute('data-agy-working-placeholder');
       pill.querySelector(':scope > .agy-speed-dot')?.remove();
       const textEl = pill.querySelector('#ag-live-metrics-text');

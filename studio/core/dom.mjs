@@ -19,6 +19,7 @@ export const OWN_HOST_IDS = new Set([
   'agy-pd-hero-usage',
   'agy-conv-project-bar',
   'agy-conv-project-menu',
+  'agy-wt-menu',
   'agy-usage-tooltip',
   'agy-maga-settings-trigger',
   'agy-maga-settings-drawer',

@@ -172,8 +172,44 @@ function parseGenMetadataRow(r) {
 }
 
 const lineageCacheByDir = new Map();
+const summaryLineageCache = new Map();
 const childScalarCache = new Map();
 const metricsPayloadCache = new Map();
+
+function readSummaryParentEdges(conversationsDir) {
+  if (!DatabaseSync || !conversationsDir) return new Map();
+  const sumDbPath = path.join(path.dirname(conversationsDir), 'conversation_summaries.db');
+  const info = getDbStatByPath(sumDbPath);
+  if (!info) return new Map();
+  const cached = summaryLineageCache.get(sumDbPath);
+  if (cached && cached.sig === info.sig) return cached.byParent;
+  try {
+    const byParent = withReadOnlyDb(sumDbPath, 30, (db) => {
+      const map = new Map();
+      const rows = db
+        .prepare(
+          "SELECT conversation_id, parent_conversation_id FROM conversation_summaries WHERE parent_conversation_id IS NOT NULL AND parent_conversation_id != ''"
+        )
+        .all();
+      for (const row of rows) {
+        const cid = String(row.conversation_id || '').trim();
+        const pid = String(row.parent_conversation_id || '').trim();
+        if (!cid || !pid || cid === pid) continue;
+        let s = map.get(pid);
+        if (!s) {
+          s = new Set();
+          map.set(pid, s);
+        }
+        s.add(cid);
+      }
+      return map;
+    });
+    setBounded(summaryLineageCache, sumDbPath, { sig: info.sig, byParent }, 16);
+    return byParent;
+  } catch {
+    return cached?.byParent || new Map();
+  }
+}
 
 function getDescendantIds(cascadeId, conversationsDir) {
   if (!DatabaseSync || !conversationsDir) return [];
@@ -241,8 +277,20 @@ function getDescendantIds(cascadeId, conversationsDir) {
     }
     if (node.rootId === cascadeId && uuid !== cascadeId) direct.add(uuid);
   }
+  const summaryEdges = readSummaryParentEdges(conversationsDir);
+  for (const [pid, childSet] of summaryEdges.entries()) {
+    let s = byParent.get(pid);
+    if (!s) {
+      s = new Set();
+      byParent.set(pid, s);
+    }
+    for (const cid of childSet) {
+      if (cid !== pid) s.add(cid);
+    }
+  }
+  const hasChildDb = (id) => dirState.nodes.has(id) || fs.existsSync(path.join(conversationsDir, `${id}.db`));
   const pSet = byParent.get(cascadeId);
-  if (pSet) for (const id of pSet) if (id !== cascadeId) direct.add(id);
+  if (pSet) for (const id of pSet) if (id !== cascadeId && hasChildDb(id)) direct.add(id);
 
   const queue = Array.from(direct);
   const visited = new Set(queue);
@@ -250,7 +298,7 @@ function getDescendantIds(cascadeId, conversationsDir) {
     const next = byParent.get(queue[i]);
     if (!next) continue;
     for (const id of next) {
-      if (id !== cascadeId && !visited.has(id)) {
+      if (id !== cascadeId && !visited.has(id) && hasChildDb(id)) {
         visited.add(id);
         queue.push(id);
       }

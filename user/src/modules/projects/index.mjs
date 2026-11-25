@@ -7,6 +7,7 @@ import { createProjectNativeStore } from './native-store.mjs';
 import { createProjectModals } from './modals.mjs';
 import { createProjectWorkspaceUi } from './workspace-ui.mjs';
 import { createConvProjectTopbar } from './conv-topbar.mjs';
+import { createWorktreeUiController } from './worktree-ui.mjs';
 
 export function createProjectsModule(rt, modelApi) {
   const ctx = createProjectSharedContext(rt, modelApi);
@@ -61,6 +62,7 @@ export function createProjectsModule(rt, modelApi) {
   const mentionsMedia = createProjectMentionsMedia(ctx);
   const modals = createProjectModals(ctx);
   const workspaceUi = createProjectWorkspaceUi(ctx);
+  const worktreeUi = createWorktreeUiController(ctx);
 
   const {
     clearNewProjectWatcher,
@@ -314,6 +316,7 @@ export function createProjectsModule(rt, modelApi) {
     openProjectsView: (...args) => openProjectsView(...args),
     startNewChatInProject: (...args) => startNewChatInProject(...args),
     showProjectsFloatingNotice: (...args) => showProjectsFloatingNotice(...args),
+    worktreeUi,
   });
 
   function closeProjectsView(opts = {}) {
@@ -850,7 +853,11 @@ export function createProjectsModule(rt, modelApi) {
     pState.pdBreadcrumbMenuOpen = false;
     pState.projectSelectedFolderPath = '';
     renderProjectsView();
-    if (proj.dirPath) fetchProjectWorkspaceStatus(proj.dirPath);
+    worktreeUi.warmConvWorktreeMap(false);
+    if (proj.dirPath) {
+      worktreeUi.warmRepoWorktrees(proj.dirPath, { includeStats: true });
+      fetchProjectWorkspaceStatus(proj.dirPath);
+    }
     if (proj.dirPath && typeof window.__agProjectCall === 'function') {
       const prevSig = JSON.stringify(pState.projectsContextMap[proj.dirPath] || null);
       window.__agProjectCall('readContext', { dirPath: proj.dirPath }, 8000).then((fresh) => {
@@ -867,8 +874,14 @@ export function createProjectsModule(rt, modelApi) {
   function renderProjectDetailView(el, project, allProjects = []) {
     const hasLocalDir = Boolean(project.dirPath);
     const ctx = hasLocalDir ? pState.projectsContextMap[project.dirPath] : null;
-    const wsStatus = hasLocalDir ? pState.projectsWorkspaceStatusMap[project.dirPath] || null : null;
-    const isLoadingWs = Boolean(hasLocalDir && pState.projectsWorkspaceBusyDirs.has(project.dirPath));
+    const activeWtPath = hasLocalDir ? (pState.pdActiveWorktreeByProj[project.dirPath] || '') : '';
+    const wsStatusKey = hasLocalDir ? (activeWtPath ? `${project.dirPath}::${activeWtPath}` : project.dirPath) : '';
+    const wsStatus = hasLocalDir
+      ? (pState.projectsWorkspaceStatusMap[wsStatusKey] || pState.projectsWorkspaceStatusMap[project.dirPath] || null)
+      : null;
+    const isLoadingWs = Boolean(
+      hasLocalDir && (pState.projectsWorkspaceBusyDirs.has(wsStatusKey) || pState.projectsWorkspaceBusyDirs.has(project.dirPath))
+    );
     const instructions = ctx && typeof ctx.instructions === 'string' ? ctx.instructions.trim() : '';
     const files = ctx && Array.isArray(ctx.files) ? ctx.files : [];
     const extraFolders = ctx && Array.isArray(ctx.extraFolders) ? ctx.extraFolders : [];
@@ -1643,9 +1656,13 @@ export function createProjectsModule(rt, modelApi) {
     updateProjectsNavActiveVisual();
     const nativeProjects = collectNativeProjects();
     refreshProjectsContexts(nativeProjects);
+    worktreeUi.warmConvWorktreeMap(false);
     if (pState.activeProjectId) {
       const target = nativeProjects.find((p) => p.id === pState.activeProjectId);
-      if (target && target.dirPath) fetchProjectWorkspaceStatus(target.dirPath);
+      if (target && target.dirPath) {
+        worktreeUi.warmRepoWorktrees(target.dirPath, { includeStats: true });
+        fetchProjectWorkspaceStatus(target.dirPath);
+      }
     }
   }
 
@@ -1681,6 +1698,7 @@ export function createProjectsModule(rt, modelApi) {
 
   function teardownProjectsWorkspace(opts = {}) {
     convTopbar.teardown();
+    worktreeUi.teardown();
     closeProjectsView({ forceCloseAllModals: Boolean(opts.forceCloseAllModals) });
     if (projectsUsageListenerBound) {
       window.removeEventListener('agy:projects-usage-updated', onProjectsUsageUpdated);
@@ -1799,6 +1817,14 @@ export function createProjectsModule(rt, modelApi) {
     showProjectsFloatingNotice,
     startNewChatInProject,
     appendDroppedMentionsToPdComposer,
+    openProjectsView,
+    onWorktreeMapChanged: () => {
+      convTopbar.sync();
+      if (rtState.projectsViewOpen) renderProjectsView();
+    },
+    buildCockpitWorktreeStripHtml: worktreeUi.buildCockpitWorktreeStripHtml,
+    bindCockpitWorktreeEvents: worktreeUi.bindCockpitWorktreeEvents,
+    getConversationBranchBadge: worktreeUi.getConversationBranchBadge,
   });
 
   function dispose() {
@@ -1834,6 +1860,7 @@ export function createProjectsModule(rt, modelApi) {
     refreshProjectsLanguageUi,
     ensureSharedModalEscBound,
     closeProjectsModal,
+    getConversationBranchBadge: worktreeUi.getConversationBranchBadge,
     dispose,
   };
 }

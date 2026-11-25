@@ -125,7 +125,24 @@ export function parseUsageRow(data, stepMetadata) {
   };
 }
 
-export function readConversationUsage(dbPath, { immutable = true } = {}) {
+function readTrajectoryLineage(db) {
+  try {
+    if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='trajectory_metadata_blob'").get()) {
+      return { parentId: '', rootId: '' };
+    }
+    const row = db.prepare('SELECT data FROM trajectory_metadata_blob LIMIT 1').get();
+    if (!row?.data) return { parentId: '', rootId: '' };
+    const meta = parsePbMap(asBytes(row.data));
+    return {
+      parentId: asBytes(meta.get(5)?.[0]).toString('utf8').trim(),
+      rootId: asBytes(meta.get(6)?.[0]).toString('utf8').trim(),
+    };
+  } catch {
+    return { parentId: '', rootId: '' };
+  }
+}
+
+export function readConversationUsageRecord(dbPath, { immutable = true } = {}) {
   const hasActiveWal = (statSync(`${dbPath}-wal`, { throwIfNoEntry: false })?.size || 0) > 0;
   const useImmutable = immutable && !hasActiveWal;
   let location = dbPath;
@@ -136,22 +153,28 @@ export function readConversationUsage(dbPath, { immutable = true } = {}) {
   const db = new DatabaseSync(location, { readOnly: true, timeout: 150 });
   try {
     if (!useImmutable) db.exec('PRAGMA busy_timeout = 150');
-    if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='gen_metadata'").get()) {
-      return [];
+    let requests = [];
+    if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='gen_metadata'").get()) {
+      const hasSteps = Boolean(
+        db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='steps'").get()
+      );
+      let stepStmt = null;
+      const stepMetadata = hasSteps
+        ? (index) => (stepStmt ??= db.prepare('SELECT metadata FROM steps WHERE idx = ?')).get(index)?.metadata
+        : () => undefined;
+      requests = db
+        .prepare('SELECT data FROM gen_metadata ORDER BY idx ASC')
+        .all()
+        .map((row) => parseUsageRow(row.data, stepMetadata))
+        .filter(Boolean);
     }
-    const hasSteps = Boolean(
-      db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='steps'").get()
-    );
-    let stepStmt = null;
-    const stepMetadata = hasSteps
-      ? (index) => (stepStmt ??= db.prepare('SELECT metadata FROM steps WHERE idx = ?')).get(index)?.metadata
-      : () => undefined;
-    return db
-      .prepare('SELECT data FROM gen_metadata ORDER BY idx ASC')
-      .all()
-      .map((row) => parseUsageRow(row.data, stepMetadata))
-      .filter(Boolean);
+    const { parentId, rootId } = readTrajectoryLineage(db);
+    return { requests, parentId, rootId };
   } finally {
     db.close();
   }
+}
+
+export function readConversationUsage(dbPath, opts = {}) {
+  return readConversationUsageRecord(dbPath, opts).requests;
 }

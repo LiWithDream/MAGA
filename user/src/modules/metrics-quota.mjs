@@ -1245,6 +1245,7 @@ export function createMetricsQuotaModule(rt) {
         if (popEl) popEl.removeAttribute('data-loading-hold');
         if (rtState.quotaPopoverOpen) renderQuotaPopoverBody();
         if (FEAT.overviewPanel) renderOverviewPanel(false);
+        updateComposerRingVisuals();
         return rtState.cachedQuotaGroups;
       })
       .catch(() => {
@@ -1328,9 +1329,23 @@ export function createMetricsQuotaModule(rt) {
     return broadIdx >= 0 ? broadIdx : 0;
   }
 
+  function readBucketRemaining(b) {
+    if (b?.remaining?.case === 'remainingFraction' && typeof b.remaining.value === 'number') {
+      return b.remaining.value;
+    }
+    return typeof b?.remainingFraction === 'number' ? b.remainingFraction : 1;
+  }
+
   function barColorForPct(pct, warnAt = 70, critAt = 85) {
     if (pct >= critAt) return '#DC2626';
     if (pct >= warnAt) return '#D97706';
+    return 'var(--primary, #2F75C3)';
+  }
+
+  function barColorForPoolPct(pct, displayName = '', warnAt = 75, critAt = 90) {
+    if (pct >= critAt) return '#DC2626';
+    if (pct >= warnAt) return '#D97706';
+    if (/claude|opus|sonnet/i.test(String(displayName || ''))) return '#D97757';
     return 'var(--primary, #2F75C3)';
   }
 
@@ -1364,6 +1379,13 @@ export function createMetricsQuotaModule(rt) {
         if (typeof window.__agyOpusGateTrigger === 'function') {
           window.__agyOpusGateTrigger('manual');
         }
+        return;
+      }
+      const jumpBtn = e.target.closest('[data-ag-quota-jump]');
+      if (jumpBtn) {
+        e.stopPropagation();
+        selectedQuotaGroupIdx = Number(jumpBtn.getAttribute('data-ag-quota-jump')) || 0;
+        renderQuotaPopoverBody();
         return;
       }
       const viewAll = e.target.closest('[data-ag-quota-view-all]');
@@ -1492,19 +1514,16 @@ export function createMetricsQuotaModule(rt) {
     } else {
       const grp = groups[selectedQuotaGroupIdx] || groups[0];
       const grpShort = localizeGroupShortName(grp.displayName);
-      const sortedBuckets = (grp.buckets || []).slice().sort((a, b) => {
-        const rank = (w) => (w === '5h' ? 0 : w === 'daily' ? 1 : 2);
-        return rank(String(a.window || '').toLowerCase()) - rank(String(b.window || '').toLowerCase());
-      });
+      const sortBuckets = (list) =>
+        (list || []).slice().sort((a, b) => {
+          const rank = (w) => (w === '5h' ? 0 : w === 'daily' ? 1 : 2);
+          return rank(String(a.window || '').toLowerCase()) - rank(String(b.window || '').toLowerCase());
+        });
+      const sortedBuckets = sortBuckets(grp.buckets);
 
       quotaRowsHtml = sortedBuckets
         .map((b) => {
-          const rem =
-            b.remaining && b.remaining.case === 'remainingFraction' && typeof b.remaining.value === 'number'
-              ? b.remaining.value
-              : typeof b.remainingFraction === 'number'
-                ? b.remainingFraction
-                : 1;
+          const rem = readBucketRemaining(b);
           const usedRaw = Math.max(0, Math.min(100, (1 - rem) * 100));
           const usedPctStr = formatQuotaUsedPctStr(usedRaw);
           const win = String(b.window || '').trim().toLowerCase();
@@ -1517,7 +1536,7 @@ export function createMetricsQuotaModule(rt) {
                   ? L(`每日 · ${grpShort}`, `Daily · ${grpShort}`)
                   : b.displayName || L('使用限额', 'Usage limit');
           const resetTxt = formatResetLabel(b, usedRaw);
-          const fillCol = barColorForPct(usedRaw, 75, 90);
+          const fillCol = barColorForPoolPct(usedRaw, grp.displayName, 75, 90);
           return `<div class="ag-qp-item">
             <div class="ag-qp-row">
               <span class="ag-qp-title">${escapeHtml(title)}</span>
@@ -1537,6 +1556,47 @@ export function createMetricsQuotaModule(rt) {
           L('调度 Claude Opus 对当前任务进行架构/风险把关', 'Invoke Claude Opus checkpoint for the current task')
         )}">✦ Opus</button>`
       : '';
+
+    let otherPoolsHtml = '';
+    if (groups.length > 1) {
+      const sortBuckets = (list) =>
+        (list || []).slice().sort((a, b) => {
+          const rank = (w) => (w === '5h' ? 0 : w === 'daily' ? 1 : 2);
+          return rank(String(a.window || '').toLowerCase()) - rank(String(b.window || '').toLowerCase());
+        });
+      const items = [];
+      groups.forEach((g, idx) => {
+        if (idx === selectedQuotaGroupIdx) return;
+        const gShort = localizeGroupShortName(g.displayName);
+        const dotCol = barColorForPoolPct(0, g.displayName);
+        const rows = sortBuckets(g.buckets)
+          .map((b) => {
+            const usedRaw = Math.max(0, Math.min(100, (1 - readBucketRemaining(b)) * 100));
+            const usedPctStr = formatQuotaUsedPctStr(usedRaw);
+            const win = String(b.window || '').trim().toLowerCase();
+            const winLbl =
+              win === '5h' ? '5h' : win === 'weekly' ? L('每周', 'Weekly') : win === 'daily' ? L('每日', 'Daily') : b.displayName || '';
+            const resetTxt = formatResetLabel(b, usedRaw);
+            const fillCol = barColorForPoolPct(usedRaw, g.displayName, 75, 90);
+            return `<div class="ag-qp-other-row">
+              <span class="ag-qp-other-lbl">${escapeHtml(winLbl)}</span>
+              <span class="ag-qp-other-reset">${escapeHtml(resetTxt)}</span>
+              <span class="ag-qp-other-meter">
+                <span class="ag-qp-other-track"><span class="ag-qp-other-fill" style="width:${usedRaw.toFixed(1)}%;background:${fillCol}"></span></span>
+                <span class="ag-qp-other-pct">${usedPctStr}%</span>
+              </span>
+            </div>`;
+          })
+          .join('');
+        items.push(`<button type="button" class="ag-qp-other-pool" data-ag-quota-jump="${idx}">
+          <div class="ag-qp-other-hdr"><i class="ag-qp-other-dot" style="background:${dotCol}"></i><span>${escapeHtml(gShort)}</span></div>
+          ${rows}
+        </button>`);
+      });
+      if (items.length > 0) {
+        otherPoolsHtml = `<div class="ag-qp-divider"></div><div class="ag-qp-other-pools">${items.join('')}</div>`;
+      }
+    }
 
     pop.innerHTML = `
       <div class="ag-qp-hdr">
@@ -1562,6 +1622,7 @@ export function createMetricsQuotaModule(rt) {
       <div class="ag-qp-divider"></div>
       ${tabsHtml}
       <div class="ag-qp-group-list">${quotaRowsHtml}</div>
+      ${otherPoolsHtml}
     `;
     positionQuotaPopover();
     if (typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
@@ -1606,6 +1667,29 @@ export function createMetricsQuotaModule(rt) {
     }
   }
 
+  function formatRingQuotaSummary(groups) {
+    if (!Array.isArray(groups) || groups.length === 0) return '';
+    const sortRank = (w) => (w === '5h' ? 0 : w === 'daily' ? 1 : 2);
+    const parts = [];
+    for (const g of groups) {
+      const buckets = Array.isArray(g?.buckets) ? g.buckets : [];
+      if (!buckets.length) continue;
+      const gShort = localizeGroupShortName(g.displayName);
+      const winParts = buckets
+        .slice()
+        .sort((a, b) => sortRank(String(a.window || '').toLowerCase()) - sortRank(String(b.window || '').toLowerCase()))
+        .map((b) => {
+          const usedRaw = Math.max(0, Math.min(100, (1 - readBucketRemaining(b)) * 100));
+          const pctStr = formatQuotaUsedPctStr(usedRaw);
+          const win = String(b.window || '').trim().toLowerCase();
+          const winLbl = win === '5h' ? '5h' : win === 'weekly' ? L('周', 'Wk') : win === 'daily' ? L('日', 'Day') : '';
+          return `${winLbl ? `${winLbl} ` : ''}${pctStr}%`;
+        });
+      if (winParts.length) parts.push(`${gShort} ${winParts.join(', ')}`);
+    }
+    return parts.join(' · ');
+  }
+
   function updateComposerRingVisuals() {
     const ring = document.getElementById('ag-claude-ctx-ring');
     if (!ring) return;
@@ -1614,6 +1698,8 @@ export function createMetricsQuotaModule(rt) {
     const compactStatus = detectCompactStatus(curCid);
     const { preUsed, limitLabel, summaryLabel, summaryPct } = extractCompactLabels(rtState.latestCtxState, curCid);
     const arc = ring.querySelector('.ag-ctx-ring-arc');
+    const quotaSummary = formatRingQuotaSummary(rtState.cachedQuotaGroups);
+    const quotaSuffix = quotaSummary ? ` · ${quotaSummary}` : '';
 
     if (compactStatus === 'compacting') {
       const pct = 18;
@@ -1642,12 +1728,12 @@ export function createMetricsQuotaModule(rt) {
       if (ring.getAttribute('data-level') !== 'normal') ring.setAttribute('data-level', 'normal');
       if (ring.getAttribute('data-compact-state') !== 'compacted') ring.setAttribute('data-compact-state', 'compacted');
       const nextTitle =
-        summaryLabel && limitLabel
+        (summaryLabel && limitLabel
           ? L(
               `当前上下文 ${summaryLabel} / ${limitLabel} (${summaryPct}%${preUsed ? ` · 原 ${preUsed} 已压缩` : ''}) · 点击查看套餐限额`,
               `Context ${summaryLabel} / ${limitLabel} (${summaryPct}%${preUsed ? ` · compacted from ${preUsed}` : ''}) · Click for plan usage`
             )
-          : L('当前上下文已压缩 · 点击查看套餐限额', 'Context compacted · Click for plan usage');
+          : L('当前上下文已压缩 · 点击查看套餐限额', 'Context compacted · Click for plan usage')) + quotaSuffix;
       if (ring.title !== nextTitle) ring.title = nextTitle;
       return;
     }
@@ -1664,12 +1750,13 @@ export function createMetricsQuotaModule(rt) {
       else if (pct >= 70) level = 'warn';
       if (ring.getAttribute('data-level') !== level) ring.setAttribute('data-level', level);
     }
-    const nextTitle = hasCtx
-      ? L(
-          `当前上下文 ${rtState.latestCtxState.ratioText} (${pct}%) · 点击查看套餐限额`,
-          `Context ${rtState.latestCtxState.ratioText} (${pct}%) · Click for plan usage`
-        )
-      : L('当前会话暂无上下文消耗 · 点击查看套餐限额', 'No context usage yet · Click for plan usage');
+    const nextTitle =
+      (hasCtx
+        ? L(
+            `当前上下文 ${rtState.latestCtxState.ratioText} (${pct}%) · 点击查看套餐限额`,
+            `Context ${rtState.latestCtxState.ratioText} (${pct}%) · Click for plan usage`
+          )
+        : L('当前会话暂无上下文消耗 · 点击查看套餐限额', 'No context usage yet · Click for plan usage')) + quotaSuffix;
     if (ring.title !== nextTitle) ring.title = nextTitle;
   }
 

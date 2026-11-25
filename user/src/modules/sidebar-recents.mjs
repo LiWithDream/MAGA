@@ -1436,7 +1436,7 @@ export function createSidebarRecentsModule(rt) {
       sec.removeAttribute('data-collapsed');
     }
     const sig = `${mode}|${FEAT.i18n ? 1 : 0}|${isCollapsed ? 1 : 0}|${isUnified ? recentPageLimit : recentExpanded ? 1 : 0}|${recentRenamingId}|${activeId}|${nowBucket}|${total}|${items
-      .map((it) => `${it.id}:${it.title}:${it.project}:${it.status ? `${it.status.kind}-${it.status.subkind}` : 'idle'}:${Math.floor(it.updatedAt / 60)}`)
+      .map((it) => `${it.id}:${it.title}:${it.project}:${hooks.getConversationBranchBadge?.(it.id) || ''}:${it.status ? `${it.status.kind}-${it.status.subkind}` : 'idle'}:${Math.floor(it.updatedAt / 60)}`)
       .join(';')}`;
     if (sig === rtState.recentLastSig) return;
     rtState.recentLastSig = sig;
@@ -1472,14 +1472,19 @@ export function createSidebarRecentsModule(rt) {
               } else if (it.status && it.status.kind === 'unread') {
                 sideHtml = `<span class="ag-claude-unread-dot"></span>${age ? `<span>${escapeHtml(age)}</span>` : ''}`;
               }
-              const tip = it.project ? `${it.title}\n${L('所属项目：', 'Project: ')}${it.project}` : it.title;
+              const wtBranch = hooks.getConversationBranchBadge?.(it.id) || '';
+              const tipParts = [it.title];
+              if (it.project) tipParts.push(`${L('所属项目：', 'Project: ')}${it.project}`);
+              if (wtBranch) tipParts.push(`Worktree: ${wtBranch}`);
+              const tip = tipParts.join('\n');
               const actionsHtml =
                 isUnified && !isRenaming
                   ? `<div class="ag-recent-actions"><button type="button" class="ag-recent-act-btn" data-ag-recent-pin="${escapeHtml(it.id)}" title="${escapeHtml(L('置顶对话', 'Pin'))}" aria-label="${escapeHtml(L('置顶对话', 'Pin'))}">${RECENT_PIN_SVG}</button><button type="button" class="ag-recent-act-btn" data-ag-recent-menu="${escapeHtml(it.id)}" title="${escapeHtml(L('更多选项', 'More options'))}" aria-label="${escapeHtml(L('更多选项', 'More options'))}">${RECENT_MORE_SVG}</button></div>`
                   : '';
+              const branchPillHtml = wtBranch ? `<span class="ag-recent-branch">${escapeHtml(wtBranch)}</span>` : '';
               const mainInner = isRenaming
                 ? `<input type="text" class="ag-recent-rename-input" data-ag-recent-rename-input="${escapeHtml(it.id)}" data-orig-title="${escapeHtml(it.title)}" value="${escapeHtml(it.title)}" />`
-                : `<div class="ag-recent-title">${escapeHtml(it.title)}</div>`;
+                : `<div class="ag-recent-title">${escapeHtml(it.title)}</div>${branchPillHtml}`;
               return `<div class="ag-recent-row" role="button" tabindex="0"${isRenaming ? '' : ' draggable="true"'} data-ag-recent-id="${escapeHtml(it.id)}" data-ag-recent-title="${escapeHtml(it.title)}" data-active="${isAct ? 'true' : 'false'}"${it.project ? ` data-has-project="true"` : ''}${isRenaming ? ' data-renaming="true"' : ''} title="${escapeHtml(tip)}"><div class="ag-recent-main">${mainInner}</div>${isRenaming ? '' : `<div class="ag-recent-side">${sideHtml}</div>${actionsHtml}`}</div>`;
             })
             .join('')}</div>` + moreHtml

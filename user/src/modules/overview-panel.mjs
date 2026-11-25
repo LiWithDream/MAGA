@@ -95,10 +95,18 @@ export function createOverviewPanelModule(rt, metricsQuota) {
     return String(Math.round(v));
   }
 
-  function ovQuotaUsedColor(usedPct) {
+  function ovQuotaUsedColor(usedPct, groupDisplayName = '') {
     if (usedPct >= 90) return '#DC2626';
     if (usedPct >= 75) return '#D97706';
+    if (/claude|opus|sonnet/i.test(String(groupDisplayName || ''))) {
+      return 'var(--ag-ov-claude, #D97757)';
+    }
     return 'var(--ag-ov-blue, #2F75C3)';
+  }
+
+  function isCoreQuotaPool(displayName) {
+    const dn = String(displayName || '').trim();
+    return /^gemini(?:\s+models?)?$/i.test(dn) || /claude|opus|sonnet/i.test(dn);
   }
 
   function localizeQuotaWindowTag(rawWin, fallbackName = '') {
@@ -187,14 +195,25 @@ export function createOverviewPanelModule(rt, metricsQuota) {
     return status;
   }
 
-  function ensureOverviewSnapshot(dirPath, force = false) {
+  function getSnapshotCacheKey(dirPath, cid = '') {
+    return `${String(dirPath || '').trim() || '__global__'}::${String(cid || '').trim()}`;
+  }
+
+  function resolveEffectiveOverviewDir(ws) {
+    const snap = ovSnapshotCache.get(getSnapshotCacheKey(ws?.dirPath, ws?.cid))?.data || null;
+    return (snap && snap.workspace && snap.workspace.worktreePath) || (ws && ws.dirPath) || '';
+  }
+
+  function ensureOverviewSnapshot(dirPath, cid = '', force = false) {
     if (typeof window.__agProjectCall !== 'function') return null;
-    const key = String(dirPath || '').trim() || '__global__';
+    const key = getSnapshotCacheKey(dirPath, cid);
     const now = Date.now();
     const cached = ovSnapshotCache.get(key);
     if (!force && cached && now - cached.ts < 15000) return cached.data;
     if (!ovSnapshotInFlight.has(key)) {
-      const p = Promise.resolve(window.__agProjectCall('getOverviewSnapshot', { dirPath: dirPath || '' }, 6000))
+      const p = Promise.resolve(
+        window.__agProjectCall('getOverviewSnapshot', { dirPath: dirPath || '', cid: cid || '', force: Boolean(force) }, 6000)
+      )
         .then((res) => {
           if (rtState.disposed || !res || !res.ok) return;
           ovSnapshotCache.set(key, { ts: Date.now(), data: res });
@@ -276,12 +295,14 @@ export function createOverviewPanelModule(rt, metricsQuota) {
         openProjectsView(ws.project.id);
       }
     } else if (action === 'finder') {
-      if (ws.dirPath && typeof window.__agProjectCall === 'function') {
-        window.__agProjectCall('revealFile', { targetPath: ws.dirPath, dirPath: ws.dirPath, openFolder: true }, 5000);
+      const effectiveDir = resolveEffectiveOverviewDir(ws);
+      if (effectiveDir && typeof window.__agProjectCall === 'function') {
+        window.__agProjectCall('revealFile', { targetPath: effectiveDir, dirPath: ws.dirPath || effectiveDir, openFolder: true }, 5000);
       }
     } else if (action === 'copy-path') {
-      if (ws.dirPath && navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
-        navigator.clipboard.writeText(ws.dirPath).then(
+      const effectiveDir = resolveEffectiveOverviewDir(ws);
+      if (effectiveDir && navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        navigator.clipboard.writeText(effectiveDir).then(
           () => showProjectsFloatingNotice(L('已复制工作区路径', 'Workspace path copied')),
           () => {}
         );
@@ -323,7 +344,8 @@ export function createOverviewPanelModule(rt, metricsQuota) {
     } else if (action === 'reveal-path') {
       const targetPath = actionEl.getAttribute('data-path') || '';
       if (targetPath && typeof window.__agProjectCall === 'function') {
-        window.__agProjectCall('revealFile', { targetPath, dirPath: ws.dirPath || '' }, 5000);
+        const effectiveDir = resolveEffectiveOverviewDir(ws);
+        window.__agProjectCall('revealFile', { targetPath, dirPath: ws.dirPath || effectiveDir || '' }, 5000);
       }
     } else if (action === 'open-plugins') {
       const pluginsBtn = document.querySelector('button[data-testid="overview-panel-row-plugins"]');
@@ -349,8 +371,8 @@ export function createOverviewPanelModule(rt, metricsQuota) {
     if (!sectionsEl) return;
 
     const ws = resolveActiveOverviewWorkspace(force);
-    const snap = ensureOverviewSnapshot(ws.dirPath, false);
     const curCid = ws.cid;
+    const snap = ensureOverviewSnapshot(ws.dirPath, curCid, false);
     const rawM = window.__ag_last_metrics;
     const hasCtx = Boolean(rawM && rawM.hasData && (!curCid || rawM.cascadeId === curCid) && rawM.stats);
     const stats = hasCtx ? rawM.stats : null;
@@ -369,7 +391,7 @@ export function createOverviewPanelModule(rt, metricsQuota) {
 
     const mergedChildren = collectMergedSidechats(curCid, stats, ws.summaries);
     const snapSig = snap
-      ? `${snap.workspace?.dirPath}|${snap.workspace?.git?.branch}:${snap.workspace?.git?.added}:${snap.workspace?.git?.deleted}:${snap.workspace?.git?.changedFiles}|r${snap.rules?.length}|s${snap.skills?.total}|a${snap.agents?.total}|c${snap.connectors?.length}`
+      ? `${snap.workspace?.worktreePath || snap.workspace?.dirPath}|${snap.workspace?.isWorktree ? 1 : 0}|${snap.workspace?.git?.branch}:${snap.workspace?.git?.added}:${snap.workspace?.git?.deleted}:${snap.workspace?.git?.changedFiles}|r${snap.rules?.length}|s${snap.skills?.total}|a${snap.agents?.total}|c${snap.connectors?.length}`
       : 'nosnap';
     const ctxSig = stats
       ? `${stats.ctx}/${stats.limit}|${stats.cached}|${stats.uncached}|${stats.lastCacheRate}|${stats.sessionCacheRate}|${stats.turns}/${stats.calls}|${stats.totalThink}|${stats.totalResp}|${compactStatus}|${paneRunning ? 1 : 0}|${summaryLabel}`
@@ -388,8 +410,11 @@ export function createOverviewPanelModule(rt, metricsQuota) {
 
     /* ---- 1. Environment Card ---- */
     const git = snap && snap.workspace && snap.workspace.git ? snap.workspace.git : null;
+    const isWt = Boolean(snap && snap.workspace && snap.workspace.isWorktree);
+    const effectiveDir = (snap && snap.workspace && snap.workspace.worktreePath) || ws.dirPath || '';
+    const wtTagHtml = isWt ? `<span class="ag-ov-wt-tag">wt</span>` : '';
     const gitPillHtml = git
-      ? `<span class="ag-ov-git-pill">${escapeHtml(git.branch)}${
+      ? `<span class="ag-ov-git-pill">${wtTagHtml}${escapeHtml(git.branch)}${
           git.added > 0 || git.deleted > 0
             ? ` · <span class="ag-ov-git-add">+${git.added}</span> <span class="ag-ov-git-del">-${git.deleted}</span>`
             : git.changedFiles > 0
@@ -398,9 +423,9 @@ export function createOverviewPanelModule(rt, metricsQuota) {
         }</span>`
       : '';
     const dirName = (ws.project && ws.project.name) || (snap && snap.workspace && snap.workspace.name) || '';
-    const shortDir = ws.dirPath ? formatShortHomePath(ws.dirPath) : '';
-    const folderRowHtml = ws.dirPath
-      ? `<button type="button" class="ag-ov-row-btn ag-ov-folder-btn" data-ag-ov-action="copy-path" title="${escapeHtml(ws.dirPath)}">
+    const shortDir = effectiveDir ? formatShortHomePath(effectiveDir) : '';
+    const folderRowHtml = effectiveDir
+      ? `<button type="button" class="ag-ov-row-btn ag-ov-folder-btn" data-ag-ov-action="copy-path" title="${escapeHtml(effectiveDir)}">
           <span class="ag-ov-row-left">
             <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M2 4.2a1 1 0 0 1 1-1h3.5l1.3 1.4H13a1 1 0 0 1 1 1v6.2a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4.2z"/></svg>
             <span class="ag-ov-row-title">${escapeHtml(dirName)}</span>
@@ -582,62 +607,72 @@ export function createOverviewPanelModule(rt, metricsQuota) {
       }</div>`;
     } else {
       const pIdx = ovPrimaryIdx >= 0 && ovPrimaryIdx < groups.length ? ovPrimaryIdx : 0;
-      const primaryGrp = groups[pIdx];
-      const pShort = localizeGroupShortName(primaryGrp.displayName);
+      const featuredIndices = [pIdx];
+      groups.forEach((g, idx) => {
+        if (idx !== pIdx && isCoreQuotaPool(g?.displayName)) {
+          featuredIndices.push(idx);
+        }
+      });
+      const featuredSet = new Set(featuredIndices);
       const sortBuckets = (list) =>
         (list || []).slice().sort((a, b) => {
           const r = (w) => (w === '5h' ? 0 : w === 'daily' ? 1 : 2);
           return r(String(a.window || '').toLowerCase()) - r(String(b.window || '').toLowerCase());
         });
-      const primaryBuckets = sortBuckets(primaryGrp.buckets);
 
       const fmtOvQuotaPct = formatQuotaUsedPctStr;
 
-      const primaryHtml = primaryBuckets
-        .map((b) => {
-          const rem =
-            b.remaining && b.remaining.case === 'remainingFraction' && typeof b.remaining.value === 'number'
-              ? b.remaining.value
-              : typeof b.remainingFraction === 'number'
-                ? b.remainingFraction
-                : 1;
-          const usedRaw = Math.max(0, Math.min(100, (1 - rem) * 100));
-          const usedPct = Math.round(usedRaw);
-          const usedPctStr = fmtOvQuotaPct(usedRaw);
-          const remPctStr = fmtOvQuotaPct(100 - usedRaw);
-          const winTag = localizeQuotaWindowTag(b.window, b.displayName || '');
-          const col = ovQuotaUsedColor(usedRaw);
-          const litCount = usedRaw <= 0 ? 0 : Math.min(20, Math.max(1, Math.round(usedRaw / 5)));
-          const segsHtml = Array.from({ length: 20 }, (_, i) =>
-            `<span class="ag-ov-seg" style="background:${i < litCount ? col : 'var(--ag-ov-track)'}"></span>`
-          ).join('');
-          const elapsedPct = computeWindowElapsedPct(b, usedRaw);
-          const cursorHtml =
-            elapsedPct !== null
-              ? `<div class="ag-ov-time-track" title="${escapeHtml(L(`窗口时间已流逝 ${elapsedPct}%`, `Window elapsed ${elapsedPct}%`))}">
-                  <div class="ag-ov-time-fill" style="width:${elapsedPct}%"></div>
-                  <span class="ag-ov-time-cursor" style="left:${elapsedPct}%"></span>
-                </div>`
-              : '';
-          const resetTxt = formatResetLabel(b, usedRaw);
-          return `<div class="ag-ov-quota-box" title="${escapeHtml(L(`已用 ${usedPctStr}% · 剩余 ${remPctStr}%`, `${usedPctStr}% used · ${remPctStr}% left`))}">
-            <div class="ag-ov-kv-row">
-              <span class="ag-ov-row-left">
-                <i class="ag-ov-qdot" style="background:${col}"></i>
-                <span class="ag-ov-qtitle">${escapeHtml(pShort)} · ${escapeHtml(winTag)}</span>
-              </span>
-              <span class="ag-ov-qpct">${usedPctStr}% ${L('已用', 'used')}</span>
-            </div>
-            <div class="ag-ov-seg-bar">${segsHtml}</div>
-            ${cursorHtml}
-            ${resetTxt ? `<div class="ag-ov-reset-txt">${escapeHtml(resetTxt)}</div>` : ''}
-          </div>`;
-        })
+      const renderQuotaBoxes = (grp) => {
+        const gShort = localizeGroupShortName(grp.displayName);
+        return sortBuckets(grp.buckets)
+          .map((b) => {
+            const rem =
+              b.remaining && b.remaining.case === 'remainingFraction' && typeof b.remaining.value === 'number'
+                ? b.remaining.value
+                : typeof b.remainingFraction === 'number'
+                  ? b.remainingFraction
+                  : 1;
+            const usedRaw = Math.max(0, Math.min(100, (1 - rem) * 100));
+            const usedPctStr = fmtOvQuotaPct(usedRaw);
+            const remPctStr = fmtOvQuotaPct(100 - usedRaw);
+            const winTag = localizeQuotaWindowTag(b.window, b.displayName || '');
+            const col = ovQuotaUsedColor(usedRaw, grp.displayName);
+            const litCount = usedRaw <= 0 ? 0 : Math.min(20, Math.max(1, Math.round(usedRaw / 5)));
+            const segsHtml = Array.from({ length: 20 }, (_, i) =>
+              `<span class="ag-ov-seg" style="background:${i < litCount ? col : 'var(--ag-ov-track)'}"></span>`
+            ).join('');
+            const elapsedPct = computeWindowElapsedPct(b, usedRaw);
+            const cursorHtml =
+              elapsedPct !== null
+                ? `<div class="ag-ov-time-track" title="${escapeHtml(L(`窗口时间已流逝 ${elapsedPct}%`, `Window elapsed ${elapsedPct}%`))}">
+                    <div class="ag-ov-time-fill" style="width:${elapsedPct}%"></div>
+                    <span class="ag-ov-time-cursor" style="left:${elapsedPct}%"></span>
+                  </div>`
+                : '';
+            const resetTxt = formatResetLabel(b, usedRaw);
+            return `<div class="ag-ov-quota-box" title="${escapeHtml(L(`已用 ${usedPctStr}% · 剩余 ${remPctStr}%`, `${usedPctStr}% used · ${remPctStr}% left`))}">
+              <div class="ag-ov-kv-row">
+                <span class="ag-ov-row-left">
+                  <i class="ag-ov-qdot" style="background:${col}"></i>
+                  <span class="ag-ov-qtitle">${escapeHtml(gShort)} · ${escapeHtml(winTag)}</span>
+                </span>
+                <span class="ag-ov-qpct">${usedPctStr}% ${L('已用', 'used')}</span>
+              </div>
+              <div class="ag-ov-seg-bar">${segsHtml}</div>
+              ${cursorHtml}
+              ${resetTxt ? `<div class="ag-ov-reset-txt">${escapeHtml(resetTxt)}</div>` : ''}
+            </div>`;
+          })
+          .join('');
+      };
+
+      const primaryHtml = featuredIndices
+        .map((idx, pos) => `${pos > 0 ? '<div class="ag-ov-pool-sep"></div>' : ''}${renderQuotaBoxes(groups[idx])}`)
         .join('');
 
       const otherRows = [];
       groups.forEach((g, idx) => {
-        if (idx === pIdx) return;
+        if (featuredSet.has(idx)) return;
         const gShort = localizeGroupShortName(g.displayName);
         for (const b of sortBuckets(g.buckets)) {
           const rem =
@@ -650,8 +685,12 @@ export function createOverviewPanelModule(rt, metricsQuota) {
           const usedPctStr = fmtOvQuotaPct(usedRaw);
           const remPctStr = fmtOvQuotaPct(100 - usedRaw);
           const winTag = localizeQuotaWindowTag(b.window, b.displayName || '');
-          const col = ovQuotaUsedColor(usedRaw);
-          otherRows.push(`<div class="ag-ov-other-pool-row" title="${escapeHtml(L(`已用 ${usedPctStr}% · 剩余 ${remPctStr}%`, `${usedPctStr}% used · ${remPctStr}% left`))}">
+          const col = ovQuotaUsedColor(usedRaw, g.displayName);
+          const resetTxt = formatResetLabel(b, usedRaw);
+          const rowTip = resetTxt
+            ? L(`已用 ${usedPctStr}% · 剩余 ${remPctStr}% · ${resetTxt}`, `${usedPctStr}% used · ${remPctStr}% left · ${resetTxt}`)
+            : L(`已用 ${usedPctStr}% · 剩余 ${remPctStr}%`, `${usedPctStr}% used · ${remPctStr}% left`);
+          otherRows.push(`<div class="ag-ov-other-pool-row" title="${escapeHtml(rowTip)}">
             <span class="ag-ov-muted ag-ov-trunc">${escapeHtml(gShort)}${winTag ? ` · ${escapeHtml(winTag)}` : ''}</span>
             <span class="ag-ov-mini-meter-wrap">
               <span class="ag-ov-mini-track"><span class="ag-ov-mini-fill" style="width:${usedRaw.toFixed(1)}%;background:${col}"></span></span>

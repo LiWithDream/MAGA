@@ -161,9 +161,11 @@ export function renderSpeedSlots(pill, textEl, payload, { cid = getActiveRouteCi
   const showWorking = Boolean(running && !hasRealContent);
 
   const slots = ensureSpeedSlots(textEl);
+  const hasSpeedNum = Boolean(hasRealContent && parsed.speedNumText);
   if (slots) {
-    setLeafText(slots.short, hasRealContent ? parsed.speedShortText : '');
-    if (slots.short.hidden !== !hasRealContent) slots.short.hidden = !hasRealContent;
+    const hideShort = !hasRealContent || !parsed.speedShortText;
+    setLeafText(slots.short, hideShort ? '' : parsed.speedShortText);
+    if (slots.short.hidden !== hideShort) slots.short.hidden = hideShort;
 
     setLeafText(slots.num, hasRealContent ? parsed.speedNumText : '');
     const hideNum = !hasRealContent || !parsed.speedNumText;
@@ -182,6 +184,11 @@ export function renderSpeedSlots(pill, textEl, payload, { cid = getActiveRouteCi
     if (slots.working.hidden !== !showWorking) slots.working.hidden = !showWorking;
   }
 
+  const nextHasNum = hasSpeedNum ? '1' : '0';
+  if (pill.getAttribute('data-agy-has-speed-num') !== nextHasNum) {
+    pill.setAttribute('data-agy-has-speed-num', nextHasNum);
+  }
+
   const nextWp = showWorking ? 'true' : null;
   if (nextWp) {
     if (pill.getAttribute('data-agy-working-placeholder') !== 'true') {
@@ -192,10 +199,12 @@ export function renderSpeedSlots(pill, textEl, payload, { cid = getActiveRouteCi
   }
 
   if (validMetrics && hasRealContent) {
-    if (pill.style.display && pill.style.display !== 'inline-flex') {
+    if (pill.style.display !== 'inline-flex') {
       pill.style.display = 'inline-flex';
-    } else if (!pill.style.display) {
-      pill.style.display = 'inline-flex';
+    }
+  } else if (!showWorking) {
+    if (pill.style.display !== 'none') {
+      pill.style.display = 'none';
     }
   }
 

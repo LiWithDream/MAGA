@@ -87,18 +87,36 @@ export function createProjectWorkspaceUi(ctx) {
   function fetchProjectWorkspaceStatus(dirPath, opts = {}) {
     if (!dirPath || typeof window.__agProjectCall !== 'function') return;
     const force = Boolean(opts && opts.force);
-    const existing = pState.projectsWorkspaceStatusMap[dirPath];
+    const worktreePath =
+      opts && typeof opts.worktreePath === 'string'
+        ? opts.worktreePath
+        : pState.pdActiveWorktreeByProj?.[dirPath] || '';
+    const statusKey = worktreePath ? `${dirPath}::${worktreePath}` : dirPath;
+    const existing = pState.projectsWorkspaceStatusMap[statusKey] || (!worktreePath ? pState.projectsWorkspaceStatusMap[dirPath] : null);
     const now = Date.now();
     if (!force && existing && existing.fetchedAt && now - existing.fetchedAt < 15000) return;
-    if (pState.projectsWorkspaceBusyDirs.has(dirPath)) return;
-    pState.projectsWorkspaceBusyDirs.add(dirPath);
+    if (pState.projectsWorkspaceBusyDirs.has(statusKey)) return;
+    pState.projectsWorkspaceBusyDirs.add(statusKey);
     const prevSig = JSON.stringify(existing || null);
     window
-      .__agProjectCall('readProjectWorkspaceStatus', { dirPath, force }, 6000)
+      .__agProjectCall('readProjectWorkspaceStatus', { dirPath, worktreePath, force }, 6000)
       .then((res) => {
-        pState.projectsWorkspaceBusyDirs.delete(dirPath);
+        pState.projectsWorkspaceBusyDirs.delete(statusKey);
         if (rtState.disposed || !res || !res.ok) return;
-        pState.projectsWorkspaceStatusMap[dirPath] = res;
+        pState.projectsWorkspaceStatusMap[statusKey] = res;
+        if (res.activeWorktreePath) {
+          pState.projectsWorkspaceStatusMap[`${dirPath}::${res.activeWorktreePath}`] = res;
+        }
+        if (!worktreePath || worktreePath === dirPath || res.activeWorktreePath === dirPath) {
+          pState.projectsWorkspaceStatusMap[dirPath] = res;
+        }
+        if (Array.isArray(res.worktrees) && res.worktrees.length) {
+          pState.repoWorktreesMap[dirPath] = {
+            ts: Date.now(),
+            hasStats: true,
+            data: { ok: true, mainDirPath: res.mainDirPath || dirPath, worktrees: res.worktrees },
+          };
+        }
         if (rtState.projectsViewOpen && pState.activeProjectId) {
           const active = (pHooks.collectNativeProjects?.() || []).find((p) => p.id === pState.activeProjectId);
           if (active && active.dirPath === dirPath && (force || JSON.stringify(res) !== prevSig)) {
@@ -107,7 +125,7 @@ export function createProjectWorkspaceUi(ctx) {
         }
       })
       .catch(() => {
-        pState.projectsWorkspaceBusyDirs.delete(dirPath);
+        pState.projectsWorkspaceBusyDirs.delete(statusKey);
       });
   }
 
@@ -200,8 +218,9 @@ export function createProjectWorkspaceUi(ctx) {
         if (!hash) return;
         pState.pdExpandedCommitHash = pState.pdExpandedCommitHash === hash ? '' : hash;
         pHooks.renderProjectsView?.();
-        if (pState.pdExpandedCommitHash && project.dirPath) {
-          fetchCommitDetail(project.dirPath, hash);
+        const activeDir = (project.dirPath && pState.pdActiveWorktreeByProj?.[project.dirPath]) || project.dirPath;
+        if (pState.pdExpandedCommitHash && activeDir) {
+          fetchCommitDetail(activeDir, hash);
         }
       });
     });
@@ -226,8 +245,9 @@ export function createProjectWorkspaceUi(ctx) {
         e.preventDefault();
         e.stopPropagation();
         const rel = b.getAttribute('data-ag-pd-reveal-rel') || '';
-        if (!rel || !project.dirPath || typeof window.__agProjectCall !== 'function') return;
-        const targetPath = `${String(project.dirPath).replace(/[\\/]+$/, '')}/${rel.replace(/^\/+/, '')}`;
+        const activeDir = (project.dirPath && pState.pdActiveWorktreeByProj?.[project.dirPath]) || project.dirPath;
+        if (!rel || !activeDir || typeof window.__agProjectCall !== 'function') return;
+        const targetPath = `${String(activeDir).replace(/[\\/]+$/, '')}/${rel.replace(/^\/+/, '')}`;
         window.__agProjectCall('revealFile', { dirPath: project.dirPath, targetPath }, 5000);
       });
     });
@@ -238,11 +258,18 @@ export function createProjectWorkspaceUi(ctx) {
         e.stopPropagation();
         const rel = b.getAttribute('data-ag-pd-mention-rel') || '';
         const compInput = el.querySelector('#ag-pd-composer-input');
-        const item = buildFileMentionItem(project, rel);
+        const activeDir = (project.dirPath && pState.pdActiveWorktreeByProj?.[project.dirPath]) || project.dirPath;
+        const item = buildFileMentionItem({ ...project, dirPath: activeDir }, rel);
         if (item && compInput) {
           pHooks.appendDroppedMentionsToPdComposer?.(project, compInput, [item]);
         }
       });
+    });
+
+    pHooks.bindCockpitWorktreeEvents?.({
+      el,
+      project,
+      onRefreshStatus: (wtPath, force) => fetchProjectWorkspaceStatus(project.dirPath, { worktreePath: wtPath, force }),
     });
 
     const crumbToggle = el.querySelector('[data-ag-pd-crumb-toggle]');
@@ -439,9 +466,10 @@ export function createProjectWorkspaceUi(ctx) {
     `;
   }
 
-  function buildCommitDetailHtml({ project, commit, remoteUrl }) {
+  function buildCommitDetailHtml({ project, commit, remoteUrl, activeDir }) {
     if (pState.pdExpandedCommitHash !== commit.hash) return '';
-    const cacheKey = `${project.dirPath}:${commit.hash}`;
+    const detailDir = activeDir || (project.dirPath && pState.pdActiveWorktreeByProj?.[project.dirPath]) || project.dirPath;
+    const cacheKey = `${detailDir}:${commit.hash}`;
     const detail = pState.pdCommitDetailMap[cacheKey] || null;
     const isLoading = pState.pdCommitBusyKey === cacheKey;
 
@@ -597,7 +625,7 @@ export function createProjectWorkspaceUi(ctx) {
               <span class="ag-pd-commit-subj">${escapeHtml(c.subject)}</span>
               <span class="ag-pd-commit-time">${escapeHtml(c.relTime)}</span>
             </button>
-            ${buildCommitDetailHtml({ project, commit: c, remoteUrl })}
+            ${buildCommitDetailHtml({ project, commit: c, remoteUrl, activeDir: data?.activeWorktreePath || project.dirPath })}
           </div>`;
         })
         .join('')}</div>`;
@@ -609,12 +637,15 @@ export function createProjectWorkspaceUi(ctx) {
       bodyHtml = `<div class="ag-pd-card-muted">${L('当前分支工作区干净，暂无最近提交列表。', 'Clean working tree.')}</div>`;
     }
 
+    const wtStripHtml = pHooks.buildCockpitWorktreeStripHtml?.({ project, wsStatus }) || '';
+
     return `
       <div class="ag-pd-section ag-pd-repo-sec" data-ag-pd-repo-sec="true">
         <div class="ag-pd-sec-hdr">
           <span class="ag-pd-sec-title">${L('代码仓库', 'Repository')}</span>
           ${rightPills}
         </div>
+        ${wtStripHtml}
         ${dirtyDrawerHtml}
         ${bodyHtml}
       </div>
@@ -906,10 +937,12 @@ export function createProjectWorkspaceUi(ctx) {
           const pinBadge = c.pinned
             ? `<span class="ag-pd-chat-pin" title="${escapeHtml(L('已置顶', 'Pinned'))}">${RECENT_PIN_SVG}</span>`
             : '';
+          const wtBranch = pHooks.getConversationBranchBadge?.(c.id) || '';
+          const wtBadgeHtml = wtBranch ? `<span class="ag-pd-chat-branch">${escapeHtml(wtBranch)}</span>` : '';
           const timeTxt = c.lastSec ? formatProjectTimeAgo(c.lastSec) : '';
           return `<button type="button" class="ag-pd-chat-row" draggable="true" data-ag-pd-chat="${escapeHtml(c.id)}" data-ag-pd-chat-title="${escapeHtml(c.title)}">
             <div class="ag-pd-chat-main">
-              <span class="ag-pd-chat-title">${statusDot}${pinBadge}${escapeHtml(c.title)}</span>
+              <span class="ag-pd-chat-title">${statusDot}${pinBadge}${escapeHtml(c.title)}</span>${wtBadgeHtml}
             </div>
             <span class="ag-pd-chat-meta-r"><span class="ag-pd-chat-usage" data-ag-pd-chat-usage="${escapeHtml(c.id)}" hidden></span><span class="ag-pd-chat-time">${escapeHtml(timeTxt)}</span></span>
           </button>`;

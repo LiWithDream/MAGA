@@ -120,17 +120,27 @@ export function renderSubModelPill(el, data, { motionThemes, shortenModelName, s
 
 export function renderSubCtxPill(el, data) {
   const langTag = isZhUi() ? 'zh' : 'en';
-  const pct = Number.isFinite(data.pct) ? Math.max(0, Math.min(100, Math.round(data.pct))) : 0;
-  const tier = pct < 60 ? 'cool' : pct >= 75 ? 'crit' : 'warn';
-  const ratio = `${fmtTok(data.contextTokens)} / ${fmtTok(data.maxContextTokens)}`;
-  const pctText = `${pct}%`;
-  const dashOffset = Math.max(0, RING_CIRC * (1 - pct / 100));
-  const sig = `${langTag}|${ratio}|${pctText}|${tier}`;
+  const maxCtx = Number(data.maxContextTokens || 0);
+  const usedCtx = Number(data.contextTokens || 0);
+  const hasRatio = maxCtx > 0 || usedCtx > 0;
+  const pct = hasRatio && Number.isFinite(data.pct) ? Math.max(0, Math.min(100, Math.round(data.pct))) : 0;
+  const tier = hasRatio ? (pct < 60 ? 'cool' : pct >= 75 ? 'crit' : 'warn') : 'cool';
+  const ratio = hasRatio ? `${fmtTok(usedCtx)} / ${fmtTok(maxCtx)}` : '';
+  const pctText = hasRatio ? `${pct}%` : '';
+  const dashOffset = hasRatio ? Math.max(0, RING_CIRC * (1 - pct / 100)) : RING_CIRC;
+  const arcOpacity = hasRatio && pct > 0 ? '1' : '0';
+  const sig = `${langTag}|${hasRatio ? 1 : 0}|${ratio}|${pctText}|${tier}`;
   if (el.getAttribute('data-sig') !== sig) {
-    el.setAttribute('data-sig', sig);
-    el.setAttribute('data-agy-ctx-tier', tier);
-    el.title = `${L('子代理上下文', 'Subagent context')} ${ratio} (${pct}%)`;
-    el.innerHTML = `<svg width="14" height="14" viewBox="0 0 20 20" aria-hidden="true"><circle class="agy-sub-ring-track" cx="10" cy="10" r="7" fill="none" stroke-width="2.15"/><circle class="agy-sub-ring-arc" cx="10" cy="10" r="7" fill="none" stroke-width="2.15" stroke-linecap="round" stroke-dasharray="${RING_CIRC.toFixed(2)}" stroke-dashoffset="${dashOffset.toFixed(2)}"/></svg><span class="agy-sub-ctx-txt agy-sub-ctx-full">${esc(ratio)}</span><span class="agy-sub-ctx-txt agy-sub-ctx-pct">${esc(pctText)}</span>`;
+    setAttr(el, 'data-sig', sig);
+    setAttr(el, 'data-agy-has-ratio', hasRatio ? 'true' : null);
+    setAttr(el, 'data-agy-ctx-tier', tier);
+    el.title = hasRatio
+      ? `${L('子代理上下文', 'Subagent context')} ${ratio} (${pct}%)`
+      : L('子代理暂无上下文消耗', 'No subagent context usage yet');
+    const textHtml = hasRatio
+      ? `<span class="agy-sub-ctx-txt agy-sub-ctx-full">${esc(ratio)}</span><span class="agy-sub-ctx-txt agy-sub-ctx-pct">${esc(pctText)}</span>`
+      : '';
+    el.innerHTML = `<svg width="14" height="14" viewBox="0 0 20 20" aria-hidden="true"><circle class="agy-sub-ring-track" cx="10" cy="10" r="7" fill="none" stroke-width="2.15"/><circle class="agy-sub-ring-arc" cx="10" cy="10" r="7" fill="none" stroke-width="2.15" stroke-linecap="round" stroke-dasharray="${RING_CIRC.toFixed(2)}" stroke-dashoffset="${dashOffset.toFixed(2)}" stroke-opacity="${arcOpacity}"/></svg>${textHtml}`;
   }
 }
 
@@ -162,6 +172,7 @@ export function renderSubSpeedPill(el, data) {
     : data.running
       ? '…'
       : '';
+  const hasSpeedNum = Boolean(fullLabel);
 
   const parts = [];
   if (fullLabel) {
@@ -174,11 +185,12 @@ export function renderSubSpeedPill(el, data) {
     parts.push(`<span class="agy-sub-spd-ttft">${esc(ttftText)}</span>`);
   }
 
-  const sig = `${langTag}|${fullLabel}|${tightLabel}|${ttftText}|${tier}|${motion}`;
+  const sig = `${langTag}|${hasSpeedNum ? 1 : 0}|${fullLabel}|${tightLabel}|${ttftText}|${tier}|${motion}`;
   if (el.getAttribute('data-sig') !== sig) {
-    el.setAttribute('data-sig', sig);
-    el.setAttribute('data-agy-speed-tier', tier);
-    el.setAttribute('data-agy-motion', motion);
+    setAttr(el, 'data-sig', sig);
+    setAttr(el, 'data-has-spd-num', hasSpeedNum ? '1' : '0');
+    setAttr(el, 'data-agy-speed-tier', tier);
+    setAttr(el, 'data-agy-motion', motion);
     el.title = fullTip;
     const txtHtml = parts.length ? `<span class="agy-sub-stxt">${parts.join('')}</span>` : '';
     el.innerHTML = `<span class="agy-sub-sdot" aria-hidden="true"></span>${txtHtml}`;

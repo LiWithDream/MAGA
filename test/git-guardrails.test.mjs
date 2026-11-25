@@ -10,6 +10,7 @@ import {
   PROTECTED_BRANCHES,
   evaluateHookPayload,
   extractGitInvocations,
+  recordConversationWorktree,
   resolveGitContext,
   splitShellSegments,
   tokenizeSegment,
@@ -405,4 +406,140 @@ test('repository guardrail scripts, permissions, package script, and .gitignore 
 
   const gitignore = fs.readFileSync(path.join(REPO_ROOT, '.gitignore'), 'utf8');
   assert.match(gitignore, /^node_modules$/m);
+});
+
+test('PreToolUse hook expands $VAR/${VAR} safely across standalone assignments, quotes, prefix env, pipelines, and records worktrees', () => {
+  const mainRepo = createTempRepo('main');
+  const wtParent = `${mainRepo}-wt`;
+  const wtDir = path.join(wtParent, 'feat-vars');
+  const fakeHome = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'maga-hook-home-')));
+  const stateDir = path.join(fakeHome, '.gemini', 'antigravity', 'anti-claude');
+
+  try {
+    fs.mkdirSync(wtParent, { recursive: true });
+    git(mainRepo, ['worktree', 'add', '-b', 'feat/vars', '--', wtDir, 'main']);
+
+    // 1. Standalone $VAR & ${VAR} expansion into protected main denies git commit
+    const denyVar = evaluateHookPayload({
+      hookEventName: 'PreToolUse',
+      cwd: wtDir,
+      toolCall: {
+        name: 'run_command',
+        args: { CommandLine: `REPO=${mainRepo}; cd "$REPO" && git commit -m "blocked"` },
+      },
+    });
+    assert.equal(denyVar.decision, 'deny');
+
+    const denyBrace = evaluateHookPayload({
+      hookEventName: 'PreToolUse',
+      cwd: wtDir,
+      toolCall: {
+        name: 'run_command',
+        args: { CommandLine: `export REPO=${mainRepo}; git -C "\${REPO}" commit -m "blocked"` },
+      },
+    });
+    assert.equal(denyBrace.decision, 'deny');
+
+    // 2. Prefix env assignment expands earlier $VAR cleanly without polluting current shellVars
+    const denyPrefix = evaluateHookPayload({
+      hookEventName: 'PreToolUse',
+      cwd: wtDir,
+      toolCall: {
+        name: 'run_command',
+        args: { CommandLine: `REPO=${mainRepo}; FOO=bar git -C "$REPO" commit -m "blocked"` },
+      },
+    });
+    assert.equal(denyPrefix.decision, 'deny');
+
+    // 3. Single quotes do NOT expand $REPO (stays literal in wtDir)
+    const singleQuoteTokens = tokenizeSegment(`git -C '$REPO' status`, new Map([['REPO', mainRepo]]));
+    assert.deepEqual(singleQuoteTokens, ['git', '-C', '$REPO', 'status']);
+
+    const singleQuoteInv = extractGitInvocations(
+      `REPO=${mainRepo}; git -C '$REPO' status && git status`,
+      wtDir
+    );
+    assert.equal(singleQuoteInv.length, 2);
+    assert.equal(singleQuoteInv[0].targetDir, path.join(wtDir, '$REPO'));
+    assert.equal(singleQuoteInv[1].targetDir, wtDir);
+
+    // 4. Pipeline segment isolation: assignment/cd inside pipeline does not leak to outer cwd
+    const pipeInv = extractGitInvocations(
+      `WT=${mainRepo} | echo ok; echo ok | cd "${mainRepo}" && git status`,
+      wtDir
+    );
+    assert.equal(pipeInv.length, 1);
+    assert.equal(pipeInv[0].targetDir, wtDir);
+
+    // 5. Unknown variable leaves literal token safely
+    const unknownTokens = tokenizeSegment(`echo $UNSET_VAR "\${ALSO_UNSET}"`, new Map([['OTHER', '1']]));
+    assert.deepEqual(unknownTokens, ['echo', '$UNSET_VAR', '${ALSO_UNSET}']);
+
+    // 6. recordConversationWorktree unit tests: direct cid, artifactDirectoryPath fallback, 30s throttle, protected & invalid skips
+    const cidA = 'conv-wt-aaaa1111';
+    const wtCtx = resolveGitContext(wtDir);
+    assert.ok(wtCtx && wtCtx.branch === 'feat/vars');
+
+    const rec1 = recordConversationWorktree({ conversationId: cidA }, wtCtx, { stateDir });
+    assert.equal(rec1.recorded, true);
+    const saved1 = JSON.parse(fs.readFileSync(rec1.filePath, 'utf8'));
+    assert.equal(saved1.cid, cidA);
+    assert.equal(saved1.branch, 'feat/vars');
+    assert.equal(saved1.worktreePath, wtDir);
+    assert.equal(saved1.repoRoot, mainRepo);
+    assert.equal(saved1.source, 'hook');
+
+    // Immediate second call with identical worktree + branch throttled
+    const recThrottled = recordConversationWorktree({ conversationId: cidA }, wtCtx, { stateDir });
+    assert.equal(recThrottled.recorded, false);
+    assert.equal(recThrottled.reason, 'throttled');
+
+    // Expiring mtime > 30s allows re-recording
+    const oldDate = new Date(Date.now() - 35_000);
+    fs.utimesSync(rec1.filePath, oldDate, oldDate);
+    const recAfterExpire = recordConversationWorktree({ conversationId: cidA }, wtCtx, { stateDir });
+    assert.equal(recAfterExpire.recorded, true);
+
+    // Fallback to basename(artifactDirectoryPath) when conversationId is omitted
+    const cidB = '11112222-3333-4444-8555-666677778888';
+    const recFallback = recordConversationWorktree(
+      { artifactDirectoryPath: `/tmp/brain/${cidB}` },
+      wtCtx,
+      { stateDir }
+    );
+    assert.equal(recFallback.recorded, true);
+    assert.equal(recFallback.record.cid, cidB);
+
+    // Skips protected branches and missing/invalid cid
+    const mainCtx = resolveGitContext(mainRepo);
+    assert.equal(recordConversationWorktree({ conversationId: cidA }, mainCtx, { stateDir }).reason, 'not_worktree');
+    assert.equal(recordConversationWorktree({ conversationId: '../bad' }, wtCtx, { stateDir }).reason, 'missing_cid');
+
+    // 7. Subprocess execution records worktree when running allowed command inside worktree
+    const subCid = 'subproc-conv-99887766';
+    const subOut = execFileSync(process.execPath, [HOOK_SCRIPT], {
+      input: JSON.stringify({
+        hookEventName: 'PreToolUse',
+        conversationId: subCid,
+        cwd: mainRepo,
+        toolCall: {
+          name: 'run_command',
+          args: { CommandLine: `WT=${wtDir}; cd "$WT" && git status` },
+        },
+      }),
+      env: { ...process.env, HOME: fakeHome },
+      encoding: 'utf8',
+    });
+    assert.deepEqual(JSON.parse(subOut), { decision: 'allow' });
+    const subFile = path.join(stateDir, 'conv-worktrees', `${subCid}.json`);
+    assert.equal(fs.existsSync(subFile), true, 'subprocess hook writes conv-worktrees/<cid>.json');
+    const subSaved = JSON.parse(fs.readFileSync(subFile, 'utf8'));
+    assert.equal(subSaved.branch, 'feat/vars');
+    assert.equal(subSaved.worktreePath, wtDir);
+    assert.equal(subSaved.repoRoot, mainRepo);
+  } finally {
+    fs.rmSync(wtParent, { recursive: true, force: true });
+    fs.rmSync(mainRepo, { recursive: true, force: true });
+    fs.rmSync(fakeHome, { recursive: true, force: true });
+  }
 });

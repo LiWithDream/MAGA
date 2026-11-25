@@ -57,6 +57,7 @@ export function createConvProjectTopbar(ctx) {
     openProjectsView,
     startNewChatInProject,
     showProjectsFloatingNotice,
+    worktreeUi,
   } = ctx;
 
   let menuOpen = false;
@@ -353,6 +354,7 @@ export function createConvProjectTopbar(ctx) {
 
   function removeBar() {
     closeMenu();
+    worktreeUi?.closeWorktreeMenu?.();
     clearHiddenNativeProjCrumbs();
     lastSig = '';
     const el = document.getElementById(BAR_ID);
@@ -367,13 +369,15 @@ export function createConvProjectTopbar(ctx) {
     const act = btn.getAttribute('data-ag-cpb-act');
     const resolved = resolveActiveConversationProject();
     if (!resolved || !resolved.project) return;
-    const { project, allProjects } = resolved;
+    const { project, allProjects, curCid } = resolved;
     if (act === 'open-project') {
       closeMenu();
+      worktreeUi?.closeWorktreeMenu?.();
       openProjectsView(project.id);
       return;
     }
     if (act === 'toggle-menu') {
+      worktreeUi?.closeWorktreeMenu?.();
       if (menuOpen) {
         closeMenu();
       } else {
@@ -385,36 +389,55 @@ export function createConvProjectTopbar(ctx) {
     }
     if (act === 'new-chat') {
       closeMenu();
+      worktreeUi?.closeWorktreeMenu?.();
       focusOrStartNewChat(project);
       return;
     }
-    if (act === 'open-repo') {
+    if (act === 'open-wt-menu') {
       closeMenu();
+      if (project.dirPath && worktreeUi) {
+        worktreeUi.openTopbarWorktreeMenu(btn, {
+          project,
+          curCid,
+          onAfterChange: () => {
+            lastSig = '';
+            sync();
+          },
+        });
+        return;
+      }
+    }
+    if (act === 'open-repo' || act === 'open-wt-menu') {
+      closeMenu();
+      worktreeUi?.closeWorktreeMenu?.();
       const ctxData = project.dirPath ? pState.projectsContextMap[project.dirPath] : null;
       const wsData = project.dirPath ? pState.projectsWorkspaceStatusMap[project.dirPath] : null;
       const remoteUrl = (wsData && wsData.remoteUrl) || (ctxData && ctxData.remoteUrl) || project.remoteUrl || '';
       if (!project.dirPath && remoteUrl && typeof window.__agProjectCall === 'function') {
         Promise.resolve(window.__agProjectCall('openExternalUrl', { url: remoteUrl }, 5000)).catch(() => {});
       } else if (project.dirPath && typeof window.__agProjectCall === 'function') {
+        const wtDisplay = worktreeUi ? worktreeUi.resolveConvWorktreeDisplay(project.dirPath, curCid) : null;
+        const targetDir = (wtDisplay && wtDisplay.worktreePath) || project.dirPath;
         Promise.resolve(
-          window.__agProjectCall('revealFile', { targetPath: project.dirPath, dirPath: project.dirPath, openFolder: true }, 5000)
+          window.__agProjectCall('revealFile', { targetPath: targetDir, dirPath: project.dirPath, openFolder: true }, 5000)
         ).catch(() => {});
       }
     }
   }
 
   function handleBarContextMenu(ev) {
-    const repoBtn = ev.target && ev.target.closest && ev.target.closest('[data-ag-cpb-act="open-repo"]');
+    const repoBtn = ev.target && ev.target.closest && ev.target.closest('[data-ag-cpb-act="open-repo"], [data-ag-cpb-act="open-wt-menu"]');
     if (!repoBtn) return;
     const resolved = resolveActiveConversationProject();
     if (!resolved || !resolved.project) return;
-    const { project } = resolved;
-    const copyVal = project.dirPath || project.remoteUrl || '';
+    const { project, curCid } = resolved;
+    const wtDisplay = project.dirPath && worktreeUi ? worktreeUi.resolveConvWorktreeDisplay(project.dirPath, curCid) : null;
+    const copyVal = (wtDisplay && wtDisplay.worktreePath) || project.dirPath || project.remoteUrl || '';
     if (!copyVal || !navigator.clipboard || typeof navigator.clipboard.writeText !== 'function') return;
     ev.preventDefault();
     ev.stopPropagation();
     const notice = project.dirPath
-      ? L('已复制项目路径', 'Project path copied')
+      ? L('已复制工作树路径', 'Worktree path copied')
       : L('已复制仓库链接', 'Repository URL copied');
     navigator.clipboard.writeText(copyVal).then(
       () => showProjectsFloatingNotice(notice),
@@ -438,12 +461,14 @@ export function createConvProjectTopbar(ctx) {
       return;
     }
 
-    const { project, allProjects, isDraft } = resolved;
+    const { project, allProjects, curCid, isDraft } = resolved;
     if (project.dirPath) maybeWarmProjectContext(project.dirPath);
 
     const ctxData = project.dirPath ? pState.projectsContextMap[project.dirPath] : null;
     const wsData = project.dirPath ? pState.projectsWorkspaceStatusMap[project.dirPath] : null;
-    const branch = String((wsData && wsData.branch) || (ctxData && ctxData.gitBranch) || '').trim();
+    const wtDisplay = project.dirPath && worktreeUi ? worktreeUi.resolveConvWorktreeDisplay(project.dirPath, curCid) : null;
+    const branch = String((wtDisplay && wtDisplay.branch) || (wsData && wsData.branch) || (ctxData && ctxData.gitBranch) || '').trim();
+    const effectiveDirPath = (wtDisplay && wtDisplay.worktreePath) || project.dirPath || '';
     const remoteLabel = String((wsData && wsData.remoteLabel) || (ctxData && ctxData.remoteLabel) || project.remoteLabel || '').trim();
     const gitBadgeText = branch || (!project.dirPath && remoteLabel ? remoteLabel : '');
 
@@ -465,7 +490,11 @@ export function createConvProjectTopbar(ctx) {
       slot.insertBefore(bar, slot.firstChild);
     }
 
-    const sig = `${FEAT.i18n ? 'zh' : 'en'}|${project.id}|${project.name}|${project.isRemote ? 1 : 0}|${allProjects.length}|${branch ? 1 : 0}|${gitBadgeText}|${isDraft ? 1 : 0}|${hasNativeConvCrumb ? 1 : 0}`;
+    const wtCount = wtDisplay ? wtDisplay.worktreeCount : 0;
+    const isProtectedOnMain = Boolean(wtDisplay && wtDisplay.isProtected && wtCount > 1);
+    const hasCollision = Boolean(wtDisplay && wtDisplay.collisionCids && wtDisplay.collisionCids.length > 0);
+    const isLinkedWt = Boolean(wtDisplay && wtDisplay.isWorktree);
+    const sig = `${FEAT.i18n ? 'zh' : 'en'}|${project.id}|${project.name}|${project.isRemote ? 1 : 0}|${allProjects.length}|${branch ? 1 : 0}|${gitBadgeText}|${effectiveDirPath}|${wtCount}|${isProtectedOnMain ? 1 : 0}|${hasCollision ? 1 : 0}|${isLinkedWt ? 1 : 0}|${isDraft ? 1 : 0}|${hasNativeConvCrumb ? 1 : 0}`;
     if (sig === lastSig) return;
     lastSig = sig;
     bar.setAttribute('aria-label', L('当前对话所属项目', 'Conversation project'));
@@ -475,15 +504,30 @@ export function createConvProjectTopbar(ctx) {
         ? `<button type="button" class="ag-cpb-switch" data-ag-cpb-act="toggle-menu" aria-expanded="${menuOpen ? 'true' : 'false'}" title="${escapeHtml(L('切换项目', 'Switch project'))}" aria-label="${escapeHtml(L('切换项目', 'Switch project'))}">${SVG_CPB_CHEVRON}</button>`
         : '';
 
-    const shortPath = project.dirPath ? formatShortHomePath(project.dirPath) : project.remoteUrl || '';
-    const repoTip = project.dirPath
-      ? `${shortPath} (${L('左键在 Finder 中打开，右键复制路径', 'Click to reveal in Finder, right-click to copy')})`
-      : remoteLabel
-        ? `${project.remoteUrl || remoteLabel} (${L('点击打开远程仓库', 'Click to open remote repository')})`
-        : '';
+    const shortPath = effectiveDirPath ? formatShortHomePath(effectiveDirPath) : project.remoteUrl || '';
+    const repoTipParts = [];
+    if (effectiveDirPath) {
+      repoTipParts.push(shortPath);
+      if (isProtectedOnMain) repoTipParts.push(L('受保护主干（建议切换到 worktree）', 'Protected main (switch to a worktree)'));
+      if (hasCollision) repoTipParts.push(L('警告：另一场近期对话也在操作该 worktree', 'Advisory: shared with another active conversation'));
+      repoTipParts.push(
+        worktreeUi
+          ? L('左键切换 Worktree，右键复制路径', 'Click to switch worktree, right-click to copy path')
+          : L('左键在 Finder 中打开，右键复制路径', 'Click to reveal in Finder, right-click to copy')
+      );
+    } else if (remoteLabel) {
+      repoTipParts.push(`${project.remoteUrl || remoteLabel} (${L('点击打开远程仓库', 'Click to open remote repository')})`);
+    }
+    const repoTip = repoTipParts.join(' · ');
 
+    const gitAct = project.dirPath && worktreeUi ? 'open-wt-menu' : 'open-repo';
+    const wtAttrs =
+      (isProtectedOnMain ? ' data-protected="true"' : '') +
+      (hasCollision ? ' data-collision="true"' : '') +
+      (isLinkedWt ? ' data-worktree="true"' : '');
+    const collisionDot = hasCollision ? '<span class="ag-cpb-dot" aria-hidden="true"></span>' : '';
     const gitHtml = gitBadgeText
-      ? `<button type="button" class="ag-cpb-git" data-ag-cpb-act="open-repo" title="${escapeHtml(repoTip)}">${branch ? SVG_CPB_BRANCH : SVG_CPB_GLOBE}<span>${escapeHtml(gitBadgeText)}</span></button>`
+      ? `<button type="button" class="ag-cpb-git" data-ag-cpb-act="${gitAct}"${wtAttrs} title="${escapeHtml(repoTip)}">${branch ? SVG_CPB_BRANCH : SVG_CPB_GLOBE}<span>${escapeHtml(gitBadgeText)}</span>${collisionDot}</button>`
       : '';
 
     const draftBadgeHtml = isDraft

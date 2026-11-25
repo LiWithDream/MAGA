@@ -11,6 +11,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { createPresentation } from '../vendor/agy-capsule/ui.mjs';
 import { buildPickerShadowCss } from './modules/capsule-picker.mjs';
+import { writeDeployMeta } from './deploy-meta.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -256,6 +257,7 @@ export async function deployStudio() {
   writeFileSync(TARGET_CUSTOM_CSS, `${baseCss.replace(/\s+$/, '')}\n\n${cssBlock}`, 'utf8');
 
   syncLiveConfigForStudio();
+  const deployedFrom = writeDeployMeta(REPO_ROOT);
 
   return {
     ok: true,
@@ -265,6 +267,7 @@ export async function deployStudio() {
     configJsonPath: TARGET_CONFIG_JSON,
     jsBytes: Buffer.byteLength(jsBlock, 'utf8'),
     cssBytes: Buffer.byteLength(cssBlock, 'utf8'),
+    deployedFrom,
     prefs,
   };
 }

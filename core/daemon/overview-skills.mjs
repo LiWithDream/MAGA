@@ -3,7 +3,23 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { execFile } from 'node:child_process';
+import {
+  execGitAsync,
+  invalidateOverviewGitCache,
+  normalizeNumstatPath,
+  parseNumstatPerFile,
+  parseNumstatZ,
+  parsePorcelainDirtyFiles,
+  readOverviewGitStatusAsync,
+} from './git-exec.mjs';
+import {
+  collectAuthorizedWorktreeRootsAsync,
+  getAuthorizedProjectDirs,
+  handleWorktreeRpc,
+  listRepoWorktreesAsync,
+  normalizeRealPath,
+  resolveConversationWorktreeAsync,
+} from './worktrees.mjs';
 import {
   ALLOWED_AGENT_TOOLS,
   GLOBAL_AGENTS_DIR,
@@ -25,7 +41,6 @@ import {
 } from './prefs-bundle.mjs';
 import {
   deleteProjectScheduledTask,
-  getRegisteredProjectDirs,
   isPathInsideDir,
   normalizeGitRemoteUrl,
   openExternalUrl,
@@ -207,83 +222,11 @@ function prettifyConnectorName(rawId) {
   return spaced ? spaced.charAt(0).toUpperCase() + spaced.slice(1) : s;
 }
 
-const overviewGitCache = new Map();
-const overviewGitInFlight = new Map();
 const projectWorkspaceCache = new Map();
 const projectWorkspaceInFlight = new Map();
 const commitDetailCache = new Map();
 
-export function normalizeNumstatPath(rawPath) {
-  const s = String(rawPath || '').trim();
-  if (!s) return '';
-  const braceM = s.match(/^(.*?)\{([^{}]*?)\s*=>\s*([^{}]*?)\}(.*)$/);
-  if (braceM) {
-    return `${braceM[1]}${braceM[3].trim()}${braceM[4]}`.replace(/\/{2,}/g, '/');
-  }
-  const arrowIdx = s.indexOf(' => ');
-  if (arrowIdx !== -1) {
-    return s.slice(arrowIdx + 4).trim();
-  }
-  return s;
-}
-
-export function parseNumstatZ(numstatZ) {
-  const entries = [];
-  if (!numstatZ) return entries;
-  const parts = String(numstatZ).split('\0');
-  for (let i = 0; i < parts.length; i += 1) {
-    const raw = parts[i].replace(/^(?:\r?\n)+/, '');
-    if (!raw) continue;
-    const cols = raw.split('\t');
-    if (cols.length < 3) continue;
-    const a = parseInt(cols[0], 10);
-    const d = parseInt(cols[1], 10);
-    const added = Number.isFinite(a) ? a : 0;
-    const deleted = Number.isFinite(d) ? d : 0;
-    let filePath = cols.slice(2).join('\t');
-    if (filePath === '' && i + 2 < parts.length) {
-      // git --numstat -z encodes renames/copies as "<added>\t<deleted>\t\0<old>\0<new>\0"
-      filePath = parts[i + 2];
-      i += 2;
-    }
-    if (!filePath) continue;
-    entries.push({ path: filePath, added, deleted });
-  }
-  return entries;
-}
-
-function parseNumstatPerFile(numstatZ) {
-  const map = new Map();
-  for (const entry of parseNumstatZ(numstatZ)) {
-    const prev = map.get(entry.path) || { added: 0, deleted: 0 };
-    prev.added += entry.added;
-    prev.deleted += entry.deleted;
-    map.set(entry.path, prev);
-  }
-  return map;
-}
-
-function parsePorcelainDirtyFiles(porcelainZ, numstatMap) {
-  const files = [];
-  if (!porcelainZ) return files;
-  const entries = String(porcelainZ).split('\0');
-  for (let i = 0; i < entries.length && files.length < 30; i += 1) {
-    const rec = entries[i];
-    if (!rec || rec.length < 4) continue;
-    const xy = rec.slice(0, 2);
-    const filePath = rec.slice(3);
-    if (!filePath) continue;
-    if (xy.includes('R') || xy.includes('C')) i += 1;
-    let status = 'M';
-    if (xy === '??') status = '?';
-    else if (xy.includes('D')) status = 'D';
-    else if (xy.includes('A')) status = 'A';
-    else if (xy.includes('R')) status = 'R';
-    const stat = numstatMap.get(filePath) || { added: 0, deleted: 0 };
-    files.push({ path: filePath, status, added: stat.added, deleted: stat.deleted });
-  }
-  return files;
-}
+export { normalizeNumstatPath, parseNumstatZ, readOverviewGitStatusAsync };
 
 export async function readGitCommitDetailAsync(rawDir, rawHash) {
   const absDir = resolveLocalProjectDir(rawDir);
@@ -319,92 +262,31 @@ export async function readGitCommitDetailAsync(rawDir, rawHash) {
   return res;
 }
 
-function execGitAsync(absDir, args, timeoutMs = 1200) {
-  return new Promise((resolve) => {
-    execFile(
-      'git',
-      ['-C', absDir, ...args],
-      { timeout: timeoutMs, maxBuffer: 256 * 1024, encoding: 'utf8' },
-      (err, stdout) => {
-        if (err) resolve(null);
-        else resolve(String(stdout || ''));
-      }
-    );
-  });
-}
-
-function parseNumstatOutput(numstatZ) {
-  let added = 0;
-  let deleted = 0;
-  for (const entry of parseNumstatZ(numstatZ)) {
-    added += entry.added;
-    deleted += entry.deleted;
-  }
-  return { added, deleted };
-}
-
-export async function readOverviewGitStatusAsync(absDir) {
-  const now = Date.now();
-  const cached = overviewGitCache.get(absDir);
-  if (cached && now - cached.ts < 5000) return cached.git;
-  if (overviewGitInFlight.has(absDir)) return overviewGitInFlight.get(absDir);
-
-  const task = (async () => {
-    let git = null;
-    try {
-      const [statusOut, headNumstat] = await Promise.all([
-        execGitAsync(absDir, ['status', '--porcelain=v2', '--branch'], 1200),
-        execGitAsync(absDir, ['diff', 'HEAD', '--numstat', '-z'], 1200)
-      ]);
-      if (statusOut !== null) {
-        let branch = '';
-        let changedFiles = 0;
-        for (const line of statusOut.split(/\r?\n/)) {
-          if (!line) continue;
-          if (line.startsWith('# branch.head ')) {
-            const rawHead = line.slice('# branch.head '.length).trim();
-            branch = rawHead === '(detached)' ? 'HEAD' : rawHead;
-          } else if (!line.startsWith('#')) {
-            changedFiles += 1;
-          }
-        }
-        if (branch) {
-          let numstatZ = headNumstat;
-          if (numstatZ === null && changedFiles > 0) {
-            const [unstaged, staged] = await Promise.all([
-              execGitAsync(absDir, ['diff', '--numstat', '-z'], 1000),
-              execGitAsync(absDir, ['diff', '--cached', '--numstat', '-z'], 1000)
-            ]);
-            numstatZ = `${unstaged || ''}\0${staged || ''}`;
-          }
-          const { added, deleted } = parseNumstatOutput(numstatZ);
-          git = { branch, added, deleted, changedFiles };
-        }
-      }
-    } catch {
-      git = null;
-    }
-    setBounded(overviewGitCache, absDir, { ts: Date.now(), git }, 32);
-    return git;
-  })().finally(() => {
-    overviewGitInFlight.delete(absDir);
-  });
-
-  overviewGitInFlight.set(absDir, task);
-  return task;
-}
-
-export async function readProjectWorkspaceStatusAsync(rawDir, { force = false } = {}) {
+export async function readProjectWorkspaceStatusAsync(rawDir, { force = false, worktreePath = '', convWtDir } = {}) {
   const absDir = resolveLocalProjectDir(rawDir);
   if (!absDir) return { ok: false, error: 'invalid_project_dir' };
+
+  const wtListRes = await listRepoWorktreesAsync(absDir, { force, includeStats: true, convWtDir });
+  let targetDir = absDir;
+  if (worktreePath && wtListRes.ok && Array.isArray(wtListRes.worktrees)) {
+    const wantedNorm = normalizeRealPath(worktreePath);
+    const matched = wtListRes.worktrees.find(
+      (w) => !w.prunable && (normalizeRealPath(w.realPath) === wantedNorm || normalizeRealPath(w.path) === wantedNorm)
+    );
+    if (matched) targetDir = matched.realPath;
+  }
+
+  const cacheKey = `${absDir}::${targetDir}`;
   if (force) {
-    overviewGitCache.delete(absDir);
-    projectWorkspaceCache.delete(absDir);
+    for (const k of Array.from(projectWorkspaceCache.keys())) {
+      if (k === absDir || k.startsWith(`${absDir}::`)) projectWorkspaceCache.delete(k);
+    }
+    invalidateOverviewGitCache(targetDir);
   }
   const now = Date.now();
-  const cached = projectWorkspaceCache.get(absDir);
+  const cached = projectWorkspaceCache.get(cacheKey);
   if (!force && cached && now - cached.ts < 8000) return cached.data;
-  if (projectWorkspaceInFlight.has(absDir)) return projectWorkspaceInFlight.get(absDir);
+  if (projectWorkspaceInFlight.has(cacheKey)) return projectWorkspaceInFlight.get(cacheKey);
 
   const task = (async () => {
     let git = null;
@@ -415,11 +297,11 @@ export async function readProjectWorkspaceStatusAsync(rawDir, { force = false } 
     let dirtyFiles = [];
     try {
       const [gitRes, logOut, tagOut, remoteOut, porcelainZ] = await Promise.all([
-        readOverviewGitStatusAsync(absDir),
-        execGitAsync(absDir, ['log', '-n', '3', '--format=%h%x1f%H%x1f%s%x1f%cr'], 1000),
-        execGitAsync(absDir, ['describe', '--tags', '--abbrev=0'], 800),
-        execGitAsync(absDir, ['config', '--get', 'remote.origin.url'], 800),
-        execGitAsync(absDir, ['status', '--porcelain=v1', '-z'], 1200)
+        readOverviewGitStatusAsync(targetDir, { force }),
+        execGitAsync(targetDir, ['log', '-n', '3', '--format=%h%x1f%H%x1f%s%x1f%cr'], 1000),
+        execGitAsync(targetDir, ['describe', '--tags', '--abbrev=0'], 800),
+        execGitAsync(targetDir, ['config', '--get', 'remote.origin.url'], 800),
+        execGitAsync(targetDir, ['status', '--porcelain=v1', '-z'], 1200)
       ]);
       git = gitRes || null;
       if (logOut) {
@@ -443,11 +325,11 @@ export async function readProjectWorkspaceStatusAsync(rawDir, { force = false } 
         remoteLabel = parsedRemote.label;
       }
       if (porcelainZ) {
-        let numstatZ = await execGitAsync(absDir, ['diff', 'HEAD', '--numstat', '-z'], 1200);
+        let numstatZ = await execGitAsync(targetDir, ['diff', 'HEAD', '--numstat', '-z'], 1200);
         if (numstatZ === null) {
           const [unstaged, staged] = await Promise.all([
-            execGitAsync(absDir, ['diff', '--numstat', '-z'], 1000),
-            execGitAsync(absDir, ['diff', '--cached', '--numstat', '-z'], 1000)
+            execGitAsync(targetDir, ['diff', '--numstat', '-z'], 1000),
+            execGitAsync(targetDir, ['diff', '--cached', '--numstat', '-z'], 1000)
           ]);
           numstatZ = `${unstaged || ''}\0${staged || ''}`;
         }
@@ -458,7 +340,7 @@ export async function readProjectWorkspaceStatusAsync(rawDir, { force = false } 
     let pkgVersion = null;
     let scripts = [];
     try {
-      const pkgPath = path.join(absDir, 'package.json');
+      const pkgPath = path.join(targetDir, 'package.json');
       const st = fs.statSync(pkgPath, { throwIfNoEntry: false });
       if (st && st.isFile() && st.size > 0 && st.size < 65536) {
         const pkg = readJsonOrFallback(pkgPath, null);
@@ -474,6 +356,9 @@ export async function readProjectWorkspaceStatusAsync(rawDir, { force = false } 
     const data = {
       ok: true,
       dirPath: absDir,
+      activeWorktreePath: targetDir,
+      mainDirPath: wtListRes.mainDirPath || absDir,
+      worktrees: wtListRes.worktrees || [],
       git,
       recentCommits,
       latestTag,
@@ -484,13 +369,13 @@ export async function readProjectWorkspaceStatusAsync(rawDir, { force = false } 
       dirtyFiles,
       fetchedAt: Date.now()
     };
-    setBounded(projectWorkspaceCache, absDir, { ts: Date.now(), data }, 32);
+    setBounded(projectWorkspaceCache, cacheKey, { ts: Date.now(), data }, 32);
     return data;
   })().finally(() => {
-    projectWorkspaceInFlight.delete(absDir);
+    projectWorkspaceInFlight.delete(cacheKey);
   });
 
-  projectWorkspaceInFlight.set(absDir, task);
+  projectWorkspaceInFlight.set(cacheKey, task);
   return task;
 }
 
@@ -532,8 +417,16 @@ export function collectOverviewSnapshot(payload = {}, opts = {}) {
     if (resolved) absDir = resolved;
   }
 
+  const wtMeta = opts.worktreeMeta || null;
+  const effectiveDir = opts.effectiveDir || absDir;
   const workspace = {
-    dirPath: absDir,
+    dirPath: effectiveDir,
+    mainDirPath: absDir,
+    worktreePath: wtMeta ? wtMeta.worktreePath : effectiveDir,
+    isWorktree: Boolean(wtMeta && wtMeta.isWorktree),
+    worktreeSource: wtMeta ? wtMeta.source : 'default',
+    worktreeCount: wtMeta ? wtMeta.worktreeCount : 0,
+    collisionCids: wtMeta ? wtMeta.collisionCids : [],
     name: absDir ? path.basename(absDir) || absDir : '',
     git: opts.gitResolved !== undefined ? opts.gitResolved : null
   };
@@ -685,8 +578,16 @@ export async function collectOverviewSnapshotAsync(payload = {}, opts = {}) {
     const resolved = resolveLocalProjectDir(rawDir);
     if (resolved) absDir = resolved;
   }
-  const gitResolved = absDir && !skipGit ? await readOverviewGitStatusAsync(absDir) : null;
-  return collectOverviewSnapshot(payload, Object.assign({}, opts, { gitResolved }));
+  let worktreeMeta = null;
+  let effectiveDir = absDir;
+  if (absDir && payload?.cid) {
+    worktreeMeta = await resolveConversationWorktreeAsync(absDir, payload.cid, opts);
+    if (worktreeMeta && worktreeMeta.worktreePath) {
+      effectiveDir = worktreeMeta.worktreePath;
+    }
+  }
+  const gitResolved = effectiveDir && !skipGit ? await readOverviewGitStatusAsync(effectiveDir, { force: Boolean(payload?.force) }) : null;
+  return collectOverviewSnapshot(payload, Object.assign({}, opts, { gitResolved, effectiveDir, worktreeMeta }));
 }
 
 function getSafePluginDocRoots(configDir = path.join(HOME, '.gemini', 'config')) {
@@ -720,6 +621,8 @@ export async function handleProjectRpcRequest(rawPayload, callerEntry = null) {
   if (!reqId || !action) return null;
 
   try {
+    const wtResult = await handleWorktreeRpc(action, payload);
+    if (wtResult !== null) return { reqId, result: wtResult };
     if (action === 'saveUiPrefs') {
       const res = saveUiPrefs(payload);
       rebuildBundleIfNeeded();
@@ -780,7 +683,10 @@ export async function handleProjectRpcRequest(rawPayload, callerEntry = null) {
       return { reqId, result: readProjectContext(payload.dirPath) };
     }
     if (action === 'readProjectWorkspaceStatus') {
-      const result = await readProjectWorkspaceStatusAsync(payload?.dirPath, { force: Boolean(payload?.force) });
+      const result = await readProjectWorkspaceStatusAsync(payload?.dirPath, {
+        force: Boolean(payload?.force),
+        worktreePath: typeof payload?.worktreePath === 'string' ? payload.worktreePath : ''
+      });
       return { reqId, result };
     }
     if (action === 'readGitCommitDetail') {
@@ -855,9 +761,10 @@ export async function handleProjectRpcRequest(rawPayload, callerEntry = null) {
       const explicitProj = resolveLocalProjectDir(payload?.dirPath);
       const globalAgentsMd = path.join(HOME, '.gemini', 'AGENTS.md');
       const builtinRootDir = path.join(HOME, '.gemini', 'antigravity', 'builtin');
+      const authorizedWorktrees = await collectAuthorizedWorktreeRootsAsync(explicitProj);
       const allowedRoots = [
-        ...(explicitProj ? [explicitProj] : []),
-        ...getRegisteredProjectDirs(),
+        ...getAuthorizedProjectDirs(),
+        ...authorizedWorktrees,
         GLOBAL_SKILLS_DIR,
         GLOBAL_AGENTS_DIR,
         builtinRootDir,

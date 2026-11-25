@@ -109,6 +109,7 @@ import { createSettingsHostModule } from './modules/settings-host.mjs';
     refreshProjectsLanguageUi: projects.refreshProjectsLanguageUi,
     ensureSharedModalEscBound: projects.ensureSharedModalEscBound,
     closeProjectsModal: projects.closeProjectsModal,
+    getConversationBranchBadge: projects.getConversationBranchBadge,
 
     invalidateOverviewSnapshotCache: overviewPanel.invalidateOverviewSnapshotCache,
     renderOverviewPanel: overviewPanel.renderOverviewPanel,

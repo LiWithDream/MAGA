@@ -165,11 +165,17 @@ export async function attachTarget(page, endpoint, opts = {}) {
     watchedCascadeId: '',
     lastMetricsSig: '',
     revokeHostAuth() {
+      const wasConfirmed = entry.hostConfirmed;
       entry.hostConfirmed = false;
       entry.trustedContextId = null;
       entry.rpcToken = '';
       entry.rpcSessionId = '';
       entry.injectedBundleHash = '';
+      if (wasConfirmed && entry.type === 'page') {
+        try {
+          runtimeState.onHostTargetClosed?.(entry);
+        } catch {}
+      }
     },
     isAuthorizedBindingCaller(executionContextId) {
       if (!entry.hostConfirmed) return false;
@@ -288,6 +294,11 @@ export async function attachTarget(page, endpoint, opts = {}) {
     if (page.type === 'page' && (resolvedMode === 'dark' || resolvedMode === 'light')) {
       targetThemeModes.set(page.id, resolvedMode);
     }
+    if (page.type === 'page' && entry.hostConfirmed) {
+      try {
+        runtimeState.onHostTargetInjected?.(entry);
+      } catch {}
+    }
   };
 
   entry.checkAndInject = async (force = false) => {
@@ -316,7 +327,7 @@ export async function attachTarget(page, endpoint, opts = {}) {
     if (page.type !== 'page') return;
     const bindParams = (name) =>
       entry.trustedContextId !== null ? { name, executionContextId: entry.trustedContextId } : { name };
-    for (const name of ['__agRequestMetrics', '__agSyncHostThemeMode', '__agProjectRpc']) {
+    for (const name of ['__agRequestMetrics', '__agSyncHostThemeMode', '__agProjectRpc', '__agRemoteTapEvent']) {
       await send('Runtime.addBinding', bindParams(name)).catch(() =>
         send('Runtime.addBinding', { name }).catch(() => {})
       );
@@ -465,6 +476,26 @@ export async function attachTarget(page, endpoint, opts = {}) {
             ).catch(() => {});
           })
           .catch(() => {});
+      } else if (name === '__agRemoteTapEvent' && payload) {
+        let parsed = null;
+        try {
+          parsed = JSON.parse(String(payload));
+        } catch {
+          return;
+        }
+        if (
+          !entry.rpcToken ||
+          !parsed ||
+          typeof parsed !== 'object' ||
+          typeof parsed.token !== 'string' ||
+          parsed.token.length !== entry.rpcToken.length ||
+          !crypto.timingSafeEqual(Buffer.from(parsed.token, 'utf8'), Buffer.from(entry.rpcToken, 'utf8'))
+        ) {
+          return;
+        }
+        try {
+          runtimeState.onRemoteTapEvent?.(parsed, entry);
+        } catch {}
       }
     }
   });
@@ -474,6 +505,11 @@ export async function attachTarget(page, endpoint, opts = {}) {
     if (attachedTargets.get(page.id) === entry) {
       attachedTargets.delete(page.id);
       targetThemeModes.delete(page.id);
+      if (entry.type === 'page') {
+        try {
+          runtimeState.onHostTargetClosed?.(entry);
+        } catch {}
+      }
       if (attachedTargets.size === 0 && typeof runtimeState.wakeMacBootstrap === 'function') {
         runtimeState.wakeMacBootstrap();
       }

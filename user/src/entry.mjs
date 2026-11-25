@@ -15,6 +15,7 @@ import { createCustomizationsModule } from './modules/customizations.mjs';
 import { createProjectsModule } from './modules/projects/index.mjs';
 import { createOverviewPanelModule } from './modules/overview-panel.mjs';
 import { createSettingsHostModule } from './modules/settings-host.mjs';
+import { createRemoteTapModule } from './modules/remote-tap.mjs';
 
 (function () {
   if (typeof window !== 'undefined' && typeof window.__agClaudeUxDispose === 'function') {
@@ -87,6 +88,7 @@ import { createSettingsHostModule } from './modules/settings-host.mjs';
   const projects = createProjectsModule(rt, modelApi);
   const overviewPanel = createOverviewPanelModule(rt, metricsQuota);
   const settingsHost = createSettingsHostModule(rt);
+  const remoteTap = createRemoteTapModule(rt);
 
   Object.assign(hooks, {
     syncCustomizationsEnhancement: customizations.syncCustomizationsEnhancement,
@@ -340,6 +342,7 @@ import { createSettingsHostModule } from './modules/settings-host.mjs';
     projects.dispose();
     overviewPanel.dispose();
     settingsHost.detachSettingsPanel();
+    remoteTap.dispose();
     metricsQuota.dispose();
     stepStream.dispose();
     modelApi.dispose();

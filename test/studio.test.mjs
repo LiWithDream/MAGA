@@ -2034,6 +2034,7 @@ test('Stage 4: daemon, studio-settings & subagent-footer maintain thin orchestra
     'core/daemon/overview-skills.mjs',
     'core/daemon/cdp-bootstrap.mjs',
     'core/daemon/cdp-attach.mjs',
+    'core/daemon/remote-bridge.mjs',
     'core/daemon/sync-loop.mjs',
     'studio/modules/settings/constants.mjs',
     'studio/modules/settings/events.mjs',
@@ -2086,6 +2087,7 @@ test('Stage 5: user/src modular decomposition, zero legacy dead code, and MagaKe
     'user/src/modules/projects/index.mjs',
     'user/src/modules/customizations.mjs',
     'user/src/modules/overview-panel.mjs',
+    'user/src/modules/remote-tap.mjs',
   ];
   assert.equal(existsSync(path.join(REPO, 'user/src/modules/projects.mjs')), false, 'monolithic projects.mjs must be removed');
   for (const rel of expectedUserModules) {

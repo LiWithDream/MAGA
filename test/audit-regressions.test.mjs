@@ -2857,7 +2857,7 @@ test('[Audit-2026-11-21 · Daemon Security & CDP] blocks symlink/case bypasses, 
     spoofEl.window.close();
   }
 
-  /* Bug #32 & Suspicious #19: reload re-binds all 3 bindings; stale socket close does not delete newer entry */
+  /* Bug #32 & Suspicious #19: reload re-binds all 4 bindings; stale socket close does not delete newer entry */
   const realWS = globalThis.WebSocket;
   daemon.rebuildBundleIfNeeded();
   daemon.attachedTargets.clear();
@@ -2921,8 +2921,8 @@ test('[Audit-2026-11-21 · Daemon Security & CDP] blocks symlink/case bypasses, 
     await new Promise((r) => setTimeout(r, 120));
     assert.deepEqual(
       addedBindings.sort(),
-      ['__agProjectRpc', '__agRequestMetrics', '__agSyncHostThemeMode'],
-      'all 3 Runtime bindings are restored after top-level reload'
+      ['__agProjectRpc', '__agRemoteTapEvent', '__agRequestMetrics', '__agSyncHostThemeMode'],
+      'all 4 Runtime bindings are restored after top-level reload'
     );
 
     /* Replace target with a newer socket, then fire delayed close on old socket */

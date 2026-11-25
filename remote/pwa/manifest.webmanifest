@@ -1,0 +1,25 @@
+{
+  "name": "MAGA Remote Control",
+  "short_name": "MAGA Remote",
+  "description": "Zero-invasive remote cockpit for Google Antigravity Desktop 2.0",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#141413",
+  "theme_color": "#141413",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'%3E%3Crect width='192' height='192' rx='44' fill='%23141413'/%3E%3Cpath d='M52 134V58h22l22 40 22-40h22v76h-19V88l-19 34h-12L71 88v46z' fill='%23D97757'/%3E%3C/svg%3E",
+      "sizes": "192x192",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' rx='112' fill='%23141413'/%3E%3Cpath d='M138 358V154h58l58 106 58-106h58v204h-50V236l-50 90h-32l-50-90v122z' fill='%23D97757'/%3E%3C/svg%3E",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

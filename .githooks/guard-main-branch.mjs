@@ -9,6 +9,24 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 export const PROTECTED_BRANCHES = new Set(['main', 'master']);
 const SAFE_CID_RE = /^[A-Za-z0-9_-]{6,128}$/;
 const HOOK_RECORD_THROTTLE_MS = 30_000;
+const MUTATING_GIT_SUBCOMMANDS = new Set([
+  'add',
+  'commit',
+  'checkout',
+  'switch',
+  'merge',
+  'rebase',
+  'cherry-pick',
+  'reset',
+  'stash',
+  'restore',
+  'rm',
+  'mv',
+  'apply',
+  'am',
+  'tag',
+  'pull',
+]);
 
 const FILE_EDIT_TOOLS = new Set([
   'edit_file',
@@ -547,7 +565,22 @@ export function resolveGitContext(dirPath) {
   }
 
   const merging = fs.existsSync(path.join(gitDir, 'MERGE_HEAD'));
-  return { topLevel, gitDir, branch, merging };
+  let isLinkedWorktree = false;
+  try {
+    isLinkedWorktree = fs.lstatSync(path.join(topLevel, '.git')).isFile();
+  } catch {}
+  return { topLevel, gitDir, branch, merging, isLinkedWorktree };
+}
+
+function isPrimaryLocalOnlyPath(absPath, topLevel) {
+  if (!absPath || !topLevel) return false;
+  const realTarget = resolveExistingPrefixRealpath(absPath);
+  const realTop = resolveExistingPrefixRealpath(topLevel);
+  if (isInsideDir(realTarget, path.join(realTop, '.agents'))) return true;
+  return (
+    realTarget === path.join(realTop, 'AGENTS.md') ||
+    realTarget === path.join(realTop, 'docs', 'DEVELOPMENT_HISTORY.md')
+  );
 }
 
 function resolveConversationId(payload) {
@@ -569,6 +602,9 @@ export function recordConversationWorktree(
   try {
     if (!ctx || !ctx.topLevel || !ctx.branch || PROTECTED_BRANCHES.has(ctx.branch)) {
       return { recorded: false, reason: 'not_worktree' };
+    }
+    if (!ctx.isLinkedWorktree) {
+      return { recorded: false, reason: 'not_linked_worktree' };
     }
     const cid = resolveConversationId(payload);
     if (!cid) return { recorded: false, reason: 'missing_cid' };
@@ -676,6 +712,86 @@ function analyzePushArgs(subArgs) {
   return { isForce, hasTagsFlag, refspecs };
 }
 
+function analyzePrimaryBranchSwitch(inv) {
+  const args = Array.isArray(inv.subArgs) ? inv.subArgs : [];
+  const sub = inv.subcommand;
+  const ddIdx = args.indexOf('--');
+  const preDd = ddIdx === -1 ? args : args.slice(0, ddIdx);
+
+  if (sub === 'switch') {
+    const pos = [];
+    for (let i = 0; i < preDd.length; i += 1) {
+      const tok = preDd[i];
+      if (
+        tok === '-c' ||
+        tok === '-C' ||
+        tok === '--create' ||
+        tok === '--force-create' ||
+        tok === '--orphan' ||
+        tok === '--detach' ||
+        tok === '-d' ||
+        tok.startsWith('-c') ||
+        tok.startsWith('-C')
+      ) {
+        return { blocked: true, reason: `creating or detaching branch '${sub} ${tok}' in primary checkout` };
+      }
+      if (tok === '--conflict' || tok === '--track') {
+        i += 1;
+        continue;
+      }
+      if (tok.startsWith('-')) continue;
+      pos.push(tok);
+    }
+    if (pos.length > 0 && !PROTECTED_BRANCHES.has(pos[0])) {
+      return { blocked: true, reason: `switching primary checkout to branch '${pos[0]}'` };
+    }
+    return { blocked: false };
+  }
+
+  // sub === 'checkout'
+  const posBeforeDd = [];
+  for (let i = 0; i < preDd.length; i += 1) {
+    const tok = preDd[i];
+    if (
+      tok === '-b' ||
+      tok === '-B' ||
+      tok === '--orphan' ||
+      tok === '--detach' ||
+      tok === '-d' ||
+      tok.startsWith('-b') ||
+      tok.startsWith('-B') ||
+      tok.startsWith('--orphan=')
+    ) {
+      return { blocked: true, reason: `creating or detaching branch 'checkout ${tok}' in primary checkout` };
+    }
+    if (tok === '--conflict' || tok === '--pathspec-from-file' || tok === '-U' || tok === '--unified') {
+      i += 1;
+      continue;
+    }
+    if (tok.startsWith('-')) continue;
+    posBeforeDd.push(tok);
+  }
+
+  if (ddIdx !== -1) {
+    // `git checkout -- file` or `git checkout <tree-ish> -- file` restores files without switching HEAD
+    if (posBeforeDd.length <= 1) return { blocked: false };
+    return { blocked: true, reason: `unexpected checkout target '${posBeforeDd.join(' ')}' in primary checkout` };
+  }
+
+  if (posBeforeDd.length === 0) return { blocked: false };
+  const first = posBeforeDd[0];
+  if (PROTECTED_BRANCHES.has(first)) return { blocked: false };
+
+  if (posBeforeDd.length === 1) {
+    try {
+      const st = fs.lstatSync(path.resolve(inv.targetDir, first), { throwIfNoEntry: false });
+      if (st && (st.isFile() || st.isSymbolicLink())) return { blocked: false };
+    } catch {}
+  }
+
+  return { blocked: true, reason: `switching primary checkout to '${first}'` };
+}
+
 function evaluateRunCommandDetailed(commandLine, payload) {
   const initialCwd = payload?.cwd || payload?.workspacePaths?.[0] || process.cwd();
   const { invocations, finalDir } = extractGitInvocationsDetailed(commandLine, initialCwd);
@@ -698,7 +814,6 @@ function evaluateRunCommandDetailed(commandLine, payload) {
 
       const ctx = resolveGitContext(inv.targetDir);
       if (!ctx) continue;
-      if (ctx.branch && !PROTECTED_BRANCHES.has(ctx.branch)) lastNonProtectedCtx = ctx;
 
       const targetsProtected =
         refspecs.some((spec) => PROTECTED_REFSPEC_RE.test(spec)) ||
@@ -733,13 +848,48 @@ function evaluateRunCommandDetailed(commandLine, payload) {
           recordCandidateDir: '',
         };
       }
-      if (ctx.branch && !PROTECTED_BRANCHES.has(ctx.branch)) lastNonProtectedCtx = ctx;
+      if (!ctx.isLinkedWorktree && !ctx.merging && inv.env.MAGA_ALLOW_MAIN_COMMIT !== '1') {
+        return {
+          result: {
+            decision: 'deny',
+            reason: `Blocked by MAGA Worktree Policy: primary checkout (${ctx.topLevel}) must stay on clean 'main'. Do not commit feature changes here; create an isolated worktree (\`npm run wt:new -- <type>/<slug>\`).`,
+          },
+          resolvedCtx: null,
+          recordCandidateDir: '',
+        };
+      }
+      if (ctx.isLinkedWorktree && ctx.branch && !PROTECTED_BRANCHES.has(ctx.branch)) {
+        lastNonProtectedCtx = ctx;
+      }
       continue;
     }
 
-    const ctx = resolveGitContext(inv.targetDir);
-    if (ctx && ctx.branch && !PROTECTED_BRANCHES.has(ctx.branch)) {
-      lastNonProtectedCtx = ctx;
+    if (inv.subcommand === 'checkout' || inv.subcommand === 'switch') {
+      const ctx = resolveGitContext(inv.targetDir);
+      if (ctx && !ctx.isLinkedWorktree && inv.env.MAGA_ALLOW_PRIMARY_CHECKOUT !== '1') {
+        const check = analyzePrimaryBranchSwitch(inv);
+        if (check.blocked) {
+          return {
+            result: {
+              decision: 'deny',
+              reason: `Blocked by MAGA Worktree Policy: ${check.reason} is forbidden because primary checkout (${ctx.topLevel}) stays permanently on 'main' as LaunchAgent daemon host. Create an isolated worktree instead: \`npm run wt:new -- <type>/<slug>\`.`,
+            },
+            resolvedCtx: null,
+            recordCandidateDir: '',
+          };
+        }
+      }
+      if (ctx && ctx.isLinkedWorktree && ctx.branch && !PROTECTED_BRANCHES.has(ctx.branch)) {
+        lastNonProtectedCtx = ctx;
+      }
+      continue;
+    }
+
+    if (MUTATING_GIT_SUBCOMMANDS.has(inv.subcommand)) {
+      const ctx = resolveGitContext(inv.targetDir);
+      if (ctx && ctx.isLinkedWorktree && ctx.branch && !PROTECTED_BRANCHES.has(ctx.branch)) {
+        lastNonProtectedCtx = ctx;
+      }
     }
   }
 
@@ -760,13 +910,35 @@ function evaluateHookPayloadDetailed(payload) {
 
   if (eventName === 'SessionStart') {
     const ctx = resolveGitContext(baseCwd);
-    if (ctx && ctx.branch && PROTECTED_BRANCHES.has(ctx.branch)) {
+    if (!ctx) {
+      return { result: {}, resolvedCtx: null, recordCandidateDir: '' };
+    }
+    if (!ctx.isLinkedWorktree) {
+      const msg =
+        ctx.branch && PROTECTED_BRANCHES.has(ctx.branch)
+          ? `[MAGA Worktree Policy] Primary checkout (${ctx.topLevel}) is on protected branch '${ctx.branch}' and doubles as the live LaunchAgent daemon host. Read-only research/review proceeds normally here. Before any code edit, ALWAYS create an isolated sibling worktree (\`npm run wt:new -- <type>/<slug>\`) instead of \`git checkout -b\` or editing here.`
+          : `[MAGA Worktree Policy] Primary checkout (${ctx.topLevel}) is currently drifted onto '${ctx.branch || 'HEAD'}' instead of clean 'main'. Do not edit or commit here; create a sibling worktree (\`npm run wt:new -- <type>/<slug>\`) from 'main' and run tests inside that worktree.`;
       return {
         result: {
           injectSteps: [
             {
               systemMessage: {
-                systemMessage: `[MAGA Git Guardrail] Current workspace is on protected branch '${ctx.branch}'. Never develop features or fix bugs directly on 'main'. Create a branch (\`git checkout -b feat/<slug>\` / \`fix/<slug>\`) or an isolated sibling worktree (\`git worktree add -b <type>/<slug> ../MAGA-wt/<slug> main\`) before editing files or committing. Direct repo edits and commits on 'main' are blocked by PreToolUse hook.`,
+                systemMessage: msg,
+              },
+            },
+          ],
+        },
+        resolvedCtx: null,
+        recordCandidateDir: '',
+      };
+    }
+    if (ctx.branch && PROTECTED_BRANCHES.has(ctx.branch)) {
+      return {
+        result: {
+          injectSteps: [
+            {
+              systemMessage: {
+                systemMessage: `[MAGA Git Guardrail] Linked worktree (${ctx.topLevel}) is on protected branch '${ctx.branch}'. Switch to a feature/fix branch inside this worktree before editing or committing.`,
               },
             },
           ],
@@ -807,11 +979,28 @@ function evaluateHookPayloadDetailed(payload) {
       return { result: allowResult, resolvedCtx: null, recordCandidateDir: '' };
     }
 
+    if (!ctx.isLinkedWorktree) {
+      if (isPrimaryLocalOnlyPath(absPath, ctx.topLevel)) {
+        return { result: allowResult, resolvedCtx: null, recordCandidateDir: '' };
+      }
+      const onProtected = Boolean(ctx.branch && PROTECTED_BRANCHES.has(ctx.branch));
+      return {
+        result: {
+          decision: 'deny',
+          reason: onProtected
+            ? `Blocked by MAGA Worktree Policy: cannot edit repository files in primary checkout on protected branch '${ctx.branch}' (${ctx.topLevel}). Create an isolated sibling worktree first: \`npm run wt:new -- <type>/<slug>\` (or \`git worktree add -b <type>/<slug> ../MAGA-wt/<slug> main\`).`
+            : `Blocked by MAGA Worktree Policy: primary checkout (${ctx.topLevel}, currently on '${ctx.branch || 'HEAD'}') is reserved for clean 'main' & LaunchAgent daemon hosting. Isolate edits in a sibling worktree: \`npm run wt:new -- <type>/<slug>\`.`,
+        },
+        resolvedCtx: null,
+        recordCandidateDir: '',
+      };
+    }
+
     if (ctx.branch && PROTECTED_BRANCHES.has(ctx.branch)) {
       return {
         result: {
           decision: 'deny',
-          reason: `Blocked by MAGA Git Guardrail: cannot edit repository files directly on protected branch '${ctx.branch}' (${ctx.topLevel}). Switch to a feature/fix branch (\`git checkout -b feat/<slug>\` or \`fix/<slug>\`) or create an isolated sibling worktree (\`git worktree add -b <type>/<slug> ../MAGA-wt/<slug> main\`) first.`,
+          reason: `Blocked by MAGA Git Guardrail: cannot edit repository files directly on protected branch '${ctx.branch}' (${ctx.topLevel}). Switch to a feature/fix branch inside this worktree first.`,
         },
         resolvedCtx: null,
         recordCandidateDir: '',

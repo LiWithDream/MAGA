@@ -404,8 +404,8 @@ test('worktrees.mjs: security guards, symlinked -wt block, node_modules clean re
   }
 });
 
-test('deploy-meta provenance & standalone studio/wt-cli.mjs lifecycle work end-to-end', async () => {
-  const { readDeployMeta, writeDeployMeta } = await import(
+test('deploy-meta provenance, single-desktop deploy guard & standalone studio/wt-cli.mjs lifecycle work end-to-end', async () => {
+  const { evaluateDeployGuard, readDeployMeta, writeDeployMeta } = await import(
     pathToFileURL(path.join(REPO, 'studio', 'deploy-meta.mjs')).href
   );
 
@@ -416,15 +416,21 @@ test('deploy-meta provenance & standalone studio/wt-cli.mjs lifecycle work end-t
   const wtCliPath = path.join(REPO, 'studio', 'wt-cli.mjs');
 
   try {
-    // 1. writeDeployMeta on main has nonMainWarning === null
+    // 1. Clean primary checkout on main passes deploy guard with zero warnings
+    const guardMain = evaluateDeployGuard(mainRepo, { metaPath });
+    assert.equal(guardMain.allowed, true);
+    assert.equal(guardMain.preview, false);
+    assert.deepEqual(guardMain.warnings, []);
+
     const mainMeta = writeDeployMeta(mainRepo, metaPath);
     assert.equal(mainMeta.branch, 'main');
+    assert.equal(mainMeta.isLinkedWorktree, false);
     assert.equal(mainMeta.dirty, false);
     const readMain = readDeployMeta(metaPath);
     assert.equal(readMain.present, true);
     assert.equal(readMain.nonMainWarning, null);
 
-    // 2. wt-cli.mjs new -> list -> meta non-main warning -> wt-cli.mjs clean
+    // 2. wt-cli.mjs new -> list -> deploy guard blocks linked worktree unless allowNonMain -> preview warns on split-brain & clobber -> wt-cli.mjs clean
     const createdOut = execFileSync(
       process.execPath,
       [wtCliPath, 'new', 'fix/cli-smoke', '--repo', mainRepo],
@@ -434,11 +440,32 @@ test('deploy-meta provenance & standalone studio/wt-cli.mjs lifecycle work end-t
     assert.equal(createdJson.ok, true);
     assert.equal(createdJson.branch, 'fix/cli-smoke');
 
-    const wtMeta = writeDeployMeta(createdJson.worktreePath, metaPath);
+    const blockedWtGuard = evaluateDeployGuard(createdJson.worktreePath, { metaPath });
+    assert.equal(blockedWtGuard.allowed, false);
+    assert.match(blockedWtGuard.reason || '', /LaunchAgent daemon|split-brain/i);
+    assert.match(blockedWtGuard.reason || '', /Currently live bundle was deployed from 'main'/);
+    assert.match(blockedWtGuard.reason || '', /--preview/);
+
+    // Explicit preview flag permits deploy with daemon split-brain warning & previous-live notice
+    const previewGuard = evaluateDeployGuard(createdJson.worktreePath, { allowNonMain: true, metaPath });
+    assert.equal(previewGuard.allowed, true);
+    assert.equal(previewGuard.preview, true);
+    assert.equal(previewGuard.warnings.length, 2);
+
+    const wtMeta = writeDeployMeta(createdJson.worktreePath, metaPath, { preview: true });
     assert.equal(wtMeta.branch, 'fix/cli-smoke');
+    assert.equal(wtMeta.isLinkedWorktree, true);
+    assert.equal(wtMeta.preview, true);
     const readWt = readDeployMeta(metaPath);
     assert.equal(readWt.present, true);
     assert.match(readWt.nonMainWarning || '', /fix\/cli-smoke/);
+
+    // Drifted primary checkout on non-main branch also blocked by default
+    gitSync(mainRepo, ['checkout', '-b', 'feat/drifted']);
+    const driftedGuard = evaluateDeployGuard(mainRepo, { metaPath });
+    assert.equal(driftedGuard.allowed, false);
+    assert.match(driftedGuard.reason || '', /feat\/drifted/);
+    gitSync(mainRepo, ['checkout', 'main']);
 
     const listOut = execFileSync(process.execPath, [wtCliPath, 'list', '--repo', mainRepo], { encoding: 'utf8' });
     const listJson = JSON.parse(listOut);

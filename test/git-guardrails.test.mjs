@@ -78,16 +78,27 @@ test('extractGitInvocations tracks cd, -C, and env prefixes', () => {
   assert.equal(PROTECTED_BRANCHES.has('main'), true);
 });
 
-test('SessionStart injects reminder on main and returns {} on feat branch', () => {
+test('SessionStart enforces Worktree-Only policy on primary checkout and stays quiet inside linked worktrees', () => {
   const repo = createTempRepo('main');
+  const wtParent = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'maga-wt-ss-')));
+  const wtDir = path.join(wtParent, 'feat-ss');
   try {
     const mainRes = evaluateHookPayload({ hookEventName: 'SessionStart', cwd: repo });
     assert.ok(Array.isArray(mainRes.injectSteps) && mainRes.injectSteps.length === 1);
     assert.match(mainRes.injectSteps[0].systemMessage.systemMessage, /protected branch 'main'/);
+    assert.match(mainRes.injectSteps[0].systemMessage.systemMessage, /wt:new/);
 
+    // Primary checkout drifted onto feat/demo STILL injects Worktree Policy warning
     git(repo, ['checkout', '-b', 'feat/demo']);
-    const featRes = evaluateHookPayload({ hookEventName: 'SessionStart', cwd: repo });
-    assert.deepEqual(featRes, {});
+    const driftedRes = evaluateHookPayload({ hookEventName: 'SessionStart', cwd: repo });
+    assert.ok(Array.isArray(driftedRes.injectSteps) && driftedRes.injectSteps.length === 1);
+    assert.match(driftedRes.injectSteps[0].systemMessage.systemMessage, /drifted onto 'feat\/demo'/);
+
+    // Linked worktree on a feature branch returns {}
+    git(repo, ['checkout', 'main']);
+    git(repo, ['worktree', 'add', '-b', 'feat/ss', wtDir, 'main']);
+    const wtRes = evaluateHookPayload({ hookEventName: 'SessionStart', cwd: wtDir });
+    assert.deepEqual(wtRes, {});
 
     const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'maga-nongit-')));
     try {
@@ -96,18 +107,20 @@ test('SessionStart injects reminder on main and returns {} on feat branch', () =
       fs.rmSync(outside, { recursive: true, force: true });
     }
   } finally {
+    gitResult(repo, ['worktree', 'remove', '--force', wtDir]);
+    fs.rmSync(wtParent, { recursive: true, force: true });
     fs.rmSync(repo, { recursive: true, force: true });
   }
 });
 
-test('PreToolUse file edits are blocked on main and allowed in branches, worktrees, artifacts, and merges', () => {
+test('PreToolUse file edits are blocked in primary checkout (even on feat branch) and allowed in linked worktrees, local-only rules, artifacts, and merges', () => {
   const repo = createTempRepo('main');
   const wtParent = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'maga-wt-')));
   const wtDir = path.join(wtParent, 'feat-wt');
   const artifactDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'maga-artifacts-')));
 
   try {
-    // 1. Denied on main for edit_file & write_file (including non-existent nested subdir)
+    // 1. Denied in primary checkout on main for edit_file & write_file (including non-existent nested subdir)
     const editMain = evaluateHookPayload({
       hookEventName: 'PreToolUse',
       cwd: repo,
@@ -125,7 +138,7 @@ test('PreToolUse file edits are blocked on main and allowed in branches, worktre
     });
     assert.equal(writeNestedMain.decision, 'deny');
 
-    // 2. Allowed in artifactDirectoryPath even when cwd is main
+    // 2. Allowed in artifactDirectoryPath and local-only excluded files (AGENTS.md, .agents/**) on primary checkout
     const artifactEdit = evaluateHookPayload({
       hookEventName: 'PreToolUse',
       cwd: repo,
@@ -133,6 +146,22 @@ test('PreToolUse file edits are blocked on main and allowed in branches, worktre
       toolCall: { name: 'write_file', args: { Path: path.join(artifactDir, 'notes', 'plan.md') } },
     });
     assert.deepEqual(artifactEdit, { decision: 'allow' });
+
+    for (const localPath of [
+      path.join(repo, 'AGENTS.md'),
+      path.join(repo, 'docs', 'DEVELOPMENT_HISTORY.md'),
+      path.join(repo, '.agents', 'hooks.json'),
+    ]) {
+      assert.deepEqual(
+        evaluateHookPayload({
+          hookEventName: 'PreToolUse',
+          cwd: repo,
+          toolCall: { name: 'edit_file', args: { Path: localPath } },
+        }),
+        { decision: 'allow' },
+        `expected allow for local-only path: ${localPath}`
+      );
+    }
 
     // 3. Allowed inside sibling worktree on feat/wt even when cwd is main
     git(repo, ['worktree', 'add', '-b', 'feat/wt', wtDir, 'main']);
@@ -144,20 +173,22 @@ test('PreToolUse file edits are blocked on main and allowed in branches, worktre
     });
     assert.deepEqual(wtEdit, { decision: 'allow' });
 
-    // 4. Allowed when repo itself is on feat/demo
+    // 4. Primary checkout STILL blocks repo edits even if drifted onto feat/demo (Worktree-Only Policy)
     git(repo, ['checkout', '-b', 'feat/demo']);
-    const featEdit = evaluateHookPayload({
+    const featPrimaryEdit = evaluateHookPayload({
       hookEventName: 'PreToolUse',
       cwd: repo,
       toolCall: { name: 'edit_file', args: { Path: path.join(repo, 'README.md') } },
     });
-    assert.deepEqual(featEdit, { decision: 'allow' });
+    assert.equal(featPrimaryEdit.decision, 'deny');
+    assert.match(featPrimaryEdit.reason, /Worktree Policy/);
 
     // 5. Allowed on main when MERGE_HEAD exists (merge conflict resolution)
     git(repo, ['checkout', 'main']);
     const ctx = resolveGitContext(repo);
     assert.equal(ctx.branch, 'main');
     assert.equal(ctx.merging, false);
+    assert.equal(ctx.isLinkedWorktree, false);
     fs.writeFileSync(path.join(ctx.gitDir, 'MERGE_HEAD'), `${git(repo, ['rev-parse', 'HEAD'])}\n`, 'utf8');
     try {
       const mergeEdit = evaluateHookPayload({
@@ -230,8 +261,34 @@ test('PreToolUse run_command enforces commit, force-push, and --tags guardrails'
       fs.rmSync(path.join(ctx.gitDir, 'MERGE_HEAD'), { force: true });
     }
 
-    // Safe non-commit commands on main allowed
-    for (const cmd of ['git checkout -b fix/x', 'git merge --no-ff feat/x', 'npm test', 'echo "git commit"']) {
+    // Denied branch creation / switching in primary checkout (Worktree-Only Policy)
+    for (const cmd of [
+      'git checkout -b fix/x',
+      'git switch -c feat/x',
+      'git checkout feat/cmd',
+      'git switch feat/cmd',
+    ]) {
+      const res = evaluateHookPayload({
+        hookEventName: 'PreToolUse',
+        cwd: repo,
+        toolCall: { name: 'run_command', args: { CommandLine: cmd } },
+      });
+      assert.equal(res.decision, 'deny', `expected primary checkout branch-switch deny for: ${cmd}`);
+    }
+
+    // Safe non-commit commands and explicit main/restore/worktree commands on primary checkout allowed
+    for (const cmd of [
+      'git checkout main',
+      'git switch main',
+      'git checkout -- README.md',
+      'git checkout HEAD -- README.md',
+      `git -C ${wtDir} checkout -b fix/inside-wt`,
+      'git worktree add -b fix/x ../wt-x main',
+      'MAGA_ALLOW_PRIMARY_CHECKOUT=1 git checkout -b temp/hotfix',
+      'git merge --no-ff feat/x',
+      'npm test',
+      'echo "git commit"',
+    ]) {
       assert.deepEqual(
         evaluateHookPayload({
           hookEventName: 'PreToolUse',
@@ -279,6 +336,8 @@ test('PreToolUse run_command enforces commit, force-push, and --tags guardrails'
 
 test('CLI subprocess reads stdin JSON and outputs expected decision JSON', () => {
   const repo = createTempRepo('main');
+  const wtParent = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'maga-wt-sub-')));
+  const wtDir = path.join(wtParent, 'feat-subproc');
   try {
     const denyOut = execFileSync(process.execPath, [HOOK_SCRIPT], {
       input: JSON.stringify({
@@ -301,8 +360,9 @@ test('CLI subprocess reads stdin JSON and outputs expected decision JSON', () =>
     });
     assert.deepEqual(JSON.parse(runAllowOut), { decision: 'allow' });
 
-    git(repo, ['checkout', '-b', 'feat/subproc']);
-    const allowOut = execFileSync(process.execPath, [HOOK_SCRIPT], {
+    // Even if primary checkout drifted onto a feature branch, edits inside primary checkout are denied
+    git(repo, ['checkout', '-b', 'feat/subproc-primary']);
+    const primaryFeatDeny = execFileSync(process.execPath, [HOOK_SCRIPT], {
       input: JSON.stringify({
         hookEventName: 'PreToolUse',
         cwd: repo,
@@ -310,8 +370,23 @@ test('CLI subprocess reads stdin JSON and outputs expected decision JSON', () =>
       }),
       encoding: 'utf8',
     });
+    assert.equal(JSON.parse(primaryFeatDeny).decision, 'deny');
+
+    // Inside linked worktree, edit_file is allowed
+    git(repo, ['checkout', 'main']);
+    git(repo, ['worktree', 'add', '-b', 'feat/subproc-wt', wtDir, 'main']);
+    const allowOut = execFileSync(process.execPath, [HOOK_SCRIPT], {
+      input: JSON.stringify({
+        hookEventName: 'PreToolUse',
+        cwd: repo,
+        toolCall: { name: 'edit_file', args: { Path: path.join(wtDir, 'README.md') } },
+      }),
+      encoding: 'utf8',
+    });
     assert.deepEqual(JSON.parse(allowOut), { decision: 'allow' });
   } finally {
+    gitResult(repo, ['worktree', 'remove', '--force', wtDir]);
+    fs.rmSync(wtParent, { recursive: true, force: true });
     fs.rmSync(repo, { recursive: true, force: true });
   }
 });
@@ -510,10 +585,37 @@ test('PreToolUse hook expands $VAR/${VAR} safely across standalone assignments, 
     assert.equal(recFallback.recorded, true);
     assert.equal(recFallback.record.cid, cidB);
 
-    // Skips protected branches and missing/invalid cid
+    // Skips protected branches, drifted primary checkout (non-linked), and missing/invalid cid
     const mainCtx = resolveGitContext(mainRepo);
     assert.equal(recordConversationWorktree({ conversationId: cidA }, mainCtx, { stateDir }).reason, 'not_worktree');
+    git(mainRepo, ['checkout', '-b', 'feat/drifted-primary']);
+    const driftedPrimaryCtx = resolveGitContext(mainRepo);
+    assert.equal(driftedPrimaryCtx.isLinkedWorktree, false);
+    assert.equal(
+      recordConversationWorktree({ conversationId: cidA }, driftedPrimaryCtx, { stateDir }).reason,
+      'not_linked_worktree'
+    );
+    git(mainRepo, ['checkout', 'main']);
     assert.equal(recordConversationWorktree({ conversationId: '../bad' }, wtCtx, { stateDir }).reason, 'missing_cid');
+
+    // Read-only `git -C <wtDir> status` executed from primary checkout does NOT hijack or create attribution
+    const roCid = 'readonly-inspect-55667788';
+    const roOut = execFileSync(process.execPath, [HOOK_SCRIPT], {
+      input: JSON.stringify({
+        hookEventName: 'PreToolUse',
+        conversationId: roCid,
+        cwd: mainRepo,
+        toolCall: { name: 'run_command', args: { CommandLine: `git -C "${wtDir}" status` } },
+      }),
+      env: { ...process.env, HOME: fakeHome },
+      encoding: 'utf8',
+    });
+    assert.deepEqual(JSON.parse(roOut), { decision: 'allow' });
+    assert.equal(
+      fs.existsSync(path.join(stateDir, 'conv-worktrees', `${roCid}.json`)),
+      false,
+      'read-only git -C inspection from primary checkout does not hijack conv-worktrees attribution'
+    );
 
     // 7. Subprocess execution records worktree when running allowed command inside worktree
     const subCid = 'subproc-conv-99887766';

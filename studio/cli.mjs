@@ -10,7 +10,7 @@
  *   node studio/cli.mjs rollback        Strip studio blocks and restore stock defaults
  */
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import {
@@ -136,12 +136,31 @@ async function runDoctor() {
 
   const plistText = existsSync(DAEMON_PLIST) ? readFileSync(DAEMON_PLIST, 'utf8') : '';
   const pointsToStudio = plistText.includes(path.join(REPO_ROOT, 'core', 'daemon.mjs'));
+  const plistDaemonMatch = plistText.match(/<string>([^<]*[\\/]core[\\/]daemon\.mjs)<\/string>/);
+  const daemonRepoDir = plistDaemonMatch ? path.dirname(path.dirname(plistDaemonMatch[1].trim())) : null;
   const hasJsMarker = existsSync(TARGET_CUSTOM_JS) && readFileSync(TARGET_CUSTOM_JS, 'utf8').includes(JS_BEGIN);
   const hasCssMarker = existsSync(TARGET_CUSTOM_CSS) && readFileSync(TARGET_CUSTOM_CSS, 'utf8').includes(CSS_BEGIN);
   const agyCfg = readJsonSafe(AGY_CONFIG_JSON);
   const hasFastIo = existsSync(AGENTS_MD) && readFileSync(AGENTS_MD, 'utf8').includes(RULE_BEGIN);
   const usage = await collectUsageStatsAsync({ force: true });
   const deployMeta = readDeployMeta();
+
+  let daemonAlignedWithDeploy = true;
+  if (daemonRepoDir && deployMeta.present && deployMeta.meta?.worktreePath) {
+    try {
+      const a = realpathSync(deployMeta.meta.worktreePath);
+      const b = realpathSync(daemonRepoDir);
+      daemonAlignedWithDeploy = process.platform === 'darwin' || process.platform === 'win32'
+        ? a.toLowerCase() === b.toLowerCase()
+        : a === b;
+    } catch {
+      daemonAlignedWithDeploy = deployMeta.meta.worktreePath === daemonRepoDir;
+    }
+  }
+  const daemonSplitBrainWarning =
+    !daemonAlignedWithDeploy && deployMeta.meta
+      ? `UI/daemon split-brain: live bundle deployed from '${deployMeta.meta.branch || 'unknown'}' (${deployMeta.meta.worktreePath}), while LaunchAgent daemon runs core/daemon.mjs from '${daemonRepoDir}'.`
+      : null;
 
   return {
     ok: Boolean(
@@ -152,6 +171,9 @@ async function runDoctor() {
       usage?.ok
     ),
     repoRoot: REPO_ROOT,
+    daemonRepoDir,
+    daemonAlignedWithDeploy,
+    ...(daemonSplitBrainWarning ? { daemonSplitBrainWarning } : {}),
     deployedFrom: deployMeta.meta,
     ...(deployMeta.nonMainWarning ? { deployedFromWarning: deployMeta.nonMainWarning } : {}),
     daemonPointsToStudio: pointsToStudio,
@@ -198,16 +220,20 @@ function collectProxyDiagnostics() {
   return { shellProxyEnvKeys, systemProxy, hint };
 }
 
-const [cmd = 'deploy'] = process.argv.slice(2);
+const [cmd = 'deploy', ...cliArgs] = process.argv.slice(2);
+const allowNonMainDeploy =
+  cliArgs.includes('--preview') ||
+  cliArgs.includes('--force') ||
+  process.env.MAGA_DEPLOY_ALLOW_NON_MAIN === '1';
 
 try {
   if (cmd === 'install') {
     await runAntiClaudeInstall();
-    const deployRes = await deployStudio();
+    const deployRes = await deployStudio({ allowNonMain: allowNonMainDeploy });
     const rulesRes = syncFastIoRules();
     console.log(JSON.stringify({ ok: true, command: 'install', deploy: deployRes, rules: rulesRes }, null, 2));
   } else if (cmd === 'deploy') {
-    const res = await deployStudio();
+    const res = await deployStudio({ allowNonMain: allowNonMainDeploy });
     await applyDefaultOrchestratorModelPreference();
     console.log(JSON.stringify(res, null, 2));
   } else if (cmd === 'sync-rules') {

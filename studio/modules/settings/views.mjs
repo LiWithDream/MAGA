@@ -28,6 +28,8 @@ export function getViewMeta(view, L) {
       return { title: L('按家族默认思考档位', 'Default Tier by Family'), parent: L('模型与思考', 'Models') };
     case 'models-hidden':
       return { title: L('隐藏不常用模型', 'Hidden Models'), parent: L('模型与思考', 'Models') };
+    case 'models-opus-gate':
+      return { title: L('Opus 协同把关', 'Opus Gate'), parent: L('模型与思考', 'Models') };
     case 'models-theme':
       return { title: L('Effort Bar 与主题皮肤', 'Effort Bar & Themes'), parent: L('模型与思考', 'Models') };
     case 'stream':
@@ -192,6 +194,13 @@ export function renderL2Models(p, catalog, { studioPrefs, state, L, renderCapsul
   const hiddenSum = p.customizeModelList
     ? L(`隐藏 ${p.hiddenModels.length} 项`, `${p.hiddenModels.length} hidden`)
     : L('全部显示', 'All shown');
+  const opusModeLbl =
+    p.opusGateMode === 'auto'
+      ? L('受控自动', 'Auto')
+      : p.opusGateMode === 'off'
+        ? L('关闭', 'Off')
+        : L('半自动', 'Semi-auto');
+  const opusSum = p.opusGateMode === 'off' ? opusModeLbl : `${opusModeLbl} · 5h≥${p.opusGateMinQuota5hPct ?? 20}%`;
 
   const capsuleTabHtml = `
       ${renderSwitchRow('showEffortBar', 'studio', L('显示思考强度条 (Effort Bar)', 'Show Effort Slider Bar'), L('打开模型菜单时显示顶部连续思考强度滑块与 Orchestrator 开关', 'Displays the interactive effort slider & Orchestrator toggle'), p.showEffortBar)}
@@ -345,6 +354,12 @@ export function renderL2Models(p, catalog, { studioPrefs, state, L, renderCapsul
           L('动态勾选账号模型即可在底部选择器中隐藏', 'Hide rarely used models from the bottom picker'),
           hiddenSum
         )}
+        ${renderDrillRow(
+          'models-opus-gate',
+          L('Opus 协同把关 (Ultra)', 'Opus Gate (Ultra)'),
+          L('在方案定型、高风险改动、连续报错与收尾节点按需调度 Claude Opus，支持双池配额熔断', 'Quota-guarded Claude Opus checkpoints via /swarm or standalone handoff'),
+          opusSum
+        )}
       </div>
 
       <div class="agy-ms-sec-hdr">${esc(L('Orchestrator 执行器（重启持久保留）', 'Orchestrator Executor (Persistent)'))}</div>
@@ -434,6 +449,94 @@ export function renderL3HiddenModels(p, catalog, { L }) {
           <button type="button" class="agy-ms-link-btn" data-ms-action="show-all-models">${esc(L('全部显示', 'Show All'))}</button>
         </div>
         ${listHtml}
+      </div>`;
+}
+
+export function renderL3OpusGate(p, { L }) {
+  const cp = p.opusGateCheckpoints || { plan: true, risk: true, debug: true, stop: true };
+  return `
+      <div class="agy-ms-sec-hdr">${esc(L('协同策略', 'Orchestration Policy'))}</div>
+      <div class="agy-ms-card">
+        ${renderSegRow(
+          'opusGateMode',
+          'studio',
+          L('工作模式', 'Gate Mode'),
+          L('半自动仅在命中关键节点时于底栏温和提示；受控自动在配额健康时通过 /swarm 直接唤起 Opus', 'Semi-auto proposes in dock; Auto triggers /swarm Opus within quota limits'),
+          [
+            ['off', L('关闭', 'Off')],
+            ['semi', L('半自动', 'Semi-auto')],
+            ['auto', L('受控自动', 'Auto')],
+          ],
+          p.opusGateMode || 'semi'
+        )}
+        ${renderSegRow(
+          'opusGatePreferredTier',
+          'studio',
+          L('首选 Opus 档位', 'Preferred Tier'),
+          L('配额逼近熔断阈值时自动从 High 降级为 Medium', 'Auto-downgrades High → Medium when quota nears floor'),
+          [
+            ['high', 'Opus High'],
+            ['medium', 'Opus Med'],
+          ],
+          p.opusGatePreferredTier || 'high'
+        )}
+      </div>
+
+      <div class="agy-ms-sec-hdr">${esc(L('关键把关节点', 'Checkpoint Triggers'))}</div>
+      <div class="agy-ms-card">
+        ${renderSwitchRow('plan', 'opus-cp', L('方案定型门禁', 'Plan Gate'), L('复杂改造前由 Opus 评审架构与边界', 'Review architecture & invariants before large edits'), cp.plan !== false)}
+        ${renderSwitchRow('risk', 'opus-cp', L('高风险改动审计', 'Risk Diff Gate'), L('触及核心调度器、Daemon、构建或安全路径时审计', 'Audit edits touching kernel, daemon, build, or security paths'), cp.risk !== false)}
+        ${renderSwitchRow('debug', 'opus-cp', L('连续报错升级排障', 'Debug Escalation'), L('命令连续失败 2 次以上时调度 Opus 定位根因', 'Escalate to Opus after >=2 consecutive command errors'), cp.debug !== false)}
+        ${renderSwitchRow('stop', 'opus-cp', L('收尾 / 发布前终审', 'Pre-Stop Final Audit'), L('改动规模较大且准备结束前做只读 P0/P1/P2 终审', 'Read-only final audit on substantial diffs before stopping'), cp.stop !== false)}
+      </div>
+
+      <div class="agy-ms-sec-hdr">${esc(L('双池配额熔断与限流', 'Quota Circuit Breaker'))}</div>
+      <div class="agy-ms-card">
+        ${renderSegRow(
+          'opusGateMinQuota5hPct',
+          'studio-num',
+          L('Claude 5h 熔断水位', 'Claude 5h Floor'),
+          L('低于此剩余百分比时暂停自动拉起，仅保留手动入口', 'Pause auto-triggers below this 5h remaining %'),
+          [
+            ['10', '10%'],
+            ['20', '20%'],
+            ['30', '30%'],
+            ['40', '40%'],
+          ],
+          String(p.opusGateMinQuota5hPct ?? 20)
+        )}
+        ${renderSegRow(
+          'opusGateMinQuotaWeeklyPct',
+          'studio-num',
+          L('Claude 周配额熔断水位', 'Claude Weekly Floor'),
+          L('低于此周剩余百分比时暂停自动拉起', 'Pause auto-triggers below this weekly remaining %'),
+          [
+            ['10', '10%'],
+            ['15', '15%'],
+            ['25', '25%'],
+          ],
+          String(p.opusGateMinQuotaWeeklyPct ?? 15)
+        )}
+        ${renderSegRow(
+          'opusGateMaxAutoPerSession',
+          'studio-num',
+          L('单会话自动把关上限', 'Max Auto Calls / Session'),
+          L('防止自动把关重复循环消耗配额', 'Caps automatic Opus checkpoints per conversation'),
+          [
+            ['1', '1'],
+            ['2', '2'],
+            ['3', '3'],
+          ],
+          String(p.opusGateMaxAutoPerSession ?? 2)
+        )}
+      </div>
+
+      <div class="agy-ms-sec-hdr">${esc(L('原生插件与手动触发', 'Native Plugin & Manual Trigger'))}</div>
+      <div class="agy-ms-card">
+        <div class="agy-ms-tools">
+          <button type="button" class="agy-ms-btn" data-ms-action="sync-opus-plugin">${esc(L('同步原生插件', 'Sync Native Plugin'))}</button>
+          <button type="button" class="agy-ms-btn" data-ms-action="trigger-opus-gate">${esc(L('呼出把关菜单', 'Open Gate Menu'))}</button>
+        </div>
       </div>`;
 }
 

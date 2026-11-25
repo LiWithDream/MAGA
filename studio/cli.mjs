@@ -26,6 +26,8 @@ import {
   stripStudioBlocksOnly,
 } from './build.mjs';
 import { collectUsageStatsAsync } from './daemon/usage-service.mjs';
+import { isOpusGatePluginInstalled, syncOpusGatePlugin } from './daemon/opus-gate-service.mjs';
+import { QUOTA_STATE_FILE } from '../core/daemon/env.mjs';
 
 const HOME = homedir();
 const AGENTS_MD = path.join(HOME, '.gemini', 'AGENTS.md');
@@ -156,6 +158,8 @@ async function runDoctor() {
     verboseConversationSteps: agyCfg?.userSettings?.verboseConversationSteps ?? null,
     orchestratorModel: agyCfg?.userSettings?.orchestratorModel ?? null,
     fastIoRuleInstalled: hasFastIo,
+    opusGatePluginInstalled: isOpusGatePluginInstalled(),
+    opusGateQuotaStatePresent: existsSync(QUOTA_STATE_FILE),
     proxyDiagnostics: collectProxyDiagnostics(),
     usageSummary: {
       daysCount: usage.days.length,
@@ -201,19 +205,24 @@ try {
     await runAntiClaudeInstall();
     const deployRes = await deployStudio();
     const rulesRes = syncFastIoRules();
-    console.log(JSON.stringify({ ok: true, command: 'install', deploy: deployRes, rules: rulesRes }, null, 2));
+    const pluginRes = syncOpusGatePlugin();
+    console.log(JSON.stringify({ ok: true, command: 'install', deploy: deployRes, rules: rulesRes, opusGatePlugin: pluginRes }, null, 2));
   } else if (cmd === 'deploy') {
     const res = await deployStudio();
     await applyDefaultOrchestratorModelPreference();
     console.log(JSON.stringify(res, null, 2));
   } else if (cmd === 'sync-rules') {
-    console.log(JSON.stringify(syncFastIoRules(), null, 2));
+    const rulesRes = syncFastIoRules();
+    const pluginRes = syncOpusGatePlugin();
+    console.log(JSON.stringify({ ...rulesRes, opusGatePlugin: pluginRes }, null, 2));
   } else if (cmd === 'doctor') {
     const report = await runDoctor();
     console.log(JSON.stringify(report, null, 2));
     process.exit(report.ok ? 0 : 1);
   } else if (cmd === 'rollback') {
-    console.log(JSON.stringify(rollbackStudio(), null, 2));
+    const rollbackRes = rollbackStudio();
+    const pluginRes = syncOpusGatePlugin({ remove: true });
+    console.log(JSON.stringify({ ...rollbackRes, opusGatePlugin: pluginRes }, null, 2));
   } else {
     console.error(`Unknown command: ${cmd}\nUse: install | deploy | sync-rules | doctor | rollback`);
     process.exit(1);

@@ -11,6 +11,8 @@ export const OWN_HOST_IDS = new Set([
   'agy-main-subagent-pill',
   'agy-subagent-menu',
   'agy-resume-pill',
+  'agy-opus-gate-pill',
+  'agy-opus-gate-menu',
   'agy-ov-usage-card',
   'agy-pd-usage-slot',
   'agy-pd-usage-card',

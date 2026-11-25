@@ -35,6 +35,12 @@ export function createStudioPrefsRuntime({ initialPrefs, defaultPrefs, effortEff
     overviewUsageEnabled: true,
     overviewUsageDefaultPeriod: 'day',
     subagentFooterEnabled: true,
+    opusGateMode: 'semi',
+    opusGatePreferredTier: 'high',
+    opusGateMinQuota5hPct: 20,
+    opusGateMinQuotaWeeklyPct: 15,
+    opusGateMaxAutoPerSession: 2,
+    opusGateCheckpoints: { plan: true, risk: true, debug: true, stop: true },
     motionLevel: 'full',
     effortMotion: 'full',
   };
@@ -50,6 +56,8 @@ export function createStudioPrefsRuntime({ initialPrefs, defaultPrefs, effortEff
     orchestrator3dStyle: ['chamber', 'helix', 'orbital', 'c-matrix', 'c-louver', 'c-spark', 'nebula', 'beam', 'orb'],
     orchestratorIcon: ['prism', 'gravity', 'semicircle', 'none'],
     overviewUsageDefaultPeriod: ['day', 'week', 'month'],
+    opusGateMode: ['off', 'semi', 'auto'],
+    opusGatePreferredTier: ['high', 'medium'],
     motionLevel: ['full', 'reduced', 'off'],
     effortMotion: ['fast', 'full'],
   };
@@ -101,6 +109,23 @@ export function createStudioPrefsRuntime({ initialPrefs, defaultPrefs, effortEff
     } catch {
       return v;
     }
+  }
+
+  function clampInt(val, min, max, fallback) {
+    const n = Number(val);
+    if (!Number.isFinite(n)) return fallback;
+    return Math.max(min, Math.min(max, Math.round(n)));
+  }
+
+  function sanitizeOpusCheckpoints(raw) {
+    const def = DEFAULTS.opusGateCheckpoints || { plan: true, risk: true, debug: true, stop: true };
+    const src = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+    return {
+      plan: typeof src.plan === 'boolean' ? src.plan : def.plan !== false,
+      risk: typeof src.risk === 'boolean' ? src.risk : def.risk !== false,
+      debug: typeof src.debug === 'boolean' ? src.debug : def.debug !== false,
+      stop: typeof src.stop === 'boolean' ? src.stop : def.stop !== false,
+    };
   }
 
   function sanitizeLocal(raw) {
@@ -156,6 +181,12 @@ export function createStudioPrefsRuntime({ initialPrefs, defaultPrefs, effortEff
       overviewUsageEnabled: boolOr('overviewUsageEnabled', DEFAULTS.overviewUsageEnabled),
       overviewUsageDefaultPeriod: enumOr('overviewUsageDefaultPeriod', DEFAULTS.overviewUsageDefaultPeriod),
       subagentFooterEnabled: boolOr('subagentFooterEnabled', DEFAULTS.subagentFooterEnabled),
+      opusGateMode: enumOr('opusGateMode', DEFAULTS.opusGateMode),
+      opusGatePreferredTier: enumOr('opusGatePreferredTier', DEFAULTS.opusGatePreferredTier),
+      opusGateMinQuota5hPct: clampInt(src.opusGateMinQuota5hPct, 5, 80, DEFAULTS.opusGateMinQuota5hPct),
+      opusGateMinQuotaWeeklyPct: clampInt(src.opusGateMinQuotaWeeklyPct, 5, 60, DEFAULTS.opusGateMinQuotaWeeklyPct),
+      opusGateMaxAutoPerSession: clampInt(src.opusGateMaxAutoPerSession, 1, 5, DEFAULTS.opusGateMaxAutoPerSession),
+      opusGateCheckpoints: sanitizeOpusCheckpoints(src.opusGateCheckpoints),
       motionLevel: enumOr('motionLevel', DEFAULTS.motionLevel),
       effortMotion: enumOr('effortMotion', DEFAULTS.effortMotion),
     };

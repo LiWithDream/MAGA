@@ -45,12 +45,17 @@ export const PID_FILE = path.join(STATE_DIR, 'daemon.pid');
 export const RELAUNCH_INTENT_FILE = path.join(STATE_DIR, 'relaunch-intent.json');
 export const UI_PREFS_FILE = path.join(STATE_DIR, 'ui-prefs.json');
 export const STUDIO_PREFS_FILE = path.join(STATE_DIR, 'studio-prefs.json');
+export const QUOTA_STATE_FILE = path.join(STATE_DIR, 'quota-state.json');
+export const OPUS_GATE_STATE_FILE = path.join(STATE_DIR, 'opus-gate-state.json');
 export const BASE_CONFIG_FILE = path.join(STATE_DIR, 'base', 'config.json');
 export const PROJECTS_REGISTRY_FILE = path.join(STATE_DIR, 'projects-registry.json');
 export const CORE_BASE_CSS_FILE = path.join(CORE_DIR, 'base.css');
 export const CORE_I18N_FILE = path.join(CORE_DIR, 'i18n.json');
 export const CORE_RUNTIME_FILE = path.join(CORE_DIR, 'runtime.js');
 export const PKG_FILE = path.join(REPO_ROOT, 'package.json');
+export const GLOBAL_PLUGINS_DIR = path.resolve(
+  process.env.ANTI_CLAUDE_PLUGINS_DIR || path.join(HOME, '.gemini', 'config', 'plugins')
+);
 
 export const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export const DB_FILE_RE = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.db$/i;

@@ -134,7 +134,7 @@ export function createFooterUnifiedRuntime({ onTierChange, kernel } = {}) {
     for (const ch of leftGroup.children) {
       if (ch.id === 'agy-capsule-picker-host' || ch.hasAttribute('data-agy-picker-host')) continue;
       if (ch.getAttribute?.('data-agy-model-wrap') === '1') continue;
-      if (ch.id === 'ag-claude-ctx-ring' || ch.id === 'ag-live-metrics-pill' || ch.id === 'agy-resume-pill') continue;
+      if (ch.id === 'ag-claude-ctx-ring' || ch.id === 'ag-live-metrics-pill' || ch.id === 'agy-resume-pill' || ch.id === 'agy-opus-gate-pill') continue;
       if (ch.hasAttribute('data-agy-sub-pill')) continue;
       if (ch.id === 'agy-main-subagent-pill') {
         if (!ch.hidden && ch.style.display !== 'none') return true;
@@ -189,7 +189,7 @@ export function createFooterUnifiedRuntime({ onTierChange, kernel } = {}) {
     }
 
     for (const ch of leftGroup.children) {
-      if (ch === addCtxBtn || ch.id === 'agy-resume-pill') continue;
+      if (ch === addCtxBtn || ch.id === 'agy-resume-pill' || ch.id === 'agy-opus-gate-pill') continue;
       if (ch.tagName === 'INPUT' || ch.hasAttribute('data-agy-picker-host') || ch.getAttribute?.('data-agy-model-wrap') === '1') continue;
       if (ch.getAttribute?.('data-deck-model-bubble') === 'hidden' || ch.querySelector?.('button[data-deck-model-bubble="hidden"]')) continue;
       const r = ch.getBoundingClientRect();
@@ -224,7 +224,7 @@ export function createFooterUnifiedRuntime({ onTierChange, kernel } = {}) {
     const pillSigs = [];
     if (leftGroup) {
       for (const ch of leftGroup.children) {
-        if (ch.hasAttribute('data-agy-sub-pill') || ch.id === 'agy-main-subagent-pill' || ch.id === 'agy-resume-pill') {
+        if (ch.hasAttribute('data-agy-sub-pill') || ch.id === 'agy-main-subagent-pill' || ch.id === 'agy-resume-pill' || ch.id === 'agy-opus-gate-pill') {
           pillSigs.push(`${ch.getAttribute('data-agy-sub-pill') || ch.id}:${ch.hidden ? '1' : '0'}:${ch.getAttribute('data-sig') || ''}`);
         } else if (
           ch.id !== 'agy-capsule-picker-host' &&

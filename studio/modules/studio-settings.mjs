@@ -31,6 +31,7 @@ import {
   renderL2Workspace,
   renderL3HiddenModels,
   renderL3ModelTiers,
+  renderL3OpusGate,
 } from './settings/views.mjs';
 
 export function createStudioSettingsRuntime({
@@ -303,6 +304,7 @@ export function createStudioSettingsRuntime({
     else if (cur.view === 'models') bodyHtml = renderL2Models(p, catalog, viewCtx);
     else if (cur.view === 'models-tiers') bodyHtml = renderL3ModelTiers(p, catalog, viewCtx);
     else if (cur.view === 'models-hidden') bodyHtml = renderL3HiddenModels(p, catalog, viewCtx);
+    else if (cur.view === 'models-opus-gate') bodyHtml = renderL3OpusGate(p, viewCtx);
     else if (cur.view === 'stream') bodyHtml = renderL2Stream(p, base, viewCtx);
     else if (cur.view === 'workspace') bodyHtml = renderL2Workspace(p, base, viewCtx);
     else if (cur.view === 'appearance') bodyHtml = renderL2Appearance(p, base, viewCtx);

@@ -1,0 +1,23 @@
+{
+  "maga-opus-gate": {
+    "PostToolUse": [
+      {
+        "matcher": "run_command|edit_file|write_file",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ./hooks/gate-check.mjs",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "type": "command",
+        "command": "node ./hooks/gate-check.mjs",
+        "timeout": 5
+      }
+    ]
+  }
+}

@@ -69,6 +69,12 @@ const DEFAULT_PREFS = {
   overviewUsageEnabled: true,
   overviewUsageDefaultPeriod: 'day',
   subagentFooterEnabled: true,
+  opusGateMode: 'semi',
+  opusGatePreferredTier: 'high',
+  opusGateMinQuota5hPct: 20,
+  opusGateMinQuotaWeeklyPct: 15,
+  opusGateMaxAutoPerSession: 2,
+  opusGateCheckpoints: { plan: true, risk: true, debug: true, stop: true },
   motionLevel: 'full',
 };
 

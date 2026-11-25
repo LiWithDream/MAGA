@@ -391,8 +391,8 @@ button[data-testid="subagent-tab-open-full-view"] + button[data-testid="sidebar-
   font-size: 11.5px !important;
 }
 
-/* Order 7: Any unknown extra native chip (excludes our styled subagent & resume capsules) */
-.agy-composer-footer > div:first-child > *:not(button:first-of-type):not(input):not([data-agy-picker-host]):not([data-agy-sub-pill]):not(#ag-claude-ctx-ring):not(#ag-live-metrics-pill):not(#agy-main-subagent-pill):not(#agy-resume-pill):not([data-agy-native-sub-chip="1"]):not([data-agy-model-wrap="1"]):not([data-deck-model-bubble="hidden"]) {
+/* Order 7: Any unknown extra native chip (excludes our styled subagent, resume & opus-gate capsules) */
+.agy-composer-footer > div:first-child > *:not(button:first-of-type):not(input):not([data-agy-picker-host]):not([data-agy-sub-pill]):not(#ag-claude-ctx-ring):not(#ag-live-metrics-pill):not(#agy-main-subagent-pill):not(#agy-resume-pill):not(#agy-opus-gate-pill):not([data-agy-native-sub-chip="1"]):not([data-agy-model-wrap="1"]):not([data-deck-model-bubble="hidden"]) {
   order: 7 !important;
   display: inline-flex !important;
   align-items: center !important;
@@ -412,7 +412,7 @@ button[data-testid="subagent-tab-open-full-view"] + button[data-testid="sidebar-
   white-space: nowrap !important;
   transition: background-color 140ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 140ms cubic-bezier(0.22, 1, 0.36, 1), color 140ms ease !important;
 }
-.agy-composer-footer > div:first-child > *:not(button:first-of-type):not(input):not([data-agy-picker-host]):not([data-agy-sub-pill]):not(#ag-claude-ctx-ring):not(#ag-live-metrics-pill):not(#agy-main-subagent-pill):not(#agy-resume-pill):not([data-agy-native-sub-chip="1"]):not([data-agy-model-wrap="1"]):not([data-deck-model-bubble="hidden"]):hover {
+.agy-composer-footer > div:first-child > *:not(button:first-of-type):not(input):not([data-agy-picker-host]):not([data-agy-sub-pill]):not(#ag-claude-ctx-ring):not(#ag-live-metrics-pill):not(#agy-main-subagent-pill):not(#agy-resume-pill):not(#agy-opus-gate-pill):not([data-agy-native-sub-chip="1"]):not([data-agy-model-wrap="1"]):not([data-deck-model-bubble="hidden"]):hover {
   background-color: var(--agy-pill-bg-hover) !important;
   box-shadow: inset 0 0 0 1px var(--agy-pill-border-hover) !important;
 }
@@ -1541,6 +1541,190 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) :is(#ag-claude-quota-popov
 .agy-composer-footer[data-agy-dock-tier="icon"] #agy-resume-pill .agy-resume-go {
   padding: 0 3px 0 7px !important;
   gap: 0 !important;
+}
+
+/* ==========================================================================
+ * Opus Gate Checkpoint Capsule (#agy-opus-gate-pill) & Action Menu
+ * ========================================================================== */
+
+#agy-opus-gate-pill#agy-opus-gate-pill {
+  --agy-opus-color: #C15F3C;
+  order: 0 !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  height: 28px !important;
+  padding: 0 3px 0 0 !important;
+  border-radius: 8px !important;
+  flex-shrink: 0 !important;
+  font-family: var(--font-sans) !important;
+  background-color: color-mix(in srgb, var(--agy-opus-color) 11%, var(--agy-pill-bg)) !important;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--agy-opus-color) 32%, var(--agy-pill-border)) !important;
+  transition: background-color 140ms ease, box-shadow 140ms ease !important;
+}
+:is(html[data-ag-theme-mode="dark"], html.dark, body.dark) #agy-opus-gate-pill#agy-opus-gate-pill {
+  --agy-opus-color: #D97757;
+  background-color: color-mix(in srgb, var(--agy-opus-color) 13%, var(--agy-pill-bg)) !important;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--agy-opus-color) 36%, var(--agy-pill-border)) !important;
+}
+#agy-opus-gate-pill#agy-opus-gate-pill[data-quota-blocked="1"] {
+  --agy-opus-color: #D97706;
+}
+#agy-opus-gate-pill#agy-opus-gate-pill:hover {
+  background-color: color-mix(in srgb, var(--agy-opus-color) 18%, var(--agy-pill-bg-hover)) !important;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--agy-opus-color) 48%, var(--agy-pill-border-hover)) !important;
+}
+#agy-opus-gate-pill .agy-opus-go {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 5px !important;
+  height: 100% !important;
+  padding: 0 5px 0 8.5px !important;
+  border: none !important;
+  background: transparent !important;
+  color: color-mix(in srgb, var(--agy-opus-color) 84%, var(--foreground)) !important;
+  font-family: inherit !important;
+  font-size: 12px !important;
+  font-weight: 500 !important;
+  line-height: 16px !important;
+  white-space: nowrap !important;
+  cursor: pointer !important;
+}
+#agy-opus-gate-pill .agy-opus-star {
+  color: var(--agy-opus-color) !important;
+  font-size: 11px !important;
+  line-height: 1 !important;
+}
+#agy-opus-gate-pill .agy-opus-dismiss {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 20px !important;
+  height: 20px !important;
+  padding: 0 !important;
+  border: none !important;
+  border-radius: 5px !important;
+  background: transparent !important;
+  color: color-mix(in srgb, var(--agy-opus-color) 65%, var(--muted-foreground)) !important;
+  cursor: pointer !important;
+  opacity: 0.72 !important;
+}
+#agy-opus-gate-pill .agy-opus-dismiss:hover {
+  opacity: 1 !important;
+  background-color: color-mix(in srgb, var(--agy-opus-color) 16%, transparent) !important;
+}
+.agy-composer-footer[data-agy-dock-tier="icon"] #agy-opus-gate-pill .agy-opus-label {
+  display: none !important;
+}
+.agy-composer-footer[data-agy-dock-tier="icon"] #agy-opus-gate-pill .agy-opus-go {
+  padding: 0 3px 0 7px !important;
+  gap: 0 !important;
+}
+
+#agy-opus-gate-menu#agy-opus-gate-menu {
+  position: fixed !important;
+  z-index: 99992 !important;
+  width: 276px !important;
+  padding: 10px !important;
+  border-radius: 12px !important;
+  border: 1px solid color-mix(in srgb, currentColor 12%, transparent) !important;
+  background: var(--popover, var(--card, #FFFFFF)) !important;
+  color: var(--foreground, #1C1C1A) !important;
+  box-shadow: 0 14px 34px -8px rgba(0, 0, 0, 0.24), 0 4px 12px -2px rgba(0, 0, 0, 0.1) !important;
+  font-family: var(--font-sans) !important;
+  display: none !important;
+  flex-direction: column !important;
+  gap: 8px !important;
+}
+:is(html[data-ag-theme-mode="dark"], html.dark, body.dark) #agy-opus-gate-menu#agy-opus-gate-menu {
+  background: var(--popover, var(--card, #232321)) !important;
+  color: var(--foreground, #F0EFEA) !important;
+}
+#agy-opus-gate-menu#agy-opus-gate-menu[data-open="1"] {
+  display: flex !important;
+}
+#agy-opus-gate-menu .agy-opus-menu-hdr {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 8px !important;
+}
+#agy-opus-gate-menu .agy-opus-menu-title {
+  font-size: 12.5px !important;
+  font-weight: 600 !important;
+}
+#agy-opus-gate-menu .agy-opus-menu-quota {
+  font-size: 11px !important;
+  padding: 1px 6px !important;
+  border-radius: 999px !important;
+  background: color-mix(in srgb, #C15F3C 14%, transparent) !important;
+  color: #C15F3C !important;
+  font-variant-numeric: tabular-nums !important;
+}
+:is(html[data-ag-theme-mode="dark"], html.dark, body.dark) #agy-opus-gate-menu .agy-opus-menu-quota {
+  color: #D97757 !important;
+}
+#agy-opus-gate-menu .agy-opus-menu-meta {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 3px !important;
+}
+#agy-opus-gate-menu .agy-opus-menu-badge {
+  align-self: flex-start !important;
+  font-size: 10.5px !important;
+  font-weight: 500 !important;
+  padding: 1px 6px !important;
+  border-radius: 5px !important;
+  background: color-mix(in srgb, currentColor 8%, transparent) !important;
+}
+#agy-opus-gate-menu .agy-opus-menu-reason {
+  font-size: 11.5px !important;
+  line-height: 1.4 !important;
+  color: var(--muted-foreground, #787774) !important;
+}
+#agy-opus-gate-menu .agy-opus-menu-warn {
+  font-size: 11px !important;
+  line-height: 1.35 !important;
+  padding: 5px 8px !important;
+  border-radius: 7px !important;
+  color: #D97706 !important;
+  background: color-mix(in srgb, #F59E0B 12%, transparent) !important;
+}
+#agy-opus-gate-menu .agy-opus-menu-actions {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 5px !important;
+}
+#agy-opus-gate-menu .agy-opus-act {
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: flex-start !important;
+  gap: 2px !important;
+  width: 100% !important;
+  padding: 7px 9px !important;
+  border-radius: 8px !important;
+  border: 1px solid color-mix(in srgb, currentColor 11%, transparent) !important;
+  background: transparent !important;
+  color: inherit !important;
+  text-align: left !important;
+  cursor: pointer !important;
+}
+#agy-opus-gate-menu .agy-opus-act.is-primary {
+  border-color: color-mix(in srgb, #C15F3C 36%, transparent) !important;
+  background: color-mix(in srgb, #C15F3C 10%, transparent) !important;
+}
+#agy-opus-gate-menu .agy-opus-act:hover {
+  background: color-mix(in srgb, currentColor 7%, transparent) !important;
+}
+#agy-opus-gate-menu .agy-opus-act.is-primary:hover {
+  background: color-mix(in srgb, #C15F3C 16%, transparent) !important;
+}
+#agy-opus-gate-menu .agy-opus-act-t {
+  font-size: 12px !important;
+  font-weight: 550 !important;
+}
+#agy-opus-gate-menu .agy-opus-act-d {
+  font-size: 10.5px !important;
+  color: var(--muted-foreground, #787774) !important;
 }
 
 /* Style B: Subtle Centered Timeline Divider replacing synthetic Resume user bubbles */

@@ -80,10 +80,11 @@ export function computeWaitingStepHash(cascadeId, step) {
   const trajectoryId = String(step?.trajectoryId || '');
   const interactionCase = String(step?.interactionCase || '');
   const toolName = String(step?.toolName || '');
+  const action = String(step?.action || '');
   const commandLine = String(step?.commandLine || '');
   return crypto
     .createHash('sha256')
-    .update(`${cascadeId}|${trajectoryId}|${stepIndex}|${interactionCase}|${toolName}|${commandLine}`)
+    .update(`${cascadeId}|${trajectoryId}|${stepIndex}|${interactionCase}|${toolName}|${action}|${commandLine}`)
     .digest('hex')
     .slice(0, 16);
 }

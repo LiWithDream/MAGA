@@ -889,13 +889,16 @@ export function createRemoteTapModule(rt) {
     };
   }
 
+  const PERMISSION_SCOPE_ONCE = 1;
+
   async function computeWaitingStepHashAsync(cascadeId, step) {
     const stepIndex = Number(step?.stepIndex ?? 0);
     const trajectoryId = String(step?.trajectoryId || '');
     const interactionCase = String(step?.interactionCase || '');
     const toolName = String(step?.toolName || '');
+    const action = String(step?.action || '');
     const commandLine = String(step?.commandLine || '');
-    const raw = `${cascadeId}|${trajectoryId}|${stepIndex}|${interactionCase}|${toolName}|${commandLine}`;
+    const raw = `${cascadeId}|${trajectoryId}|${stepIndex}|${interactionCase}|${toolName}|${action}|${commandLine}`;
     const subtle =
       (typeof globalThis !== 'undefined' && globalThis.crypto?.subtle) ||
       (typeof window !== 'undefined' && window.crypto?.subtle) ||
@@ -907,8 +910,15 @@ export function createRemoteTapModule(rt) {
       .slice(0, 16);
   }
 
+  function isSafeNonTurboPreset(preset) {
+    if (typeof preset === 'boolean' || preset === null || preset === undefined) return false;
+    if (typeof preset === 'string' && !/^\d+$/.test(preset.trim())) return false;
+    const n = Number(preset);
+    return n === 1 || n === 2;
+  }
+
   function isTurboLikePreset(preset) {
-    return preset === null || preset === undefined || Number(preset) === 3 || !Number.isFinite(Number(preset));
+    return !isSafeNonTurboPreset(preset);
   }
 
   function checkOwnsConversation(payload) {
@@ -1009,7 +1019,7 @@ export function createRemoteTapModule(rt) {
           case: 'permission',
           value: {
             allow: decision === 'allow_once',
-            scope: 1,
+            scope: PERMISSION_SCOPE_ONCE,
           },
         },
       });

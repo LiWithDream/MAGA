@@ -29,8 +29,30 @@ const READ_METHODS = new Set(['convo.list', 'convo.snapshot', 'convo.watch']);
 const WRITE_METHODS = new Set(['convo.send', 'convo.approve', 'convo.cancel']);
 const ROLE_RANK = Object.freeze({ observe: 0, steer: 1, admin: 2 });
 
+function isSafeNonTurboPreset(preset) {
+  if (typeof preset === 'boolean' || preset === null || preset === undefined) return false;
+  if (typeof preset === 'string' && !/^\d+$/.test(preset.trim())) return false;
+  const n = Number(preset);
+  return n === 1 || n === 2;
+}
+
 function isTurboPreset(preset) {
-  return preset === null || preset === undefined || Number(preset) === 3 || !Number.isFinite(Number(preset));
+  return !isSafeNonTurboPreset(preset);
+}
+
+function isAmbiguousWriteError(errCode) {
+  if (!errCode || errCode === 'uds_unauthorized') return false;
+  return (
+    errCode === 'outcome_unknown' ||
+    errCode === 'uds_timeout' ||
+    errCode === 'uds_disconnected' ||
+    errCode === 'uds_not_connected' ||
+    errCode === 'uds_closed' ||
+    errCode === 'uds_error' ||
+    errCode === 'cdp_timeout' ||
+    errCode === 'eval_timeout' ||
+    /timeout|uds_/i.test(errCode)
+  );
 }
 
 function sha256Hex(text) {
@@ -112,6 +134,7 @@ export function createWsServer({
   const watchRefCounts = new Map();
   const inFlightWritesByDevice = new Map();
   const writeTimestampsByDevice = new Map();
+  const lastRateLimitAuditByDevice = new Map();
   const idempotencyInFlight = new Map();
   const idempotencyCache = new Map();
   let tapActive = false;
@@ -419,6 +442,15 @@ export function createWsServer({
     return true;
   }
 
+  function auditRateLimitedWrite(deviceId, method, clientKey) {
+    const ts = now();
+    const lastAt = lastRateLimitAuditByDevice.get(deviceId) || 0;
+    if (ts - lastAt >= 15_000) {
+      lastRateLimitAuditByDevice.set(deviceId, ts);
+      audit?.append('ws_write_rate_limited', { deviceId, method, clientKey });
+    }
+  }
+
   function validateAndBuildWriteSpec(method, params) {
     const cascadeId = typeof params.cascadeId === 'string' ? params.cascadeId.trim() : '';
     if (!UUID_RE.test(cascadeId)) {
@@ -443,6 +475,7 @@ export function createWsServer({
         ok: true,
         cascadeId,
         idempotencyKey: rawKey,
+        payloadHash: sha256Hex(JSON.stringify(['convo.send', cascadeId, text])),
         rpcParams: {
           cascadeId,
           text,
@@ -473,17 +506,20 @@ export function createWsServer({
         ok: true,
         cascadeId,
         idempotencyKey: rawKey,
+        payloadHash: sha256Hex(JSON.stringify(['convo.approve', cascadeId, stepIndex, waitingStepHash, decision])),
         rpcParams: { cascadeId, stepIndex, waitingStepHash, decision },
         auditMeta: { cascadeId, stepIndex, waitingStepHash, decision },
       };
     }
 
+    const killBackgroundTasks = Boolean(params.killBackgroundTasks);
     return {
       ok: true,
       cascadeId,
       idempotencyKey: rawKey,
-      rpcParams: { cascadeId, killBackgroundTasks: Boolean(params.killBackgroundTasks) },
-      auditMeta: { cascadeId, killBackgroundTasks: Boolean(params.killBackgroundTasks) },
+      payloadHash: sha256Hex(JSON.stringify(['convo.cancel', cascadeId, killBackgroundTasks])),
+      rpcParams: { cascadeId, killBackgroundTasks },
+      auditMeta: { cascadeId, killBackgroundTasks },
     };
   }
 
@@ -491,6 +527,13 @@ export function createWsServer({
     const deviceId = liveDevice.deviceId;
     const role = String(liveDevice.role || 'observe');
     if ((ROLE_RANK[role] ?? 0) < ROLE_RANK.steer) {
+      if (!checkAndRecordWriteRate(deviceId)) {
+        auditRateLimitedWrite(deviceId, method, client.clientKey);
+        if (!client.closed) {
+          client.sendJson({ type: 'res', reqId, ok: false, error: 'write_rate_limited' });
+        }
+        return;
+      }
       audit?.append('ws_write_forbidden_role', {
         deviceId,
         role,
@@ -505,6 +548,13 @@ export function createWsServer({
 
     const spec = validateAndBuildWriteSpec(method, params);
     if (!spec.ok) {
+      if (!checkAndRecordWriteRate(deviceId)) {
+        auditRateLimitedWrite(deviceId, method, client.clientKey);
+        if (!client.closed) {
+          client.sendJson({ type: 'res', reqId, ok: false, error: 'write_rate_limited' });
+        }
+        return;
+      }
       if (!client.closed) {
         client.sendJson({ type: 'res', reqId, ok: false, error: spec.error });
       }
@@ -516,6 +566,12 @@ export function createWsServer({
       pruneIdempotencyCache();
       const cached = idempotencyCache.get(cacheKey);
       if (cached && now() < Number(cached.expiresAt || 0)) {
+        if (!cached.payloadHash || cached.payloadHash !== spec.payloadHash) {
+          if (!client.closed) {
+            client.sendJson({ type: 'res', reqId, ok: false, error: 'idempotency_key_conflict' });
+          }
+          return;
+        }
         if (!client.closed) {
           client.sendJson({
             type: 'res',
@@ -529,7 +585,13 @@ export function createWsServer({
       }
       const existingFlight = idempotencyInFlight.get(cacheKey);
       if (existingFlight) {
-        const outcome = await existingFlight;
+        if (existingFlight.payloadHash !== spec.payloadHash) {
+          if (!client.closed) {
+            client.sendJson({ type: 'res', reqId, ok: false, error: 'idempotency_key_conflict' });
+          }
+          return;
+        }
+        const outcome = await existingFlight.promise;
         if (!client.closed) {
           client.sendJson({
             type: 'res',
@@ -552,34 +614,39 @@ export function createWsServer({
     }
 
     if (!checkAndRecordWriteRate(deviceId)) {
-      audit?.append('ws_write_rate_limited', { deviceId, method, clientKey: client.clientKey });
+      auditRateLimitedWrite(deviceId, method, client.clientKey);
       if (!client.closed) {
         client.sendJson({ type: 'res', reqId, ok: false, error: 'write_rate_limited' });
       }
       return;
     }
 
-    if (method === 'convo.send') {
-      const health = await udsClient.request('bridge.health', {}, { timeoutMs: 2000 }).catch(() => null);
-      if (!health || isTurboPreset(health.globalPreset)) {
-        if (spec.rpcParams.turboWriteConfirmed !== true) {
-          audit?.append('ws_send_rejected_turbo', {
-            deviceId,
-            cascadeId: spec.cascadeId,
-            globalPreset: health?.globalPreset ?? null,
-          });
-          if (!client.closed) {
-            client.sendJson({ type: 'res', reqId, ok: false, error: 'turbo_write_confirmation_required' });
-          }
-          return;
-        }
-      }
-    }
-
+    // Synchronously reserve concurrency slot and in-flight key BEFORE any await
     inFlightWritesByDevice.set(deviceId, currentInFlight + 1);
     const execPromise = (async () => {
       try {
-        const timeoutMs = method === 'convo.cancel' ? 10_000 : 15_000;
+        if (method === 'convo.send') {
+          const health = await udsClient.request('bridge.health', {}, { timeoutMs: 2000 }).catch(() => null);
+          const stillLive = verifyClientDeviceLive(client);
+          if (!stillLive) {
+            return { ok: false, error: 'device_revoked' };
+          }
+          if ((ROLE_RANK[String(stillLive.role || 'observe')] ?? 0) < ROLE_RANK.steer) {
+            return { ok: false, error: 'forbidden_role_observe' };
+          }
+          if (!health || isTurboPreset(health.globalPreset)) {
+            if (spec.rpcParams.turboWriteConfirmed !== true) {
+              audit?.append('ws_send_rejected_turbo', {
+                deviceId,
+                cascadeId: spec.cascadeId,
+                globalPreset: health?.globalPreset ?? null,
+              });
+              return { ok: false, error: 'turbo_write_confirmation_required' };
+            }
+          }
+        }
+
+        const timeoutMs = method === 'convo.send' ? 20_000 : method === 'convo.approve' ? 18_000 : 15_000;
         const result = await udsClient.request(method, spec.rpcParams, { timeoutMs, write: true });
         audit?.append('remote_write', {
           deviceId,
@@ -592,6 +659,7 @@ export function createWsServer({
         if (cacheKey) {
           idempotencyCache.set(cacheKey, {
             ...outcome,
+            payloadHash: spec.payloadHash,
             createdAt: now(),
             expiresAt: now() + idempotencyTtlMs,
           });
@@ -600,6 +668,29 @@ export function createWsServer({
         return outcome;
       } catch (err) {
         const errCode = String(err?.code || err?.message || 'uds_error');
+        if (isAmbiguousWriteError(errCode)) {
+          audit?.append('remote_write', {
+            deviceId,
+            role,
+            method,
+            ...spec.auditMeta,
+            ok: false,
+            error: 'outcome_unknown',
+            originalError: errCode,
+          });
+          const outcome = { ok: false, error: 'outcome_unknown' };
+          if (cacheKey) {
+            idempotencyCache.set(cacheKey, {
+              ...outcome,
+              payloadHash: spec.payloadHash,
+              createdAt: now(),
+              expiresAt: now() + idempotencyTtlMs,
+            });
+            persistIdempotencyCache();
+          }
+          return outcome;
+        }
+
         audit?.append('remote_write', {
           deviceId,
           role,
@@ -610,12 +701,11 @@ export function createWsServer({
         });
         const outcome = { ok: false, error: errCode };
         const deterministicFailure =
-          errCode === 'waiting_step_mismatch' ||
-          errCode === 'unsupported_interaction_case' ||
-          errCode === 'conversation_not_found';
+          errCode === 'waiting_step_mismatch' || errCode === 'unsupported_interaction_case';
         if (cacheKey && deterministicFailure) {
           idempotencyCache.set(cacheKey, {
             ...outcome,
+            payloadHash: spec.payloadHash,
             createdAt: now(),
             expiresAt: now() + idempotencyTtlMs,
           });
@@ -631,7 +721,7 @@ export function createWsServer({
     });
 
     if (cacheKey) {
-      idempotencyInFlight.set(cacheKey, execPromise);
+      idempotencyInFlight.set(cacheKey, { promise: execPromise, payloadHash: spec.payloadHash });
     }
 
     const outcome = await execPromise;
@@ -818,6 +908,7 @@ export function createWsServer({
       welcomeBuffer: [],
       awaitingPong: false,
       missedPongs: 0,
+      activeWriteDispatches: 0,
       device: null,
       clientKey,
       watchedCids: new Set(),
@@ -956,7 +1047,19 @@ export function createWsServer({
             return;
           }
           if (parsed.type === 'req' && WRITE_METHODS.has(String(parsed.method || '').trim())) {
-            handleAuthenticatedMessage(client, parsed).catch(() => {});
+            const maxClientWriteDispatches = Math.max(8, maxConcurrentWrites * 2);
+            if (client.activeWriteDispatches >= maxClientWriteDispatches) {
+              if (parsed.reqId !== undefined && parsed.reqId !== null) {
+                client.sendJson({ type: 'res', reqId: parsed.reqId, ok: false, error: 'too_many_concurrent_writes' });
+              }
+              return;
+            }
+            client.activeWriteDispatches += 1;
+            handleAuthenticatedMessage(client, parsed)
+              .catch(() => {})
+              .finally(() => {
+                client.activeWriteDispatches = Math.max(0, client.activeWriteDispatches - 1);
+              });
             return;
           }
         }

@@ -66,6 +66,7 @@ function createFakeUdsServer(
     listDelayMs = 0,
     watchDelayMs = 0,
     writeDelayMs = 0,
+    healthDelayMs = 0,
     expectedUdsToken = '',
     onListStart = null,
     onWrite = null,
@@ -74,6 +75,8 @@ function createFakeUdsServer(
   const calls = [];
   const sockets = new Set();
   let curPreset = globalPreset;
+  let curHealthDelayMs = healthDelayMs;
+  let curWriteDelayMs = writeDelayMs;
   const server = net.createServer((sock) => {
     sockets.add(sock);
     sock.setEncoding('utf8');
@@ -103,16 +106,19 @@ function createFakeUdsServer(
           }
         };
         if (req.method === 'bridge.health') {
-          reply({
-            ok: true,
-            hostAttached,
-            hostCount: hostAttached ? 1 : 0,
-            capabilities: { reduxSummaries: true, agentStream: true, sendMessage: true, approval: true, cancel: true, diskRead: true },
-            agVersion: '2.0.0',
-            globalPreset: curPreset,
-            tapActive: false,
-            activeStreams: 0,
-          });
+          const sendHealth = () =>
+            reply({
+              ok: true,
+              hostAttached,
+              hostCount: hostAttached ? 1 : 0,
+              capabilities: { reduxSummaries: true, agentStream: true, sendMessage: true, approval: true, cancel: true, diskRead: true },
+              agVersion: '2.0.0',
+              globalPreset: curPreset,
+              tapActive: false,
+              activeStreams: 0,
+            });
+          if (curHealthDelayMs > 0) setTimeout(sendHealth, curHealthDelayMs);
+          else sendHealth();
         } else if (req.method === 'convo.list') {
           onListStart?.();
           setTimeout(() => {
@@ -153,7 +159,7 @@ function createFakeUdsServer(
             } catch (err) {
               replyError(err?.code || err?.message || 'write_failed');
             }
-          }, writeDelayMs);
+          }, curWriteDelayMs);
         }
       }
     });
@@ -167,6 +173,19 @@ function createFakeUdsServer(
         calls,
         setGlobalPreset(nextPreset) {
           curPreset = nextPreset;
+        },
+        setHealthDelayMs(ms) {
+          curHealthDelayMs = ms;
+        },
+        setWriteDelayMs(ms) {
+          curWriteDelayMs = ms;
+        },
+        destroySockets() {
+          for (const s of sockets) {
+            try {
+              s.destroy();
+            } catch {}
+          }
         },
         pushTap(payload) {
           const line = `${JSON.stringify({ event: 'tap', payload })}\n`;
@@ -1766,6 +1785,7 @@ test('Phase 1 Bridge & Tap: per-boot UDS token, zero-disk-write, multi-window co
       trajectoryId: 'traj-live-1',
       interactionCase: 'permission',
       toolName: 'run_command',
+      action: 'permission',
       commandLine: 'rm -rf ./tmp-build',
     };
     const lsCalls = [];
@@ -1833,7 +1853,10 @@ test('Phase 1 Bridge & Tap: per-boot UDS token, zero-disk-write, multi-window co
       });
       assert.equal(staleApp.error, 'waiting_step_mismatch');
 
-      const expectedHash = bridgeMod.computeWaitingStepHash(cid1, stepObj);
+      const sumList = api.listSummaries();
+      const normalizedFromTap = sumList.conversations[0].waitingSteps[0];
+      const expectedHash = bridgeMod.computeWaitingStepHash(cid1, normalizedFromTap);
+      assert.equal(expectedHash, bridgeMod.computeWaitingStepHash(cid1, stepObj));
       const okApp = await api.invoke('convo.approve', {
         cascadeId: cid1,
         stepIndex: 4,
@@ -1854,6 +1877,37 @@ test('Phase 1 Bridge & Tap: per-boot UDS token, zero-disk-write, multi-window co
       const canceled = await api.invoke('convo.cancel', { cascadeId: cid1, killBackgroundTasks: true });
       assert.equal(canceled.ok, true);
       assert.deepEqual(lsCalls.at(-1), { fn: 'cancel', arg: { cascadeId: cid1, killBackgroundTasks: true } });
+
+      // P2 deny scope pin + strict preset allowlist on Tap + action CAS differentiation
+      const hashActA = bridgeMod.computeWaitingStepHash(cid1, { ...stepObj, action: 'actA', commandLine: '' });
+      const hashActB = bridgeMod.computeWaitingStepHash(cid1, { ...stepObj, action: 'actB', commandLine: '' });
+      assert.notEqual(hashActA, hashActB, 'computeWaitingStepHash must include action when commandLine is empty');
+
+      const denyApp = await api.invoke('convo.approve', {
+        cascadeId: cid1,
+        stepIndex: 4,
+        waitingStepHash: expectedHash,
+        decision: 'deny',
+      });
+      assert.equal(denyApp.ok, true);
+      assert.deepEqual(lsCalls.at(-1), {
+        fn: 'interact',
+        cidArg: cid1,
+        intArg: {
+          trajectoryId: 'traj-live-1',
+          stepIndex: 4,
+          interaction: { case: 'permission', value: { allow: false, scope: 1 } },
+        },
+      });
+
+      for (const unsafePreset of [0, '', false, null, undefined, 3]) {
+        currentPreset = unsafePreset;
+        const blocked = await api.invoke('convo.send', { cascadeId: cid1, text: 'check-unsafe' });
+        assert.equal(blocked.error, 'turbo_write_confirmation_required');
+      }
+      currentPreset = 1;
+      const safeSend = await api.invoke('convo.send', { cascadeId: cid1, text: 'check-safe-1' });
+      assert.equal(safeSend.ok, true);
     } finally {
       tap.dispose();
       dom.window.close();
@@ -1866,6 +1920,319 @@ test('Phase 1 Bridge & Tap: per-boot UDS token, zero-disk-write, multi-window co
     attachedTargets.clear();
     for (const [k, v] of prevTargets) attachedTargets.set(k, v);
     await bridgeMod.shutdownRemoteBridge().catch(() => {});
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+test('Phase 1 Red-Team regressions: same-key race, semaphore cap, payload hash conflict, outcome_unknown persistence, preset allowlist & health consistency', async () => {
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'maga-rem-p1rt-'));
+  const openSockets = [];
+  const servers = [];
+  let udsServer = null;
+
+  try {
+    const remoteDir = path.join(tmpRoot, 'remote');
+    const sockPath = path.join(tmpRoot, 'bridge.sock');
+    const writeToken = 'rt-uds-token-0123456789abcdef';
+    const writeCalls = [];
+    let writeHandler = async (req) => {
+      writeCalls.push(req);
+      return { ok: true, cascadeId: req.params.cascadeId, method: req.method };
+    };
+
+    udsServer = await createFakeUdsServer(sockPath, {
+      globalPreset: 2,
+      expectedUdsToken: writeToken,
+      healthDelayMs: 60,
+      writeDelayMs: 20,
+      onWrite: async (req) => writeHandler(req),
+    });
+
+    const enroll = async (gw, role, name) => {
+      configMod.writePairing(
+        { code: `RT_${name}`, expiresAt: Date.now() + 60_000, role, gatewayFingerprint: gw.gatewayFingerprint },
+        { remoteDir }
+      );
+      const kp = await crypto.webcrypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign', 'verify']);
+      const publicKeyJwk = await crypto.webcrypto.subtle.exportKey('jwk', kp.publicKey);
+      const res = await (
+        await fetch(`http://127.0.0.1:${gw.port}/api/pair/complete`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ code: `RT_${name}`, deviceName: name, publicKeyJwk, turboAcknowledged: true }),
+        })
+      ).json();
+      assert.equal(res.ok, true);
+      return { deviceId: res.deviceId, kp };
+    };
+
+    const connectClient = async (gw, dev) => {
+      const ch = await (await fetch(`http://127.0.0.1:${gw.port}/api/auth/challenge`)).json();
+      const sig = await signHello(dev.kp.privateKey, { nonce: ch.nonce, deviceId: dev.deviceId, lastSeq: 0, lastEpoch: '' });
+      const ws = await rawWsUpgrade(gw.port);
+      openSockets.push(ws.socket);
+      const reader = readServerFrames(ws.socket, ws.head);
+      ws.socket.write(
+        makeMaskedClientFrame(
+          0x1,
+          Buffer.from(
+            JSON.stringify({
+              type: 'hello',
+              protocol: 'maga-remote/1',
+              deviceId: dev.deviceId,
+              nonce: ch.nonce,
+              signature: sig,
+              lastSeq: 0,
+              lastEpoch: '',
+            })
+          )
+        )
+      );
+      const welcome = JSON.parse((await reader.nextFrame()).payload.toString('utf8'));
+      assert.equal(welcome.type, 'welcome');
+      return { ws, reader };
+    };
+
+    let gw = await serverMod.createGatewayServer({
+      remoteDir,
+      sockPath,
+      port: 0,
+      writePid: false,
+      udsWriteToken: writeToken,
+      maxWritesPerMinute: 30,
+      maxConcurrentWrites: 2,
+    });
+    servers.push(gw);
+
+    const devSteer = await enroll(gw, 'steer', 'RT-Steer');
+    const devObs = await enroll(gw, 'observe', 'RT-Obs');
+    const cSteer = await connectClient(gw, devSteer);
+    const cObs = await connectClient(gw, devObs);
+    const cidA = '66666666-6666-4666-8666-666666666661';
+    const cidB = '77777777-7777-4777-8777-777777777772';
+
+    const sendFrame = (client, frame) => {
+      client.ws.socket.write(makeMaskedClientFrame(0x1, Buffer.from(JSON.stringify(frame))));
+    };
+    const nextResFrames = async (reader, count) => {
+      const map = new Map();
+      for (let i = 0; i < count; i += 1) {
+        const msg = JSON.parse((await reader.nextFrame()).payload.toString('utf8'));
+        map.set(msg.reqId, msg);
+      }
+      return map;
+    };
+
+    // P1-1a: Concurrent same-key convo.send during 60ms bridge.health latency MUST execute UDS once
+    writeCalls.length = 0;
+    sendFrame(cSteer, {
+      type: 'req',
+      reqId: 'race-1',
+      method: 'convo.send',
+      params: { cascadeId: cidA, text: 'same payload', idempotencyKey: 'k-race-same-1' },
+    });
+    sendFrame(cSteer, {
+      type: 'req',
+      reqId: 'race-2',
+      method: 'convo.send',
+      params: { cascadeId: cidA, text: 'same payload', idempotencyKey: 'k-race-same-1' },
+    });
+    const raceMap = await nextResFrames(cSteer.reader, 2);
+    assert.equal(raceMap.get('race-1').ok, true);
+    assert.equal(raceMap.get('race-2').ok, true);
+    assert.equal(raceMap.get('race-2').replayed, true);
+    assert.equal(writeCalls.length, 1, 'same-key concurrent sends must deduplicate before bridge.health await');
+
+    // P1-2: Reusing idempotencyKey for another cascadeId or different text rejects with idempotency_key_conflict
+    sendFrame(cSteer, {
+      type: 'req',
+      reqId: 'conflict-cid',
+      method: 'convo.send',
+      params: { cascadeId: cidB, text: 'same payload', idempotencyKey: 'k-race-same-1' },
+    });
+    const cCid = JSON.parse((await cSteer.reader.nextFrame()).payload.toString('utf8'));
+    assert.equal(cCid.ok, false);
+    assert.equal(cCid.error, 'idempotency_key_conflict');
+
+    sendFrame(cSteer, {
+      type: 'req',
+      reqId: 'conflict-text',
+      method: 'convo.send',
+      params: { cascadeId: cidA, text: 'different payload', idempotencyKey: 'k-race-same-1' },
+    });
+    const cTxt = JSON.parse((await cSteer.reader.nextFrame()).payload.toString('utf8'));
+    assert.equal(cTxt.ok, false);
+    assert.equal(cTxt.error, 'idempotency_key_conflict');
+
+    // P1-1b: N > maxConcurrentWrites (2) distinct writes concurrently during bridge.health delay cannot bypass semaphore
+    writeCalls.length = 0;
+    udsServer.setWriteDelayMs(80);
+    for (let i = 1; i <= 4; i += 1) {
+      sendFrame(cSteer, {
+        type: 'req',
+        reqId: `sem-${i}`,
+        method: 'convo.send',
+        params: { cascadeId: cidA, text: `msg-${i}`, idempotencyKey: `k-sem-000${i}` },
+      });
+    }
+    const semMap = await nextResFrames(cSteer.reader, 4);
+    const semOk = [...semMap.values()].filter((m) => m.ok);
+    const semTooMany = [...semMap.values()].filter((m) => m.error === 'too_many_concurrent_writes');
+    assert.equal(semOk.length, 2);
+    assert.equal(semTooMany.length, 2);
+    assert.equal(writeCalls.length, 2, 'maxConcurrentWrites must enforce before bridge.health await');
+
+    // P1-4 / P2 preset allowlist fail-closed: only 1 and 2 allowed without ack; 0/'', false, null, 3 require ack
+    udsServer.setHealthDelayMs(0);
+    udsServer.setWriteDelayMs(0);
+    for (const p of [0, '', false, null, 3]) {
+      udsServer.setGlobalPreset(p);
+      sendFrame(cSteer, {
+        type: 'req',
+        reqId: `preset-deny-${String(p)}`,
+        method: 'convo.send',
+        params: { cascadeId: cidA, text: 'unsafe check', idempotencyKey: `k-pd-${String(p || 'empty')}-1234`, turboWriteConfirmed: false },
+      });
+      const denyRes = JSON.parse((await cSteer.reader.nextFrame()).payload.toString('utf8'));
+      assert.equal(denyRes.error, 'turbo_write_confirmation_required');
+    }
+    udsServer.setGlobalPreset(1);
+    sendFrame(cSteer, {
+      type: 'req',
+      reqId: 'preset-allow-1',
+      method: 'convo.send',
+      params: { cascadeId: cidA, text: 'safe 1', idempotencyKey: 'k-safe-preset-1', turboWriteConfirmed: false },
+    });
+    assert.equal(JSON.parse((await cSteer.reader.nextFrame()).payload.toString('utf8')).ok, true);
+
+    // P1-3 & transient failure: UDS disconnect mid-write -> outcome_unknown persisted across gateway restarts; conversation_not_found NOT cached
+    let failNotFound = true;
+    writeCalls.length = 0;
+    writeHandler = async (req) => {
+      writeCalls.push(req);
+      if (req.params.waitingStepHash === '1111111111111111') {
+        udsServer.destroySockets();
+        await new Promise((r) => setTimeout(r, 30));
+        return { ok: true };
+      }
+      if (req.params.waitingStepHash === '2222222222222222' && failNotFound) {
+        return { ok: false, error: 'conversation_not_found' };
+      }
+      return { ok: true, cascadeId: req.params.cascadeId };
+    };
+
+    sendFrame(cSteer, {
+      type: 'req',
+      reqId: 'unk-1',
+      method: 'convo.approve',
+      params: { cascadeId: cidA, stepIndex: 1, waitingStepHash: '1111111111111111', decision: 'allow_once', idempotencyKey: 'k-unk-1111' },
+    });
+    const unkRes = JSON.parse((await cSteer.reader.nextFrame()).payload.toString('utf8'));
+    assert.equal(unkRes.ok, false);
+    assert.equal(unkRes.error, 'outcome_unknown');
+
+    await gw.close();
+    gw = await serverMod.createGatewayServer({
+      remoteDir,
+      sockPath,
+      port: 0,
+      writePid: false,
+      udsWriteToken: writeToken,
+      maxWritesPerMinute: 3,
+      maxConcurrentWrites: 2,
+    });
+    servers.push(gw);
+
+    const cSteerRestart = await connectClient(gw, devSteer);
+    const cObsRestart = await connectClient(gw, devObs);
+    const callsBeforeReplayUnk = writeCalls.length;
+    sendFrame(cSteerRestart, {
+      type: 'req',
+      reqId: 'unk-replay',
+      method: 'convo.approve',
+      params: { cascadeId: cidA, stepIndex: 1, waitingStepHash: '1111111111111111', decision: 'allow_once', idempotencyKey: 'k-unk-1111' },
+    });
+    const unkReplay = JSON.parse((await cSteerRestart.reader.nextFrame()).payload.toString('utf8'));
+    assert.equal(unkReplay.ok, false);
+    assert.equal(unkReplay.error, 'outcome_unknown');
+    assert.equal(unkReplay.replayed, true);
+    assert.equal(writeCalls.length, callsBeforeReplayUnk, 'outcome_unknown must remain durable and block retry re-execution');
+
+    sendFrame(cSteerRestart, {
+      type: 'req',
+      reqId: 'transient-1',
+      method: 'convo.approve',
+      params: { cascadeId: cidA, stepIndex: 2, waitingStepHash: '2222222222222222', decision: 'allow_once', idempotencyKey: 'k-trans-1111' },
+    });
+    assert.equal(JSON.parse((await cSteerRestart.reader.nextFrame()).payload.toString('utf8')).error, 'conversation_not_found');
+
+    failNotFound = false;
+    sendFrame(cSteerRestart, {
+      type: 'req',
+      reqId: 'transient-2',
+      method: 'convo.approve',
+      params: { cascadeId: cidA, stepIndex: 2, waitingStepHash: '2222222222222222', decision: 'allow_once', idempotencyKey: 'k-trans-1111' },
+    });
+    assert.equal(JSON.parse((await cSteerRestart.reader.nextFrame()).payload.toString('utf8')).ok, true, 'conversation_not_found must not be cached');
+
+    // P2: Observe spam hits rate limit before RBAC/audit flood
+    for (let i = 1; i <= 5; i += 1) {
+      sendFrame(cObsRestart, {
+        type: 'req',
+        reqId: `obs-spam-${i}`,
+        method: 'convo.send',
+        params: { cascadeId: cidA, text: 'spam', idempotencyKey: `k-obs-spam-${i}` },
+      });
+    }
+    const obsSpamMap = await nextResFrames(cObsRestart.reader, 5);
+    assert.equal(obsSpamMap.get('obs-spam-1').error, 'forbidden_role_observe');
+    assert.equal(obsSpamMap.get('obs-spam-3').error, 'forbidden_role_observe');
+    assert.equal(obsSpamMap.get('obs-spam-4').error, 'write_rate_limited');
+    assert.equal(obsSpamMap.get('obs-spam-5').error, 'write_rate_limited');
+    const obsRlAudits = gw.audit.readTail(50).filter((e) => e.event === 'ws_write_rate_limited' && e.deviceId === devObs.deviceId);
+    assert.equal(obsRlAudits.length, 1, 'rate-limit audit events must be throttled per device');
+
+    // P2: probeRemoteCapabilities returns null when attached tapCap.globalPreset is null instead of falling back to diskPreset
+    const fakeHome = path.join(tmpRoot, 'fake-home');
+    fs.mkdirSync(path.join(fakeHome, '.gemini', 'config'), { recursive: true });
+    fs.writeFileSync(path.join(fakeHome, '.gemini', 'config', 'config.json'), JSON.stringify({ userSettings: { globalPreset: 2 } }));
+    const probeScript = `
+      import assert from 'node:assert/strict';
+      const bridgeMod = await import(${JSON.stringify(pathToFileURL(path.join(REPO, 'core', 'daemon', 'remote-bridge.mjs')).href)});
+      const { attachedTargets } = await import(${JSON.stringify(pathToFileURL(path.join(REPO, 'core', 'daemon', 'env.mjs')).href)});
+      assert.equal(bridgeMod.readDiskGlobalPreset(), 2);
+      attachedTargets.set('host-null-preset', {
+        id: 'host-null-preset',
+        type: 'page',
+        hostConfirmed: true,
+        trustedContextId: 1,
+        ws: { readyState: 1 },
+        async send() {
+          return {
+            result: {
+              result: {
+                value: { ok: true, globalPreset: null, capabilities: { reduxSummaries: true, sendMessage: true, approval: true, cancel: true } },
+              },
+            },
+          };
+        },
+      });
+      const probed = await bridgeMod.probeRemoteCapabilities();
+      assert.equal(probed.hostAttached, true);
+      assert.equal(probed.globalPreset, null, 'attached host with globalPreset=null must stay null rather than stale diskPreset');
+    `;
+    execFileSync(process.execPath, ['--input-type=module', '-e', probeScript], {
+      env: { ...process.env, HOME: fakeHome },
+      stdio: 'pipe',
+    });
+  } finally {
+    for (const s of openSockets) {
+      try { s.destroy(); } catch {}
+    }
+    for (const srv of servers) {
+      await srv.close().catch(() => {});
+    }
+    await udsServer?.close().catch(() => {});
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   }
 });

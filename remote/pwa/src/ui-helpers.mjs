@@ -105,13 +105,27 @@ export function normalizeStepStatus(status) {
   return { label: s || 'STEP', tone: 'neutral' };
 }
 
+export function isSafeNonTurboPreset(preset) {
+  if (typeof preset === 'boolean' || preset === null || preset === undefined) return false;
+  if (typeof preset === 'string' && !/^\d+$/.test(preset.trim())) return false;
+  const n = Number(preset);
+  return n === 1 || n === 2;
+}
+
 export function formatPresetBadge(preset) {
+  if (typeof preset === 'boolean' || preset === null || preset === undefined) {
+    return { label: 'Preset 未知', tone: 'warn' };
+  }
+  if (typeof preset === 'string' && !/^\d+$/.test(preset.trim())) {
+    return { label: 'Preset 未知', tone: 'warn' };
+  }
   const n = Number(preset);
   if (n === 3) return { label: 'TURBO (3)', tone: 'danger' };
   if (n === 2) return { label: 'REVIEW (2)', tone: 'ok' };
   if (n === 1) return { label: 'SAFE (1)', tone: 'ok' };
-  if (Number.isFinite(n)) return { label: `Preset ${n}`, tone: 'neutral' };
-  return { label: 'Preset 未知', tone: 'neutral' };
+  if (n === 0) return { label: 'UNSPECIFIED (0)', tone: 'warn' };
+  if (Number.isFinite(n)) return { label: `Preset ${n}`, tone: 'warn' };
+  return { label: 'Preset 未知', tone: 'warn' };
 }
 
 export function normalizeWsStatus(status, detail = '') {
@@ -139,7 +153,7 @@ export function shortFingerprint(fp) {
 }
 
 export function requiresTurboAck(preset) {
-  return preset === null || preset === undefined || Number(preset) === 3 || !Number.isFinite(Number(preset));
+  return !isSafeNonTurboPreset(preset);
 }
 
 export function collectPendingApprovals(state) {

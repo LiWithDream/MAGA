@@ -54,6 +54,8 @@ const state = {
   draftText: '',
   draftIdempotencyKey: createIdempotencyKey(),
   turboWriteConfirmed: false,
+  pendingApproveKeys: new Map(),
+  cancelConfirmArmedCid: '',
   sendBusy: false,
   cancelBusy: false,
   approvingHash: '',
@@ -63,8 +65,25 @@ const state = {
 
 let wsClient = null;
 let snapshotRefreshTimer = null;
+let cancelConfirmTimer = null;
 let workspaceRefs = null;
 const rootEl = document.getElementById('app');
+
+function updateGlobalPreset(nextPreset) {
+  if (nextPreset === undefined) return;
+  if (nextPreset !== state.globalPreset) {
+    state.globalPreset = nextPreset;
+    state.turboWriteConfirmed = false;
+  }
+}
+
+function resetCancelConfirm() {
+  state.cancelConfirmArmedCid = '';
+  if (cancelConfirmTimer) {
+    clearTimeout(cancelConfirmTimer);
+    cancelConfirmTimer = null;
+  }
+}
 
 const pairView = createPairViewController({
   state,
@@ -108,6 +127,10 @@ function ensureWorkspaceShell() {
       state.streams.clear();
       state.selectedId = null;
       state.turboAcknowledged = false;
+      state.turboWriteConfirmed = false;
+      state.draftIdempotencyKey = createIdempotencyKey();
+      state.pendingApproveKeys.clear();
+      resetCancelConfirm();
       workspaceRefs = null;
       pairView.loadHealthForPairing();
     },
@@ -322,6 +345,8 @@ function formatWriteError(err) {
   if (code === 'waiting_step_mismatch') return '目标审批步骤已变化或已失效，已自动刷新最新状态';
   if (code === 'write_rate_limited') return '写操作过于频繁，请稍后再试';
   if (code === 'too_many_concurrent_writes') return '并发写请求过多，请等待当前操作完成';
+  if (code === 'idempotency_key_conflict') return '请求幂等键冲突，已重置请求标识，请重新确认后发送';
+  if (code === 'outcome_unknown') return '远端执行结果未知（请求超时或连接中断），已自动刷新会话状态，请确认是否已生效后再决定是否重发';
   return code;
 }
 
@@ -344,9 +369,9 @@ function syncComposerControls() {
     refs.composerRow.classList.add('rc-hidden');
   }
 
+  refs.turboWriteCheckbox.checked = Boolean(needTurboConfirm && state.turboWriteConfirmed);
   if (writable && needTurboConfirm) {
     refs.turboWriteLabel.classList.remove('rc-hidden');
-    refs.turboWriteCheckbox.checked = state.turboWriteConfirmed;
     refs.turboWriteCheckbox.disabled = state.sendBusy;
   } else {
     refs.turboWriteLabel.classList.add('rc-hidden');
@@ -364,7 +389,13 @@ function syncComposerControls() {
     state.sendBusy ||
     !state.draftText.trim() ||
     (needTurboConfirm && !state.turboWriteConfirmed);
-  refs.cancelBtn.textContent = state.cancelBusy ? '停止中…' : '停止';
+  if (state.cancelBusy) {
+    refs.cancelBtn.textContent = '停止中…';
+  } else if (state.cancelConfirmArmedCid && state.cancelConfirmArmedCid === state.selectedId) {
+    refs.cancelBtn.textContent = '确认停止？';
+  } else {
+    refs.cancelBtn.textContent = '停止';
+  }
   refs.cancelBtn.disabled = !writable || !online || !hasSelection || state.cancelBusy;
 
   if (state.actionError) {
@@ -384,29 +415,46 @@ function syncComposerControls() {
 async function handleSendDraft() {
   if (!wsClient || !state.selectedId || !canSteer() || state.sendBusy) return;
   if (!state.draftText.trim()) return;
-  if (requiresTurboAck(state.globalPreset) && !state.turboWriteConfirmed) {
+  const turboAckShown = requiresTurboAck(state.globalPreset);
+  const confirmed = Boolean(turboAckShown && state.turboWriteConfirmed);
+  if (turboAckShown && !confirmed) {
     state.actionError = '请先勾选 TURBO / 未知权限高危确认框';
     state.actionNotice = '';
     syncComposerControls();
     return;
   }
   const targetCid = state.selectedId;
+  const textSnapshot = state.draftText;
+  const keySnapshot = state.draftIdempotencyKey;
   state.sendBusy = true;
   state.actionError = '';
   state.actionNotice = '';
   syncComposerControls();
   try {
-    await wsClient.sendMessage(targetCid, state.draftText, {
-      idempotencyKey: state.draftIdempotencyKey,
-      turboWriteConfirmed: state.turboWriteConfirmed,
+    await wsClient.sendMessage(targetCid, textSnapshot, {
+      idempotencyKey: keySnapshot,
+      turboWriteConfirmed: confirmed,
     });
-    state.draftText = '';
-    state.draftIdempotencyKey = createIdempotencyKey();
-    state.actionNotice = '指令已发送至桌面端';
+    if (state.selectedId === targetCid) {
+      if (state.draftText === textSnapshot) {
+        state.draftText = '';
+      }
+      state.draftIdempotencyKey = createIdempotencyKey();
+      state.actionNotice = '指令已发送至桌面端';
+    }
     fetchAndRenderSnapshot(targetCid);
   } catch (err) {
-    state.actionError = formatWriteError(err);
+    if (err?.code === 'idempotency_key_conflict' || err?.code === 'outcome_unknown') {
+      state.draftIdempotencyKey = createIdempotencyKey();
+      if (err?.code === 'outcome_unknown') {
+        fetchAndRenderSnapshot(targetCid);
+      }
+    }
+    if (state.selectedId === targetCid) {
+      state.actionError = formatWriteError(err);
+    }
   } finally {
+    state.turboWriteConfirmed = false;
     state.sendBusy = false;
     syncComposerControls();
   }
@@ -415,7 +463,14 @@ async function handleSendDraft() {
 async function handleApproveStep(w, decision) {
   if (!wsClient || !state.selectedId || !canSteer() || state.approvingHash) return;
   const targetCid = state.selectedId;
-  state.approvingHash = String(w?.waitingStepHash || '');
+  const waitingHash = String(w?.waitingStepHash || '');
+  const approveMapKey = `${targetCid}:${w?.stepIndex ?? ''}:${waitingHash}:${decision}`;
+  let approveKey = state.pendingApproveKeys.get(approveMapKey);
+  if (!approveKey) {
+    approveKey = createIdempotencyKey();
+    state.pendingApproveKeys.set(approveMapKey, approveKey);
+  }
+  state.approvingHash = waitingHash;
   state.actionError = '';
   state.actionNotice = '';
   renderDetailTimeline();
@@ -423,15 +478,25 @@ async function handleApproveStep(w, decision) {
   try {
     await wsClient.approveWaitingStep(targetCid, {
       stepIndex: w.stepIndex,
-      waitingStepHash: w.waitingStepHash,
+      waitingStepHash: waitingHash,
       decision,
+      idempotencyKey: approveKey,
     });
-    state.actionNotice = decision === 'allow_once' ? '已允许本次执行 (Allow Once)' : '已拒绝该操作 (Deny)';
+    state.pendingApproveKeys.delete(approveMapKey);
+    if (state.selectedId === targetCid) {
+      state.actionNotice = decision === 'allow_once' ? '已允许本次执行 (Allow Once)' : '已拒绝该操作 (Deny)';
+    }
     refreshAllData();
   } catch (err) {
-    state.actionError = formatWriteError(err);
-    if (err?.code === 'waiting_step_mismatch') {
-      refreshAllData();
+    const code = err?.code;
+    if (code === 'waiting_step_mismatch' || code === 'idempotency_key_conflict' || code === 'outcome_unknown') {
+      state.pendingApproveKeys.delete(approveMapKey);
+      if (code === 'waiting_step_mismatch' || code === 'outcome_unknown') {
+        refreshAllData();
+      }
+    }
+    if (state.selectedId === targetCid) {
+      state.actionError = formatWriteError(err);
     }
   } finally {
     state.approvingHash = '';
@@ -443,16 +508,37 @@ async function handleApproveStep(w, decision) {
 async function handleCancelConvo() {
   if (!wsClient || !state.selectedId || !canSteer() || state.cancelBusy) return;
   const targetCid = state.selectedId;
+  if (state.cancelConfirmArmedCid !== targetCid) {
+    resetCancelConfirm();
+    state.cancelConfirmArmedCid = targetCid;
+    cancelConfirmTimer = setTimeout(() => {
+      if (state.cancelConfirmArmedCid === targetCid) {
+        state.cancelConfirmArmedCid = '';
+        cancelConfirmTimer = null;
+        syncComposerControls();
+      }
+    }, 4000);
+    syncComposerControls();
+    return;
+  }
+  resetCancelConfirm();
   state.cancelBusy = true;
   state.actionError = '';
   state.actionNotice = '';
   syncComposerControls();
   try {
     await wsClient.cancelConversation(targetCid, { killBackgroundTasks: false });
-    state.actionNotice = '已发送停止指令';
+    if (state.selectedId === targetCid) {
+      state.actionNotice = '已发送停止指令';
+    }
     refreshAllData();
   } catch (err) {
-    state.actionError = formatWriteError(err);
+    if (err?.code === 'outcome_unknown') {
+      refreshAllData();
+    }
+    if (state.selectedId === targetCid) {
+      state.actionError = formatWriteError(err);
+    }
   } finally {
     state.cancelBusy = false;
     syncComposerControls();
@@ -494,6 +580,9 @@ function renderTopStatus() {
         onClick: async () => {
           await clearDeviceIdentity().catch(() => {});
           state.identity = null;
+          state.turboWriteConfirmed = false;
+          state.pendingApproveKeys.clear();
+          resetCancelConfirm();
           workspaceRefs = null;
           pairView.loadHealthForPairing();
         },
@@ -668,7 +757,7 @@ function render() {
 function applyConvoListResult(result) {
   if (!result || typeof result !== 'object') return;
   if (result.source) state.source = result.source;
-  if (result.globalPreset !== undefined) state.globalPreset = result.globalPreset;
+  if (result.globalPreset !== undefined) updateGlobalPreset(result.globalPreset);
   if (Array.isArray(result.conversations)) {
     state.conversations = result.conversations;
     if (!state.selectedId && result.conversations.length > 0 && window.innerWidth >= 840) {
@@ -735,6 +824,13 @@ function scheduleSelectedSnapshotRefresh() {
 
 async function selectConversation(cascadeId) {
   if (!cascadeId || !UUID_RE.test(cascadeId)) return;
+  if (state.selectedId !== cascadeId) {
+    state.draftIdempotencyKey = createIdempotencyKey();
+    state.turboWriteConfirmed = false;
+    state.actionError = '';
+    state.actionNotice = '';
+    resetCancelConfirm();
+  }
   state.selectedId = cascadeId;
   state.mobileView = 'detail';
   state.snapshotError = '';
@@ -770,7 +866,7 @@ function handleTapDelta(delta) {
 
   if (kind === 'host_status') {
     if ('hostAttached' in data) state.hostAttached = Boolean(data.hostAttached);
-    if ('globalPreset' in data) state.globalPreset = data.globalPreset;
+    if ('globalPreset' in data) updateGlobalPreset(data.globalPreset);
     if ('capabilities' in data) state.capabilities = data.capabilities;
     if ('source' in data) state.source = data.source;
     renderTopStatus();
@@ -778,7 +874,7 @@ function handleTapDelta(delta) {
   }
 
   if (kind === 'summaries') {
-    if (data.globalPreset !== undefined) state.globalPreset = data.globalPreset;
+    if (data.globalPreset !== undefined) updateGlobalPreset(data.globalPreset);
     if (data.source) state.source = data.source;
     if (Array.isArray(data.conversations)) {
       state.conversations = data.conversations;
@@ -948,7 +1044,7 @@ function startWorkspaceSession() {
       }
       if (msg.health) {
         state.hostAttached = Boolean(msg.health.hostAttached);
-        state.globalPreset = msg.health.globalPreset ?? state.globalPreset;
+        if (msg.health.globalPreset !== undefined) updateGlobalPreset(msg.health.globalPreset);
         state.capabilities = msg.health.capabilities ?? state.capabilities;
       }
       if (Array.isArray(msg.conversations)) {

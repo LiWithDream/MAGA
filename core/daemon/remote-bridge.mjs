@@ -148,13 +148,15 @@ async function resolveHostForCascade(cascadeId) {
   if (hosts.length === 1) return hosts[0];
   const checks = await Promise.all(
     hosts.map(async (entry) => {
-      const ownRes = await invokeTapOnHost(entry, 'convo.owns', { cascadeId }, 2500);
-      if (!entry._remoteCap) {
-        const capRes = await evalOnHost(entry, 'window.__agRemoteTap ? window.__agRemoteTap.getCapabilities() : null', 2000);
-        if (capRes.ok && capRes.value && typeof capRes.value === 'object') {
-          entry._remoteCap = capRes.value;
-          entry._remoteCapScore = scoreHostCapabilities(capRes.value);
-        }
+      const [ownRes, capRes] = await Promise.all([
+        invokeTapOnHost(entry, 'convo.owns', { cascadeId }, 2000),
+        entry._remoteCap
+          ? Promise.resolve({ ok: true, value: entry._remoteCap })
+          : evalOnHost(entry, 'window.__agRemoteTap ? window.__agRemoteTap.getCapabilities() : null', 1500),
+      ]);
+      if (!entry._remoteCap && capRes?.ok && capRes.value && typeof capRes.value === 'object') {
+        entry._remoteCap = capRes.value;
+        entry._remoteCapScore = scoreHostCapabilities(capRes.value);
       }
       const owned = Boolean(ownRes.ok && ownRes.value?.ok && ownRes.value.owned);
       const active = Boolean(ownRes.ok && ownRes.value?.ok && ownRes.value.active);
@@ -167,8 +169,15 @@ async function resolveHostForCascade(cascadeId) {
   return checks[0].entry;
 }
 
+function isSafeNonTurboPreset(preset) {
+  if (typeof preset === 'boolean' || preset === null || preset === undefined) return false;
+  if (typeof preset === 'string' && !/^\d+$/.test(preset.trim())) return false;
+  const n = Number(preset);
+  return n === 1 || n === 2;
+}
+
 function isTurboPreset(preset) {
-  return preset === null || preset === undefined || Number(preset) === 3 || !Number.isFinite(Number(preset));
+  return !isSafeNonTurboPreset(preset);
 }
 
 function verifyUdsWriteToken(provided, expected) {
@@ -204,10 +213,13 @@ export async function probeRemoteCapabilities() {
 
   if (!primary) return base;
 
-  const tapCap =
-    primary._remoteCap ||
-    (await evalOnHost(primary, 'window.__agRemoteTap ? window.__agRemoteTap.getCapabilities() : null', 3000)).value ||
-    null;
+  const capRes = await evalOnHost(primary, 'window.__agRemoteTap ? window.__agRemoteTap.getCapabilities() : null', 2500);
+  const liveCap = capRes.ok && capRes.value && typeof capRes.value === 'object' ? capRes.value : null;
+  if (liveCap) {
+    primary._remoteCap = liveCap;
+    primary._remoteCapScore = scoreHostCapabilities(liveCap);
+  }
+  const tapCap = liveCap || primary._remoteCap || null;
   if (!tapCap || typeof tapCap !== 'object') return base;
 
   return {
@@ -223,7 +235,7 @@ export async function probeRemoteCapabilities() {
       diskRead: Boolean(DatabaseSync)
     },
     agVersion: tapCap.agVersion || null,
-    globalPreset: tapCap.globalPreset ?? diskPreset,
+    globalPreset: tapCap.globalPreset ?? null,
     tapActive: Boolean(state ? state.tapActive && tapCap.tapActive : tapCap.tapActive),
     activeStreams: state ? Array.from(state.watchedStreams.keys()) : tapCap.activeStreams || []
   };
@@ -507,7 +519,7 @@ async function handleConvoSend(params = {}) {
   }
 
   const host = await resolveHostForCascade(cascadeId);
-  const capRes = await evalOnHost(host, 'window.__agRemoteTap ? window.__agRemoteTap.getCapabilities() : null', 2500);
+  const capRes = await evalOnHost(host, 'window.__agRemoteTap ? window.__agRemoteTap.getCapabilities() : null', 2000);
   const preset = capRes.ok && capRes.value && typeof capRes.value === 'object' ? capRes.value.globalPreset : null;
   if (isTurboPreset(preset) && params.turboWriteConfirmed !== true) {
     throw Object.assign(new Error('turbo_write_confirmation_required'), { code: 'turbo_write_confirmation_required' });
@@ -517,7 +529,7 @@ async function handleConvoSend(params = {}) {
     host,
     'convo.send',
     { cascadeId, text, turboWriteConfirmed: Boolean(params.turboWriteConfirmed) },
-    12000
+    10000
   );
   if (!r.ok || !r.value?.ok) {
     const errCode = r.value?.error || r.error || 'send_failed';
@@ -549,7 +561,7 @@ async function handleConvoApprove(params = {}) {
     host,
     'convo.approve',
     { cascadeId, stepIndex, waitingStepHash, decision },
-    12000
+    10000
   );
   if (!r.ok || !r.value?.ok) {
     const errCode = r.value?.error || r.error || 'approve_failed';
@@ -568,7 +580,7 @@ async function handleConvoCancel(params = {}) {
     host,
     'convo.cancel',
     { cascadeId, killBackgroundTasks: Boolean(params?.killBackgroundTasks) },
-    10000
+    8000
   );
   if (!r.ok || !r.value?.ok) {
     const errCode = r.value?.error || r.error || 'cancel_failed';

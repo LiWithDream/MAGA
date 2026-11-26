@@ -528,7 +528,7 @@ export function createRemoteWsClient(identity, handlers = {}) {
         idempotencyKey,
         turboWriteConfirmed: Boolean(turboWriteConfirmed),
       },
-      16_000
+      25_000
     );
   }
 
@@ -551,7 +551,7 @@ export function createRemoteWsClient(identity, handlers = {}) {
         decision,
         idempotencyKey,
       },
-      16_000
+      22_000
     );
   }
 
@@ -566,7 +566,7 @@ export function createRemoteWsClient(identity, handlers = {}) {
         killBackgroundTasks: Boolean(killBackgroundTasks),
         idempotencyKey,
       },
-      12_000
+      18_000
     );
   }
 

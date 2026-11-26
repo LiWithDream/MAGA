@@ -125,6 +125,19 @@ export function bindSettingsRootEvents(root, {
         if (typeof window.__agyOpusGateTrigger === 'function') {
           window.__agyOpusGateTrigger('manual');
         }
+      } else if (act === 'sync-auto-compact-plugin') {
+        if (typeof window.__agProjectCall === 'function') {
+          const res = await window.__agProjectCall('syncAutoCompactPlugin', {}, 5000).catch(() => null);
+          if (res?.ok) flashToast('✓ 已同步 Auto-Compact 插件', '✓ Auto-Compact plugin synced');
+          else flashToast('同步插件失败', 'Plugin sync failed', 'error');
+        }
+      } else if (act === 'trigger-compact-now') {
+        closeDrawer({ restore: false });
+        const fn = window.__agClaudeUxBridge?.triggerConversationCompact;
+        if (typeof fn === 'function') {
+          const ok = await Promise.resolve(fn()).catch(() => false);
+          if (!ok) flashToast('当前会话暂不可压缩', 'Cannot compact right now', 'error');
+        }
       } else if (act === 'ai-sugg-save' && typeof window.__agProjectCall === 'function') {
         const { apiKey, model, baseUrl } = readAiSuggestionsInputs(root);
         const res = await window.__agProjectCall('saveProjectSuggestionsConfig', { apiKey, model, baseUrl }, 5000).catch(() => null);
@@ -210,6 +223,11 @@ export function bindSettingsRootEvents(root, {
         curCp[key] = nextVal;
         studioPrefs.patch({ opusGateCheckpoints: curCp });
         flashToast('✓ 已保存', '✓ Saved');
+      } else if (kind === 'ac-trigger') {
+        const curTr = Object.assign({ longTimer: true, modelRequest: true, highWater: false }, studioPrefs.get().autoCompactTriggers || {});
+        curTr[key] = nextVal;
+        studioPrefs.patch({ autoCompactTriggers: curTr });
+        flashToast('✓ 已保存', '✓ Saved');
       } else if (kind === 'ai-sugg' && typeof window.__agProjectCall === 'function') {
         const res = await window.__agProjectCall('saveProjectSuggestionsConfig', { [key]: nextVal }, 5000).catch(() => null);
         if (res?.ok) {
@@ -228,9 +246,13 @@ export function bindSettingsRootEvents(root, {
       const val = segBtn.getAttribute('data-ms-seg-val');
       if (kind === 'studio') {
         const prevMode = studioPrefs.get().opusGateMode;
+        const prevAcMode = studioPrefs.get().autoCompactMode;
         studioPrefs.patch({ [key]: val });
         if (key === 'opusGateMode' && prevMode === 'off' && val !== 'off' && typeof window.__agProjectCall === 'function') {
           window.__agProjectCall('syncOpusGatePlugin', {}, 5000).catch(() => {});
+        }
+        if (key === 'autoCompactMode' && prevAcMode === 'off' && val !== 'off' && typeof window.__agProjectCall === 'function') {
+          window.__agProjectCall('syncAutoCompactPlugin', {}, 5000).catch(() => {});
         }
         flashToast('✓ 已保存', '✓ Saved');
       } else if (kind === 'studio-num') {

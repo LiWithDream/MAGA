@@ -1,0 +1,11 @@
+{
+  "maga-auto-compact": {
+    "Stop": [
+      {
+        "type": "command",
+        "command": "node ./hooks/compact-check.mjs",
+        "timeout": 5
+      }
+    ]
+  }
+}

@@ -13,6 +13,7 @@ export const OWN_HOST_IDS = new Set([
   'agy-resume-pill',
   'agy-opus-gate-pill',
   'agy-opus-gate-menu',
+  'agy-auto-compact-pill',
   'agy-ov-usage-card',
   'agy-pd-usage-slot',
   'agy-pd-usage-card',

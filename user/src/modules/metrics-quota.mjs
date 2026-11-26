@@ -475,19 +475,36 @@ export function createMetricsQuotaModule(rt) {
     if (FEAT.overviewPanel) renderOverviewPanel(false);
   }
 
-  async function triggerConversationCompact() {
+  function hasLiveComposerDraft(boxArg) {
+    const compCtx = discoverComposerContextFromInputBox(boxArg);
+    if (compCtx && composerHasExistingDraft(compCtx)) return true;
+    const box = boxArg || getActiveInputBox();
+    const ed = box && box.querySelector('[data-lexical-editor="true"]');
+    if (ed) {
+      const txt = (ed.textContent || '').replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
+      if (txt.length > 0) return true;
+    }
+    return false;
+  }
+
+  async function triggerConversationCompact(opts = {}) {
     if (rtState.disposed) return false;
+    const expectedCid = opts && typeof opts.expectedCid === 'string' ? opts.expectedCid.trim() : '';
+    const requireEmptyDraft = Boolean(opts && opts.requireEmptyDraft);
     const curCid = getActiveCascadeId();
+    if (expectedCid && curCid !== expectedCid) return false;
+
     const cidKey = curCid || '__active__';
     const curStatus = detectCompactStatus(curCid);
     if (curStatus === 'compacting' || curStatus === 'compacted') return false;
 
-    const agentProps = discoverAgentInputProps();
+    const box = getActiveInputBox();
+    const agentProps = discoverAgentInputProps(box);
+    if (expectedCid && agentProps && agentProps.cascadeId && agentProps.cascadeId !== expectedCid) {
+      return false;
+    }
     if (isPaneCurrentlyRunning(agentProps)) return false;
-
-    rtState.manualCompactPending = { cascadeId: cidKey, startedAt: Date.now() };
-    syncCompactVisualState(true);
-    ensureCompactPollTimer();
+    if (requireEmptyDraft && hasLiveComposerDraft(box)) return false;
 
     try {
       if (agentProps && typeof agentProps.handleSubmit === 'function') {
@@ -498,10 +515,17 @@ export function createMetricsQuotaModule(rt) {
         );
         if (!compactDef || !compactDef.info) {
           /* Never fabricate a hard-coded SlashCommandInfo proto if official /compact definition is absent */
-          rtState.manualCompactPending = { cascadeId: '', startedAt: 0 };
-          syncCompactVisualState(true);
           return false;
         }
+        /* Synchronous final guard right before handleSubmit so a draft typed concurrently is never wiped */
+        if (expectedCid && getActiveCascadeId() !== expectedCid) return false;
+        if (isPaneCurrentlyRunning(agentProps)) return false;
+        if (requireEmptyDraft && hasLiveComposerDraft(box)) return false;
+
+        rtState.manualCompactPending = { cascadeId: cidKey, startedAt: Date.now() };
+        syncCompactVisualState(true);
+        ensureCompactPollTimer();
+
         const slashInfo = compactDef.info;
         const submitItems = [
           {
@@ -534,8 +558,12 @@ export function createMetricsQuotaModule(rt) {
         return true;
       }
 
-      const compCtx = discoverComposerContextFromInputBox();
-      if (compCtx && !composerHasExistingDraft(compCtx)) {
+      const compCtx = discoverComposerContextFromInputBox(box);
+      if (compCtx && !hasLiveComposerDraft(box)) {
+        if (expectedCid && getActiveCascadeId() !== expectedCid) return false;
+        rtState.manualCompactPending = { cascadeId: cidKey, startedAt: Date.now() };
+        syncCompactVisualState(true);
+        ensureCompactPollTimer();
         setComposerText(compCtx, '/compact ');
         const ref = compCtx.inputBoxRef && compCtx.inputBoxRef.current;
         if (ref && typeof ref.submit === 'function') {

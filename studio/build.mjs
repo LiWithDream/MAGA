@@ -89,6 +89,11 @@ const DEFAULT_PREFS = {
   opusGateMinQuotaWeeklyPct: 15,
   opusGateMaxAutoPerSession: 2,
   opusGateCheckpoints: { plan: true, risk: true, debug: true, stop: true },
+  autoCompactMode: 'semi',
+  autoCompactThresholdPct: 50,
+  autoCompactMinWaitSec: 300,
+  autoCompactHighWaterPct: 0,
+  autoCompactTriggers: { longTimer: true, modelRequest: true, highWater: false },
   motionLevel: 'full',
 };
 

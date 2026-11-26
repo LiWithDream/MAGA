@@ -34,6 +34,8 @@ export function getViewMeta(view, L) {
       return { title: L('Effort Bar 与主题皮肤', 'Effort Bar & Themes'), parent: L('模型与思考', 'Models') };
     case 'stream':
       return { title: L('对话与过程流', 'Conversation & Stream'), parent: L('MAGA 设置', 'MAGA') };
+    case 'stream-auto-compact':
+      return { title: L('智能压缩上下文', 'Auto-Compact'), parent: L('对话与过程流', 'Conversation & Stream') };
     case 'workspace':
       return { title: L('工作区与面板', 'Workspace & Panels'), parent: L('MAGA 设置', 'MAGA') };
     case 'workspace-ai-suggestions':
@@ -544,6 +546,15 @@ export function renderL3OpusGate(p, { L }) {
 
 export function renderL2Stream(p, base, { studioPrefs, L }) {
   const stepMode = studioPrefs.getStepStreamMode();
+  const acMode = p.autoCompactMode || 'semi';
+  const acModeLbl =
+    acMode === 'auto'
+      ? L('全自动', 'Auto')
+      : acMode === 'off'
+        ? L('关闭', 'Off')
+        : L('半自动', 'Semi-auto');
+  const acMin = Math.max(1, Math.round((p.autoCompactMinWaitSec ?? 300) / 60));
+  const acSum = acMode === 'off' ? acModeLbl : `${acModeLbl} · ≥${p.autoCompactThresholdPct ?? 50}% / ${acMin}m`;
   return `
       <div class="agy-ms-card">
         ${renderSwitchRow('hideThinkingProse', 'studio', L('隐藏思考过程正文', 'Hide Thinking Prose'), L('开启时隐藏英文 Thought 正文与展开箭头，需要查看推理细节时可随时关闭', 'Hides verbose Thought bodies & chevrons; turn off to inspect reasoning'), p.hideThinkingProse)}
@@ -551,8 +562,83 @@ export function renderL2Stream(p, base, { studioPrefs, L }) {
           ['compact', L('紧凑折叠', 'Compact')],
           ['expanded', L('展开摘要', 'Expanded')],
         ], stepMode)}
+        ${renderDrillRow('stream-auto-compact', L('智能压缩上下文 (Auto-Compact)', 'Auto-Compact'), L('高上下文且设了长定时等待时，回合结束趁缓存未失效自动触发 /compact', 'Runs /compact right after long-wait or high-context turns while cache is warm'), acSum)}
         ${renderSwitchRow('resumeBannerEnabled', 'studio', L('中断恢复胶囊 (Resume)', 'Interrupted Task Resume Pill'), L('检测到对话因崩溃、超时或网络意外中断时在底栏显示一键继续按钮', 'Shows one-click Resume pill when a conversation terminated mid-task'), p.resumeBannerEnabled)}
         ${renderSwitchRow('claudeUxCodeFold', 'base', L('长代码块折叠与吸顶', 'Long Code Folding (>40 lines)'), L('超过 40 行的代码块自动折叠为预览并保持语言与复制栏吸顶', 'Collapses long code blocks with sticky language & copy bar'), base.modules?.claudeUxCodeFold !== false)}
+      </div>`;
+}
+
+export function renderL3AutoCompact(p, { L }) {
+  const tr = p.autoCompactTriggers || { longTimer: true, modelRequest: true, highWater: false };
+  return `
+      <div class="agy-ms-sec-hdr">${esc(L('自动压缩策略', 'Compaction Policy'))}</div>
+      <div class="agy-ms-card">
+        ${renderSegRow(
+          'autoCompactMode',
+          'studio',
+          L('工作模式', 'Execution Mode'),
+          L('半自动在底栏展示一键建议胶囊；全自动在回合落定且输入框无草稿时直接静默执行 /compact', 'Semi-auto shows a one-click dock pill; Auto runs /compact silently when idle & draft-free'),
+          [
+            ['off', L('关闭', 'Off')],
+            ['semi', L('半自动', 'Semi-auto')],
+            ['auto', L('全自动', 'Auto')],
+          ],
+          p.autoCompactMode || 'semi'
+        )}
+        ${renderSegRow(
+          'autoCompactThresholdPct',
+          'studio-num',
+          L('长等待触发上下文阈值', 'Long-Wait Context Threshold'),
+          L('设了长定时器且上下文达到此百分比时触发压缩', 'Trigger compaction when context reaches this % before a long timer'),
+          [
+            ['40', '40%'],
+            ['50', '50%'],
+            ['60', '60%'],
+            ['70', '70%'],
+          ],
+          String(p.autoCompactThresholdPct ?? 50)
+        )}
+        ${renderSegRow(
+          'autoCompactMinWaitSec',
+          'studio-num',
+          L('长定时器判定阈值', 'Minimum Timer Wait'),
+          L('定时器/Cron 间隔达到此时间（Prompt Cache 易过期区间）才介入', 'Minimum timer or cron interval before triggering compaction'),
+          [
+            ['180', '3m'],
+            ['300', '5m'],
+            ['600', '10m'],
+            ['900', '15m'],
+          ],
+          String(p.autoCompactMinWaitSec ?? 300)
+        )}
+      </div>
+
+      <div class="agy-ms-sec-hdr">${esc(L('触发条件', 'Triggers'))}</div>
+      <div class="agy-ms-card">
+        ${renderSwitchRow('longTimer', 'ac-trigger', L('长定时等待前趁热压缩', 'Before Long Timers / Crons'), L('在长等待回合结束瞬间趁 Prompt Cache 未过期执行 /compact', 'Compacts right after setting a long wait while Prompt Cache is still warm'), tr.longTimer !== false)}
+        ${renderSwitchRow('modelRequest', 'ac-trigger', L('允许模型主动请求压缩', 'Agent-Requested Compaction'), L('允许模型在复杂阶段收尾时调用 auto-compact 技能排队压缩', 'Allows the agent to queue end-of-turn compaction via the auto-compact skill'), tr.modelRequest !== false)}
+        ${renderSwitchRow('highWater', 'ac-trigger', L('纯高水位线自动保护', 'Pure High-Water Guard'), L('无定时器时，只要上下文超过下方高水位阈值也在回合结束后触发', 'Also triggers after any turn exceeding the high-water % below'), tr.highWater === true)}
+        ${renderSegRow(
+          'autoCompactHighWaterPct',
+          'studio-num',
+          L('高水位保护阈值', 'High-Water Threshold'),
+          L('仅在开启「纯高水位线自动保护」时生效', 'Active only when Pure High-Water Guard is enabled'),
+          [
+            ['0', L('关闭', 'Off')],
+            ['75', '75%'],
+            ['80', '80%'],
+            ['85', '85%'],
+          ],
+          String(p.autoCompactHighWaterPct ?? 0)
+        )}
+      </div>
+
+      <div class="agy-ms-sec-hdr">${esc(L('原生插件与手动触发', 'Native Plugin & Manual Action'))}</div>
+      <div class="agy-ms-card">
+        <div class="agy-ms-tools">
+          <button type="button" class="agy-ms-btn" data-ms-action="sync-auto-compact-plugin">${esc(L('同步原生插件', 'Sync Native Plugin'))}</button>
+          <button type="button" class="agy-ms-btn" data-ms-action="trigger-compact-now">${esc(L('立即压缩当前会话', 'Compact Now'))}</button>
+        </div>
       </div>`;
 }
 

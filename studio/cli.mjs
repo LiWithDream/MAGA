@@ -27,6 +27,11 @@ import {
 } from './build.mjs';
 import { collectUsageStatsAsync } from './daemon/usage-service.mjs';
 import { isOpusGatePluginInstalled, syncOpusGatePlugin } from './daemon/opus-gate-service.mjs';
+import {
+  isAutoCompactPluginInstalled,
+  syncAutoCompactPlugin,
+  verifyLiveScheduleStepDecoder,
+} from './daemon/auto-compact-service.mjs';
 import { QUOTA_STATE_FILE } from '../core/daemon/env.mjs';
 import { evaluateDeployGuard, readDeployMeta } from './deploy-meta.mjs';
 
@@ -186,6 +191,8 @@ async function runDoctor() {
     fastIoRuleInstalled: hasFastIo,
     opusGatePluginInstalled: isOpusGatePluginInstalled(),
     opusGateQuotaStatePresent: existsSync(QUOTA_STATE_FILE),
+    autoCompactPluginInstalled: isAutoCompactPluginInstalled(),
+    autoCompactDecoder: verifyLiveScheduleStepDecoder(),
     proxyDiagnostics: collectProxyDiagnostics(),
     usageSummary: {
       daysCount: usage.days.length,
@@ -243,15 +250,18 @@ try {
       ? { ok: true, skipped: true, reason: '--no-rules' }
       : syncFastIoRules();
     const pluginRes = syncOpusGatePlugin();
-    console.log(JSON.stringify({ ok: true, command: 'install', deploy: deployRes, rules: rulesRes, opusGatePlugin: pluginRes }, null, 2));
+    const compactPluginRes = syncAutoCompactPlugin();
+    console.log(JSON.stringify({ ok: true, command: 'install', deploy: deployRes, rules: rulesRes, opusGatePlugin: pluginRes, autoCompactPlugin: compactPluginRes }, null, 2));
   } else if (cmd === 'deploy') {
     const res = await deployStudio({ allowNonMain: allowNonMainDeploy });
     await applyDefaultOrchestratorModelPreference();
-    console.log(JSON.stringify(res, null, 2));
+    const compactPluginRes = syncAutoCompactPlugin();
+    console.log(JSON.stringify({ ...res, autoCompactPlugin: compactPluginRes }, null, 2));
   } else if (cmd === 'sync-rules') {
     const rulesRes = syncFastIoRules();
     const pluginRes = syncOpusGatePlugin();
-    console.log(JSON.stringify({ ...rulesRes, opusGatePlugin: pluginRes }, null, 2));
+    const compactPluginRes = syncAutoCompactPlugin();
+    console.log(JSON.stringify({ ...rulesRes, opusGatePlugin: pluginRes, autoCompactPlugin: compactPluginRes }, null, 2));
   } else if (cmd === 'doctor') {
     const report = await runDoctor();
     console.log(JSON.stringify(report, null, 2));
@@ -259,7 +269,8 @@ try {
   } else if (cmd === 'rollback') {
     const rollbackRes = rollbackStudio();
     const pluginRes = syncOpusGatePlugin({ remove: true });
-    console.log(JSON.stringify({ ...rollbackRes, opusGatePlugin: pluginRes }, null, 2));
+    const compactPluginRes = syncAutoCompactPlugin({ remove: true });
+    console.log(JSON.stringify({ ...rollbackRes, opusGatePlugin: pluginRes, autoCompactPlugin: compactPluginRes }, null, 2));
   } else {
     console.error(`Unknown command: ${cmd}\nUse: install | deploy | sync-rules | doctor | rollback`);
     process.exit(1);

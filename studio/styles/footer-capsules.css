@@ -398,8 +398,8 @@ button[data-testid="subagent-tab-open-full-view"] + button[data-testid="sidebar-
   font-size: 11.5px !important;
 }
 
-/* Order 7: Any unknown extra native chip (excludes our styled subagent, resume & opus-gate capsules) */
-.agy-composer-footer > div:first-child > *:not(button:first-of-type):not(input):not([data-agy-picker-host]):not([data-agy-sub-pill]):not(#ag-claude-ctx-ring):not(#ag-live-metrics-pill):not(#agy-main-subagent-pill):not(#agy-resume-pill):not(#agy-opus-gate-pill):not([data-agy-native-sub-chip="1"]):not([data-agy-model-wrap="1"]):not([data-deck-model-bubble="hidden"]) {
+/* Order 7: Any unknown extra native chip (excludes our styled subagent, resume, opus-gate & auto-compact capsules) */
+.agy-composer-footer > div:first-child > *:not(button:first-of-type):not(input):not([data-agy-picker-host]):not([data-agy-sub-pill]):not(#ag-claude-ctx-ring):not(#ag-live-metrics-pill):not(#agy-main-subagent-pill):not(#agy-resume-pill):not(#agy-opus-gate-pill):not(#agy-auto-compact-pill):not([data-agy-native-sub-chip="1"]):not([data-agy-model-wrap="1"]):not([data-deck-model-bubble="hidden"]) {
   order: 7 !important;
   display: inline-flex !important;
   align-items: center !important;
@@ -419,7 +419,7 @@ button[data-testid="subagent-tab-open-full-view"] + button[data-testid="sidebar-
   white-space: nowrap !important;
   transition: background-color 140ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 140ms cubic-bezier(0.22, 1, 0.36, 1), color 140ms ease !important;
 }
-.agy-composer-footer > div:first-child > *:not(button:first-of-type):not(input):not([data-agy-picker-host]):not([data-agy-sub-pill]):not(#ag-claude-ctx-ring):not(#ag-live-metrics-pill):not(#agy-main-subagent-pill):not(#agy-resume-pill):not(#agy-opus-gate-pill):not([data-agy-native-sub-chip="1"]):not([data-agy-model-wrap="1"]):not([data-deck-model-bubble="hidden"]):hover {
+.agy-composer-footer > div:first-child > *:not(button:first-of-type):not(input):not([data-agy-picker-host]):not([data-agy-sub-pill]):not(#ag-claude-ctx-ring):not(#ag-live-metrics-pill):not(#agy-main-subagent-pill):not(#agy-resume-pill):not(#agy-opus-gate-pill):not(#agy-auto-compact-pill):not([data-agy-native-sub-chip="1"]):not([data-agy-model-wrap="1"]):not([data-deck-model-bubble="hidden"]):hover {
   background-color: var(--agy-pill-bg-hover) !important;
   box-shadow: inset 0 0 0 1px var(--agy-pill-border-hover) !important;
 }
@@ -1797,6 +1797,80 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) :is(#ag-claude-quota-popov
 #agy-opus-gate-menu .agy-opus-act-d {
   font-size: 10.5px !important;
   color: var(--muted-foreground, #787774) !important;
+}
+
+/* ==========================================================================
+ * Auto-Compact Suggestion Capsule (#agy-auto-compact-pill)
+ * ========================================================================== */
+
+#agy-auto-compact-pill#agy-auto-compact-pill {
+  --agy-ac-color: #0D9488;
+  order: 0 !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  height: 28px !important;
+  padding: 0 3px 0 0 !important;
+  border-radius: 8px !important;
+  flex-shrink: 0 !important;
+  font-family: var(--font-sans) !important;
+  background-color: color-mix(in srgb, var(--agy-ac-color) 11%, var(--agy-pill-bg)) !important;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--agy-ac-color) 32%, var(--agy-pill-border)) !important;
+  transition: background-color 140ms ease, box-shadow 140ms ease !important;
+}
+:is(html[data-ag-theme-mode="dark"], html.dark, body.dark) #agy-auto-compact-pill#agy-auto-compact-pill {
+  --agy-ac-color: #2DD4BF;
+  background-color: color-mix(in srgb, var(--agy-ac-color) 13%, var(--agy-pill-bg)) !important;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--agy-ac-color) 36%, var(--agy-pill-border)) !important;
+}
+#agy-auto-compact-pill#agy-auto-compact-pill:hover {
+  background-color: color-mix(in srgb, var(--agy-ac-color) 18%, var(--agy-pill-bg-hover)) !important;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--agy-ac-color) 48%, var(--agy-pill-border-hover)) !important;
+}
+#agy-auto-compact-pill .agy-ac-go {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 5px !important;
+  height: 100% !important;
+  padding: 0 5px 0 8.5px !important;
+  border: none !important;
+  background: transparent !important;
+  color: color-mix(in srgb, var(--agy-ac-color) 84%, var(--foreground)) !important;
+  font-family: inherit !important;
+  font-size: 12px !important;
+  font-weight: 500 !important;
+  line-height: 16px !important;
+  white-space: nowrap !important;
+  cursor: pointer !important;
+}
+#agy-auto-compact-pill .agy-ac-bolt {
+  color: var(--agy-ac-color) !important;
+  font-size: 11px !important;
+  line-height: 1 !important;
+}
+#agy-auto-compact-pill .agy-ac-dismiss {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 20px !important;
+  height: 20px !important;
+  padding: 0 !important;
+  border: none !important;
+  border-radius: 5px !important;
+  background: transparent !important;
+  color: color-mix(in srgb, var(--agy-ac-color) 65%, var(--muted-foreground)) !important;
+  cursor: pointer !important;
+  opacity: 0.72 !important;
+}
+#agy-auto-compact-pill .agy-ac-dismiss:hover {
+  opacity: 1 !important;
+  background-color: color-mix(in srgb, var(--agy-ac-color) 16%, transparent) !important;
+}
+.agy-composer-footer[data-agy-dock-tier="icon"] #agy-auto-compact-pill .agy-ac-label {
+  display: none !important;
+}
+.agy-composer-footer[data-agy-dock-tier="icon"] #agy-auto-compact-pill .agy-ac-go {
+  padding: 0 3px 0 7px !important;
+  gap: 0 !important;
 }
 
 /* Style B: Subtle Centered Timeline Divider replacing synthetic Resume user bubbles */

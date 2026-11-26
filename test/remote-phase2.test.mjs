@@ -899,6 +899,16 @@ test('Phase 2 Dual-Form UI regressions: layout mode, Overview panel, code copy &
     assert.equal(userCard.getAttribute('data-role'), 'user');
     assert.equal(botCard.getAttribute('data-role'), 'assistant');
     assert.equal(toolCard.getAttribute('data-role'), 'tool');
+
+    // 5. Dual-UI polish regressions: Overview sync on host_status/onStatus, auto-refresh & read-only dock CSS
+    const appSrc = fs.readFileSync(path.join(PWA_DIR, 'src', 'app.mjs'), 'utf8');
+    const cssSrc = fs.readFileSync(path.join(PWA_DIR, 'src', 'styles.css'), 'utf8');
+    assert.match(appSrc, /if\s*\(kind\s*===\s*'host_status'\)[\s\S]*?renderStudioPanels\(\)/);
+    assert.match(appSrc, /if\s*\(!wasAttached\s*&&\s*state\.hostAttached\)\s*\{\s*refreshAllData\(\);/);
+    assert.match(appSrc, /onStatus:[\s\S]*?renderStudioPanels\(\)/);
+    assert.ok(cssSrc.includes('.rc-composer-card[data-writable="false"]'));
+    assert.ok(cssSrc.includes('.rc-group-subagent'));
+    assert.equal(cssSrc.includes(':has('), false);
   } finally {
     if (prevDoc) Object.defineProperty(globalThis, 'document', prevDoc);
     else delete globalThis.document;

@@ -594,6 +594,10 @@ input {
   white-space: nowrap;
 }
 
+.rc-group-subagent {
+  margin-left: auto;
+}
+
 .rc-chip {
   min-height: 26px;
   padding: 0 9px;
@@ -1231,6 +1235,21 @@ input {
   padding: 10px 12px 8px;
   background: var(--rc-surface);
   box-shadow: var(--rc-shadow);
+}
+
+.rc-app[data-layout-mode="desktop"] .rc-composer-card[data-writable="false"] {
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  padding: 0;
+}
+
+.rc-app[data-layout-mode="desktop"] .rc-composer-card[data-writable="false"] .rc-dock-aux {
+  justify-content: flex-end;
+}
+
+.rc-app[data-layout-mode="desktop"] .rc-composer-card[data-writable="false"][data-has-selection="false"] {
+  display: none;
 }
 
 .rc-composer-row {

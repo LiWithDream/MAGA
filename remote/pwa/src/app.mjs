@@ -17,6 +17,11 @@ import {
 import { renderOverviewPanel } from './overview-panel.mjs';
 import { createPairViewController } from './pair-view.mjs';
 import {
+  renderFilterChipsView,
+  renderSidebarListView,
+} from './sidebar-view.mjs';
+import {
+  renderMobileMoreMenu,
   renderOpusGateBanner,
   renderResumeBanner,
 } from './studio-panel.mjs';
@@ -25,16 +30,11 @@ import {
   DESKTOP_BREAKPOINT_PX,
   UUID_RE,
   clearNode,
-  collectPendingApprovals,
   copyTextWithFeedback,
   el,
-  filterConversations,
   formatPresetBadge,
-  formatRelativeTime,
-  getEffectiveWaitingCount,
   isRunningStatus,
   mergeSummariesDelta,
-  normalizeRunStatus,
   normalizeWsStatus,
   requiresTurboAck,
   resolveLayoutMode,
@@ -118,6 +118,7 @@ const state = {
   cancelConfirmArmedCid: '',
   studioOverview: null,
   studioDrawerOpen: false,
+  moreMenuOpen: false,
   selectedProjectId: '',
   resumeState: null,
   modelCatalog: null,
@@ -141,9 +142,27 @@ let modelReqSeq = 0;
 let studioOverviewRetryTimer = null;
 let streamTickTimer = null;
 let cancelConfirmTimer = null;
+let actionNoticeTimer = null;
 let workspaceRefs = null;
 let globalListenersBound = false;
 const rootEl = document.getElementById('app');
+
+function setActionNotice(msg) {
+  state.actionNotice = String(msg || '');
+  if (actionNoticeTimer) {
+    clearTimeout(actionNoticeTimer);
+    actionNoticeTimer = null;
+  }
+  if (state.actionNotice) {
+    actionNoticeTimer = setTimeout(() => {
+      actionNoticeTimer = null;
+      if (state.actionNotice && state.identity && workspaceRefs) {
+        state.actionNotice = '';
+        syncComposerControls();
+      }
+    }, 3400);
+  }
+}
 
 function clearStreamTickTimer() {
   if (streamTickTimer) {
@@ -204,6 +223,11 @@ function applyLayoutAttrs() {
     workspaceRefs.navChatsBtn.setAttribute('aria-pressed', state.mobileTab === 'chats' ? 'true' : 'false');
     workspaceRefs.navApprovalsBtn.setAttribute('aria-pressed', state.mobileTab === 'approvals' ? 'true' : 'false');
     workspaceRefs.navOverviewBtn.setAttribute('aria-pressed', state.mobileTab === 'overview' ? 'true' : 'false');
+    workspaceRefs.draftInput.placeholder =
+      resolvedMode === 'mobile'
+        ? '输入指令…'
+        : '输入指令继续当前会话（Ctrl/Cmd + Enter 发送，可 Ctrl/Cmd+V 粘贴截图）…';
+    renderMoreMenu();
   }
 }
 
@@ -219,8 +243,10 @@ function ensureGlobalUiListeners() {
     });
   });
   window.addEventListener('keydown', (ev) => {
-    if (ev.key === 'Escape' && state.modelPopoverOpen) {
+    if (ev.key === 'Escape' && (state.modelPopoverOpen || state.moreMenuOpen)) {
       state.modelPopoverOpen = false;
+      state.moreMenuOpen = false;
+      renderMoreMenu();
       syncComposerControls();
       return;
     }
@@ -250,8 +276,16 @@ function ensureGlobalUiListeners() {
   });
   if (typeof document !== 'undefined') {
     document.addEventListener('click', (ev) => {
-      if (!state.modelPopoverOpen || !workspaceRefs?.composerCard) return;
       const path = typeof ev.composedPath === 'function' ? ev.composedPath() : [];
+      if (state.moreMenuOpen && workspaceRefs?.moreMenu) {
+        const insideMenu =
+          path.includes(workspaceRefs.moreMenu) || workspaceRefs.moreMenu.contains(ev.target);
+        if (!insideMenu) {
+          state.moreMenuOpen = false;
+          renderMoreMenu();
+        }
+      }
+      if (!state.modelPopoverOpen || !workspaceRefs?.composerCard) return;
       if (path.includes(workspaceRefs.composerCard) || workspaceRefs.composerCard.contains(ev.target)) {
         return;
       }
@@ -284,6 +318,74 @@ const pairView = createPairViewController({
   onPaired: () => startWorkspaceSession(),
 });
 
+async function handleUnpairDevice() {
+  state.moreMenuOpen = false;
+  if (wsClient) {
+    wsClient.dispose();
+    wsClient = null;
+  }
+  await clearDeviceIdentity().catch(() => {});
+  state.identity = null;
+  state.conversations = [];
+  state.snapshots.clear();
+  state.streams.clear();
+  state.selectedId = null;
+  state.mobileView = 'list';
+  state.mobileTab = 'chats';
+  state.turboAcknowledged = false;
+  state.turboWriteConfirmed = false;
+  state.draftMedia = [];
+  state.draftIdempotencyKey = createIdempotencyKey();
+  state.pendingApproveKeys.clear();
+  state.pendingResumeKeys.clear();
+  state.studioOverview = null;
+  state.studioDrawerOpen = false;
+  state.selectedProjectId = '';
+  state.resumeState = null;
+  state.modelCatalog = null;
+  state.modelPopoverOpen = false;
+  state.modelSelectBusy = false;
+  state.streamStartedAt = 0;
+  setActionNotice('');
+  clearStreamTickTimer();
+  clearStudioOverviewRetry();
+  resetCancelConfirm();
+  workspaceRefs = null;
+  pairView.loadHealthForPairing();
+}
+
+function renderMoreMenu() {
+  renderMobileMoreMenu(workspaceRefs?.moreMenu, {
+    open: state.moreMenuOpen,
+    hostLine: state.hostAttached ? `CDP 在线 (${state.source || 'cdp'})` : '宿主离线 · 只读',
+    role: state.identity?.role || 'observe',
+    presetLabel: formatPresetBadge(state.globalPreset).label,
+    layoutLabel: layoutButtonLabel(state.layoutPref),
+    onCycleLayout: () => {
+      const order = ['auto', 'desktop', 'mobile'];
+      const next = order[(order.indexOf(state.layoutPref) + 1) % order.length];
+      state.layoutPref = next;
+      writeStoredPref(STORAGE_KEYS.layoutPref, next);
+      state.moreMenuOpen = false;
+      applyLayoutAttrs();
+      renderSidebarList();
+    },
+    onOpenOverview: () => {
+      state.moreMenuOpen = false;
+      state.mobileTab = 'overview';
+      state.mobileView = 'list';
+      applyLayoutAttrs();
+      renderStudioPanels();
+    },
+    onRefreshAll: () => {
+      state.moreMenuOpen = false;
+      renderMoreMenu();
+      refreshAllData();
+    },
+    onUnpair: () => handleUnpairDevice(),
+  });
+}
+
 function ensureWorkspaceShell() {
   if (workspaceRefs && rootEl.contains(workspaceRefs.topbar)) {
     return workspaceRefs;
@@ -292,7 +394,7 @@ function ensureWorkspaceShell() {
 
   const brandDot = el('span', { className: 'rc-brand-dot' });
   const wsPill = el('span', { className: 'rc-pill' });
-  const hostPill = el('span', { className: 'rc-pill' });
+  const hostPill = el('span', { className: 'rc-pill rc-desktop-only' });
   const presetPill = el('span', { className: 'rc-pill rc-desktop-only' });
   const devicePill = el('span', { className: 'rc-pill rc-desktop-only' });
 
@@ -310,7 +412,7 @@ function ensureWorkspaceShell() {
 
   const layoutModeBtn = el('button', {
     type: 'button',
-    className: 'rc-btn is-sm',
+    className: 'rc-btn is-sm rc-desktop-only',
     title: '切换桌面 / 移动视图适配模式',
     text: layoutButtonLabel(state.layoutPref),
     onClick: () => {
@@ -337,49 +439,44 @@ function ensureWorkspaceShell() {
 
   const refreshBtn = el('button', {
     type: 'button',
-    className: 'rc-btn is-sm',
+    className: 'rc-btn is-sm rc-desktop-only',
     text: '刷新',
     onClick: () => refreshAllData(),
   });
 
   const unpairBtn = el('button', {
     type: 'button',
-    className: 'rc-btn is-sm is-danger',
+    className: 'rc-btn is-sm is-danger rc-desktop-only',
     text: '重配对',
-    onClick: async () => {
-      if (wsClient) {
-        wsClient.dispose();
-        wsClient = null;
-      }
-      await clearDeviceIdentity().catch(() => {});
-      state.identity = null;
-      state.conversations = [];
-      state.snapshots.clear();
-      state.streams.clear();
-      state.selectedId = null;
-      state.mobileView = 'list';
-      state.mobileTab = 'chats';
-      state.turboAcknowledged = false;
-      state.turboWriteConfirmed = false;
-      state.draftMedia = [];
-      state.draftIdempotencyKey = createIdempotencyKey();
-      state.pendingApproveKeys.clear();
-      state.pendingResumeKeys.clear();
-      state.studioOverview = null;
-      state.studioDrawerOpen = false;
-      state.selectedProjectId = '';
-      state.resumeState = null;
-      state.modelCatalog = null;
-      state.modelPopoverOpen = false;
-      state.modelSelectBusy = false;
-      state.streamStartedAt = 0;
-      clearStreamTickTimer();
-      clearStudioOverviewRetry();
-      resetCancelConfirm();
-      workspaceRefs = null;
-      pairView.loadHealthForPairing();
-    },
+    onClick: () => handleUnpairDevice(),
   });
+
+  const toggleMoreMenu = (ev) => {
+    ev?.stopPropagation?.();
+    state.moreMenuOpen = !state.moreMenuOpen;
+    if (state.moreMenuOpen) state.modelPopoverOpen = false;
+    renderMoreMenu();
+  };
+
+  const mobileRefreshBtn = el('button', {
+    type: 'button',
+    className: 'rc-icon-btn rc-mobile-only',
+    'aria-label': '刷新',
+    title: '刷新',
+    text: '↻',
+    onClick: () => refreshAllData(),
+  });
+
+  const mobileMoreBtn = el('button', {
+    type: 'button',
+    className: 'rc-icon-btn rc-mobile-only',
+    'aria-label': '更多选项',
+    title: '更多选项',
+    text: '⋯',
+    onClick: toggleMoreMenu,
+  });
+
+  const moreMenu = el('div', { className: 'rc-more-menu rc-hidden', role: 'menu' });
 
   const topbar = el(
     'header',
@@ -394,7 +491,17 @@ function ensureWorkspaceShell() {
       hostPill,
       presetPill
     ),
-    el('div', { className: 'rc-topbar-right' }, devicePill, layoutModeBtn, refreshBtn, overviewToggleBtn, unpairBtn)
+    el(
+      'div',
+      { className: 'rc-topbar-right' },
+      devicePill,
+      layoutModeBtn,
+      refreshBtn,
+      overviewToggleBtn,
+      unpairBtn,
+      mobileRefreshBtn,
+      mobileMoreBtn
+    )
   );
 
   const noticeBar = el('div', { className: 'rc-notice-bar rc-hidden' });
@@ -428,10 +535,13 @@ function ensureWorkspaceShell() {
   const detailSub = el('div', { className: 'rc-detail-sub' });
   const backBtn = el('button', {
     type: 'button',
-    className: 'rc-btn is-sm rc-mobile-only',
-    text: '← 列表',
+    className: 'rc-icon-btn rc-back-btn rc-mobile-only',
+    'aria-label': '返回会话列表',
+    title: '返回会话列表',
+    text: '‹',
     onClick: () => {
       state.mobileView = 'list';
+      state.moreMenuOpen = false;
       applyLayoutAttrs();
     },
   });
@@ -442,15 +552,34 @@ function ensureWorkspaceShell() {
     backBtn,
     el('div', { className: 'rc-detail-title-wrap' }, detailTitle, detailSub),
     el(
-      'button',
-      {
+      'div',
+      { className: 'rc-detail-actions' },
+      el('button', {
         type: 'button',
-        className: 'rc-btn is-sm',
+        className: 'rc-btn is-sm rc-desktop-only',
         text: '拉取快照',
         onClick: () => {
           if (state.selectedId) fetchAndRenderSnapshot(state.selectedId);
         },
-      }
+      }),
+      el('button', {
+        type: 'button',
+        className: 'rc-icon-btn rc-mobile-only',
+        'aria-label': '刷新快照',
+        title: '刷新快照',
+        text: '↻',
+        onClick: () => {
+          if (state.selectedId) fetchAndRenderSnapshot(state.selectedId);
+        },
+      }),
+      el('button', {
+        type: 'button',
+        className: 'rc-icon-btn rc-mobile-only',
+        'aria-label': '更多选项',
+        title: '更多选项',
+        text: '⋯',
+        onClick: toggleMoreMenu,
+      })
     )
   );
 
@@ -460,10 +589,38 @@ function ensureWorkspaceShell() {
   roleBanner.append(roleBannerText, roleBannerPill);
 
   const timeline = el('div', { className: 'rc-timeline' });
+  const scrollFab = el('button', {
+    type: 'button',
+    className: 'rc-scroll-fab rc-hidden',
+    'aria-label': '回到底部',
+    title: '回到底部',
+    text: '↓',
+    onClick: () => {
+      timeline.scrollTop = timeline.scrollHeight;
+      scrollFab.classList.add('rc-hidden');
+    },
+  });
+  timeline.addEventListener('scroll', () => {
+    const gap = timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight;
+    if (gap > 140) {
+      scrollFab.classList.remove('rc-hidden');
+    } else {
+      scrollFab.classList.add('rc-hidden');
+    }
+  });
+  const timelineWrap = el('div', { className: 'rc-timeline-wrap' }, timeline, scrollFab);
 
   const resumeBanner = el('div', { className: 'rc-resume-card rc-hidden' });
   const opusBanner = el('div', { className: 'rc-opus-card rc-hidden' });
-  const actionBanner = el('div', { className: 'rc-action-banner rc-hidden' });
+  const actionBanner = el('div', {
+    className: 'rc-action-banner rc-hidden',
+    title: '点击关闭提示',
+    onClick: () => {
+      state.actionError = '';
+      setActionNotice('');
+      syncComposerControls();
+    },
+  });
   const turboWriteCheckbox = el('input', {
     id: 'rc-turbo-write-ack',
     type: 'checkbox',
@@ -477,7 +634,7 @@ function ensureWorkspaceShell() {
     'label',
     { className: 'rc-turbo-inline rc-hidden', for: 'rc-turbo-write-ack' },
     turboWriteCheckbox,
-    el('span', { text: 'TURBO / 未知权限高危确认：我确认远程发送将自动执行本机操作' })
+    el('span', { text: 'TURBO 自动执行确认（远程发送将直接执行本机操作）' })
   );
 
   const draftInput = el('textarea', {
@@ -529,13 +686,13 @@ function ensureWorkspaceShell() {
 
   const sendBtn = el('button', {
     type: 'button',
-    className: 'rc-btn is-sm is-primary',
+    className: 'rc-btn is-sm is-primary rc-send-btn',
     text: '发送',
     onClick: () => handleSendDraft(),
   });
   const cancelBtn = el('button', {
     type: 'button',
-    className: 'rc-btn is-sm is-danger',
+    className: 'rc-btn is-sm is-danger rc-cancel-btn',
     text: '停止',
     onClick: () => handleCancelConvo(),
   });
@@ -572,7 +729,7 @@ function ensureWorkspaceShell() {
     { className: 'rc-detail' },
     detailHead,
     roleBanner,
-    timeline,
+    timelineWrap,
     bottomDock
   );
 
@@ -619,10 +776,11 @@ function ensureWorkspaceShell() {
   );
 
   const main = el('main', { className: 'rc-main' }, sidebar, detail, overviewPane);
-  rootEl.append(topbar, noticeBar, studioStrip, projectsDrawer, main, mobileNav);
+  rootEl.append(topbar, moreMenu, noticeBar, studioStrip, projectsDrawer, main, mobileNav);
 
   workspaceRefs = {
     topbar,
+    moreMenu,
     sidebarToggleBtn,
     layoutModeBtn,
     overviewToggleBtn,
@@ -659,6 +817,7 @@ function ensureWorkspaceShell() {
     detailTitle,
     detailSub,
     timeline,
+    scrollFab,
     overviewPane,
     mobileNav,
     navChatsBtn,
@@ -751,7 +910,8 @@ async function handleSelectModelOption(opt) {
     } else if (res?.selected && state.modelCatalog) {
       state.modelCatalog = { ...state.modelCatalog, selected: res.selected };
     }
-    state.actionNotice = res?.selected?.label ? `已切换为 ${res.selected.label}` : '模型已切换';
+    state.actionNotice = '';
+    setActionNotice(res?.selected?.label ? `已切换为 ${res.selected.label}` : '模型已切换');
   } catch (err) {
     state.actionError = formatWriteError(err);
   } finally {
@@ -930,6 +1090,10 @@ function syncComposerControls() {
       (isRunningStatus(activeSnap?.status ?? activeConvo?.status) ||
         (typeof streamEntry === 'object' && streamEntry && isRunningStatus(streamEntry.status)))
   );
+  const showCancelControl = Boolean(
+    isStreaming || state.cancelBusy || (state.cancelConfirmArmedCid && state.cancelConfirmArmedCid === state.selectedId)
+  );
+  refs.composerCard.setAttribute('data-streaming', showCancelControl ? 'true' : 'false');
   syncStreamTimer(isStreaming);
   const streamElapsedSec = state.streamStartedAt ? Math.floor((Date.now() - state.streamStartedAt) / 1000) : 0;
   const activeMetrics =
@@ -1023,7 +1187,7 @@ async function handleSendDraft() {
         state.draftMedia = [];
       }
       state.draftIdempotencyKey = createIdempotencyKey();
-      state.actionNotice = mediaSnapshot.length > 0 ? '指令与图片已发送至桌面端' : '指令已发送至桌面端';
+      setActionNotice(mediaSnapshot.length > 0 ? '指令与图片已发送至桌面端' : '指令已发送至桌面端');
     }
     fetchAndRenderSnapshot(targetCid);
   } catch (err) {
@@ -1067,7 +1231,7 @@ async function handleApproveStep(w, decision) {
     });
     state.pendingApproveKeys.delete(approveMapKey);
     if (state.selectedId === targetCid) {
-      state.actionNotice = decision === 'allow_once' ? '已允许本次执行 (Allow Once)' : '已拒绝该操作 (Deny)';
+      setActionNotice(decision === 'allow_once' ? '已允许本次执行 (Allow Once)' : '已拒绝该操作 (Deny)');
     }
     refreshAllData();
   } catch (err) {
@@ -1112,7 +1276,7 @@ async function handleCancelConvo() {
   try {
     await wsClient.cancelConversation(targetCid, { killBackgroundTasks: false });
     if (state.selectedId === targetCid) {
-      state.actionNotice = '已发送停止指令';
+      setActionNotice('已发送停止指令');
     }
     refreshAllData();
   } catch (err) {
@@ -1160,7 +1324,7 @@ async function handleResumeConvo(rs) {
     state.pendingResumeKeys.delete(mapKey);
     if (state.selectedId === targetCid) {
       state.resumeState = null;
-      state.actionNotice = '已静默触发继续任务 (Resume)';
+      setActionNotice('已静默触发继续任务 (Resume)');
     }
     refreshAllData();
   } catch (err) {
@@ -1197,7 +1361,7 @@ async function handleCompactConvo() {
   try {
     await wsClient.compactConversation(targetCid);
     if (state.selectedId === targetCid) {
-      state.actionNotice = '已触发上下文压缩 (/compact)';
+      setActionNotice('已触发上下文压缩 (/compact)');
     }
     refreshAllData();
   } catch (err) {
@@ -1221,7 +1385,7 @@ async function handleDismissOpus(prop) {
   try {
     await wsClient.dismissOpusProposal(targetCid, prop.id, { ts: prop.ts });
     if (state.selectedId === targetCid) {
-      state.actionNotice = '已忽略 Opus Gate 检查点建议';
+      setActionNotice('已忽略 Opus Gate 检查点建议');
     }
     refreshStudioOverview(targetCid);
   } catch (err) {
@@ -1297,214 +1461,38 @@ function renderTopStatus() {
 }
 
 function renderFilterChips() {
-  const refs = ensureWorkspaceShell();
-  clearNode(refs.filterRow);
-  clearNode(refs.groupRow);
-
-  const pendingCount = collectPendingApprovals(state).length;
-  const runningCount = state.conversations.filter(
-    (c) => (state.includeSubagents || !c.parentConversationId) && isRunningStatus(c.status)
-  ).length;
-
-  refs.navApprovalsBadge.textContent = String(pendingCount);
-  if (pendingCount > 0) {
-    refs.navApprovalsBadge.classList.remove('rc-hidden');
-  } else {
-    refs.navApprovalsBadge.classList.add('rc-hidden');
-  }
-
-  const filters = [
-    { id: 'all', label: `全部 (${state.conversations.filter((c) => state.includeSubagents || !c.parentConversationId).length})` },
-    { id: 'waiting', label: `待审批 (${pendingCount})` },
-    { id: 'running', label: `运行中 (${runningCount})` },
-  ];
-
-  for (const f of filters) {
-    refs.filterRow.appendChild(
-      el('button', {
-        type: 'button',
-        className: 'rc-chip',
-        'aria-pressed': state.filter === f.id ? 'true' : 'false',
-        text: f.label,
-        onClick: () => {
-          state.filter = f.id;
-          renderFilterChips();
-          renderSidebarList();
-        },
-      })
-    );
-  }
-
-  refs.groupRow.appendChild(el('span', { className: 'rc-group-label', text: '排列' }));
-  for (const grp of [
-    { id: 'recent', label: '时间流' },
-    { id: 'project', label: '按项目' },
-  ]) {
-    refs.groupRow.appendChild(
-      el('button', {
-        type: 'button',
-        className: 'rc-chip is-compact',
-        'aria-pressed': state.sidebarGroupBy === grp.id ? 'true' : 'false',
-        text: grp.label,
-        onClick: () => {
-          state.sidebarGroupBy = grp.id;
-          writeStoredPref(STORAGE_KEYS.sidebarGroupBy, grp.id);
-          renderFilterChips();
-          renderSidebarList();
-        },
-      })
-    );
-  }
-
-  refs.groupRow.appendChild(
-    el('button', {
-      type: 'button',
-      className: 'rc-chip is-compact rc-group-subagent',
-      'aria-pressed': state.includeSubagents ? 'true' : 'false',
-      text: '含子代理',
-      onClick: () => {
-        state.includeSubagents = !state.includeSubagents;
-        renderFilterChips();
-        renderSidebarList();
-        if (wsClient) {
-          wsClient.refreshList(state.includeSubagents).then(applyConvoListResult).catch(() => {});
-        }
-      },
-    })
-  );
-}
-
-function buildConversationRow(c) {
-  const waitCount = getEffectiveWaitingCount(state, c);
-  const statusInfo = normalizeRunStatus(c.status);
-  const isSelected = state.selectedId === c.id;
-  const wtMeta = state.studioOverview?.worktreeByCid?.[c.id] || null;
-  return el(
-    'button',
-    {
-      type: 'button',
-      className: 'rc-convo-item',
-      'data-selected': isSelected ? 'true' : 'false',
-      'data-waiting': waitCount > 0 ? 'true' : 'false',
-      onClick: () => selectConversation(c.id),
+  renderFilterChipsView({
+    state,
+    refs: ensureWorkspaceShell(),
+    onSelectFilter: (id) => {
+      state.filter = id;
+      renderFilterChips();
+      renderSidebarList();
     },
-    el(
-      'div',
-      { className: 'rc-convo-top' },
-      el('span', { className: 'rc-convo-dot', 'data-tone': waitCount > 0 ? 'warn' : statusInfo.tone }),
-      el('span', { className: 'rc-convo-title', text: c.title || c.summary || c.id.slice(0, 8) }),
-      waitCount > 0
-        ? el('span', { className: 'rc-pill rc-convo-status', 'data-tone': 'warn', text: `待审批 ${waitCount}` })
-        : el('span', { className: 'rc-pill rc-convo-status', 'data-tone': statusInfo.tone, text: statusInfo.label }),
-      c.lastModifiedTime
-        ? el('span', { className: 'rc-convo-time', text: formatRelativeTime(c.lastModifiedTime) })
-        : null
-    ),
-    el(
-      'div',
-      { className: 'rc-convo-meta' },
-      c.parentConversationId ? el('span', { className: 'rc-pill', text: 'Subagent' }) : null,
-      wtMeta?.branch ? el('span', { className: 'rc-pill', 'data-tone': 'info', text: `⎇ ${wtMeta.branch}` }) : null,
-      el('span', { text: `${c.stepCount ?? 0} steps` }),
-      c.lastModifiedTime
-        ? el('span', { className: 'rc-convo-meta-time', text: `· ${formatRelativeTime(c.lastModifiedTime)}` })
-        : null
-    )
-  );
-}
-
-function resolveConversationProjectName(c) {
-  const wtMeta = state.studioOverview?.worktreeByCid?.[c.id] || null;
-  if (wtMeta?.repoName) return wtMeta.repoName;
-  const projects = Array.isArray(state.studioOverview?.projects) ? state.studioOverview.projects : [];
-  const pid = String(c.projectId || wtMeta?.projectId || '');
-  if (pid) {
-    const match = projects.find((p) => p.id === pid);
-    if (match?.name) return match.name;
-  }
-  return '独立会话';
+    onSelectGroupBy: (id) => {
+      state.sidebarGroupBy = id;
+      writeStoredPref(STORAGE_KEYS.sidebarGroupBy, id);
+      renderFilterChips();
+      renderSidebarList();
+    },
+    onToggleSubagents: () => {
+      state.includeSubagents = !state.includeSubagents;
+      renderFilterChips();
+      renderSidebarList();
+      if (wsClient) {
+        wsClient.refreshList(state.includeSubagents).then(applyConvoListResult).catch(() => {});
+      }
+    },
+  });
 }
 
 function renderSidebarList() {
-  const refs = ensureWorkspaceShell();
-  clearNode(refs.sidebarList);
-
-  const pendingApprovals = collectPendingApprovals(state);
-  const mobileApprovalsOnly = getResolvedLayoutMode() === 'mobile' && state.mobileTab === 'approvals';
-
-  if (pendingApprovals.length > 0) {
-    refs.sidebarList.appendChild(
-      el('div', { className: 'rc-sec-label', text: `待审批队列 (${pendingApprovals.length})` })
-    );
-    for (const item of pendingApprovals) {
-      const preview = item.commandLine || item.action || item.interactionCase || '等待确认';
-      refs.sidebarList.appendChild(
-        el(
-          'button',
-          {
-            type: 'button',
-            className: 'rc-approval-item',
-            onClick: () => selectConversation(item.cascadeId),
-          },
-          el(
-            'div',
-            { className: 'rc-convo-top' },
-            el('span', {
-              className: 'rc-convo-title',
-              text: item.parentTitle ? `[子代理] ${item.title}` : item.title,
-            }),
-            el('span', { className: 'rc-pill', 'data-tone': 'warn', text: item.toolName || '审批' })
-          ),
-          el('div', { className: 'rc-mono', text: preview })
-        )
-      );
-    }
-  } else if (mobileApprovalsOnly) {
-    refs.sidebarList.appendChild(
-      el('div', { className: 'rc-empty', text: '当前没有等待审批的桌面端操作。' })
-    );
-    return;
-  }
-
-  if (mobileApprovalsOnly) {
-    return;
-  }
-
-  const list = filterConversations(state);
-  if (list.length === 0) {
-    refs.sidebarList.appendChild(
-      el('div', { className: 'rc-sec-label', text: '会话列表 (0)' })
-    );
-    refs.sidebarList.appendChild(
-      el('div', { className: 'rc-empty', text: '当前筛选条件下没有会话' })
-    );
-    return;
-  }
-
-  if (state.sidebarGroupBy === 'project') {
-    const groups = new Map();
-    for (const c of list) {
-      const label = resolveConversationProjectName(c);
-      if (!groups.has(label)) groups.set(label, []);
-      groups.get(label).push(c);
-    }
-    for (const [projLabel, items] of groups.entries()) {
-      refs.sidebarList.appendChild(
-        el('div', { className: 'rc-sec-label', text: `${projLabel} (${items.length})` })
-      );
-      for (const c of items) {
-        refs.sidebarList.appendChild(buildConversationRow(c));
-      }
-    }
-    return;
-  }
-
-  refs.sidebarList.appendChild(
-    el('div', { className: 'rc-sec-label', text: `会话列表 (${list.length})` })
-  );
-  for (const c of list) {
-    refs.sidebarList.appendChild(buildConversationRow(c));
-  }
+  renderSidebarListView({
+    state,
+    refs: ensureWorkspaceShell(),
+    resolvedLayoutMode: getResolvedLayoutMode(),
+    onSelectConversation: selectConversation,
+  });
 }
 
 function renderDetailTimeline() {

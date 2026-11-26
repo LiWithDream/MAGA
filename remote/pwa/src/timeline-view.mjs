@@ -198,6 +198,7 @@ export function renderStepCard(step) {
     roleAttr = 'system';
   }
 
+  const isDoneStep = statusInfo.label === 'DONE';
   const card = el(
     'article',
     { className: 'rc-step', 'data-type': typeStr, 'data-role': roleAttr },
@@ -208,8 +209,12 @@ export function renderStepCard(step) {
       el(
         'div',
         { className: 'rc-dock-group' },
-        step.createdAt ? el('span', { text: formatTime(step.createdAt) }) : null,
-        el('span', { className: 'rc-pill', 'data-tone': statusInfo.tone, text: statusInfo.label })
+        step.createdAt ? el('span', { className: 'rc-step-time', text: formatTime(step.createdAt) }) : null,
+        el('span', {
+          className: `rc-pill rc-step-status-pill${isDoneStep ? ' is-done' : ''}`,
+          'data-tone': statusInfo.tone,
+          text: statusInfo.label,
+        })
       )
     )
   );
@@ -387,9 +392,11 @@ export function renderDetailTimeline({
   appendNodes(
     refs.detailSub,
     el('span', { className: 'rc-pill', 'data-tone': runInfo.tone, text: runInfo.label }),
-    el('span', { className: 'rc-mono', text: cid.slice(0, 13) }),
-    wtMeta?.branch ? el('span', { className: 'rc-pill', 'data-tone': 'info', text: `⎇ ${wtMeta.branch}` }) : null,
-    snap?.source ? el('span', { text: `来源: ${snap.source}` }) : null
+    el('span', { className: 'rc-mono rc-desktop-only', text: cid.slice(0, 13) }),
+    wtMeta?.branch
+      ? el('span', { className: 'rc-pill rc-branch-pill', 'data-tone': 'info', text: `⎇ ${wtMeta.branch}` })
+      : null,
+    snap?.source ? el('span', { className: 'rc-desktop-only', text: `来源: ${snap.source}` }) : null
   );
 
   const wasNearBottom =

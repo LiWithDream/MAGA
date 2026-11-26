@@ -265,3 +265,72 @@ export function renderOpusGateBanner(
       : null
   );
 }
+
+export function renderMobileMoreMenu(
+  container,
+  {
+    open = false,
+    hostLine = '',
+    role = 'observe',
+    presetLabel = '',
+    layoutLabel = '',
+    onCycleLayout = null,
+    onOpenOverview = null,
+    onRefreshAll = null,
+    onUnpair = null,
+  } = {}
+) {
+  if (!container) return;
+  clearNode(container);
+  if (!open) {
+    container.classList.add('rc-hidden');
+    return;
+  }
+  container.classList.remove('rc-hidden');
+  appendNodes(
+    container,
+    el(
+      'div',
+      { className: 'rc-more-meta' },
+      el('div', { className: 'rc-more-meta-line', text: `${hostLine} · ${String(role || 'observe').toUpperCase()}` }),
+      el('div', { className: 'rc-more-meta-sub', text: `权限策略：${presetLabel || '--'}` })
+    ),
+    el('button', {
+      type: 'button',
+      className: 'rc-more-item',
+      text: `切换${layoutLabel}`,
+      onClick: (ev) => {
+        ev?.stopPropagation?.();
+        onCycleLayout?.();
+      },
+    }),
+    el('button', {
+      type: 'button',
+      className: 'rc-more-item',
+      text: '查看配额与概览',
+      onClick: (ev) => {
+        ev?.stopPropagation?.();
+        onOpenOverview?.();
+      },
+    }),
+    el('button', {
+      type: 'button',
+      className: 'rc-more-item',
+      text: '刷新全部数据',
+      onClick: (ev) => {
+        ev?.stopPropagation?.();
+        onRefreshAll?.();
+      },
+    }),
+    el('div', { className: 'rc-more-divider' }),
+    el('button', {
+      type: 'button',
+      className: 'rc-more-item is-danger',
+      text: '解除并重新配对',
+      onClick: (ev) => {
+        ev?.stopPropagation?.();
+        onUnpair?.();
+      },
+    })
+  );
+}

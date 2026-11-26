@@ -123,13 +123,13 @@ export function autoResizeTextarea(textarea) {
   if (!textarea || !textarea.style) return;
   const val = String(textarea.value || '');
   if (!val) {
-    textarea.style.height = '42px';
+    textarea.style.height = '';
     return;
   }
   textarea.style.height = 'auto';
   const scHeight = Number(textarea.scrollHeight || 0);
   if (scHeight > 0) {
-    const nextH = Math.min(180, Math.max(42, scHeight));
+    const nextH = Math.min(180, Math.max(34, scHeight));
     textarea.style.height = `${nextH}px`;
   }
 }
@@ -496,19 +496,11 @@ export function renderComposerFooterBar(
     }
   }
 
-  rightCluster.appendChild(
-    el('button', {
-      type: 'button',
-      className: 'rc-btn is-sm rc-mobile-only',
-      text: '← 列表',
-      onClick: () => onScrollBottom?.('back'),
-    })
-  );
   if (hasSelection) {
     rightCluster.appendChild(
       el('button', {
         type: 'button',
-        className: 'rc-btn is-sm',
+        className: 'rc-btn is-sm rc-desktop-only',
         text: '回到底部',
         onClick: () => onScrollBottom?.('bottom'),
       })

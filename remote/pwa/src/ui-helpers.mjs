@@ -244,6 +244,11 @@ export function filterConversations(state) {
   return state.conversations
     .filter((c) => {
       if (!state.includeSubagents && c.parentConversationId) return false;
+      if (state.selectedProjectId) {
+        const wtMeta = state.studioOverview?.worktreeByCid?.[c.id];
+        const cidPid = String(c.projectId || wtMeta?.projectId || '');
+        if (cidPid !== state.selectedProjectId) return false;
+      }
       if (state.filter === 'running' && !isRunningStatus(c.status)) return false;
       if (state.filter === 'waiting' && getEffectiveWaitingCount(state, c) === 0) return false;
       if (q) {

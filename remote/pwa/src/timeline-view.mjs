@@ -197,9 +197,11 @@ export function renderDetailTimeline({
   refs.detailTitle.textContent = convo?.title || convo?.summary || cid;
   clearNode(refs.detailSub);
   const runInfo = normalizeRunStatus(snap?.status ?? convo?.status);
+  const wtMeta = state.studioOverview?.worktreeByCid?.[cid] || null;
   refs.detailSub.append(
     el('span', { className: 'rc-pill', 'data-tone': runInfo.tone, text: runInfo.label }),
     el('span', { className: 'rc-mono', text: cid.slice(0, 13) }),
+    wtMeta?.branch ? el('span', { className: 'rc-pill', 'data-tone': 'info', text: `⎇ ${wtMeta.branch}` }) : null,
     snap?.source ? el('span', { text: `来源: ${snap.source}` }) : null
   );
 

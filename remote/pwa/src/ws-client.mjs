@@ -570,6 +570,66 @@ export function createRemoteWsClient(identity, handlers = {}) {
     );
   }
 
+  function fetchStudioOverview(cascadeId = '') {
+    const cid = typeof cascadeId === 'string' && UUID_RE.test(cascadeId.trim()) ? cascadeId.trim() : '';
+    return request('studio.overview', cid ? { cascadeId: cid } : {}, 10_000);
+  }
+
+  function fetchResumeState(cascadeId) {
+    if (!cascadeId || !UUID_RE.test(cascadeId)) {
+      return Promise.reject(new Error('invalid_cascade_id'));
+    }
+    return request('convo.resumeState', { cascadeId }, 8_000);
+  }
+
+  function resumeConversation(
+    cascadeId,
+    { expectedLastIdx, turboWriteConfirmed = false, idempotencyKey = createIdempotencyKey() } = {}
+  ) {
+    if (!cascadeId || !UUID_RE.test(cascadeId)) {
+      return Promise.reject(new Error('invalid_cascade_id'));
+    }
+    if (!Number.isInteger(expectedLastIdx) || expectedLastIdx < 0) {
+      return Promise.reject(new Error('invalid_expected_last_idx'));
+    }
+    return request(
+      'convo.resume',
+      {
+        cascadeId,
+        expectedLastIdx,
+        turboWriteConfirmed: Boolean(turboWriteConfirmed),
+        idempotencyKey,
+      },
+      25_000
+    );
+  }
+
+  function compactConversation(cascadeId, { idempotencyKey = createIdempotencyKey() } = {}) {
+    if (!cascadeId || !UUID_RE.test(cascadeId)) {
+      return Promise.reject(new Error('invalid_cascade_id'));
+    }
+    return request('convo.compact', { cascadeId, idempotencyKey }, 18_000);
+  }
+
+  function dismissOpusProposal(cascadeId, proposalId, { ts, idempotencyKey = createIdempotencyKey() } = {}) {
+    if (!cascadeId || !UUID_RE.test(cascadeId)) {
+      return Promise.reject(new Error('invalid_cascade_id'));
+    }
+    if (!proposalId || typeof proposalId !== 'string') {
+      return Promise.reject(new Error('invalid_proposal_id'));
+    }
+    return request(
+      'opus.dismiss',
+      {
+        cascadeId,
+        proposalId,
+        ...(Number.isFinite(Number(ts)) && Number(ts) > 0 ? { ts: Number(ts) } : {}),
+        idempotencyKey,
+      },
+      12_000
+    );
+  }
+
   function dispose() {
     disposed = true;
     clearTimers();
@@ -610,6 +670,11 @@ export function createRemoteWsClient(identity, handlers = {}) {
     sendMessage,
     approveWaitingStep,
     cancelConversation,
+    fetchStudioOverview,
+    fetchResumeState,
+    resumeConversation,
+    compactConversation,
+    dismissOpusProposal,
     reconnectNow: () => {
       if (!disposed) {
         attempt = 0;

@@ -25,6 +25,14 @@ import {
   stopGatewayChildGracefully,
   stopGatewayChildSync
 } from './remote/gateway-supervisor.mjs';
+import { withCascadeWriteLock } from './remote/cascade-lock.mjs';
+import {
+  SILENT_RESUME_PROMPT,
+  collectStudioOverview,
+  getRemoteResumeState,
+  handleRemoteOpusDismiss
+} from './remote/studio-bridge.mjs';
+import { collectResumeState } from '../../studio/daemon/resume-detector.mjs';
 
 export {
   DEFAULT_REMOTE_CONFIG,
@@ -37,8 +45,8 @@ export {
 
 const MAX_ACTIVE_STREAMS = 3;
 const MAX_UDS_LINE_BYTES = 1024 * 1024;
-const WRITE_UDS_METHODS = new Set(['convo.send', 'convo.approve', 'convo.cancel']);
-const TAP_INVOKE_METHODS = new Set(['convo.owns', 'convo.send', 'convo.approve', 'convo.cancel']);
+const WRITE_UDS_METHODS = new Set(['convo.send', 'convo.approve', 'convo.cancel', 'convo.resume', 'convo.compact', 'opus.dismiss']);
+const TAP_INVOKE_METHODS = new Set(['convo.owns', 'convo.send', 'convo.approve', 'convo.cancel', 'convo.compact']);
 
 let bridgeState = null;
 
@@ -203,6 +211,8 @@ export async function probeRemoteCapabilities() {
       sendMessage: false,
       cancel: false,
       approval: false,
+      compact: false,
+      resume: true,
       diskRead: Boolean(DatabaseSync)
     },
     agVersion: null,
@@ -232,6 +242,8 @@ export async function probeRemoteCapabilities() {
       sendMessage: Boolean(tapCap.capabilities?.sendMessage),
       cancel: Boolean(tapCap.capabilities?.cancel),
       approval: Boolean(tapCap.capabilities?.approval),
+      compact: Boolean(tapCap.capabilities?.compact),
+      resume: true,
       diskRead: Boolean(DatabaseSync)
     },
     agVersion: tapCap.agVersion || null,
@@ -383,22 +395,35 @@ async function handleConvoSnapshot(params = {}) {
       6000
     );
     if (r.ok && r.value?.ok && Array.isArray(r.value.steps)) {
-      return applySnapshotByteBudget({
+      const snapStatus = String(r.value.status || 'IDLE');
+      const waitingSteps = normalizeWaitingStepsWithSha(cascadeId, r.value.waitingSteps);
+      const snap = applySnapshotByteBudget({
         cascadeId,
         source: 'cdp',
-        status: String(r.value.status || 'IDLE'),
+        status: snapStatus,
         steps: r.value.steps,
         hasMore: Boolean(r.value.hasMore),
         nextBeforeIdx: Number.isInteger(r.value.nextBeforeIdx) ? r.value.nextBeforeIdx : null,
-        waitingSteps: normalizeWaitingStepsWithSha(cascadeId, r.value.waitingSteps),
+        waitingSteps,
         streamingText: String(r.value.streamingText || '')
       });
+      snap.resumeState = getRemoteResumeState(cascadeId, {
+        liveBusy: /RUNNING|BUSY|CANCEL/i.test(snapStatus),
+        liveWaiting: waitingSteps.length > 0,
+        ...(bridgeState?.conversationsDir ? { conversationsDir: bridgeState.conversationsDir } : {}),
+      });
+      return snap;
     }
   }
   const disk = readConversationSnapshotFromDisk(cascadeId, { beforeIdx });
   if (disk.ok === false) {
     throw Object.assign(new Error(disk.error || 'snapshot_failed'), { code: disk.error || 'snapshot_failed' });
   }
+  disk.resumeState = getRemoteResumeState(cascadeId, {
+    liveBusy: /RUNNING|BUSY|CANCEL/i.test(String(disk.status || '')),
+    liveWaiting: Array.isArray(disk.waitingSteps) && disk.waitingSteps.length > 0,
+    ...(bridgeState?.conversationsDir ? { conversationsDir: bridgeState.conversationsDir } : {}),
+  });
   return disk;
 }
 
@@ -518,24 +543,31 @@ async function handleConvoSend(params = {}) {
     throw Object.assign(new Error('invalid_text_length'), { code: 'invalid_text_length' });
   }
 
-  const host = await resolveHostForCascade(cascadeId);
-  const capRes = await evalOnHost(host, 'window.__agRemoteTap ? window.__agRemoteTap.getCapabilities() : null', 2000);
-  const preset = capRes.ok && capRes.value && typeof capRes.value === 'object' ? capRes.value.globalPreset : null;
-  if (isTurboPreset(preset) && params.turboWriteConfirmed !== true) {
-    throw Object.assign(new Error('turbo_write_confirmation_required'), { code: 'turbo_write_confirmation_required' });
-  }
+  return withCascadeWriteLock(
+    cascadeId,
+    'remote:send',
+    async () => {
+      const host = await resolveHostForCascade(cascadeId);
+      const capRes = await evalOnHost(host, 'window.__agRemoteTap ? window.__agRemoteTap.getCapabilities() : null', 2000);
+      const preset = capRes.ok && capRes.value && typeof capRes.value === 'object' ? capRes.value.globalPreset : null;
+      if (isTurboPreset(preset) && params.turboWriteConfirmed !== true) {
+        throw Object.assign(new Error('turbo_write_confirmation_required'), { code: 'turbo_write_confirmation_required' });
+      }
 
-  const r = await invokeTapOnHost(
-    host,
-    'convo.send',
-    { cascadeId, text, turboWriteConfirmed: Boolean(params.turboWriteConfirmed) },
-    10000
+      const r = await invokeTapOnHost(
+        host,
+        'convo.send',
+        { cascadeId, text, turboWriteConfirmed: Boolean(params.turboWriteConfirmed) },
+        10000
+      );
+      if (!r.ok || !r.value?.ok) {
+        const errCode = r.value?.error || r.error || 'send_failed';
+        throw Object.assign(new Error(errCode), { code: errCode });
+      }
+      return r.value;
+    },
+    { markCooldownOnSuccess: true }
   );
-  if (!r.ok || !r.value?.ok) {
-    const errCode = r.value?.error || r.error || 'send_failed';
-    throw Object.assign(new Error(errCode), { code: errCode });
-  }
-  return r.value;
 }
 
 async function handleConvoApprove(params = {}) {
@@ -556,18 +588,20 @@ async function handleConvoApprove(params = {}) {
     throw Object.assign(new Error('invalid_waiting_step_hash'), { code: 'invalid_waiting_step_hash' });
   }
 
-  const host = await resolveHostForCascade(cascadeId);
-  const r = await invokeTapOnHost(
-    host,
-    'convo.approve',
-    { cascadeId, stepIndex, waitingStepHash, decision },
-    10000
-  );
-  if (!r.ok || !r.value?.ok) {
-    const errCode = r.value?.error || r.error || 'approve_failed';
-    throw Object.assign(new Error(errCode), { code: errCode });
-  }
-  return r.value;
+  return withCascadeWriteLock(cascadeId, 'remote:approve', async () => {
+    const host = await resolveHostForCascade(cascadeId);
+    const r = await invokeTapOnHost(
+      host,
+      'convo.approve',
+      { cascadeId, stepIndex, waitingStepHash, decision },
+      10000
+    );
+    if (!r.ok || !r.value?.ok) {
+      const errCode = r.value?.error || r.error || 'approve_failed';
+      throw Object.assign(new Error(errCode), { code: errCode });
+    }
+    return r.value;
+  });
 }
 
 async function handleConvoCancel(params = {}) {
@@ -575,18 +609,131 @@ async function handleConvoCancel(params = {}) {
   if (!UUID_RE.test(cascadeId)) {
     throw Object.assign(new Error('invalid_cascade_id'), { code: 'invalid_cascade_id' });
   }
-  const host = await resolveHostForCascade(cascadeId);
-  const r = await invokeTapOnHost(
-    host,
-    'convo.cancel',
-    { cascadeId, killBackgroundTasks: Boolean(params?.killBackgroundTasks) },
-    8000
-  );
-  if (!r.ok || !r.value?.ok) {
-    const errCode = r.value?.error || r.error || 'cancel_failed';
-    throw Object.assign(new Error(errCode), { code: errCode });
+  return withCascadeWriteLock(cascadeId, 'remote:cancel', async () => {
+    const host = await resolveHostForCascade(cascadeId);
+    const r = await invokeTapOnHost(
+      host,
+      'convo.cancel',
+      { cascadeId, killBackgroundTasks: Boolean(params?.killBackgroundTasks) },
+      8000
+    );
+    if (!r.ok || !r.value?.ok) {
+      const errCode = r.value?.error || r.error || 'cancel_failed';
+      throw Object.assign(new Error(errCode), { code: errCode });
+    }
+    return r.value;
+  });
+}
+
+async function handleConvoResumeState(params = {}) {
+  const cascadeId = typeof params?.cascadeId === 'string' ? params.cascadeId.trim() : '';
+  if (!UUID_RE.test(cascadeId)) {
+    throw Object.assign(new Error('invalid_cascade_id'), { code: 'invalid_cascade_id' });
   }
-  return r.value;
+  let liveBusy = false;
+  let liveWaiting = false;
+  const primary = await resolvePrimaryHostEntry();
+  if (primary) {
+    const r = await evalOnHost(
+      primary,
+      'window.__agRemoteTap ? window.__agRemoteTap.listSummaries({ includeSubagents: true }) : null',
+      2500
+    );
+    const list = r.ok && r.value?.ok && Array.isArray(r.value.conversations) ? r.value.conversations : [];
+    const sum = list.find((c) => c && c.id === cascadeId);
+    if (sum) {
+      liveBusy = /RUNNING|BUSY|CANCEL/i.test(String(sum.status || ''));
+      liveWaiting = Array.isArray(sum.waitingSteps) && sum.waitingSteps.length > 0;
+    }
+  }
+  return getRemoteResumeState(cascadeId, {
+    liveBusy,
+    liveWaiting,
+    ...(bridgeState?.conversationsDir ? { conversationsDir: bridgeState.conversationsDir } : {}),
+  });
+}
+
+async function handleConvoResume(params = {}) {
+  const cascadeId = typeof params?.cascadeId === 'string' ? params.cascadeId.trim() : '';
+  if (!UUID_RE.test(cascadeId)) {
+    throw Object.assign(new Error('invalid_cascade_id'), { code: 'invalid_cascade_id' });
+  }
+  const expectedLastIdx = params?.expectedLastIdx;
+  if (!Number.isInteger(expectedLastIdx) || expectedLastIdx < 0) {
+    throw Object.assign(new Error('invalid_expected_last_idx'), { code: 'invalid_expected_last_idx' });
+  }
+
+  return withCascadeWriteLock(
+    cascadeId,
+    'remote:resume',
+    async () => {
+      const host = await resolveHostForCascade(cascadeId);
+      const capRes = await evalOnHost(host, 'window.__agRemoteTap ? window.__agRemoteTap.getCapabilities() : null', 2000);
+      const preset = capRes.ok && capRes.value && typeof capRes.value === 'object' ? capRes.value.globalPreset : null;
+      if (isTurboPreset(preset) && params.turboWriteConfirmed !== true) {
+        throw Object.assign(new Error('turbo_write_confirmation_required'), { code: 'turbo_write_confirmation_required' });
+      }
+
+      const st = collectResumeState(
+        { cascadeId, force: true },
+        bridgeState?.conversationsDir ? { conversationsDir: bridgeState.conversationsDir } : undefined
+      );
+      if (!st?.ok || !st.interrupted || st.lastIdx !== expectedLastIdx) {
+        throw Object.assign(new Error('resume_state_changed'), { code: 'resume_state_changed' });
+      }
+
+      const r = await invokeTapOnHost(
+        host,
+        'convo.send',
+        {
+          cascadeId,
+          text: SILENT_RESUME_PROMPT,
+          turboWriteConfirmed: Boolean(params.turboWriteConfirmed),
+        },
+        10000
+      );
+      if (!r.ok || !r.value?.ok) {
+        const errCode = r.value?.error || r.error || 'resume_failed';
+        throw Object.assign(new Error(errCode), { code: errCode });
+      }
+      return {
+        ok: true,
+        cascadeId,
+        resumedFromIdx: expectedLastIdx,
+        reason: String(st.reason || 'aborted'),
+      };
+    },
+    { markCooldownOnSuccess: true }
+  );
+}
+
+async function handleConvoCompact(params = {}) {
+  const cascadeId = typeof params?.cascadeId === 'string' ? params.cascadeId.trim() : '';
+  if (!UUID_RE.test(cascadeId)) {
+    throw Object.assign(new Error('invalid_cascade_id'), { code: 'invalid_cascade_id' });
+  }
+  return withCascadeWriteLock(
+    cascadeId,
+    'remote:compact',
+    async () => {
+      const host = await resolveHostForCascade(cascadeId);
+      const r = await invokeTapOnHost(host, 'convo.compact', { cascadeId }, 8000);
+      if (!r.ok || !r.value?.ok) {
+        const errCode = r.value?.error || r.error || 'compact_failed';
+        throw Object.assign(new Error(errCode), { code: errCode });
+      }
+      return r.value;
+    },
+    { markCooldownOnSuccess: true }
+  );
+}
+
+async function handleStudioOverview(params = {}) {
+  return collectStudioOverview(params, bridgeState?.studioOpts);
+}
+
+async function handleOpusDismiss(params = {}) {
+  return handleRemoteOpusDismiss(params, bridgeState?.studioOpts);
 }
 
 async function dispatchUdsRpc(client, req) {
@@ -634,6 +781,21 @@ async function dispatchUdsRpc(client, req) {
       reply(true, res, null);
     } else if (method === 'convo.cancel') {
       const res = await handleConvoCancel(params);
+      reply(true, res, null);
+    } else if (method === 'convo.resumeState') {
+      const res = await handleConvoResumeState(params);
+      reply(true, res, null);
+    } else if (method === 'convo.resume') {
+      const res = await handleConvoResume(params);
+      reply(true, res, null);
+    } else if (method === 'convo.compact') {
+      const res = await handleConvoCompact(params);
+      reply(true, res, null);
+    } else if (method === 'studio.overview') {
+      const res = await handleStudioOverview(params);
+      reply(true, res, null);
+    } else if (method === 'opus.dismiss') {
+      const res = await handleOpusDismiss(params);
       reply(true, res, null);
     } else {
       reply(false, null, 'method_not_supported');
@@ -793,8 +955,25 @@ export async function initRemoteBridge({ env = process.env, gatewayScript } = {}
 
   const udsServer = await createUdsServer(paths.sockPath, paths.remoteDir);
 
+  const studioOpts = {};
+  if (typeof env.ANTI_CLAUDE_STATE_DIR === 'string' && env.ANTI_CLAUDE_STATE_DIR.trim()) {
+    const stDir = path.resolve(env.ANTI_CLAUDE_STATE_DIR.trim());
+    studioOpts.opusOpts = {
+      proposalsDir: path.join(stDir, 'opus-gate-proposals'),
+      quotaStateFile: path.join(stDir, 'quota-state.json'),
+    };
+    studioOpts.quotaOpts = { quotaStateFile: path.join(stDir, 'quota-state.json') };
+    studioOpts.compactOpts = { requestsDir: path.join(stDir, 'auto-compact-requests') };
+  }
+  const conversationsDir =
+    typeof env.MAGA_REMOTE_CONV_DIR === 'string' && env.MAGA_REMOTE_CONV_DIR.trim()
+      ? path.resolve(env.MAGA_REMOTE_CONV_DIR.trim())
+      : undefined;
+
   bridgeState = {
     paths,
+    studioOpts,
+    conversationsDir,
     gatewayScript: gatewayScript || path.join(REPO_ROOT, 'remote', 'gateway', 'server.mjs'),
     udsWriteToken:
       typeof env.MAGA_REMOTE_UDS_TOKEN === 'string' && env.MAGA_REMOTE_UDS_TOKEN.trim()

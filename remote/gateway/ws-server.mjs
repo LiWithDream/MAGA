@@ -25,8 +25,9 @@ const MAX_WRITE_TEXT_CHARS = 16384;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const IDEMPOTENCY_KEY_RE = /^[a-zA-Z0-9._:-]{8,128}$/;
 const WAITING_HASH_RE = /^[0-9a-f]{16}$/i;
-const READ_METHODS = new Set(['convo.list', 'convo.snapshot', 'convo.watch']);
-const WRITE_METHODS = new Set(['convo.send', 'convo.approve', 'convo.cancel']);
+const PROPOSAL_ID_RE = /^[A-Za-z0-9._:-]{4,128}$/;
+const READ_METHODS = new Set(['convo.list', 'convo.snapshot', 'convo.watch', 'convo.resumeState', 'studio.overview']);
+const WRITE_METHODS = new Set(['convo.send', 'convo.approve', 'convo.cancel', 'convo.resume', 'convo.compact', 'opus.dismiss']);
 const ROLE_RANK = Object.freeze({ observe: 0, steer: 1, admin: 2 });
 
 function isSafeNonTurboPreset(preset) {
@@ -51,7 +52,7 @@ function isAmbiguousWriteError(errCode) {
     errCode === 'uds_error' ||
     errCode === 'cdp_timeout' ||
     errCode === 'eval_timeout' ||
-    /timeout|uds_/i.test(errCode)
+    /timeout|uds_|deadline_exceeded|target_closed|socket_closed|host_disconnected/i.test(errCode)
   );
 }
 
@@ -457,7 +458,13 @@ export function createWsServer({
       return { ok: false, error: 'invalid_cascade_id' };
     }
     const rawKey = typeof params.idempotencyKey === 'string' ? params.idempotencyKey.trim() : '';
-    if (method === 'convo.send' || method === 'convo.approve') {
+    if (
+      method === 'convo.send' ||
+      method === 'convo.approve' ||
+      method === 'convo.resume' ||
+      method === 'convo.compact' ||
+      method === 'opus.dismiss'
+    ) {
       if (!rawKey || !IDEMPOTENCY_KEY_RE.test(rawKey)) {
         return { ok: false, error: 'invalid_idempotency_key' };
       }
@@ -509,6 +516,52 @@ export function createWsServer({
         payloadHash: sha256Hex(JSON.stringify(['convo.approve', cascadeId, stepIndex, waitingStepHash, decision])),
         rpcParams: { cascadeId, stepIndex, waitingStepHash, decision },
         auditMeta: { cascadeId, stepIndex, waitingStepHash, decision },
+      };
+    }
+
+    if (method === 'convo.resume') {
+      const expectedLastIdx = params.expectedLastIdx;
+      if (!Number.isInteger(expectedLastIdx) || expectedLastIdx < 0) {
+        return { ok: false, error: 'invalid_expected_last_idx' };
+      }
+      return {
+        ok: true,
+        cascadeId,
+        idempotencyKey: rawKey,
+        payloadHash: sha256Hex(JSON.stringify(['convo.resume', cascadeId, expectedLastIdx])),
+        rpcParams: {
+          cascadeId,
+          expectedLastIdx,
+          turboWriteConfirmed: Boolean(params.turboWriteConfirmed),
+        },
+        auditMeta: { cascadeId, expectedLastIdx },
+      };
+    }
+
+    if (method === 'convo.compact') {
+      return {
+        ok: true,
+        cascadeId,
+        idempotencyKey: rawKey,
+        payloadHash: sha256Hex(JSON.stringify(['convo.compact', cascadeId])),
+        rpcParams: { cascadeId },
+        auditMeta: { cascadeId },
+      };
+    }
+
+    if (method === 'opus.dismiss') {
+      const proposalId = typeof params.proposalId === 'string' ? params.proposalId.trim() : '';
+      if (!PROPOSAL_ID_RE.test(proposalId)) {
+        return { ok: false, error: 'invalid_proposal_id' };
+      }
+      const ts = Number.isFinite(Number(params.ts)) && Number(params.ts) > 0 ? Number(params.ts) : undefined;
+      return {
+        ok: true,
+        cascadeId,
+        idempotencyKey: rawKey,
+        payloadHash: sha256Hex(JSON.stringify(['opus.dismiss', cascadeId, proposalId])),
+        rpcParams: { cascadeId, proposalId, ...(ts ? { ts } : {}) },
+        auditMeta: { cascadeId, proposalId },
       };
     }
 
@@ -625,7 +678,7 @@ export function createWsServer({
     inFlightWritesByDevice.set(deviceId, currentInFlight + 1);
     const execPromise = (async () => {
       try {
-        if (method === 'convo.send') {
+        if (method === 'convo.send' || method === 'convo.resume') {
           const health = await udsClient.request('bridge.health', {}, { timeoutMs: 2000 }).catch(() => null);
           const stillLive = verifyClientDeviceLive(client);
           if (!stillLive) {
@@ -639,6 +692,7 @@ export function createWsServer({
               audit?.append('ws_send_rejected_turbo', {
                 deviceId,
                 cascadeId: spec.cascadeId,
+                method,
                 globalPreset: health?.globalPreset ?? null,
               });
               return { ok: false, error: 'turbo_write_confirmation_required' };
@@ -646,7 +700,14 @@ export function createWsServer({
           }
         }
 
-        const timeoutMs = method === 'convo.send' ? 20_000 : method === 'convo.approve' ? 18_000 : 15_000;
+        const timeoutMs =
+          method === 'convo.send' || method === 'convo.resume'
+            ? 20_000
+            : method === 'convo.approve'
+              ? 18_000
+              : method === 'opus.dismiss'
+                ? 10_000
+                : 15_000;
         const result = await udsClient.request(method, spec.rpcParams, { timeoutMs, write: true });
         audit?.append('remote_write', {
           deviceId,
@@ -701,7 +762,9 @@ export function createWsServer({
         });
         const outcome = { ok: false, error: errCode };
         const deterministicFailure =
-          errCode === 'waiting_step_mismatch' || errCode === 'unsupported_interaction_case';
+          errCode === 'waiting_step_mismatch' ||
+          errCode === 'unsupported_interaction_case' ||
+          errCode === 'resume_state_changed';
         if (cacheKey && deterministicFailure) {
           idempotencyCache.set(cacheKey, {
             ...outcome,
@@ -818,6 +881,40 @@ export function createWsServer({
       }
       try {
         const result = await udsClient.request('convo.snapshot', reqParams);
+        if (!client.closed) client.sendJson({ type: 'res', reqId, ok: true, result });
+      } catch (err) {
+        if (!client.closed) {
+          client.sendJson({ type: 'res', reqId, ok: false, error: err?.code || err?.message || 'uds_error' });
+        }
+      }
+      return;
+    }
+
+    if (method === 'convo.resumeState') {
+      const cascadeId = typeof params.cascadeId === 'string' ? params.cascadeId.trim() : '';
+      if (!UUID_RE.test(cascadeId)) {
+        client.sendJson({ type: 'res', reqId, ok: false, error: 'invalid_cascade_id' });
+        return;
+      }
+      try {
+        const result = await udsClient.request('convo.resumeState', { cascadeId });
+        if (!client.closed) client.sendJson({ type: 'res', reqId, ok: true, result });
+      } catch (err) {
+        if (!client.closed) {
+          client.sendJson({ type: 'res', reqId, ok: false, error: err?.code || err?.message || 'uds_error' });
+        }
+      }
+      return;
+    }
+
+    if (method === 'studio.overview') {
+      const rawCid = typeof params.cascadeId === 'string' ? params.cascadeId.trim() : '';
+      if (rawCid && !UUID_RE.test(rawCid)) {
+        client.sendJson({ type: 'res', reqId, ok: false, error: 'invalid_cascade_id' });
+        return;
+      }
+      try {
+        const result = await udsClient.request('studio.overview', rawCid ? { cascadeId: rawCid } : {});
         if (!client.closed) client.sendJson({ type: 'res', reqId, ok: true, result });
       } catch (err) {
         if (!client.closed) {

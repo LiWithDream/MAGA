@@ -9,6 +9,12 @@ import {
   saveDeviceIdentity,
 } from './crypto-store.mjs';
 import { createPairViewController } from './pair-view.mjs';
+import {
+  renderOpusGateBanner,
+  renderProjectsDrawer,
+  renderResumeBanner,
+  renderStudioStrip,
+} from './studio-panel.mjs';
 import { renderDetailTimeline as renderTimelineView } from './timeline-view.mjs';
 import {
   UUID_RE,
@@ -55,9 +61,17 @@ const state = {
   draftIdempotencyKey: createIdempotencyKey(),
   turboWriteConfirmed: false,
   pendingApproveKeys: new Map(),
+  pendingResumeKeys: new Map(),
   cancelConfirmArmedCid: '',
+  studioOverview: null,
+  studioDrawerOpen: false,
+  selectedProjectId: '',
+  resumeState: null,
   sendBusy: false,
   cancelBusy: false,
+  resumeBusy: false,
+  compactBusy: false,
+  opusDismissBusy: false,
   approvingHash: '',
   actionError: '',
   actionNotice: '',
@@ -130,6 +144,11 @@ function ensureWorkspaceShell() {
       state.turboWriteConfirmed = false;
       state.draftIdempotencyKey = createIdempotencyKey();
       state.pendingApproveKeys.clear();
+      state.pendingResumeKeys.clear();
+      state.studioOverview = null;
+      state.studioDrawerOpen = false;
+      state.selectedProjectId = '';
+      state.resumeState = null;
       resetCancelConfirm();
       workspaceRefs = null;
       pairView.loadHealthForPairing();
@@ -152,6 +171,8 @@ function ensureWorkspaceShell() {
   );
 
   const noticeBar = el('div', { className: 'rc-notice-bar rc-hidden' });
+  const studioStrip = el('div', { className: 'rc-studio-strip rc-hidden' });
+  const projectsDrawer = el('div', { className: 'rc-projects-drawer rc-hidden' });
 
   const searchInput = el('input', {
     className: 'rc-search',
@@ -210,6 +231,8 @@ function ensureWorkspaceShell() {
 
   const timeline = el('div', { className: 'rc-timeline' });
 
+  const resumeBanner = el('div', { className: 'rc-resume-card rc-hidden' });
+  const opusBanner = el('div', { className: 'rc-opus-card rc-hidden' });
   const actionBanner = el('div', { className: 'rc-action-banner rc-hidden' });
   const turboWriteCheckbox = el('input', {
     id: 'rc-turbo-write-ack',
@@ -259,6 +282,12 @@ function ensureWorkspaceShell() {
     onClick: () => handleCancelConvo(),
   });
   const composerRow = el('div', { className: 'rc-composer-row' }, draftInput, sendBtn, cancelBtn);
+  const compactBtn = el('button', {
+    type: 'button',
+    className: 'rc-btn is-sm rc-hidden',
+    text: '/compact',
+    onClick: () => handleCompactConvo(),
+  });
   const auxDockRow = el(
     'div',
     { className: 'rc-dock-aux' },
@@ -282,12 +311,15 @@ function ensureWorkspaceShell() {
           timeline.scrollTop = timeline.scrollHeight;
         },
       })
-    )
+    ),
+    el('div', { className: 'rc-dock-group' }, compactBtn)
   );
 
   const bottomDock = el(
     'footer',
     { className: 'rc-bottom-dock is-composer' },
+    resumeBanner,
+    opusBanner,
     actionBanner,
     turboWriteLabel,
     composerRow,
@@ -304,7 +336,7 @@ function ensureWorkspaceShell() {
   );
 
   const main = el('main', { className: 'rc-main' }, sidebar, detail);
-  rootEl.append(topbar, noticeBar, main);
+  rootEl.append(topbar, noticeBar, studioStrip, projectsDrawer, main);
 
   workspaceRefs = {
     brandDot,
@@ -313,9 +345,13 @@ function ensureWorkspaceShell() {
     presetPill,
     devicePill,
     noticeBar,
+    studioStrip,
+    projectsDrawer,
     roleBanner,
     roleBannerText,
     roleBannerPill,
+    resumeBanner,
+    opusBanner,
     actionBanner,
     turboWriteLabel,
     turboWriteCheckbox,
@@ -323,6 +359,7 @@ function ensureWorkspaceShell() {
     draftInput,
     sendBtn,
     cancelBtn,
+    compactBtn,
     filterRow,
     sidebarList,
     detailTitle,
@@ -347,7 +384,52 @@ function formatWriteError(err) {
   if (code === 'too_many_concurrent_writes') return '并发写请求过多，请等待当前操作完成';
   if (code === 'idempotency_key_conflict') return '请求幂等键冲突，已重置请求标识，请重新确认后发送';
   if (code === 'outcome_unknown') return '远端执行结果未知（请求超时或连接中断），已自动刷新会话状态，请确认是否已生效后再决定是否重发';
+  if (code === 'cascade_write_busy') return '桌面端或另一请求正在操作该会话，请稍后再试';
+  if (code === 'resume_state_changed') return '会话状态已更新，当前无需续跑，已自动刷新状态';
+  if (code === 'compact_requires_active_pane') return '请先在桌面端激活对应会话窗口，或使用发送框触发压缩';
+  if (code === 'compact_rejected_or_busy') return '当前无法执行上下文压缩（可能正在运行、已压缩或输入框仍有草稿）';
+  if (code === 'compact_unavailable') return '当前宿主版本暂不支持远程触发 /compact';
   return code;
+}
+
+function getEffectiveResumeState(cid) {
+  if (!cid) return null;
+  const snap = state.snapshots.get(cid);
+  const direct = state.resumeState && state.resumeState.cascadeId === cid ? state.resumeState : null;
+  const rs = direct || snap?.resumeState || null;
+  if (!rs || rs.interrupted !== true || rs.active === true) return null;
+  const convo = state.conversations.find((c) => c.id === cid);
+  const statusStr = String(snap?.status ?? convo?.status ?? '');
+  if (/RUNNING|BUSY|CANCEL|WAIT/i.test(statusStr)) return null;
+  if ((snap?.waitingSteps?.length || 0) > 0 || (convo?.waitingSteps?.length || 0) > 0) return null;
+  return rs;
+}
+
+function renderStudioPanels() {
+  const refs = ensureWorkspaceShell();
+  renderStudioStrip(refs.studioStrip, {
+    overview: state.studioOverview,
+    open: state.studioDrawerOpen,
+    selectedProjectId: state.selectedProjectId,
+    onToggleProjects: () => {
+      state.studioDrawerOpen = !state.studioDrawerOpen;
+      renderStudioPanels();
+    },
+  });
+  renderProjectsDrawer(refs.projectsDrawer, {
+    overview: state.studioOverview,
+    open: state.studioDrawerOpen,
+    selectedProjectId: state.selectedProjectId,
+    onSelectProject: (nextPid) => {
+      state.selectedProjectId = nextPid || '';
+      renderStudioPanels();
+      renderSidebarList();
+    },
+    onClose: () => {
+      state.studioDrawerOpen = false;
+      renderStudioPanels();
+    },
+  });
 }
 
 function syncComposerControls() {
@@ -372,10 +454,40 @@ function syncComposerControls() {
   refs.turboWriteCheckbox.checked = Boolean(needTurboConfirm && state.turboWriteConfirmed);
   if (writable && needTurboConfirm) {
     refs.turboWriteLabel.classList.remove('rc-hidden');
-    refs.turboWriteCheckbox.disabled = state.sendBusy;
+    refs.turboWriteCheckbox.disabled = state.sendBusy || state.resumeBusy;
   } else {
     refs.turboWriteLabel.classList.add('rc-hidden');
   }
+
+  renderResumeBanner(refs.resumeBanner, {
+    resumeState: getEffectiveResumeState(state.selectedId),
+    canWrite: writable,
+    online,
+    needTurboConfirm,
+    turboConfirmed: state.turboWriteConfirmed,
+    busy: state.resumeBusy,
+    onResume: handleResumeConvo,
+  });
+
+  const activeOpusGate =
+    state.selectedId && state.studioOverview?.activeCascade?.cascadeId === state.selectedId
+      ? state.studioOverview.activeCascade.opusGate
+      : null;
+  renderOpusGateBanner(refs.opusBanner, {
+    opusGate: activeOpusGate,
+    canWrite: writable,
+    busy: state.opusDismissBusy,
+    onDismiss: handleDismissOpus,
+  });
+
+  if (writable && hasSelection) {
+    refs.compactBtn.classList.remove('rc-hidden');
+  } else {
+    refs.compactBtn.classList.add('rc-hidden');
+  }
+  refs.compactBtn.textContent = state.compactBusy ? '压缩中…' : '/compact';
+  refs.compactBtn.disabled =
+    !writable || !online || !hasSelection || state.compactBusy || state.capabilities?.compact === false;
 
   if (refs.draftInput.value !== state.draftText) {
     refs.draftInput.value = state.draftText;
@@ -545,6 +657,112 @@ async function handleCancelConvo() {
   }
 }
 
+async function handleResumeConvo(rs) {
+  if (!wsClient || !state.selectedId || !canSteer() || state.resumeBusy) return;
+  const targetCid = state.selectedId;
+  const expectedLastIdx = rs?.lastIdx;
+  if (!Number.isInteger(expectedLastIdx) || expectedLastIdx < 0) return;
+  const turboAckShown = requiresTurboAck(state.globalPreset);
+  const confirmed = Boolean(turboAckShown && state.turboWriteConfirmed);
+  if (turboAckShown && !confirmed) {
+    state.actionError = '请先勾选 TURBO / 未知权限高危确认框';
+    state.actionNotice = '';
+    syncComposerControls();
+    return;
+  }
+  const mapKey = `${targetCid}:${expectedLastIdx}`;
+  let idempotencyKey = state.pendingResumeKeys.get(mapKey);
+  if (!idempotencyKey) {
+    idempotencyKey = createIdempotencyKey();
+    state.pendingResumeKeys.set(mapKey, idempotencyKey);
+  }
+  state.resumeBusy = true;
+  state.actionError = '';
+  state.actionNotice = '';
+  syncComposerControls();
+  try {
+    await wsClient.resumeConversation(targetCid, {
+      expectedLastIdx,
+      turboWriteConfirmed: confirmed,
+      idempotencyKey,
+    });
+    state.pendingResumeKeys.delete(mapKey);
+    if (state.selectedId === targetCid) {
+      state.resumeState = null;
+      state.actionNotice = '已静默触发继续任务 (Resume)';
+    }
+    refreshAllData();
+  } catch (err) {
+    const code = err?.code;
+    if (code === 'resume_state_changed' || code === 'idempotency_key_conflict' || code === 'outcome_unknown') {
+      state.pendingResumeKeys.delete(mapKey);
+      if (code === 'resume_state_changed' || code === 'outcome_unknown') {
+        refreshAllData();
+        wsClient.fetchResumeState(targetCid).then((fresh) => {
+          if (state.selectedId === targetCid) {
+            state.resumeState = fresh;
+            syncComposerControls();
+          }
+        }).catch(() => {});
+      }
+    }
+    if (state.selectedId === targetCid) {
+      state.actionError = formatWriteError(err);
+    }
+  } finally {
+    state.turboWriteConfirmed = false;
+    state.resumeBusy = false;
+    syncComposerControls();
+  }
+}
+
+async function handleCompactConvo() {
+  if (!wsClient || !state.selectedId || !canSteer() || state.compactBusy) return;
+  const targetCid = state.selectedId;
+  state.compactBusy = true;
+  state.actionError = '';
+  state.actionNotice = '';
+  syncComposerControls();
+  try {
+    await wsClient.compactConversation(targetCid);
+    if (state.selectedId === targetCid) {
+      state.actionNotice = '已触发上下文压缩 (/compact)';
+    }
+    refreshAllData();
+  } catch (err) {
+    if (err?.code === 'outcome_unknown') refreshAllData();
+    if (state.selectedId === targetCid) {
+      state.actionError = formatWriteError(err);
+    }
+  } finally {
+    state.compactBusy = false;
+    syncComposerControls();
+  }
+}
+
+async function handleDismissOpus(prop) {
+  if (!wsClient || !state.selectedId || !canSteer() || state.opusDismissBusy || !prop?.id) return;
+  const targetCid = state.selectedId;
+  state.opusDismissBusy = true;
+  state.actionError = '';
+  state.actionNotice = '';
+  syncComposerControls();
+  try {
+    await wsClient.dismissOpusProposal(targetCid, prop.id, { ts: prop.ts });
+    if (state.selectedId === targetCid) {
+      state.actionNotice = '已忽略 Opus Gate 检查点建议';
+    }
+    refreshStudioOverview(targetCid);
+  } catch (err) {
+    if (state.selectedId === targetCid) {
+      state.actionError = formatWriteError(err);
+    }
+  } finally {
+    state.opusDismissBusy = false;
+    syncComposerControls();
+  }
+}
+
 function renderTopStatus() {
   const refs = ensureWorkspaceShell();
   rootEl.setAttribute('data-mobile-view', state.mobileView);
@@ -582,6 +800,11 @@ function renderTopStatus() {
           state.identity = null;
           state.turboWriteConfirmed = false;
           state.pendingApproveKeys.clear();
+          state.pendingResumeKeys.clear();
+          state.studioOverview = null;
+          state.studioDrawerOpen = false;
+          state.selectedProjectId = '';
+          state.resumeState = null;
           resetCancelConfirm();
           workspaceRefs = null;
           pairView.loadHealthForPairing();
@@ -701,6 +924,7 @@ function renderSidebarList() {
     const waitCount = getEffectiveWaitingCount(state, c);
     const statusInfo = normalizeRunStatus(c.status);
     const isSelected = state.selectedId === c.id;
+    const wtMeta = state.studioOverview?.worktreeByCid?.[c.id] || null;
     const itemBtn = el(
       'button',
       {
@@ -722,6 +946,7 @@ function renderSidebarList() {
         'div',
         { className: 'rc-convo-meta' },
         c.parentConversationId ? el('span', { className: 'rc-pill', text: 'Subagent' }) : null,
+        wtMeta?.branch ? el('span', { className: 'rc-pill', 'data-tone': 'info', text: `⎇ ${wtMeta.branch}` }) : null,
         el('span', { text: `${c.stepCount ?? 0} steps` }),
         c.lastModifiedTime ? el('span', { text: `· ${formatRelativeTime(c.lastModifiedTime)}` }) : null
       )
@@ -741,6 +966,7 @@ function renderDetailTimeline() {
 
 function renderWorkspace() {
   renderTopStatus();
+  renderStudioPanels();
   renderFilterChips();
   renderSidebarList();
   renderDetailTimeline();
@@ -771,9 +997,29 @@ function applyConvoListResult(result) {
   renderWorkspace();
 }
 
+function refreshStudioOverview(cascadeId = state.selectedId) {
+  if (!wsClient) return;
+  wsClient
+    .fetchStudioOverview(cascadeId || '')
+    .then((ov) => {
+      if (!ov || !wsClient) return;
+      state.studioOverview = ov;
+      if (state.identity) {
+        renderStudioPanels();
+        renderSidebarList();
+        renderDetailTimeline();
+        syncComposerControls();
+      }
+    })
+    .catch(() => {});
+}
+
 function applySnapshot(cascadeId, snap) {
   if (!cascadeId || !snap) return;
   state.snapshots.set(cascadeId, snap);
+  if (snap.resumeState && state.selectedId === cascadeId) {
+    state.resumeState = snap.resumeState;
+  }
   if (typeof snap.streamingText === 'string' && snap.streamingText) {
     const steps = Array.isArray(snap.steps) ? snap.steps : [];
     const lastIdx = steps.length > 0 ? steps[steps.length - 1].idx : 0;
@@ -827,6 +1073,7 @@ async function selectConversation(cascadeId) {
   if (state.selectedId !== cascadeId) {
     state.draftIdempotencyKey = createIdempotencyKey();
     state.turboWriteConfirmed = false;
+    state.resumeState = null;
     state.actionError = '';
     state.actionNotice = '';
     resetCancelConfirm();
@@ -838,12 +1085,23 @@ async function selectConversation(cascadeId) {
   renderWorkspace();
 
   if (!wsClient) return;
+  refreshStudioOverview(cascadeId);
+  wsClient
+    .fetchResumeState(cascadeId)
+    .then((rs) => {
+      if (state.selectedId === cascadeId && rs) {
+        state.resumeState = rs;
+        syncComposerControls();
+      }
+    })
+    .catch(() => {});
   try {
     const snap = await wsClient.watchConversation(cascadeId);
     if (snap && state.selectedId === cascadeId) {
       applySnapshot(cascadeId, snap);
       state.snapshotLoading = false;
       renderDetailTimeline();
+      syncComposerControls();
     }
   } catch (err) {
     state.snapshotLoading = false;
@@ -855,6 +1113,7 @@ async function selectConversation(cascadeId) {
 function refreshAllData() {
   if (!wsClient) return;
   wsClient.refreshList(state.includeSubagents).then(applyConvoListResult).catch(() => {});
+  refreshStudioOverview(state.selectedId);
   if (state.selectedId) {
     fetchAndRenderSnapshot(state.selectedId);
   }
@@ -1056,6 +1315,7 @@ function startWorkspaceSession() {
       } else {
         wsClient.refreshList(state.includeSubagents).then(applyConvoListResult).catch(() => {});
       }
+      refreshStudioOverview(state.selectedId);
       renderTopStatus();
     },
     onDelta: handleTapDelta,
@@ -1064,6 +1324,7 @@ function startWorkspaceSession() {
       if (state.selectedId === cid) {
         state.snapshotLoading = false;
         renderDetailTimeline();
+        syncComposerControls();
       }
     },
     onError: () => {},

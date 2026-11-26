@@ -10,7 +10,7 @@ export function createRemoteTapModule(rt) {
   const MAX_STREAMS = 3;
   const MAX_STEPS_SNAPSHOT = 200;
   const MAX_FIELD_CHARS = 16384;
-  const INVOKE_METHODS = new Set(['convo.owns', 'convo.send', 'convo.approve', 'convo.cancel']);
+  const INVOKE_METHODS = new Set(['convo.owns', 'convo.send', 'convo.approve', 'convo.cancel', 'convo.compact']);
 
   let active = false;
   let rpcToken = '';
@@ -754,6 +754,10 @@ export function createRemoteTapModule(rt) {
         sendMessage: Boolean(lsClient && typeof lsClient.sendUserCascadeMessage === 'function'),
         cancel: Boolean(lsClient && typeof lsClient.cancelCascadeInvocation === 'function'),
         approval: Boolean(lsClient && typeof lsClient.handleCascadeUserInteraction === 'function'),
+        compact: Boolean(
+          typeof window !== 'undefined' &&
+            typeof window.__agClaudeUxBridge?.triggerConversationCompact === 'function'
+        ),
         diskRead: true,
       },
     };
@@ -1056,6 +1060,38 @@ export function createRemoteTapModule(rt) {
     }
   }
 
+  async function compactConversation(payload) {
+    const cid = typeof payload?.cascadeId === 'string' ? payload.cascadeId.trim() : '';
+    if (!UUID_RE.test(cid)) return { ok: false, error: 'invalid_cascade_id' };
+    const triggerFn =
+      typeof window !== 'undefined' ? window.__agClaudeUxBridge?.triggerConversationCompact : null;
+    if (typeof triggerFn !== 'function') {
+      return { ok: false, error: 'compact_unavailable' };
+    }
+    const selCid =
+      typeof document !== 'undefined'
+        ? document.querySelector('[data-testid="conversation-row-sidebar"][data-selected="true"]')?.getAttribute('data-cascade-id')
+        : '';
+    const isActive = Boolean(
+      typeof window !== 'undefined' &&
+        ((typeof window.location?.pathname === 'string' && window.location.pathname.includes(cid)) ||
+          window.__ag_watched_cascade_id === cid ||
+          selCid === cid)
+    );
+    if (!isActive) {
+      return { ok: false, error: 'compact_requires_active_pane' };
+    }
+    try {
+      const ok = await triggerFn({ expectedCid: cid, requireEmptyDraft: true });
+      if (!ok) {
+        return { ok: false, error: 'compact_rejected_or_busy' };
+      }
+      return { ok: true, cascadeId: cid };
+    } catch (err) {
+      return { ok: false, error: String(err?.message || err || 'compact_failed') };
+    }
+  }
+
   async function invoke(method, payload) {
     if (rtState.disposed) return { ok: false, error: 'disposed' };
     if (typeof method !== 'string' || !INVOKE_METHODS.has(method)) {
@@ -1068,6 +1104,7 @@ export function createRemoteTapModule(rt) {
     if (method === 'convo.send') return sendMessage(payload);
     if (method === 'convo.approve') return approveInteraction(payload);
     if (method === 'convo.cancel') return cancelConversation(payload);
+    if (method === 'convo.compact') return compactConversation(payload);
     return { ok: false, error: 'disallowed_invoke_method' };
   }
 

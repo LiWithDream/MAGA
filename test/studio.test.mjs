@@ -4313,10 +4313,10 @@ function writeConvDb(convDir, cid, steps, execRows = []) {
 function writeSummariesDb(sumDbPath, rows) {
   const db = new DatabaseSync(sumDbPath);
   db.exec(
-    'CREATE TABLE conversation_summaries (conversation_id TEXT PRIMARY KEY, parent_conversation_id TEXT DEFAULT "", status TEXT DEFAULT "", not_fully_idle INTEGER DEFAULT 0, killed INTEGER DEFAULT 0, step_count INTEGER DEFAULT 0, raw_summary BLOB);'
+    'CREATE TABLE IF NOT EXISTS conversation_summaries (conversation_id TEXT PRIMARY KEY, parent_conversation_id TEXT DEFAULT "", status TEXT DEFAULT "", not_fully_idle INTEGER DEFAULT 0, killed INTEGER DEFAULT 0, step_count INTEGER DEFAULT 0, raw_summary BLOB);'
   );
   const ins = db.prepare(
-    'INSERT INTO conversation_summaries (conversation_id, parent_conversation_id, status, not_fully_idle, killed, step_count, raw_summary) VALUES (?, ?, ?, ?, ?, ?, ?);'
+    'INSERT OR REPLACE INTO conversation_summaries (conversation_id, parent_conversation_id, status, not_fully_idle, killed, step_count, raw_summary) VALUES (?, ?, ?, ?, ?, ?, ?);'
   );
   for (const r of rows) {
     ins.run(
@@ -4748,5 +4748,164 @@ test('resume-banner suppresses pill during waiting states, clears stale cache, r
 
     rt.dispose();
     assert.equal(storeListeners.size, 0, 'dispose unsubscribes from live store');
+  });
+});
+
+test('resume-detector handles P2 hardening cases: malformed protobuf, WAL cache invalidation, >6 meta steps, precedence & schema drift', () => {
+  const { root, convDir, sumDbPath } = setupResumeFixtureDir('agy-resume-p2-');
+  try {
+    // 1. Malformed/truncated protobuf blobs degrade cleanly without throwing
+    const badProto = Buffer.from([0x12, 0xff, 0xff, 0xff, 0xff, 0x0f, 0xa2, 0x01, 0x7f, 0xff]);
+    const cidBadProto = 'conv_bad_proto_001';
+    writeConvDb(
+      convDir,
+      cidBadProto,
+      [{ idx: 1, stepType: 15, status: 3, metadata: badProto, stepPayload: badProto }],
+      [{ idx: 0, data: badProto }]
+    );
+    writeSummariesDb(sumDbPath, [
+      { cid: cidBadProto, status: 'CASCADE_RUN_STATUS_IDLE', notFullyIdle: false, stepCount: 2, rawSummary: badProto },
+    ]);
+    const rBad = collectResumeState({ cascadeId: cidBadProto }, { conversationsDir: convDir });
+    assert.equal(rBad.ok, true);
+    assert.equal(rBad.interrupted, false);
+
+    // 2. Cache invalidates when -wal file changes on disk
+    const cidWal = 'conv_wal_invalidate_002';
+    const walDbPath = path.join(convDir, `${cidWal}.db`);
+    const walDb = new DatabaseSync(walDbPath);
+    walDb.exec('PRAGMA journal_mode = WAL;');
+    walDb.exec('PRAGMA wal_autocheckpoint = 0;');
+    walDb.exec('CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER, status INTEGER, error_details BLOB, metadata BLOB, step_payload BLOB);');
+    walDb
+      .prepare('INSERT INTO steps (idx, step_type, status, error_details, metadata, step_payload) VALUES (?, ?, ?, ?, ?, ?);')
+      .run(0, 15, 3, Buffer.alloc(0), Buffer.alloc(0), encodePlannerPayload({ stopReason: 2 }));
+    const w1 = collectResumeState({ cascadeId: cidWal }, { conversationsDir: convDir });
+    assert.equal(w1.interrupted, false);
+    walDb
+      .prepare('INSERT INTO steps (idx, step_type, status, error_details, metadata, step_payload) VALUES (?, ?, ?, ?, ?, ?);')
+      .run(1, 17, 3, Buffer.alloc(0), Buffer.alloc(0), Buffer.alloc(0));
+    const w2 = collectResumeState({ cascadeId: cidWal }, { conversationsDir: convDir });
+    assert.equal(w2.interrupted, true);
+    assert.equal(w2.reason, 'error');
+    walDb.close();
+
+    // 3. >6 trailing SYSTEM_MESSAGE (101) steps after ERROR_MESSAGE (17) are still detected
+    const cidManyMeta = 'conv_many_meta_003';
+    const manySteps = [{ idx: 0, stepType: 17, status: 3 }];
+    for (let i = 1; i <= 10; i++) manySteps.push({ idx: i, stepType: 101, status: 3 });
+    writeConvDb(convDir, cidManyMeta, manySteps);
+    const rMany = collectResumeState({ cascadeId: cidManyMeta }, { conversationsDir: convDir });
+    assert.equal(rMany.interrupted, true);
+    assert.equal(rMany.reason, 'error');
+    assert.equal(rMany.lastIdx, 10);
+
+    // 4. executor_metadata USER_CANCELED (2) overrides STATUS_WAITING (9)
+    const cidWaitCanceled = 'conv_wait_canceled_004';
+    writeConvDb(
+      convDir,
+      cidWaitCanceled,
+      [{ idx: 4, stepType: 132, status: 9 }],
+      [{ idx: 0, data: encodeExecMetadata(2, 4) }]
+    );
+    const rWc = collectResumeState({ cascadeId: cidWaitCanceled }, { conversationsDir: convDir });
+    assert.equal(rWc.interrupted, true);
+    assert.equal(rWc.reason, 'canceled');
+
+    // 5. Store-absent stale RUNNING summary is overridden when DB holds explicit terminal failure,
+    //    while active RUNNING step remains suppressed
+    const cidStaleErr = 'conv_stale_summary_err_005';
+    writeConvDb(convDir, cidStaleErr, [{ idx: 3, stepType: 132, status: 6 }]);
+    const cidLiveActive = 'conv_live_active_006';
+    writeConvDb(convDir, cidLiveActive, [{ idx: 3, stepType: 132, status: 2 }]);
+    writeSummariesDb(sumDbPath, [
+      { cid: cidStaleErr, status: 'CASCADE_RUN_STATUS_RUNNING', notFullyIdle: true, stepCount: 4 },
+      { cid: cidLiveActive, status: 'CASCADE_RUN_STATUS_RUNNING', notFullyIdle: true, stepCount: 4 },
+    ]);
+    const rStaleErr = collectResumeState({ cascadeId: cidStaleErr }, { conversationsDir: convDir });
+    assert.equal(rStaleErr.interrupted, true);
+    assert.equal(rStaleErr.reason, 'canceled');
+    const rLiveAct = collectResumeState({ cascadeId: cidLiveActive }, { conversationsDir: convDir });
+    assert.equal(rLiveAct.interrupted, false);
+    assert.equal(rLiveAct.active, true);
+
+    // 6. executor_metadata table lacking idx column still works via rowid fallback
+    const cidNoIdxExec = 'conv_exec_no_idx_007';
+    const noIdxPath = path.join(convDir, `${cidNoIdxExec}.db`);
+    const noIdxDb = new DatabaseSync(noIdxPath);
+    noIdxDb.exec('CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER, status INTEGER, error_details BLOB);');
+    noIdxDb.prepare('INSERT INTO steps (idx, step_type, status, error_details) VALUES (?, ?, ?, ?);').run(2, 15, 3, Buffer.alloc(0));
+    noIdxDb.exec('CREATE TABLE executor_metadata (data BLOB);');
+    noIdxDb.prepare('INSERT INTO executor_metadata (data) VALUES (?);').run(encodeExecMetadata(2, 2));
+    noIdxDb.close();
+    const rNoIdx = collectResumeState({ cascadeId: cidNoIdxExec }, { conversationsDir: convDir });
+    assert.equal(rNoIdx.ok, true);
+    assert.equal(rNoIdx.interrupted, true);
+    assert.equal(rNoIdx.reason, 'canceled');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('resume-banner ignores stale A->B->A responses using reqGen token', async () => {
+  const env = makeMockDomEnv({ pathname: '/c/conv-A', lang: 'en', width: 640 });
+  const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms));
+
+  await withGlobals(env, async () => {
+    const mainBox = env.createEl('div');
+    mainBox.id = 'antigravity.agentSidePanelInputBox';
+    const footer = env.createEl('div');
+    footer.className = 'agy-composer-footer';
+    const leftGroup = env.createEl('div');
+    leftGroup.append(env.createEl('button'));
+    footer.append(leftGroup);
+    mainBox.append(footer);
+    env.doc.body.append(mainBox);
+
+    const pending = [];
+    env.win.__agProjectCall = (_action, payload) =>
+      new Promise((resolve) => {
+        pending.push({ cid: payload.cascadeId, resolve });
+      });
+
+    const rt = createResumeBannerRuntime({});
+
+    // 1. Visit A (reqGen 1)
+    rt.sync();
+    assert.equal(pending.length, 1);
+    assert.equal(pending[0].cid, 'conv-A');
+
+    // 2. Fast switch A -> B (reqGen 2) -> A (reqGen 3)
+    env.loc.pathname = '/c/conv-B';
+    rt.sync();
+    assert.equal(pending.length, 2);
+    assert.equal(pending[1].cid, 'conv-B');
+
+    env.loc.pathname = '/c/conv-A';
+    rt.sync();
+    assert.equal(pending.length, 3);
+    assert.equal(pending[2].cid, 'conv-A');
+
+    // 3. Stale first response for conv-A resolves with interrupted:true — must be ignored and must not clear inFlight
+    pending[0].resolve({ ok: true, interrupted: true, reason: 'canceled', lastIdx: 1 });
+    await tick(10);
+    assert.equal(env.doc.getElementById('agy-resume-pill'), null, 'stale first A response must be ignored');
+
+    // 4. Forced refresh while reqGen 3 is still inFlight must queue via pendingForce (proving inFlight stayed true)
+    let forcedCount = 0;
+    env.win.__agProjectCall = (_action, payload) => {
+      forcedCount += 1;
+      return Promise.resolve({ ok: true, interrupted: true, reason: 'error', lastIdx: 99, cascadeId: payload.cascadeId });
+    };
+    env.win.__ag_last_metrics = { cascadeId: 'conv-A', hasData: true, stats: { turns: 2, calls: 3 } };
+    rt.sync();
+    assert.equal(forcedCount, 0, 'inFlight must stay true after stale reqGen 1 finished, queuing pendingForce');
+
+    pending[2].resolve({ ok: true, interrupted: false, reason: 'done', lastIdx: 98 });
+    await tick(20);
+    assert.equal(forcedCount, 1, 'pendingForce runs once reqGen 3 settles');
+    assert.ok(env.doc.getElementById('agy-resume-pill'), 'pill mounts from queued forced refetch after reqGen 3');
+
+    rt.dispose();
   });
 });

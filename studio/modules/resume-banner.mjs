@@ -31,7 +31,8 @@ export function createResumeBannerRuntime({ studioPrefs } = {}) {
   let subscribedStore = null;
   let unsubStore = null;
   let visibilityBound = false;
-  let stateCache = { cid: '', ts: 0, inFlight: false, pendingForce: false, pendingOpts: null, data: null };
+  let reqSeq = 0;
+  let stateCache = { cid: '', ts: 0, reqGen: 0, inFlight: false, pendingForce: false, pendingOpts: null, data: null };
   const scannedSteps = new WeakSet();
   const fallbackTimers = new Set();
 
@@ -448,7 +449,9 @@ export function createResumeBannerRuntime({ studioPrefs } = {}) {
       return;
     }
 
+    const myGen = ++reqSeq;
     stateCache.cid = cid;
+    stateCache.reqGen = myGen;
     stateCache.inFlight = true;
     stateCache.pendingForce = false;
     stateCache.pendingOpts = null;
@@ -457,7 +460,7 @@ export function createResumeBannerRuntime({ studioPrefs } = {}) {
     const rpcPayload = liveIdle ? { cascadeId: cid, liveIdle: true } : { cascadeId: cid };
     Promise.resolve(window.__agProjectCall('getResumeState', rpcPayload, 3000))
       .then((res) => {
-        if (disposed || stateCache.cid !== cid) return;
+        if (disposed || stateCache.cid !== cid || stateCache.reqGen !== myGen) return;
         resolvedRes = res;
         if (res && res.ok && !getLiveBusyFlags(cid).busy) {
           stateCache.data = res;
@@ -466,14 +469,13 @@ export function createResumeBannerRuntime({ studioPrefs } = {}) {
       })
       .catch(() => {})
       .finally(() => {
-        const sameCid = stateCache.cid === cid;
-        const pendingForce = sameCid && stateCache.pendingForce;
-        const pendingOpts = sameCid ? stateCache.pendingOpts : null;
-        if (sameCid) {
-          stateCache.inFlight = false;
-          stateCache.pendingForce = false;
-          stateCache.pendingOpts = null;
-        }
+        const sameReq = stateCache.cid === cid && stateCache.reqGen === myGen;
+        if (!sameReq) return;
+        const pendingForce = stateCache.pendingForce;
+        const pendingOpts = stateCache.pendingOpts;
+        stateCache.inFlight = false;
+        stateCache.pendingForce = false;
+        stateCache.pendingOpts = null;
         if (disposed) return;
 
         if (pendingForce && getActiveRouteCid() === cid) {
@@ -690,7 +692,8 @@ export function createResumeBannerRuntime({ studioPrefs } = {}) {
       prevBusy = null;
       lastMetricsSig = '';
       lastLiveSig = '';
-      stateCache = { cid: '', ts: 0, inFlight: false, pendingForce: false, pendingOpts: null, data: null };
+      reqSeq += 1;
+      stateCache = { cid: '', ts: 0, reqGen: 0, inFlight: false, pendingForce: false, pendingOpts: null, data: null };
       if (settleTimer) {
         clearTimeout(settleTimer);
         settleTimer = 0;
@@ -704,6 +707,9 @@ export function createResumeBannerRuntime({ studioPrefs } = {}) {
         settleTimer = 0;
       }
       if (stateCache.cid === cid) {
+        reqSeq += 1;
+        stateCache.reqGen = 0;
+        stateCache.inFlight = false;
         stateCache.data = null;
         stateCache.pendingForce = false;
         stateCache.pendingOpts = null;
@@ -745,6 +751,8 @@ export function createResumeBannerRuntime({ studioPrefs } = {}) {
   function dispose() {
     if (disposed) return;
     disposed = true;
+    reqSeq += 1;
+    stateCache = { cid: '', ts: 0, reqGen: 0, inFlight: false, pendingForce: false, pendingOpts: null, data: null };
     offStudioPrefs?.();
     unsubStore?.();
     unsubStore = null;

@@ -26,7 +26,11 @@ import {
   stripStudioBlocksOnly,
 } from './build.mjs';
 import { collectUsageStatsAsync } from './daemon/usage-service.mjs';
-import { isOpusGatePluginInstalled, syncOpusGatePlugin } from './daemon/opus-gate-service.mjs';
+import {
+  isOpusGatePluginInstalled,
+  syncOpusGatePlugin,
+  verifyOpusGateHookNodeRuntime,
+} from './daemon/opus-gate-service.mjs';
 import {
   isAutoCompactPluginInstalled,
   syncAutoCompactPlugin,
@@ -71,6 +75,19 @@ function syncFastIoRules() {
   mkdirSync(path.dirname(AGENTS_MD), { recursive: true });
   writeFileSync(AGENTS_MD, next, 'utf8');
   return { ok: true, path: AGENTS_MD };
+}
+
+function removeFastIoRules(agentsMdPath = AGENTS_MD) {
+  if (!existsSync(agentsMdPath)) {
+    return { ok: true, removed: false, path: agentsMdPath };
+  }
+  const existing = readFileSync(agentsMdPath, 'utf8');
+  if (!existing.includes(RULE_BEGIN)) {
+    return { ok: true, removed: false, path: agentsMdPath };
+  }
+  const cleaned = stripBlock(existing, RULE_BEGIN, RULE_END).trim();
+  writeFileSync(agentsMdPath, cleaned ? `${cleaned}\n` : '', 'utf8');
+  return { ok: true, removed: true, path: agentsMdPath };
 }
 
 async function applyCollapsedStepsPreference() {
@@ -198,6 +215,7 @@ async function runDoctor() {
     orchestratorModel: agyCfg?.userSettings?.orchestratorModel ?? null,
     fastIoRuleInstalled: hasFastIo,
     opusGatePluginInstalled: isOpusGatePluginInstalled(),
+    opusGateHookNode: verifyOpusGateHookNodeRuntime(),
     opusGateQuotaStatePresent: existsSync(QUOTA_STATE_FILE),
     autoCompactPluginInstalled: isAutoCompactPluginInstalled(),
     autoCompactHookNode: verifyInstalledHookNodeRuntime(),
@@ -234,7 +252,7 @@ function collectProxyDiagnostics() {
       };
       const anySysProxy = systemProxy.httpEnabled || systemProxy.httpsEnabled || systemProxy.socksEnabled || systemProxy.pacEnabled;
       if (shellProxyEnvKeys.length > 0 && !anySysProxy) {
-        hint = 'Shell proxy env vars detected while macOS System Proxy is disabled; MAGA auto-forwards proxy env vars during CDP relaunch, and enabling System Proxy or TUN mode is recommended if Antigravity language_server reports loadCodeAssist: EOF.';
+        hint = 'Shell proxy env vars detected while macOS System Proxy is disabled; AGY Studio auto-forwards proxy env vars during CDP relaunch, and enabling System Proxy or TUN mode is recommended if Antigravity language_server reports loadCodeAssist: EOF.';
       }
     } catch {
       systemProxy = null;
@@ -268,15 +286,17 @@ try {
   } else if (cmd === 'deploy') {
     const res = await deployStudio({ allowNonMain: allowNonMainDeploy });
     await applyDefaultOrchestratorModelPreference();
-    const compactPluginRes =
-      res?.ok && !allowNonMainDeploy && !res?.deployedFrom?.preview
-        ? syncAutoCompactPlugin()
-        : { ok: true, skipped: true, reason: 'preview_deploy' };
-    const gitWorkflowPluginRes =
-      res?.ok && !allowNonMainDeploy && !res?.deployedFrom?.preview
-        ? syncGitWorkflowPlugin()
-        : { ok: true, skipped: true, reason: 'preview_deploy' };
-    console.log(JSON.stringify({ ...res, autoCompactPlugin: compactPluginRes, gitWorkflowPlugin: gitWorkflowPluginRes }, null, 2));
+    const shouldSyncPlugins = Boolean(res?.ok && !allowNonMainDeploy && !res?.deployedFrom?.preview);
+    const opusGatePluginRes = shouldSyncPlugins
+      ? syncOpusGatePlugin()
+      : { ok: true, skipped: true, reason: 'preview_deploy' };
+    const compactPluginRes = shouldSyncPlugins
+      ? syncAutoCompactPlugin()
+      : { ok: true, skipped: true, reason: 'preview_deploy' };
+    const gitWorkflowPluginRes = shouldSyncPlugins
+      ? syncGitWorkflowPlugin()
+      : { ok: true, skipped: true, reason: 'preview_deploy' };
+    console.log(JSON.stringify({ ...res, opusGatePlugin: opusGatePluginRes, autoCompactPlugin: compactPluginRes, gitWorkflowPlugin: gitWorkflowPluginRes }, null, 2));
   } else if (cmd === 'sync-rules') {
     const rulesRes = syncFastIoRules();
     const pluginRes = syncOpusGatePlugin();
@@ -289,15 +309,16 @@ try {
     process.exit(report.ok ? 0 : 1);
   } else if (cmd === 'rollback') {
     const rollbackRes = rollbackStudio();
+    const rulesRes = removeFastIoRules();
     const pluginRes = syncOpusGatePlugin({ remove: true });
     const compactPluginRes = syncAutoCompactPlugin({ remove: true });
     const gitWorkflowPluginRes = syncGitWorkflowPlugin({ remove: true });
-    console.log(JSON.stringify({ ...rollbackRes, opusGatePlugin: pluginRes, autoCompactPlugin: compactPluginRes, gitWorkflowPlugin: gitWorkflowPluginRes }, null, 2));
+    console.log(JSON.stringify({ ...rollbackRes, rules: rulesRes, opusGatePlugin: pluginRes, autoCompactPlugin: compactPluginRes, gitWorkflowPlugin: gitWorkflowPluginRes }, null, 2));
   } else {
     console.error(`Unknown command: ${cmd}\nUse: install | deploy | sync-rules | doctor | rollback`);
     process.exit(1);
   }
 } catch (err) {
-  console.error('[MAGA]', err?.message || err);
+  console.error('[AGY Studio]', err?.message || err);
   process.exit(1);
 }

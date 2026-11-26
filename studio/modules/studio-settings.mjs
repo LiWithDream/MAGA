@@ -171,7 +171,7 @@ export function createStudioSettingsRuntime({
     if (!btn) return;
     const exp = drawerOpen ? 'true' : 'false';
     setAttr(btn, 'aria-expanded', exp);
-    const lbl = L('MAGA 设置', 'MAGA Settings');
+    const lbl = L('AGY Studio 设置', 'AGY Studio Settings');
     setAttr(btn, 'aria-label', lbl);
     if (btn.title !== lbl) btn.title = lbl;
   }
@@ -403,8 +403,8 @@ export function createStudioSettingsRuntime({
     const navBtn = navWrap?.querySelector('button');
     if (navBtn) {
       const span = navBtn.querySelector('span');
-      if (span) setLeafText(span, 'MAGA');
-      setAttr(navBtn, 'aria-label', 'MAGA');
+      if (span) setLeafText(span, 'AGY Studio');
+      setAttr(navBtn, 'aria-label', 'AGY Studio');
       if (!navBtn.__agyMagaBound) {
         navBtn.__agyMagaBound = true;
         navBtn.addEventListener('click', () => {

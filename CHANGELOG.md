@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-11-26
+
+Consolidated parallel feature development into a unified, hardened release: added Cache-Aware Auto-Compact and Global Tiered Git Workflow guardrails, centralized plugin syncing and preferences schemas, hardened Resume detection and footer capsule coexistence, and aligned UI/plugin branding to **AGY Studio**.
+
+### Added
+- **Cache-Aware Auto-Compact (`studio/plugin/maga-auto-compact/`, `studio/daemon/auto-compact-service.mjs`, `studio/modules/auto-compact.mjs`, `user/src/modules/compact-controller.mjs`)**: Detects long scheduled waits (`schedule` step decoder) and context usage thresholds, coordinating automatic `/compact` via 30s `O_EXCL`-locked CAS leases or `#agy-auto-compact-pill` while protecting live composer drafts and prompt cache warmth.
+- **Global Tiered Git Workflow Guardrails & Policy UI (`studio/plugin/maga-git-workflow/`, `studio/daemon/git-workflow-service.mjs`, `studio/plugin/maga-git-workflow/bin/wt.mjs`, `studio/modules/settings/views.mjs`)**: Enforces centralized per-repo policies (`observe` / `protect-main` / `worktree-only`) with shared worktree core (`lib/worktree-core.mjs`), universal `wt.mjs`, per-conversation worktree attribution, and deny telemetry without polluting repositories.
+
+### Changed
+- **Unified Plugin Sync & Shared Preferences Schema (`studio/daemon/plugin-sync.mjs`, `studio/shared/prefs-schema.mjs`)**: Consolidated Node-executable pinning, `chmod 0755`, stale-file pruning, and runtime verification across all three managed plugins (`maga-opus-gate`, `maga-auto-compact`, `maga-git-workflow`), and extracted a single canonical preferences schema shared by `studio/build.mjs`, `core/daemon/prefs-bundle.mjs`, and `studio/modules/studio-prefs.mjs`.
+- **Shell Parser Split & Repo-Wide `< 2,000`-Line Invariant (`studio/plugin/maga-git-workflow/lib/shell-parser.mjs`, `test/studio.test.mjs`)**: Extracted shell segmentation, tokenization, and redirect parsing from `hooks/git-guard.mjs` (`2,017` -> `1,352` lines) and extended the `< 2,000`-line syntax check across `studio/` and `core/`.
+- **Unified `AGY Studio` UI & Plugin Branding**: Aligned user-facing Settings labels, plugin `displayName` fields, CLI hints, and Git workflow notices to `AGY Studio` while preserving internal compatibility identifiers (`com.antigravity.anti-claude.daemon`, `maga-*` plugin slugs, `MAGA_ALLOW_*`).
+
+### Fixed
+- **Footer Capsule Coexistence & Live Speed Pill Stability (`studio/core/dom.mjs`, `studio/modules/subagent-footer.mjs`, `studio/modules/footer-unified.mjs`)**: Exported shared `OWN_FOOTER_PILL_IDS` and `OWN_ROW1_PILL_IDS` so `#agy-auto-compact-pill` coexists cleanly with `#agy-main-subagent-pill`, and prevented `#ag-live-metrics-pill` detachment or duplicate `tok/s` displays.
+- **Preserve User `cjkFontScale` on Deploy (`studio/build.mjs`)**: Fixed `syncLiveConfigForStudio` overwriting user-selected `'94.5'` / `'100'` optical scales; now initializes `'95'` only when missing or invalid.
+- **Interrupted-Task Resume Detection Hardening (`studio/daemon/resume-detector.mjs`, `studio/modules/resume-banner.mjs`)**: Eliminated waiting/background false positives, added `-wal`/`-shm` concurrency retries and malformed protobuf safety, expanded tail meta-step scanning (`LIMIT 24`), and added `reqGen` stale-response cancellation.
+- **Complete `rollback` Cleanup & `deploy` / `doctor` Parity (`studio/cli.mjs`)**: `rollback` now strips `<!-- BEGIN agy-fast-io-pruned -->` rules from `~/.gemini/AGENTS.md` without disturbing surrounding user rules; `deploy` now syncs `maga-opus-gate`, and `doctor` checks `opusGateHookNode`.
+
 ## [1.2.0] - 2026-11-26
 
 Rebranded from **MAGA** to **AGY Studio (`agy-studio`)**, added Git Worktree workspace management, quota-guarded Claude Opus Gate, Git-history-grounded AI chat suggestions, and zero-`npm-install` macOS Release packaging.
@@ -15,7 +34,7 @@ Rebranded from **MAGA** to **AGY Studio (`agy-studio`)**, added Git Worktree wor
 - **Rebrand to AGY Studio (`agy-studio`)**: Renamed the public project, Release tarball prefix (`agy-studio-v*-macos.tar.gz`), installer defaults (`~/.local/share/agy-studio`), and documentation while preserving internal compatibility identifiers (`com.antigravity.anti-claude.daemon`, `studio-prefs.json`).
 - **Git Worktree UI, Per-Conversation Tracking & `wt` CLI (`user/src/modules/projects/worktree-ui.mjs`, `user/src/modules/projects/conv-topbar.mjs`, `studio/wt-cli.mjs`, `studio/deploy-meta.mjs`, `core/daemon/git-exec.mjs`)**: Manage sibling worktrees from the Projects workspace strip, track per-conversation worktrees with live branch/dirty pills, create/clean worktrees via `npm run wt:new` / `wt:clean`, and enforce single-desktop deploy provenance.
 - **Quota-Guarded Claude Opus Gate (`studio/daemon/opus-gate-service.mjs`, `studio/modules/opus-gate-pill.mjs`, `studio/plugin/maga-opus-gate/`)**: Added semi-auto (`✦ 请 Opus 把关` dock pill) and quota-guarded auto Claude Opus checkpoints (`plan` / `risk` / `debug` / `stop`), plus Claude/GPT dual-pool quota tracking across Overview and project usage cards.
-- **History-Aware Project AI Chat Suggestions & Redesigned Repo Header (`core/daemon/project-suggestions.mjs`, `user/src/modules/projects/suggestions-ui.mjs`, `user/src/modules/projects/workspace-ui.mjs`)**: Added optional Gemini 3.8 Flash follow-up prompt pills grounded in recent git history and refined 3-column strip layout, plus redesigned single-line repository status pills.
+- **History-Aware Project AI Chat Suggestions & Redesigned Repo Header (`studio/daemon/project-suggestions.mjs`, `user/src/modules/projects/suggestions-ui.mjs`, `user/src/modules/projects/workspace-ui.mjs`)**: Added optional Gemini 3.8 Flash follow-up prompt pills grounded in recent git history and refined 3-column strip layout, plus redesigned single-line repository status pills.
 - **Zero-Dependency Release Packager & One-Line Installer (`install.sh`, `uninstall.sh`, `studio/pack-release.mjs`, `docs/INSTALL_AGENT.md`)**: Added prebuilt browser bundle support (`studio/prebuilt/studio-entry.js` + `user/custom.js`), `npm run release:pack` tarball + SHA-256 emitter, `--dry-run` safe `install.sh` / `uninstall.sh` with automatic `npm install` fallback for fresh clones, and an Ask-Agent installation guide.
 - **Proxy Diagnostics in `npm run doctor` (`studio/cli.mjs`)**: Added non-blocking `proxyDiagnostics` reporting (active proxy env key names without exposing values, plus macOS `scutil --proxy` status and troubleshooting hint when shell proxy vars are set without System Proxy).
 

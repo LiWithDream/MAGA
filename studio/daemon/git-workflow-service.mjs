@@ -4,18 +4,22 @@
  * - Surfaces recent deny telemetry from `git-workflow-events.json` & detects stale deleted repo keys
  * - Idempotently syncs/removes the native `maga-git-workflow` plugin with pinned Node executable
  */
-import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
   GIT_WORKFLOW_EVENTS_FILE,
   GIT_WORKFLOW_POLICY_FILE,
-  GLOBAL_PLUGINS_DIR,
   NATIVE_PROJECTS_DIR,
-  REPO_ROOT,
   readJsonOrFallback,
   writeAtomicUtf8,
 } from '../../core/daemon/env.mjs';
+import {
+  buildPinnedHooksJsonForPlugin,
+  extractPluginHookNodeBin,
+  isPluginInstalled,
+  syncManagedPlugin,
+  verifyPluginHookNodeRuntime,
+} from './plugin-sync.mjs';
 import { resolveLocalProjectDir } from '../../core/daemon/projects.mjs';
 import { getAuthorizedProjectDirs, isAuthorizedProjectDir } from '../../core/daemon/worktrees.mjs';
 import {
@@ -37,6 +41,15 @@ const PLUGIN_FILES = [
   'rules/AGENTS.md',
   'skills/git-workflow/SKILL.md',
   'hooks/git-guard.mjs',
+  'lib/shell-parser.mjs',
+  'lib/worktree-core.mjs',
+  'bin/wt.mjs',
+];
+const REQUIRED_PLUGIN_FILES = [
+  'plugin.json',
+  'hooks.json',
+  'hooks/git-guard.mjs',
+  'lib/shell-parser.mjs',
   'lib/worktree-core.mjs',
   'bin/wt.mjs',
 ];
@@ -57,10 +70,6 @@ function withPolicyLock(policyFile, fn, { maxWaitMs = 400 } = {}) {
   });
 }
 
-function getPluginTargetDir(opts = {}) {
-  return path.join(opts.pluginsDir || GLOBAL_PLUGINS_DIR, PLUGIN_NAME);
-}
-
 function getPolicyFilePath(opts = {}) {
   if (opts.policyFile) return opts.policyFile;
   if (opts.stateDir) return path.join(opts.stateDir, 'git-workflow-policy.json');
@@ -74,183 +83,32 @@ function getEventsFilePath(opts = {}) {
 }
 
 export function isGitWorkflowPluginInstalled(opts = {}) {
-  const targetDir = getPluginTargetDir(opts);
-  return (
-    fs.existsSync(path.join(targetDir, 'plugin.json')) &&
-    fs.existsSync(path.join(targetDir, 'hooks.json')) &&
-    fs.existsSync(path.join(targetDir, 'hooks', 'git-guard.mjs')) &&
-    fs.existsSync(path.join(targetDir, 'lib', 'worktree-core.mjs')) &&
-    fs.existsSync(path.join(targetDir, 'bin', 'wt.mjs'))
-  );
-}
-
-function formatPinnedHookCommand(rawCmd, nodeBin) {
-  const cmd = String(rawCmd || '').trim();
-  const m = cmd.match(/^node\s+(.+)$/);
-  if (!m || !nodeBin) return cmd;
-  const quoted =
-    process.platform === 'win32'
-      ? `"${String(nodeBin).replace(/"/g, '\\"')}"`
-      : `'${String(nodeBin).replace(/'/g, `'\\''`)}'`;
-  return `${quoted} ${m[1]}`;
+  return isPluginInstalled(PLUGIN_NAME, REQUIRED_PLUGIN_FILES, opts);
 }
 
 export function buildPinnedGitWorkflowHooksJson(rawText, nodeBin = process.execPath) {
-  const parsed = JSON.parse(rawText);
-  const root = parsed?.[PLUGIN_NAME];
-  if (root && typeof root === 'object') {
-    for (const handlers of Object.values(root)) {
-      if (!Array.isArray(handlers)) continue;
-      for (const h of handlers) {
-        if (h && typeof h === 'object' && typeof h.command === 'string') {
-          h.command = formatPinnedHookCommand(h.command, nodeBin);
-        }
-        if (Array.isArray(h?.hooks)) {
-          for (const sub of h.hooks) {
-            if (sub && typeof sub === 'object' && typeof sub.command === 'string') {
-              sub.command = formatPinnedHookCommand(sub.command, nodeBin);
-            }
-          }
-        }
-      }
-    }
-  }
-  return `${JSON.stringify(parsed, null, 2)}\n`;
+  return buildPinnedHooksJsonForPlugin(PLUGIN_NAME, rawText, nodeBin);
 }
 
 export function extractGitWorkflowHookNodeBin(hooksObj) {
-  const root = hooksObj?.[PLUGIN_NAME];
-  const sessionCmd = Array.isArray(root?.SessionStart) ? String(root.SessionStart[0]?.command || '').trim() : '';
-  const preHandlers = Array.isArray(root?.PreToolUse) ? root.PreToolUse : [];
-  let preCmd = '';
-  for (const h of preHandlers) {
-    if (typeof h?.command === 'string' && h.command.trim()) {
-      preCmd = h.command.trim();
-      break;
-    }
-    if (Array.isArray(h?.hooks) && typeof h.hooks[0]?.command === 'string' && h.hooks[0].command.trim()) {
-      preCmd = h.hooks[0].command.trim();
-      break;
-    }
-  }
-  const cmd = sessionCmd || preCmd;
-  if (!cmd) return process.execPath;
-  const sq = cmd.match(/^'((?:[^']|'\\'')+)'\s+/);
-  if (sq) return sq[1].replace(/'\\''/g, "'");
-  const dq = cmd.match(/^"([^"]+)"\s+/);
-  if (dq) return dq[1];
-  const bare = cmd.match(/^(\S+)\s+/);
-  return bare ? bare[1] : process.execPath;
+  return extractPluginHookNodeBin(PLUGIN_NAME, hooksObj);
 }
 
 export function verifyGitWorkflowHookNodeRuntime(opts = {}) {
-  const hooksFile = path.join(getPluginTargetDir(opts), 'hooks.json');
-  const hooksObj = readJsonOrFallback(hooksFile, null);
-  const nodeBin = hooksObj ? extractGitWorkflowHookNodeBin(hooksObj) : opts.nodeExecPath || process.execPath;
-  const pinned = Boolean(hooksObj && nodeBin && nodeBin !== 'node' && path.isAbsolute(nodeBin));
-  try {
-    if (!fs.existsSync(nodeBin) && nodeBin !== 'node') {
-      return { ok: false, pinned, nodeBin, error: 'node_binary_missing' };
-    }
-    const ver = execFileSync(nodeBin, ['--version'], {
-      timeout: 2000,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-    }).trim();
-    return {
-      ok: true,
-      pinned,
-      nodeBin,
-      version: ver,
-      ...(!pinned && hooksObj ? { warning: 'unpinned_node_binary' } : {}),
-    };
-  } catch (err) {
-    return {
-      ok: false,
-      pinned,
-      nodeBin,
-      error: String(err?.message || err).slice(0, 160),
-    };
-  }
-}
-
-function pruneStalePluginFiles(targetDir, expectedRelFiles) {
-  const removed = [];
-  if (!fs.existsSync(targetDir)) return removed;
-  const expectedSet = new Set(expectedRelFiles.map((rel) => rel.split(path.sep).join('/')));
-  const walk = (absDir, relPrefix = '') => {
-    const entries = fs.readdirSync(absDir, { withFileTypes: true });
-    for (const ent of entries) {
-      const rel = relPrefix ? `${relPrefix}/${ent.name}` : ent.name;
-      const abs = path.join(absDir, ent.name);
-      if (ent.isDirectory()) {
-        walk(abs, rel);
-        try {
-          if (fs.readdirSync(abs).length === 0) fs.rmdirSync(abs);
-        } catch {}
-      } else if (!expectedSet.has(rel)) {
-        try {
-          fs.rmSync(abs, { force: true });
-          removed.push(rel);
-        } catch {}
-      }
-    }
-  };
-  try {
-    walk(targetDir);
-  } catch {}
-  return removed;
+  return verifyPluginHookNodeRuntime(PLUGIN_NAME, {}, opts);
 }
 
 export function syncGitWorkflowPlugin({ remove = false } = {}, opts = {}) {
-  const srcDir = opts.pluginSrcDir || path.join(REPO_ROOT, 'studio', 'plugin', PLUGIN_NAME);
-  const targetDir = getPluginTargetDir(opts);
-  if (remove) {
-    fs.rmSync(targetDir, { recursive: true, force: true });
-    return { ok: true, action: 'removed', pluginDir: targetDir, installed: false };
-  }
-  if (!fs.existsSync(srcDir)) {
-    return { ok: false, error: 'missing_plugin_source', srcDir };
-  }
-  const nodeBin = opts.nodeExecPath || process.execPath;
-  const copied = [];
-  let pinned = false;
-  let pinError = '';
-  for (const rel of PLUGIN_FILES) {
-    const from = path.join(srcDir, rel);
-    const to = path.join(targetDir, rel);
-    if (!fs.existsSync(from)) continue;
-    fs.mkdirSync(path.dirname(to), { recursive: true });
-    let body = fs.readFileSync(from, 'utf8');
-    if (rel === 'hooks.json') {
-      try {
-        body = buildPinnedGitWorkflowHooksJson(body, nodeBin);
-        pinned = Boolean(nodeBin && path.isAbsolute(nodeBin));
-      } catch (err) {
-        pinned = false;
-        pinError = String(err?.message || err).slice(0, 120);
-      }
-    }
-    writeAtomicUtf8(to, body);
-    if (EXECUTABLE_PLUGIN_FILES.has(rel)) {
-      try {
-        fs.chmodSync(to, 0o755);
-      } catch {}
-    }
-    copied.push(rel);
-  }
-  const staleRemoved = pruneStalePluginFiles(targetDir, copied);
-  return {
-    ok: true,
-    action: 'synced',
-    pluginDir: targetDir,
-    files: copied,
-    ...(staleRemoved.length > 0 ? { staleRemoved } : {}),
-    nodeBin,
-    pinned,
-    ...(pinError ? { pinError } : {}),
-    installed: isGitWorkflowPluginInstalled(opts),
-  };
+  return syncManagedPlugin(
+    {
+      pluginName: PLUGIN_NAME,
+      pluginFiles: PLUGIN_FILES,
+      requiredFiles: REQUIRED_PLUGIN_FILES,
+      executableFiles: EXECUTABLE_PLUGIN_FILES,
+      remove,
+    },
+    opts
+  );
 }
 
 export function loadGitWorkflowPolicy(opts = {}) {

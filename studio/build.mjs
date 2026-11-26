@@ -11,6 +11,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createPresentation } from '../vendor/agy-capsule/ui.mjs';
 import { buildPickerShadowCss } from './modules/capsule-picker.mjs';
 import { evaluateDeployGuard, writeDeployMeta } from './deploy-meta.mjs';
+import { DEFAULT_STUDIO_PREFS } from './shared/prefs-schema.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -58,44 +59,7 @@ const STYLE_FILES = [
   'studio-settings.css',
 ];
 
-const DEFAULT_PREFS = {
-  language: 'en',
-  settingsLanguage: 'en',
-  modelEffortPicker: true,
-  showEffortBar: true,
-  hideModelTags: true,
-  hideDefaultEffort: true,
-  customizeModelList: false,
-  hiddenModels: [],
-  defaultTierByFamily: { 'Gemini 4 Neon': 'high' },
-  showModelDots: true,
-  effortMotion: 'full',
-  effortTicks: 'highlight',
-  effortTheme: 'auto',
-  geminiTheme: 'physical',
-  claudeTheme: 'matrix',
-  codexTheme: 'nebula',
-  orchestratorMode: 'dock',
-  orchestrator3dStyle: 'helix',
-  orchestratorIcon: 'prism',
-  hideThinkingProse: true,
-  resumeBannerEnabled: true,
-  overviewUsageEnabled: true,
-  overviewUsageDefaultPeriod: 'day',
-  subagentFooterEnabled: true,
-  opusGateMode: 'semi',
-  opusGatePreferredTier: 'high',
-  opusGateMinQuota5hPct: 20,
-  opusGateMinQuotaWeeklyPct: 15,
-  opusGateMaxAutoPerSession: 2,
-  opusGateCheckpoints: { plan: true, risk: true, debug: true, stop: true },
-  autoCompactMode: 'semi',
-  autoCompactThresholdPct: 50,
-  autoCompactMinWaitSec: 300,
-  autoCompactHighWaterPct: 0,
-  autoCompactTriggers: { longTimer: true, modelRequest: true, highWater: false },
-  motionLevel: 'full',
-};
+const DEFAULT_PREFS = DEFAULT_STUDIO_PREFS;
 
 export function stripBlock(content, beginMarker, endMarker) {
   const start = content.indexOf(beginMarker);
@@ -265,9 +229,14 @@ export async function buildStudioBundle({ allowPrebuilt = true } = {}) {
   return { jsBlock, cssBlock, prefs };
 }
 
-function syncLiveConfigForStudio() {
-  if (existsSync(TARGET_CONFIG_JSON)) {
-    const raw = readFileSync(TARGET_CONFIG_JSON, 'utf8');
+const VALID_CJK_SCALES = new Set(['94.5', '95', '100']);
+
+export function syncLiveConfigForStudio({
+  configPath = TARGET_CONFIG_JSON,
+  uiPrefsPath = TARGET_UI_PREFS_JSON,
+} = {}) {
+  if (existsSync(configPath)) {
+    const raw = readFileSync(configPath, 'utf8');
     const cfg = JSON.parse(raw);
     cfg.modules = cfg.modules && typeof cfg.modules === 'object' ? cfg.modules : {};
     let dirty = false;
@@ -275,22 +244,23 @@ function syncLiveConfigForStudio() {
       cfg.modules.claudeUxStepUnfold = false;
       dirty = true;
     }
-    if (cfg.cjkFontScale !== '100') {
-      cfg.cjkFontScale = '100';
+    const curScale = String(cfg.cjkFontScale ?? '').trim();
+    if (!VALID_CJK_SCALES.has(curScale)) {
+      cfg.cjkFontScale = '95';
       dirty = true;
     }
     if (dirty) {
-      writeFileSync(TARGET_CONFIG_JSON, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
+      writeFileSync(configPath, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
     }
   }
-  if (existsSync(TARGET_UI_PREFS_JSON)) {
+  if (existsSync(uiPrefsPath)) {
     try {
-      const prefs = JSON.parse(readFileSync(TARGET_UI_PREFS_JSON, 'utf8'));
+      const prefs = JSON.parse(readFileSync(uiPrefsPath, 'utf8'));
       if (prefs && typeof prefs === 'object') {
         prefs.modules = prefs.modules && typeof prefs.modules === 'object' ? prefs.modules : {};
         if (prefs.modules.claudeUxStepUnfold !== false) {
           prefs.modules.claudeUxStepUnfold = false;
-          writeFileSync(TARGET_UI_PREFS_JSON, JSON.stringify(prefs, null, 2) + '\n', 'utf8');
+          writeFileSync(uiPrefsPath, JSON.stringify(prefs, null, 2) + '\n', 'utf8');
         }
       }
     } catch {}

@@ -1,5 +1,5 @@
 {
   "name": "maga-auto-compact",
-  "displayName": "MAGA Auto-Compact",
+  "displayName": "AGY Studio · Auto-Compact",
   "description": "Cache-aware automatic /compact before long schedule waits and on high context usage."
 }

@@ -7,7 +7,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { buildStudioBundle, CSS_BEGIN, CSS_END, JS_BEGIN, JS_END } from '../studio/build.mjs';
+import { buildStudioBundle, CSS_BEGIN, CSS_END, JS_BEGIN, JS_END, syncLiveConfigForStudio } from '../studio/build.mjs';
 import {
   buildPickerShadowCss,
   createCapsulePickerRuntime,
@@ -22,7 +22,7 @@ import { createSubagentFooterRuntime } from '../studio/modules/subagent-footer.m
 import { createUsageHistory } from '../vendor/agy-capsule/usage_history.mjs';
 import { collectResumeState } from '../studio/daemon/resume-detector.mjs';
 import { createStudioPrefsRuntime } from '../studio/modules/studio-prefs.mjs';
-import { OWN_HOST_IDS, OWN_ATTR, setAttr, setLeafText } from '../studio/core/dom.mjs';
+import { OWN_FOOTER_PILL_IDS, OWN_HOST_IDS, OWN_ROW1_PILL_IDS, OWN_ATTR, setAttr, setLeafText } from '../studio/core/dom.mjs';
 import { createDomFlagsFeature } from '../studio/core/dom-flags.mjs';
 import { createMagaKernel } from '../studio/core/kernel.mjs';
 import { renderSpeedSlots } from '../studio/core/metrics-bus.mjs';
@@ -2117,6 +2117,27 @@ test('Stage 5: user/src modular decomposition, zero legacy dead code, and MagaKe
     assert.equal(shimPattern.test(text), false, `Removed Pre-1.0 shim found in ${path.relative(REPO, f)}`);
   }
 
+  // Enforce < 2,000-line ceiling and valid syntax across all studio/ & core/ source modules (excluding generated prebuilt/)
+  const collectRepoModules = (dir) => {
+    const out = [];
+    for (const ent of readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, ent.name);
+      if (ent.isDirectory()) {
+        if (ent.name === 'prebuilt' || ent.name === 'node_modules') continue;
+        out.push(...collectRepoModules(full));
+      } else if (/\.(mjs|js)$/.test(ent.name)) {
+        out.push(full);
+      }
+    }
+    return out;
+  };
+  for (const abs of [...collectRepoModules(path.join(REPO, 'studio')), ...collectRepoModules(path.join(REPO, 'core'))]) {
+    const rel = path.relative(REPO, abs);
+    const lineCount = readFileSync(abs, 'utf8').split('\n').length;
+    assert.ok(lineCount < 2000, `Source module ${rel} must be < 2000 lines (got ${lineCount})`);
+    execFileSync(process.execPath, ['--check', abs], { stdio: 'pipe' });
+  }
+
   const customJsSrc = readFileSync(path.join(REPO, 'user', 'custom.js'), 'utf8');
   const customCssSrc = readFileSync(path.join(REPO, 'user', 'custom.css'), 'utf8');
   assert.equal(customCssSrc.includes(':has('), false, 'user/custom.css must have zero :has() rules');
@@ -2346,7 +2367,8 @@ test('readProjectWorkspaceStatusAsync & handleProjectRpcRequest return Git commi
   const direct = await readProjectWorkspaceStatusAsync(REPO, { force: true });
   assert.equal(direct.ok, true);
   assert.equal(direct.dirPath, REPO);
-  assert.equal(direct.pkgVersion, '1.2.0');
+  const expectedPkgVersion = JSON.parse(readFileSync(path.join(REPO, 'package.json'), 'utf8')).version;
+  assert.equal(direct.pkgVersion, expectedPkgVersion);
   assert.ok(Array.isArray(direct.scripts) && direct.scripts.includes('test'));
   assert.ok(direct.git && direct.git.branch, 'detects live git branch');
   assert.ok(Array.isArray(direct.recentCommits) && direct.recentCommits.length >= 1);
@@ -2378,7 +2400,7 @@ test('readProjectWorkspaceStatusAsync & handleProjectRpcRequest return Git commi
   );
   assert.equal(rpcOk?.reqId, 'ws-1');
   assert.equal(rpcOk?.result?.ok, true);
-  assert.equal(rpcOk?.result?.pkgVersion, '1.2.0');
+  assert.equal(rpcOk?.result?.pkgVersion, expectedPkgVersion);
 
   const unsafeEtc = await readProjectWorkspaceStatusAsync('/etc');
   assert.equal(unsafeEtc.ok, false);
@@ -4908,4 +4930,111 @@ test('resume-banner ignores stale A->B->A responses using reqGen token', async (
 
     rt.dispose();
   });
+});
+
+test('OWN_FOOTER_PILL_IDS stays aligned with CSS exclusions and allows auto-compact + subagent pills to coexist', async () => {
+  const footerCss = readFileSync(FOOTER_CSS_PATH, 'utf8');
+  for (const id of OWN_FOOTER_PILL_IDS) {
+    assert.equal(OWN_HOST_IDS.has(id), true, `OWN_HOST_IDS must include ${id}`);
+    assert.match(
+      footerCss,
+      new RegExp(`:not\\(#${id}\\)`),
+      `footer-capsules.css Order 7 exclusion must exclude #${id}`
+    );
+  }
+  for (const id of OWN_ROW1_PILL_IDS) {
+    assert.equal(OWN_FOOTER_PILL_IDS.has(id), true, `OWN_FOOTER_PILL_IDS must include Row 1 pill ${id}`);
+  }
+
+  const env = makeMockDomEnv({ pathname: '/c/conv-coexist', lang: 'en', width: 640 });
+  await withGlobals(env, () => {
+    const mainBox = env.createEl('div');
+    mainBox.id = 'antigravity.agentSidePanelInputBox';
+    const footer = env.createEl('div');
+    footer.className = 'agy-composer-footer';
+    const leftGroup = env.createEl('div');
+    leftGroup.append(env.createEl('button'));
+    const compactPill = env.createEl('div');
+    compactPill.id = 'agy-auto-compact-pill';
+    leftGroup.append(compactPill);
+    const opusPill = env.createEl('div');
+    opusPill.id = 'agy-opus-gate-pill';
+    leftGroup.append(opusPill);
+    const resumePill = env.createEl('div');
+    resumePill.id = 'agy-resume-pill';
+    leftGroup.append(resumePill);
+    footer.append(leftGroup);
+    mainBox.append(footer);
+    env.doc.body.append(mainBox);
+
+    env.win.__ag_last_metrics = {
+      cascadeId: 'conv-coexist',
+      stats: {
+        children: [{ id: 'sub-1', agentName: 'Researcher', running: true, calls: 2, outTok: 120 }],
+      },
+    };
+
+    const subRt = createSubagentFooterRuntime({
+      motionThemes,
+      shortenModelName,
+      shortenEffortBadge,
+    });
+    try {
+      subRt.sync();
+      const subPill = env.doc.getElementById('agy-main-subagent-pill');
+      assert.ok(subPill, 'subagent pill must remain mounted when auto-compact, opus-gate & resume pills are visible');
+    } finally {
+      subRt.dispose();
+    }
+  });
+});
+
+test('syncLiveConfigForStudio preserves valid user cjkFontScale and defaults missing/invalid to 95', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'agy-cjk-sync-'));
+  try {
+    const cfgPath = path.join(dir, 'config.json');
+    const uiPrefsPath = path.join(dir, 'ui-prefs.json');
+    for (const scale of ['94.5', '95', '100']) {
+      writeFileSync(cfgPath, JSON.stringify({ cjkFontScale: scale, modules: { claudeUxStepUnfold: true } }), 'utf8');
+      writeFileSync(uiPrefsPath, JSON.stringify({ modules: { claudeUxStepUnfold: true } }), 'utf8');
+      syncLiveConfigForStudio({ configPath: cfgPath, uiPrefsPath });
+      const savedCfg = JSON.parse(readFileSync(cfgPath, 'utf8'));
+      const savedUi = JSON.parse(readFileSync(uiPrefsPath, 'utf8'));
+      assert.equal(savedCfg.cjkFontScale, scale, `must preserve cjkFontScale=${scale}`);
+      assert.equal(savedCfg.modules.claudeUxStepUnfold, false);
+      assert.equal(savedUi.modules.claudeUxStepUnfold, false);
+    }
+
+    writeFileSync(cfgPath, JSON.stringify({ cjkFontScale: '80', modules: {} }), 'utf8');
+    syncLiveConfigForStudio({ configPath: cfgPath, uiPrefsPath });
+    assert.equal(JSON.parse(readFileSync(cfgPath, 'utf8')).cjkFontScale, '95');
+
+    writeFileSync(cfgPath, JSON.stringify({ modules: {} }), 'utf8');
+    syncLiveConfigForStudio({ configPath: cfgPath, uiPrefsPath });
+    assert.equal(JSON.parse(readFileSync(cfgPath, 'utf8')).cjkFontScale, '95');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('studio/shared/prefs-schema.mjs is the single source of truth across build, daemon & runtime', async () => {
+  const { DEFAULT_STUDIO_PREFS: schemaDefaults } = await import('../studio/shared/prefs-schema.mjs');
+  const { DEFAULT_STUDIO_PREFS: daemonDefaults } = await import('../core/daemon/prefs-bundle.mjs');
+  assert.strictEqual(daemonDefaults, schemaDefaults);
+  assert.equal('language' in schemaDefaults, false, 'dead language key must be removed');
+  assert.equal('settingsLanguage' in schemaDefaults, false, 'dead settingsLanguage key must be removed');
+
+  const rt = createStudioPrefsRuntime({});
+  try {
+    const rtKeys = Object.keys(rt.get()).filter((k) => k !== 'schema' && k !== 'updatedAt').sort();
+    assert.deepEqual(rtKeys, Object.keys(schemaDefaults).sort());
+  } finally {
+    rt.dispose();
+  }
+
+  const bundle = await buildStudioBundle({ allowPrebuilt: false });
+  const match = bundle.jsBlock.match(/const __STUDIO_DEFAULT_PREFS__ = (\{[^\n]+\});/);
+  assert.ok(match, 'buildStudioBundle embeds __STUDIO_DEFAULT_PREFS__');
+  const embedded = JSON.parse(match[1]);
+  assert.deepEqual(Object.keys(embedded).sort(), Object.keys(schemaDefaults).sort());
 });

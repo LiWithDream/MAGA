@@ -6,6 +6,8 @@
  * 3. Antigravity host native React `prefStore` (`orchestratorModel`, `orchestratorExecutorModel`, `verboseConversationSteps`)
  */
 
+import { DEFAULT_STUDIO_PREFS, sanitizeStudioPrefs } from '../shared/prefs-schema.mjs';
+
 export function createStudioPrefsRuntime({ initialPrefs, defaultPrefs, effortEffects, cfgMods } = {}) {
   const PREFS_CACHE_KEY = 'agy_studio_prefs_cache_v1';
   const MODEL_CATALOG_CACHE_KEY = 'agy_studio_model_catalog_v1';
@@ -13,61 +15,8 @@ export function createStudioPrefsRuntime({ initialPrefs, defaultPrefs, effortEff
   const MODS_STORAGE_KEY = 'ag_claude_ux_modules_v1';
   const EFFORT_EVENT = 'agy-capsule:effort-bar';
 
-  const FALLBACK_DEFAULTS = {
-    modelEffortPicker: true,
-    showEffortBar: true,
-    showModelDots: true,
-    hideModelTags: true,
-    hideDefaultEffort: true,
-    customizeModelList: false,
-    hiddenModels: [],
-    defaultTierByFamily: { 'Gemini 4 Neon': 'high' },
-    effortTheme: 'auto',
-    geminiTheme: 'physical',
-    claudeTheme: 'matrix',
-    codexTheme: 'nebula',
-    effortTicks: 'highlight',
-    orchestratorMode: 'dock',
-    orchestrator3dStyle: 'helix',
-    orchestratorIcon: 'prism',
-    hideThinkingProse: true,
-    resumeBannerEnabled: true,
-    overviewUsageEnabled: true,
-    overviewUsageDefaultPeriod: 'day',
-    subagentFooterEnabled: true,
-    opusGateMode: 'semi',
-    opusGatePreferredTier: 'high',
-    opusGateMinQuota5hPct: 20,
-    opusGateMinQuotaWeeklyPct: 15,
-    opusGateMaxAutoPerSession: 2,
-    opusGateCheckpoints: { plan: true, risk: true, debug: true, stop: true },
-    autoCompactMode: 'semi',
-    autoCompactThresholdPct: 50,
-    autoCompactMinWaitSec: 300,
-    autoCompactHighWaterPct: 0,
-    autoCompactTriggers: { longTimer: true, modelRequest: true, highWater: false },
-    motionLevel: 'full',
-    effortMotion: 'full',
-  };
-
-  const DEFAULTS = Object.assign({}, FALLBACK_DEFAULTS, defaultPrefs || {});
-  const VALID_ENUMS = {
-    effortTheme: ['auto', 'gemini', 'claude', 'codex'],
-    geminiTheme: ['physical', 'ribbon', 'nebula'],
-    claudeTheme: ['matrix', 'bars', 'spark'],
-    codexTheme: ['nebula', 'beam', 'orb'],
-    effortTicks: ['highlight', 'dim', 'hidden'],
-    orchestratorMode: ['follow', 'dock', 'custom3d'],
-    orchestrator3dStyle: ['chamber', 'helix', 'orbital', 'c-matrix', 'c-louver', 'c-spark', 'nebula', 'beam', 'orb'],
-    orchestratorIcon: ['prism', 'gravity', 'semicircle', 'none'],
-    overviewUsageDefaultPeriod: ['day', 'week', 'month'],
-    opusGateMode: ['off', 'semi', 'auto'],
-    opusGatePreferredTier: ['high', 'medium'],
-    autoCompactMode: ['off', 'semi', 'auto'],
-    motionLevel: ['full', 'reduced', 'off'],
-    effortMotion: ['fast', 'full'],
-  };
-  const VALID_TIERS = new Set(['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'extra', 'max']);
+  const DEFAULTS = Object.assign({}, DEFAULT_STUDIO_PREFS, defaultPrefs || {});
+  const sanitizeLocal = (raw) => sanitizeStudioPrefs(raw, DEFAULTS);
   const EFFORT_KEYS = [
     'effortTheme',
     'geminiTheme',
@@ -115,111 +64,6 @@ export function createStudioPrefsRuntime({ initialPrefs, defaultPrefs, effortEff
     } catch {
       return v;
     }
-  }
-
-  function clampInt(val, min, max, fallback) {
-    const n = Number(val);
-    if (!Number.isFinite(n)) return fallback;
-    return Math.max(min, Math.min(max, Math.round(n)));
-  }
-
-  function sanitizeHighWaterPct(val, fallback) {
-    if (val === null || val === undefined || val === '') return fallback;
-    const n = Number(val);
-    if (!Number.isFinite(n)) return fallback;
-    const rounded = Math.round(n);
-    if (rounded <= 0) return 0;
-    return Math.max(65, Math.min(95, rounded));
-  }
-
-  function sanitizeOpusCheckpoints(raw) {
-    const def = DEFAULTS.opusGateCheckpoints || { plan: true, risk: true, debug: true, stop: true };
-    const src = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
-    return {
-      plan: typeof src.plan === 'boolean' ? src.plan : def.plan !== false,
-      risk: typeof src.risk === 'boolean' ? src.risk : def.risk !== false,
-      debug: typeof src.debug === 'boolean' ? src.debug : def.debug !== false,
-      stop: typeof src.stop === 'boolean' ? src.stop : def.stop !== false,
-    };
-  }
-
-  function sanitizeAutoCompactTriggers(raw) {
-    const def = DEFAULTS.autoCompactTriggers || { longTimer: true, modelRequest: true, highWater: false };
-    const src = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
-    return {
-      longTimer: typeof src.longTimer === 'boolean' ? src.longTimer : def.longTimer !== false,
-      modelRequest: typeof src.modelRequest === 'boolean' ? src.modelRequest : def.modelRequest !== false,
-      highWater: typeof src.highWater === 'boolean' ? src.highWater : Boolean(def.highWater),
-    };
-  }
-
-  function sanitizeLocal(raw) {
-    const src = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
-    const boolOr = (k, def) => (typeof src[k] === 'boolean' ? src[k] : def);
-    const enumOr = (k, def) => (VALID_ENUMS[k].includes(src[k]) ? src[k] : def);
-
-    const hiddenModels = [];
-    if (Array.isArray(src.hiddenModels)) {
-      const seen = new Set();
-      for (const item of src.hiddenModels) {
-        if (typeof item !== 'string') continue;
-        const t = item.trim();
-        if (!t || seen.has(t)) continue;
-        seen.add(t);
-        hiddenModels.push(t);
-        if (hiddenModels.length >= 200) break;
-      }
-    }
-
-    let defaultTierByFamily = Object.assign({}, DEFAULTS.defaultTierByFamily);
-    if (src.defaultTierByFamily && typeof src.defaultTierByFamily === 'object' && !Array.isArray(src.defaultTierByFamily)) {
-      const cleaned = {};
-      for (const [k, v] of Object.entries(src.defaultTierByFamily)) {
-        const fam = String(k || '').trim();
-        const tier = String(v || '').trim().toLowerCase();
-        if (fam && VALID_TIERS.has(tier)) cleaned[fam] = tier;
-      }
-      defaultTierByFamily = cleaned;
-    }
-
-    return {
-      schema: 1,
-      updatedAt: Number(src.updatedAt) > 0 ? Math.floor(Number(src.updatedAt)) : 0,
-      modelEffortPicker: boolOr('modelEffortPicker', DEFAULTS.modelEffortPicker),
-      showEffortBar: boolOr('showEffortBar', DEFAULTS.showEffortBar),
-      showModelDots: boolOr('showModelDots', DEFAULTS.showModelDots),
-      hideModelTags: boolOr('hideModelTags', DEFAULTS.hideModelTags),
-      hideDefaultEffort: boolOr('hideDefaultEffort', DEFAULTS.hideDefaultEffort),
-      customizeModelList: boolOr('customizeModelList', DEFAULTS.customizeModelList),
-      hiddenModels,
-      defaultTierByFamily,
-      effortTheme: enumOr('effortTheme', DEFAULTS.effortTheme),
-      geminiTheme: enumOr('geminiTheme', DEFAULTS.geminiTheme),
-      claudeTheme: enumOr('claudeTheme', DEFAULTS.claudeTheme),
-      codexTheme: enumOr('codexTheme', DEFAULTS.codexTheme),
-      effortTicks: enumOr('effortTicks', DEFAULTS.effortTicks),
-      orchestratorMode: enumOr('orchestratorMode', DEFAULTS.orchestratorMode),
-      orchestrator3dStyle: enumOr('orchestrator3dStyle', DEFAULTS.orchestrator3dStyle),
-      orchestratorIcon: enumOr('orchestratorIcon', DEFAULTS.orchestratorIcon),
-      hideThinkingProse: boolOr('hideThinkingProse', DEFAULTS.hideThinkingProse),
-      resumeBannerEnabled: boolOr('resumeBannerEnabled', DEFAULTS.resumeBannerEnabled),
-      overviewUsageEnabled: boolOr('overviewUsageEnabled', DEFAULTS.overviewUsageEnabled),
-      overviewUsageDefaultPeriod: enumOr('overviewUsageDefaultPeriod', DEFAULTS.overviewUsageDefaultPeriod),
-      subagentFooterEnabled: boolOr('subagentFooterEnabled', DEFAULTS.subagentFooterEnabled),
-      opusGateMode: enumOr('opusGateMode', DEFAULTS.opusGateMode),
-      opusGatePreferredTier: enumOr('opusGatePreferredTier', DEFAULTS.opusGatePreferredTier),
-      opusGateMinQuota5hPct: clampInt(src.opusGateMinQuota5hPct, 5, 80, DEFAULTS.opusGateMinQuota5hPct),
-      opusGateMinQuotaWeeklyPct: clampInt(src.opusGateMinQuotaWeeklyPct, 5, 60, DEFAULTS.opusGateMinQuotaWeeklyPct),
-      opusGateMaxAutoPerSession: clampInt(src.opusGateMaxAutoPerSession, 1, 5, DEFAULTS.opusGateMaxAutoPerSession),
-      opusGateCheckpoints: sanitizeOpusCheckpoints(src.opusGateCheckpoints),
-      autoCompactMode: enumOr('autoCompactMode', DEFAULTS.autoCompactMode),
-      autoCompactThresholdPct: clampInt(src.autoCompactThresholdPct, 25, 85, DEFAULTS.autoCompactThresholdPct),
-      autoCompactMinWaitSec: clampInt(src.autoCompactMinWaitSec, 60, 3600, DEFAULTS.autoCompactMinWaitSec),
-      autoCompactHighWaterPct: sanitizeHighWaterPct(src.autoCompactHighWaterPct, DEFAULTS.autoCompactHighWaterPct),
-      autoCompactTriggers: sanitizeAutoCompactTriggers(src.autoCompactTriggers),
-      motionLevel: enumOr('motionLevel', DEFAULTS.motionLevel),
-      effortMotion: enumOr('effortMotion', DEFAULTS.effortMotion),
-    };
   }
 
   function readLocalCache() {

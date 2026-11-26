@@ -38,7 +38,7 @@
 | 根 DOM 观测器数量 (`window.__agyMagaKernel`) | **`1`** 个统一 `MutationObserver`（`data-maga-own` 自隔离） |
 | 主线程刷帧耗时（Apple Silicon 本地 CDP 实测 `lastFlushMs`） | **`3.6 ms`**，高频遥测走叶节点原地更新（`MetricsBus`） |
 | 全局 CSS `:has()` 选择器数量 | **`0`**（自动化测试硬守卫） |
-| 自动化测试套件 (`npm test`) | **`150+`** 项全部通过，**`0`** 项跳过 |
+| 自动化测试套件 (`npm test`) | **`175+`** 项全部通过，**`0`** 项跳过 |
 | 对 `/Applications/Antigravity.app` 的改动 | **`0 bytes`**（苹果官方签名与自动更新完全不受影响） |
 | 本机后台运行形态 | **`1`** 个 `LaunchAgent` 本地守护进程，数据全留本机 |
 
@@ -87,7 +87,7 @@ bash ./install.sh
 
 - **项目排序墙与详情工作台**：支持按最近活跃、Token 用量、名称排序；进入项目后集中展示版本徽章、本地路径或远端仓库状态、`AGENTS.md` 指令渲染，以及带单场对话 Token 徽章的历史列表。
 - **Git 脏文件与 Commit 详情抽屉**：展开未提交改动清单（带彩色 `+/-` 行数统计），点一下 `+` 直接把 `@file` 插入输入框，支持一键 `Review changes` / `Draft commit`；点开任意 Commit 可查看改动文件清单并跳转远端链接。
-- **Git Worktree 界面与 `wt` 命令行**：在项目工作台与对话顶部项目栏（`#agy-conv-project-bar` + `#agy-wt-menu`）管理每场对话绑定的隔离 Worktree、实时分支与脏状态，或用 `npm run wt:new -- feat/name` / `wt:clean` 快速建删分身。
+- **Git Worktree 界面、分级分支保护与 `wt` 工具**：在项目工作台与对话顶部项目栏（`#agy-conv-project-bar` + `#agy-wt-menu`）管理每场对话绑定的隔离 Worktree，在设置中按仓库配置集中式策略（`observe` / `protect-main` / `worktree-only`）且零配置污染，或使用 `npm run wt:new -- feat/name` 与全局 `wt.mjs` 快速建删分身。
 - **分项目 Token 用量图表**：右下角原生嵌入日 / 周 / 月堆叠柱状图，悬浮即可核对非缓存输入、缓存读写、输出与全局占比（由单一守护进程以只读 `immutable=1` 扫描本机 SQLite，零额外盘扫）。
 - **可选 Gemini 3.8 Flash 历史建议**：填自己的 Google AI Studio Key（`0600` 权限仅存本地）后，会结合近期 Git 提交历史与最近 5 条对话生成 3 个续跑建议按钮并支持冷启动交接。
 
@@ -117,6 +117,7 @@ bash ./install.sh
         <li><b>三标签实时设置台</b> — 支持胶囊、滑条主题与 Orchestrator 样式实时预览，改动即时生效并持久化，支持 JSON 导入导出与一键复位。</li>
         <li><b>底栏子代理快捷分屏</b> — 派发子代理后底栏实时亮起胶囊（运行中蓝呼吸 → 完成后转绿），点一下自动收起右侧 Overview 与冗余列表展开对称分屏，再点收起。</li>
         <li><b>偶发中断一键静默 <code>Resume</code></b> — 检测到未完成对话时在上排左侧亮起温和胶囊，点一下直接从断点续跑，不在输入框闪现预设废话。</li>
+        <li><b>缓存感知智能压缩 (`Auto-Compact`)</b> — 在长定时等待（<code>schedule</code>）或上下文达到阈值时，保护未发草稿并在 Prompt Cache 尚热时自动或半自动触发 <code>/compact</code>。</li>
         <li><b>7 行 <code>fast-io</code> 执行规则</b> — 将先 <code>grep</code> 后批读、免审白名单命令和阶段节点短汇报写入 <code>~/.gemini/AGENTS.md</code>，减少无效等待且不限制回答深度。</li>
       </ul>
     </td>
@@ -178,11 +179,13 @@ bash ./install.sh
 | **对话与过程流** | 隐藏思考过程正文 | `开` | 收起冗长的英文 Thought 正文与展开箭头 |
 | **对话与过程流** | 步骤流展示模式 | `紧凑折叠` | 统一同步宿主 `verboseConversationSteps` 与步骤展开状态 |
 | **对话与过程流** | 中断恢复胶囊 (`Resume`) | `开` | 检测到任务意外中止时在底栏显示静默续跑按钮 |
+| **对话与过程流** | 智能压缩上下文 (`Auto-Compact`) | `半自动` | 模式（关闭/半自动/自动）、触发阈值（`50%`）、长等待与高水位触发 |
 | **对话与过程流** | 长代码块折叠与吸顶 | `开` | 超过 40 行自动折叠并吸顶语言栏与复制按钮 |
 | **工作区与面板** | Overview 与项目用量图表 | `开` | 右侧 Overview 与项目详情页的日/周/月 Token 柱状图 |
 | **工作区与面板** | 底部子代理胶囊与分屏 | `开` | 底栏实时状态胶囊与一键 50/50 联动分屏 |
 | **工作区与面板** | 上下文圆环与双池配额弹层 | `开` | 实时上下文水位预警、5h/周限额与一键 `Compact` |
 | **工作区与面板** | 侧栏统一「最近对话」 | `关` | 可选把原生项目分组收拢为按时间混排列表 |
+| **工作区与面板** | Git 并行工作流策略 | `观察` | 按仓库配置 `observe` / `protect-main` / `worktree-only` 与强推拦截 |
 | **工作区与面板** | AI 历史对话建议 | `关`（可选 Key） | 使用 Gemini 3.8 Flash 结合 Git 历史与最近 5 条对话推荐下一步起点 |
 | **语言与外观** | 中文界面汉化与字高校准 | `关` / `95%` | 内置简体中文开关与苹果苹方视觉字高（`94.5%` / `95%` / `100%`） |
 | **语言与外观** | 交互动效强度 | `完整` | `完整` / `精简` / `关闭` |
@@ -209,13 +212,15 @@ bash ./install.sh
 
 ```text
 .
-├── core/                  # 本地 CDP 守护进程与子模块（挂载、冷启引导、SQLite、项目扫描、git-exec）
-├── user/src/              # 18 个模块化 ESM 前端源码（全部 <2,000 行，编入 user/custom.js）
+├── core/                  # 本地 CDP 守护进程与子模块（挂载、冷启引导、SQLite、项目扫描、worktrees）
+├── user/src/              # 21 个模块化 ESM 前端源码（全部 <2,000 行，编入 user/custom.js）
 ├── vendor/agy-capsule/    # 内化整合的 MIT 模型/滑轨核心、动效主题与 SQLite 解析
 ├── studio/
 │   ├── core/              # MagaKernel（单根观测器）、DomFlags、MetricsBus、状态快照
-│   ├── daemon/            # 本机 Token 用量聚合、中断检测、AI 历史建议与 Opus Gate 服务
-│   ├── modules/           # 底栏胶囊、三标签设置台、项目用量、子代理分屏
+│   ├── shared/            # 单一数据源偏好设置 Schema 与清洗校验
+│   ├── daemon/            # 用量聚合、中断检测、AI 历史建议、插件同步与各服务守护逻辑
+│   ├── modules/           # 底栏胶囊、三标签设置台、智能压缩、子代理分屏
+│   ├── plugin/            # 托管原生插件（maga-opus-gate、maga-auto-compact、maga-git-workflow）
 │   ├── styles/            # 作用域样式表（全仓 0 条 :has() 选择器）
 │   ├── cli.mjs            # 统一 CLI（install / deploy / sync-rules / doctor / rollback）
 │   └── pack-release.mjs   # 零依赖 Release 压缩包打包器

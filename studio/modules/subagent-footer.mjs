@@ -3,7 +3,7 @@
  * Delegates panel handoff choreography to `./subagent/panel-handoff.mjs` and
  * pill/menu rendering to `./subagent/pills.mjs`.
  */
-import { markOwn } from '../core/dom.mjs';
+import { OWN_FOOTER_PILL_IDS, markOwn } from '../core/dom.mjs';
 import { getActiveRouteCid, isComposerRunning } from '../core/env.mjs';
 import {
   createPanelHandoffController,
@@ -249,10 +249,9 @@ export function createSubagentFooterRuntime({ motionThemes, shortenModelName, sh
     const addCtxBtn = leftGroup.querySelector(':scope > button:first-of-type');
     const hasNativeSubChip = Array.from(leftGroup.children).some((ch) => {
       if (ch === addCtxBtn) return false;
-      if (ch.id === MAIN_PILL_ID || ch.id === 'agy-resume-pill' || ch.id === 'agy-opus-gate-pill') return false;
+      if (OWN_FOOTER_PILL_IDS.has(ch.id)) return false;
       if (ch.id === 'agy-capsule-picker-host' || ch.hasAttribute('data-agy-picker-host')) return false;
       if (ch.getAttribute?.('data-agy-model-wrap') === '1') return false;
-      if (ch.id === 'ag-claude-ctx-ring' || ch.id === 'ag-live-metrics-pill') return false;
       if (ch.tagName === 'INPUT' || ch.querySelector?.('button[data-deck-model-bubble="hidden"]')) return false;
       return ch.getBoundingClientRect().width > 1;
     });

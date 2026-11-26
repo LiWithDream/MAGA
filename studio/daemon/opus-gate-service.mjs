@@ -9,13 +9,19 @@ import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
-  GLOBAL_PLUGINS_DIR,
   OPUS_GATE_PROPOSALS_DIR,
   QUOTA_STATE_FILE,
-  REPO_ROOT,
   readJsonOrFallback,
   writeAtomicUtf8,
 } from '../../core/daemon/env.mjs';
+import {
+  buildPinnedHooksJsonForPlugin,
+  extractPluginHookNodeBin,
+  getPluginTargetDir as resolveManagedPluginTargetDir,
+  isPluginInstalled,
+  syncManagedPlugin,
+  verifyPluginHookNodeRuntime,
+} from './plugin-sync.mjs';
 import { loadStudioPrefs } from '../../core/daemon/prefs-bundle.mjs';
 import { resolveLocalProjectDir } from '../../core/daemon/projects.mjs';
 
@@ -33,6 +39,8 @@ const PLUGIN_FILES = [
   'skills/opus-gate/SKILL.md',
   'hooks/gate-check.mjs',
 ];
+const REQUIRED_PLUGIN_FILES = ['plugin.json', 'hooks.json', 'hooks/gate-check.mjs'];
+const EXECUTABLE_PLUGIN_FILES = new Set(['hooks/gate-check.mjs']);
 
 export const OPUS_GATE_ACTIONS = new Set([
   'saveQuotaState',
@@ -171,35 +179,36 @@ function readActiveProposal(cid, opts = {}, now = Date.now()) {
 }
 
 function getPluginTargetDir(opts = {}) {
-  return path.join(opts.pluginsDir || GLOBAL_PLUGINS_DIR, PLUGIN_NAME);
+  return resolveManagedPluginTargetDir(PLUGIN_NAME, opts);
 }
 
 export function isOpusGatePluginInstalled(opts = {}) {
-  const targetDir = getPluginTargetDir(opts);
-  return fs.existsSync(path.join(targetDir, 'plugin.json')) && fs.existsSync(path.join(targetDir, 'hooks.json'));
+  return isPluginInstalled(PLUGIN_NAME, REQUIRED_PLUGIN_FILES, opts);
+}
+
+export function buildPinnedOpusGateHooksJson(rawText, nodeBin = process.execPath) {
+  return buildPinnedHooksJsonForPlugin(PLUGIN_NAME, rawText, nodeBin);
+}
+
+export function extractOpusGateHookNodeBin(hooksObj) {
+  return extractPluginHookNodeBin(PLUGIN_NAME, hooksObj);
+}
+
+export function verifyOpusGateHookNodeRuntime(opts = {}) {
+  return verifyPluginHookNodeRuntime(PLUGIN_NAME, {}, opts);
 }
 
 export function syncOpusGatePlugin({ remove = false } = {}, opts = {}) {
-  const srcDir = opts.pluginSrcDir || path.join(REPO_ROOT, 'studio', 'plugin', PLUGIN_NAME);
-  const targetDir = getPluginTargetDir(opts);
-  if (remove) {
-    fs.rmSync(targetDir, { recursive: true, force: true });
-    return { ok: true, action: 'removed', pluginDir: targetDir, installed: false };
-  }
-  if (!fs.existsSync(srcDir)) {
-    return { ok: false, error: 'missing_plugin_source', srcDir };
-  }
-  const copied = [];
-  for (const rel of PLUGIN_FILES) {
-    const from = path.join(srcDir, rel);
-    const to = path.join(targetDir, rel);
-    if (!fs.existsSync(from)) continue;
-    fs.mkdirSync(path.dirname(to), { recursive: true });
-    const body = fs.readFileSync(from, 'utf8');
-    writeAtomicUtf8(to, body);
-    copied.push(rel);
-  }
-  return { ok: true, action: 'synced', pluginDir: targetDir, files: copied, installed: isOpusGatePluginInstalled(opts) };
+  return syncManagedPlugin(
+    {
+      pluginName: PLUGIN_NAME,
+      pluginFiles: PLUGIN_FILES,
+      requiredFiles: REQUIRED_PLUGIN_FILES,
+      executableFiles: EXECUTABLE_PLUGIN_FILES,
+      remove,
+    },
+    opts
+  );
 }
 
 export function getOpusGateStatus(payload = {}, opts = {}) {

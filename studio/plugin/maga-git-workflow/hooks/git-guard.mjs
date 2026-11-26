@@ -21,6 +21,23 @@ import {
   withFileLock,
   writeAtomicUtf8,
 } from '../lib/worktree-core.mjs';
+import {
+  ENV_ASSIGNMENT_RE,
+  expandHome,
+  extractGitInvocations,
+  extractGitInvocationsDetailed,
+  extractInlineShellString,
+  extractWriteRedirectTargets,
+  getShellSegmentWriteInfo,
+  isGitBinary,
+  parseCommandWrapper,
+  splitShellSegments,
+  splitShellSegmentsWithOps,
+  stripUnquotedGroupDelimiters,
+  tokenizeSegment,
+} from '../lib/shell-parser.mjs';
+
+export { extractGitInvocations, splitShellSegments, tokenizeSegment };
 
 export const PROTECTED_BRANCHES = DEFAULT_PROTECTED_BRANCHES;
 export const VALID_WORKFLOW_MODES = ['observe', 'protect-main', 'worktree-only'];
@@ -57,61 +74,9 @@ const FILE_EDIT_TOOLS = new Set([
   'multi_replace_file_content',
 ]);
 
-const GIT_GLOBAL_VALUE_FLAGS = new Set([
-  '-C',
-  '-c',
-  '--git-dir',
-  '--work-tree',
-  '--namespace',
-  '--super-prefix',
-  '--config-env',
-]);
-
-const GIT_GLOBAL_BOOL_FLAGS = new Set([
-  '--no-pager',
-  '-p',
-  '--paginate',
-  '--bare',
-  '--literal-pathspecs',
-  '-P',
-  '--glob-pathspecs',
-  '--noglob-pathspecs',
-  '--icase-pathspecs',
-  '--no-replace-objects',
-  '--no-lazy-fetch',
-  '--no-optional-locks',
-  '--no-advice',
-  '-h',
-  '--help',
-  '-v',
-  '--version',
-]);
-
-const ENV_ASSIGNMENT_RE = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/;
-const VAR_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const PROTECTED_REFSPEC_BASE_RE = /^\+?([^:]*:)?(refs\/heads\/)?([^\s]+)$/;
 const ENGINE_MARKER_RE = /studio[\\/]plugin[\\/]maga-git-workflow[\\/]hooks[\\/]git-guard\.mjs|\.githooks[\\/]guard-main-branch\.mjs/;
 const SHELL_TAMPER_SUSPECT_RE = /git-workflow-policy\.json|maga-git-workflow|\.agents[\\/]hooks/;
-const SHELL_MUTATING_BINS = new Set([
-  'tee',
-  'rm',
-  'rmdir',
-  'unlink',
-  'mv',
-  'cp',
-  'install',
-  'ln',
-  'truncate',
-  'chmod',
-  'chown',
-  'chflags',
-  'touch',
-  'dd',
-  'shred',
-  'sponge',
-]);
-const INLINE_SCRIPT_RUNNERS = new Set(['node', 'bun', 'deno', 'python', 'python3', 'ruby', 'perl', 'osascript']);
-const INLINE_WRITE_HINT_RE = /\b(?:write|writeFile|writeFileSync|appendFile|appendFileSync|createWriteStream|unlink|unlinkSync|rm|rmSync|rmdir|rename|renameSync|copyFile|copyFileSync|chmod|chmodSync|truncate|truncateSync|open|mkdir|mkdirSync)\b/i;
 
 function gitExecEnv() {
   return { ...process.env, GIT_OPTIONAL_LOCKS: '0' };
@@ -127,15 +92,6 @@ function getDefaultPluginsDir(explicit) {
   return path.resolve(
     explicit || process.env.ANTI_CLAUDE_PLUGINS_DIR || path.join(os.homedir(), '.gemini', 'config', 'plugins')
   );
-}
-
-function expandHome(inputPath) {
-  if (!inputPath || typeof inputPath !== 'string') return inputPath;
-  if (inputPath === '~') return os.homedir();
-  if (inputPath.startsWith('~/') || inputPath.startsWith('~\\')) {
-    return path.join(os.homedir(), inputPath.slice(2));
-  }
-  return inputPath;
 }
 
 function resolveExistingPrefixRealpath(targetPath) {
@@ -162,498 +118,6 @@ export function isInsideDir(targetPath, baseDir) {
   const b = CASE_INSENSITIVE_FS ? resolvedBase.toLowerCase() : resolvedBase;
   const rel = path.relative(b, a);
   return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
-}
-
-function splitShellSegmentsWithOps(commandLine) {
-  if (!commandLine || typeof commandLine !== 'string') return [];
-  const segments = [];
-  let buf = '';
-  let inSingle = false;
-  let inDouble = false;
-  let escaped = false;
-  let sepBefore = '';
-
-  const flush = (sepAfter = '') => {
-    const trimmed = buf.trim();
-    if (trimmed) {
-      segments.push({ text: trimmed, sepBefore, sepAfter });
-    }
-    buf = '';
-    sepBefore = sepAfter;
-  };
-
-  for (let i = 0; i < commandLine.length; i += 1) {
-    const ch = commandLine[i];
-    const next = commandLine[i + 1];
-
-    if (escaped) {
-      buf += ch;
-      escaped = false;
-      continue;
-    }
-
-    if (inSingle) {
-      if (ch === "'") inSingle = false;
-      buf += ch;
-      continue;
-    }
-
-    if (inDouble) {
-      if (ch === '\\') {
-        escaped = true;
-        buf += ch;
-        continue;
-      }
-      if (ch === '"') inDouble = false;
-      buf += ch;
-      continue;
-    }
-
-    if (ch === '\\') {
-      escaped = true;
-      buf += ch;
-      continue;
-    }
-
-    if (ch === "'") {
-      inSingle = true;
-      buf += ch;
-      continue;
-    }
-
-    if (ch === '"') {
-      inDouble = true;
-      buf += ch;
-      continue;
-    }
-
-    if (ch === ';' || ch === '\n' || ch === '\r') {
-      flush(';');
-      continue;
-    }
-
-    if (ch === '&' && next === '&') {
-      flush('&&');
-      i += 1;
-      continue;
-    }
-
-    if (ch === '|') {
-      if (next === '|') {
-        flush('||');
-        i += 1;
-      } else {
-        flush('|');
-      }
-      continue;
-    }
-
-    buf += ch;
-  }
-
-  flush('');
-  return segments;
-}
-
-export function splitShellSegments(commandLine) {
-  return splitShellSegmentsWithOps(commandLine).map((s) => s.text);
-}
-
-function stripUnquotedGroupDelimiters(segmentText) {
-  let s = String(segmentText || '').trim();
-  while (s.startsWith('(') || s.startsWith('{')) {
-    if (s.startsWith('{') && !/^\{\s/.test(s) && s !== '{') break;
-    s = s.slice(1).trimStart();
-  }
-  while (s.endsWith(')') || s.endsWith('}')) {
-    const last = s[s.length - 1];
-    const prev = s.length >= 2 ? s[s.length - 2] : '';
-    if (prev === "'" || prev === '"' || prev === '\\') break;
-    // Do not strip balanced quoting or ${var}
-    if (last === '}' && /\$\{[^}]*\}$/.test(s)) break;
-    if (last === ')' && /\$\([^)]*\)$/.test(s)) break;
-    s = s.slice(0, -1).trimEnd();
-  }
-  return s;
-}
-
-function tryExpandDollar(segment, idx, shellVars) {
-  if (!shellVars || shellVars.size === 0) return null;
-  const next = segment[idx + 1];
-  if (!next || next === '(' || next === '`') return null;
-
-  if (next === '{') {
-    const closeIdx = segment.indexOf('}', idx + 2);
-    if (closeIdx === -1) return null;
-    const inner = segment.slice(idx + 2, closeIdx);
-    if (!VAR_NAME_RE.test(inner) || !shellVars.has(inner)) return null;
-    return { value: shellVars.get(inner), nextIndex: closeIdx };
-  }
-
-  if (!/[A-Za-z_]/.test(next)) return null;
-  let end = idx + 2;
-  while (end < segment.length && /[A-Za-z0-9_]/.test(segment[end])) {
-    end += 1;
-  }
-  const name = segment.slice(idx + 1, end);
-  if (!shellVars.has(name)) return null;
-  return { value: shellVars.get(name), nextIndex: end - 1 };
-}
-
-export function tokenizeSegment(segment, shellVars = null) {
-  if (!segment || typeof segment !== 'string') return [];
-  const tokens = [];
-  let current = '';
-  let hasToken = false;
-  let inSingle = false;
-  let inDouble = false;
-  let escaped = false;
-
-  const pushToken = () => {
-    if (hasToken) {
-      tokens.push(current);
-      current = '';
-      hasToken = false;
-    }
-  };
-
-  for (let i = 0; i < segment.length; i += 1) {
-    const ch = segment[i];
-
-    if (escaped) {
-      current += ch;
-      hasToken = true;
-      escaped = false;
-      continue;
-    }
-
-    if (inSingle) {
-      if (ch === "'") {
-        inSingle = false;
-      } else {
-        current += ch;
-        hasToken = true;
-      }
-      continue;
-    }
-
-    if (inDouble) {
-      if (ch === '\\') {
-        const next = segment[i + 1];
-        if (next === '"' || next === '\\' || next === '$' || next === '`') {
-          escaped = true;
-        } else if (next === '\n') {
-          i += 1;
-        } else {
-          current += ch;
-          hasToken = true;
-        }
-        continue;
-      }
-      if (ch === '"') {
-        inDouble = false;
-      } else if (ch === '$') {
-        const exp = tryExpandDollar(segment, i, shellVars);
-        if (exp) {
-          current += exp.value;
-          i = exp.nextIndex;
-        } else {
-          current += ch;
-        }
-        hasToken = true;
-      } else {
-        current += ch;
-        hasToken = true;
-      }
-      continue;
-    }
-
-    if (ch === '\\') {
-      escaped = true;
-      hasToken = true;
-      continue;
-    }
-
-    if (ch === "'") {
-      inSingle = true;
-      hasToken = true;
-      continue;
-    }
-
-    if (ch === '"') {
-      inDouble = true;
-      hasToken = true;
-      continue;
-    }
-
-    if (ch === '$') {
-      const exp = tryExpandDollar(segment, i, shellVars);
-      if (exp) {
-        current += exp.value;
-        i = exp.nextIndex;
-      } else {
-        current += ch;
-      }
-      hasToken = true;
-      continue;
-    }
-
-    if (/\s/.test(ch)) {
-      pushToken();
-      continue;
-    }
-
-    current += ch;
-    hasToken = true;
-  }
-
-  if (escaped) {
-    current += '\\';
-    hasToken = true;
-  }
-  pushToken();
-  return tokens;
-}
-
-function isGitBinary(token) {
-  if (!token) return false;
-  return token === 'git' || path.basename(token) === 'git';
-}
-
-function parseCommandWrapper(tokens) {
-  const env = {};
-  let idx = 0;
-
-  while (idx < tokens.length) {
-    const tok = tokens[idx];
-    if (tok === '(' || tok === '{' || tok === '}' || tok === ')') {
-      idx += 1;
-      continue;
-    }
-    const m = tok.match(ENV_ASSIGNMENT_RE);
-    if (m) {
-      env[m[1]] = m[2];
-      idx += 1;
-      continue;
-    }
-
-    const base = path.basename(tok);
-    if (base === 'env') {
-      idx += 1;
-      while (idx < tokens.length && tokens[idx].startsWith('-')) {
-        const flag = tokens[idx];
-        idx += 1;
-        if ((flag === '-u' || flag === '--unset' || flag === '-C' || flag === '--chdir') && idx < tokens.length) {
-          idx += 1;
-        }
-      }
-      continue;
-    }
-
-    if (base === 'command' || base === 'nohup' || base === 'time') {
-      idx += 1;
-      while (idx < tokens.length && tokens[idx].startsWith('-')) {
-        idx += 1;
-      }
-      continue;
-    }
-
-    if (base === 'sudo') {
-      idx += 1;
-      const SUDO_VAL_FLAGS = new Set(['-u', '--user', '-g', '--group', '-C', '--close-from', '-h', '--host', '-p', '--prompt', '-r', '--role', '-t', '--type', '-U', '--other-user', '-T', '--command-timeout']);
-      while (idx < tokens.length && tokens[idx].startsWith('-')) {
-        const flag = tokens[idx];
-        idx += 1;
-        if (SUDO_VAL_FLAGS.has(flag) && idx < tokens.length) idx += 1;
-      }
-      continue;
-    }
-
-    if (base === 'nice') {
-      idx += 1;
-      while (idx < tokens.length && tokens[idx].startsWith('-')) {
-        const flag = tokens[idx];
-        idx += 1;
-        if ((flag === '-n' || flag === '--adjustment') && idx < tokens.length) idx += 1;
-      }
-      continue;
-    }
-
-    if (base === 'xargs') {
-      idx += 1;
-      const XARGS_VAL_FLAGS = new Set(['-I', '-i', '-J', '-L', '-l', '-n', '-P', '-s', '-E', '-d', '-a', '--arg-file', '--delimiter', '--eof', '--max-lines', '--max-args', '--max-procs', '--max-chars', '--replace']);
-      while (idx < tokens.length && tokens[idx].startsWith('-')) {
-        const flag = tokens[idx];
-        idx += 1;
-        if (XARGS_VAL_FLAGS.has(flag) && idx < tokens.length) idx += 1;
-      }
-      continue;
-    }
-
-    break;
-  }
-
-  return { env, cmdTokens: tokens.slice(idx) };
-}
-
-function extractInlineShellString(cmdTokens) {
-  if (!Array.isArray(cmdTokens) || cmdTokens.length < 2) return '';
-  const base = path.basename(cmdTokens[0]);
-  if (base !== 'sh' && base !== 'bash' && base !== 'zsh') return '';
-  for (let i = 1; i < cmdTokens.length; i += 1) {
-    const tok = cmdTokens[i];
-    if (tok === '-c' || tok === '-lc' || tok === '-ec' || tok === '-xc' || /^-[a-z]*c$/.test(tok)) {
-      return typeof cmdTokens[i + 1] === 'string' ? cmdTokens[i + 1] : '';
-    }
-    if (!tok.startsWith('-')) break;
-  }
-  return '';
-}
-
-function extractGitInvocationsDetailed(commandLine, initialCwd = process.cwd(), depth = 0) {
-  const segments = splitShellSegmentsWithOps(commandLine);
-  const invocations = [];
-  const shellVars = new Map();
-  let currentDir = path.resolve(expandHome(initialCwd) || process.cwd());
-  let prevDir = currentDir;
-
-  for (const seg of segments) {
-    const inPipeline = seg.sepBefore === '|' || seg.sepAfter === '|';
-    const cleanedSegText = stripUnquotedGroupDelimiters(seg.text);
-    const rawTokens = tokenizeSegment(cleanedSegText, shellVars);
-    if (rawTokens.length === 0) continue;
-
-    if (rawTokens[0] === 'export' && rawTokens.length > 1) {
-      if (!inPipeline) {
-        for (const tok of rawTokens.slice(1)) {
-          const m = tok.match(ENV_ASSIGNMENT_RE);
-          if (m) shellVars.set(m[1], m[2]);
-        }
-      }
-      continue;
-    }
-
-    const { env, cmdTokens } = parseCommandWrapper(rawTokens);
-
-    if (cmdTokens.length === 0) {
-      if (!inPipeline) {
-        for (const [k, v] of Object.entries(env)) {
-          shellVars.set(k, v);
-        }
-      }
-      continue;
-    }
-
-    if (cmdTokens[0] === 'cd') {
-      if (inPipeline) continue;
-      let argIdx = 1;
-      if (cmdTokens[argIdx] === '--') argIdx += 1;
-      const rawTarget = cmdTokens[argIdx];
-      let nextDir = currentDir;
-      if (!rawTarget) {
-        nextDir = os.homedir();
-      } else if (rawTarget === '-') {
-        nextDir = prevDir;
-      } else {
-        nextDir = path.resolve(currentDir, expandHome(rawTarget));
-      }
-      prevDir = currentDir;
-      currentDir = nextDir;
-      continue;
-    }
-
-    if (depth === 0) {
-      const inlineShell = extractInlineShellString(cmdTokens);
-      if (inlineShell) {
-        const nested = extractGitInvocationsDetailed(inlineShell, currentDir, depth + 1);
-        for (const subInv of nested.invocations) {
-          invocations.push({
-            ...subInv,
-            env: { ...env, ...subInv.env },
-          });
-        }
-        continue;
-      }
-    }
-
-    if (!isGitBinary(cmdTokens[0])) continue;
-
-    let targetDir = currentDir;
-    let i = 1;
-    while (i < cmdTokens.length) {
-      const tok = cmdTokens[i];
-      if (tok === '--') {
-        i += 1;
-        break;
-      }
-      if (!tok.startsWith('-') || tok === '-') {
-        break;
-      }
-
-      if (tok === '-C' && i + 1 < cmdTokens.length) {
-        targetDir = path.resolve(targetDir, expandHome(cmdTokens[i + 1]));
-        i += 2;
-        continue;
-      }
-      if (tok.startsWith('-C') && tok.length > 2) {
-        targetDir = path.resolve(targetDir, expandHome(tok.slice(2)));
-        i += 1;
-        continue;
-      }
-      if (tok.startsWith('--work-tree=')) {
-        const wt = tok.slice('--work-tree='.length);
-        if (wt) targetDir = path.resolve(targetDir, expandHome(wt));
-        i += 1;
-        continue;
-      }
-      if (tok === '--work-tree' && i + 1 < cmdTokens.length) {
-        targetDir = path.resolve(targetDir, expandHome(cmdTokens[i + 1]));
-        i += 2;
-        continue;
-      }
-
-      const eqIdx = tok.indexOf('=');
-      if (eqIdx > 0 && GIT_GLOBAL_VALUE_FLAGS.has(tok.slice(0, eqIdx))) {
-        i += 1;
-        continue;
-      }
-      if (tok.startsWith('--exec-path=')) {
-        i += 1;
-        continue;
-      }
-      if (GIT_GLOBAL_VALUE_FLAGS.has(tok) && i + 1 < cmdTokens.length) {
-        i += 2;
-        continue;
-      }
-      if (tok.startsWith('-c') && tok.length > 2) {
-        i += 1;
-        continue;
-      }
-      if (GIT_GLOBAL_BOOL_FLAGS.has(tok)) {
-        i += 1;
-        continue;
-      }
-
-      i += 1;
-    }
-
-    const subcommand = cmdTokens[i] || '';
-    const subArgs = subcommand ? cmdTokens.slice(i + 1) : [];
-    if (subcommand) {
-      invocations.push({
-        targetDir,
-        subcommand,
-        subArgs,
-        env,
-      });
-    }
-  }
-
-  return { invocations, finalDir: currentDir };
-}
-
-export function extractGitInvocations(commandLine, initialCwd = process.cwd()) {
-  return extractGitInvocationsDetailed(commandLine, initialCwd).invocations;
 }
 
 function findNearestGitCandidateDir(dirPath) {
@@ -1330,135 +794,6 @@ function expandShellArg(raw, shellVars, opts = {}) {
   return expandHome(s);
 }
 
-function extractWriteRedirectTargets(segmentText) {
-  const targets = [];
-  if (!segmentText || !segmentText.includes('>')) return targets;
-  let inSingle = false;
-  let inDouble = false;
-  let escaped = false;
-
-  for (let i = 0; i < segmentText.length; i += 1) {
-    const ch = segmentText[i];
-    if (escaped) {
-      escaped = false;
-      continue;
-    }
-    if (inSingle) {
-      if (ch === "'") inSingle = false;
-      continue;
-    }
-    if (inDouble) {
-      if (ch === '\\') {
-        escaped = true;
-      } else if (ch === '"') {
-        inDouble = false;
-      }
-      continue;
-    }
-    if (ch === '\\') {
-      escaped = true;
-      continue;
-    }
-    if (ch === "'") {
-      inSingle = true;
-      continue;
-    }
-    if (ch === '"') {
-      inDouble = true;
-      continue;
-    }
-    if (ch !== '>') continue;
-    if (i > 0 && segmentText[i - 1] === '<' && !(i > 1 && segmentText[i - 2] === '<')) {
-      // `<>` read-write open IS mutating; fall through
-    } else if (i > 0 && segmentText[i - 1] === '<') {
-      continue;
-    }
-
-    let j = i + 1;
-    if (segmentText[j] === '>' || segmentText[j] === '|') j += 1;
-    if (segmentText[j] === '&') {
-      i = j;
-      continue;
-    }
-    while (j < segmentText.length && /\s/.test(segmentText[j])) j += 1;
-
-    let tok = '';
-    let tSingle = false;
-    let tDouble = false;
-    let tEsc = false;
-    while (j < segmentText.length) {
-      const c = segmentText[j];
-      if (tEsc) {
-        tok += c;
-        tEsc = false;
-        j += 1;
-        continue;
-      }
-      if (tSingle) {
-        if (c === "'") tSingle = false;
-        else tok += c;
-        j += 1;
-        continue;
-      }
-      if (tDouble) {
-        if (c === '\\') tEsc = true;
-        else if (c === '"') tDouble = false;
-        else tok += c;
-        j += 1;
-        continue;
-      }
-      if (c === '\\') {
-        tEsc = true;
-        j += 1;
-        continue;
-      }
-      if (c === "'") {
-        tSingle = true;
-        j += 1;
-        continue;
-      }
-      if (c === '"') {
-        tDouble = true;
-        j += 1;
-        continue;
-      }
-      if (/[\s;|&()<>]/.test(c)) break;
-      tok += c;
-      j += 1;
-    }
-    if (tok && tok !== '/dev/null') targets.push(tok);
-    i = Math.max(i, j - 1);
-  }
-  return targets;
-}
-
-function getShellSegmentWriteInfo(cmdTokens, rawSegText) {
-  if (!Array.isArray(cmdTokens) || cmdTokens.length === 0) {
-    return { mutating: false, inlineScript: false };
-  }
-  const bin = path.basename(cmdTokens[0]).toLowerCase();
-  if (SHELL_MUTATING_BINS.has(bin)) return { mutating: true, inlineScript: false };
-  if (bin === 'sed') {
-    const hasInPlace = cmdTokens.slice(1).some((t) => t === '--in-place' || /^-[a-zA-Z]*i/.test(t));
-    return { mutating: hasInPlace, inlineScript: false };
-  }
-  if (bin === 'perl') {
-    const hasInPlace = cmdTokens.slice(1).some((t) => /^-[a-zA-Z]*i/.test(t));
-    if (hasInPlace) return { mutating: true, inlineScript: false };
-  }
-  if (INLINE_SCRIPT_RUNNERS.has(bin)) {
-    const hasInlineFlag = cmdTokens.slice(1).some((t) => t === '-e' || t === '--eval' || t === '-c' || /^-[a-z]*[ec]$/i.test(t));
-    if (hasInlineFlag && INLINE_WRITE_HINT_RE.test(rawSegText)) {
-      return { mutating: true, inlineScript: true };
-    }
-  }
-  if (isGitBinary(cmdTokens[0])) {
-    const mutatingGit = cmdTokens.slice(1).some((t) => t === 'rm' || t === 'mv' || t === 'checkout' || t === 'restore' || t === 'clean');
-    if (mutatingGit) return { mutating: true, inlineScript: false };
-  }
-  return { mutating: false, inlineScript: false };
-}
-
 function evaluateShellTamperCommand(commandLine, initialCwd, payload, policy, opts, depth = 0) {
   const segments = splitShellSegmentsWithOps(commandLine);
   const shellVars = new Map();
@@ -1542,7 +877,7 @@ function evaluateShellTamperCommand(commandLine, initialCwd, payload, policy, op
         !/studio[\\/]plugin[\\/]maga-git-workflow/.test(expandedText))
     ) {
       return makeDeny(
-        'Blocked by MAGA Git Workflow: modifying git-workflow-policy.json or the installed maga-git-workflow plugin via shell is forbidden. Change project workflow modes via MAGA Projects Cockpit or MAGA Settings UI.',
+        'Blocked by AGY Studio Git Workflow: modifying git-workflow-policy.json or the installed maga-git-workflow plugin via shell is forbidden. Change project workflow modes via AGY Studio Projects Cockpit or AGY Studio Settings UI.',
         { tool: 'run_command', payload }
       );
     }
@@ -1570,7 +905,7 @@ function evaluateShellTamperCommand(commandLine, initialCwd, payload, policy, op
             (!ctx.isLinkedWorktree || expandedText.includes(ctx.mainRoot)));
         if (hitsRepoHooks) {
           return makeDeny(
-            `Blocked by MAGA Git Workflow (${eff.mode}): modifying '.agents/hooks.json' or '.agents/hooks/**' via shell in an enforced repository is forbidden.`,
+            `Blocked by AGY Studio Git Workflow (${eff.mode}): modifying '.agents/hooks.json' or '.agents/hooks/**' via shell in an enforced repository is forbidden.`,
             { ctx, eff, tool: 'run_command', payload }
           );
         }
@@ -1612,7 +947,7 @@ function evaluateRunCommandDetailed(commandLine, payload, policy, opts) {
       const effErr = resolveEffectiveProjectPolicy(fallbackCtx, policy, opts);
       if (effErr.mode === 'protect-main' || effErr.mode === 'worktree-only') {
         return makeDeny(
-          `Blocked by MAGA Git Workflow (${effErr.mode}): ${detailed.error}. Use MAGA_ALLOW_MAIN_COMMIT=1 / MAGA_ALLOW_PRIMARY_CHECKOUT=1 if intentional.`,
+          `Blocked by AGY Studio Git Workflow (${effErr.mode}): ${detailed.error}. Use MAGA_ALLOW_MAIN_COMMIT=1 / MAGA_ALLOW_PRIMARY_CHECKOUT=1 if intentional.`,
           { ctx: fallbackCtx, eff: effErr, tool: 'run_command', payload }
         );
       }
@@ -1631,7 +966,7 @@ function evaluateRunCommandDetailed(commandLine, payload, policy, opts) {
       const { isForce, hasTagsFlag, refspecs } = analyzePushArgs(inv.subArgs);
       if (hasTagsFlag && eff.blockPushTags) {
         return makeDeny(
-          "Blocked by MAGA Git Guardrail: never run 'git push --tags'. Push explicit tags instead: git push origin vX.Y.Z.",
+          "Blocked by AGY Studio Git Guardrail: never run 'git push --tags'. Push explicit tags instead: git push origin vX.Y.Z.",
           { ctx, eff, tool: 'run_command', payload }
         );
       }
@@ -1643,7 +978,7 @@ function evaluateRunCommandDetailed(commandLine, payload, policy, opts) {
 
       if (isForce && targetsProtected && eff.blockForcePushProtected) {
         return makeDeny(
-          `Blocked by MAGA Git Workflow: force-pushing to protected branch '${ctx.branch || 'main/master'}' is forbidden.`,
+          `Blocked by AGY Studio Git Workflow: force-pushing to protected branch '${ctx.branch || 'main/master'}' is forbidden.`,
           { ctx, eff, tool: 'run_command', payload }
         );
       }
@@ -1667,14 +1002,14 @@ function evaluateRunCommandDetailed(commandLine, payload, policy, opts) {
           const unbornCheck = isUnbornHead(inv.targetDir);
           if (unbornCheck.error) {
             return makeDeny(
-              `Blocked by MAGA Git Workflow (${eff.mode}): ${unbornCheck.error}. Override intentionally with MAGA_ALLOW_MAIN_COMMIT=1.`,
+              `Blocked by AGY Studio Git Workflow (${eff.mode}): ${unbornCheck.error}. Override intentionally with MAGA_ALLOW_MAIN_COMMIT=1.`,
               { ctx, eff, tool: 'run_command', payload }
             );
           }
           if (!unbornCheck.unborn) {
             const wtCmd = buildWtCommandHint(ctx, opts);
             return makeDeny(
-              `Blocked by MAGA Git Guardrail (${eff.mode}): direct 'git commit' on protected branch '${ctx.branch}' is forbidden. Create a worktree first: \`${wtCmd}\` (or override: \`MAGA_ALLOW_MAIN_COMMIT=1 git commit ...\`).`,
+              `Blocked by AGY Studio Git Guardrail (${eff.mode}): direct 'git commit' on protected branch '${ctx.branch}' is forbidden. Create a worktree first: \`${wtCmd}\` (or override: \`MAGA_ALLOW_MAIN_COMMIT=1 git commit ...\`).`,
               { ctx, eff, tool: 'run_command', payload }
             );
           }
@@ -1682,7 +1017,7 @@ function evaluateRunCommandDetailed(commandLine, payload, policy, opts) {
       } else if (eff.mode === 'worktree-only' && !ctx.isLinkedWorktree && !ctx.merging && inv.env.MAGA_ALLOW_MAIN_COMMIT !== '1') {
         const wtCmd = buildWtCommandHint(ctx, opts);
         return makeDeny(
-          `Blocked by MAGA Worktree Policy: primary checkout (${ctx.topLevel}) must stay on clean main branch. Commit inside an isolated worktree (\`${wtCmd}\`), or override: \`MAGA_ALLOW_MAIN_COMMIT=1\`.`,
+          `Blocked by AGY Studio Worktree Policy: primary checkout (${ctx.topLevel}) must stay on clean main branch. Commit inside an isolated worktree (\`${wtCmd}\`), or override: \`MAGA_ALLOW_MAIN_COMMIT=1\`.`,
           { ctx, eff, tool: 'run_command', payload }
         );
       }
@@ -1700,7 +1035,7 @@ function evaluateRunCommandDetailed(commandLine, payload, policy, opts) {
         if (check.blocked) {
           const wtCmd = buildWtCommandHint(ctx, opts);
           return makeDeny(
-            `Blocked by MAGA Worktree Policy: ${check.reason} is forbidden because primary checkout (${ctx.topLevel}) stays permanently on main. Create an isolated worktree instead: \`${wtCmd}\` (escape hatch: \`MAGA_ALLOW_PRIMARY_CHECKOUT=1\`).`,
+            `Blocked by AGY Studio Worktree Policy: ${check.reason} is forbidden because primary checkout (${ctx.topLevel}) stays permanently on main. Create an isolated worktree instead: \`${wtCmd}\` (escape hatch: \`MAGA_ALLOW_PRIMARY_CHECKOUT=1\`).`,
             { ctx, eff, tool: 'run_command', payload }
           );
         }
@@ -1761,14 +1096,14 @@ export function evaluateHookPayloadDetailed(payload, opts = {}) {
       if (!ctx.isLinkedWorktree) {
         msg =
           ctx.branch && prot.has(ctx.branch)
-            ? `[MAGA Worktree Policy] Primary checkout (${ctx.topLevel}) is on protected branch '${ctx.branch}'. Read-only research proceeds here. Before any code edit, ALWAYS create an isolated sibling worktree (\`${wtCmd}\`) instead of \`git checkout -b\` or editing here.`
-            : `[MAGA Worktree Policy] Primary checkout (${ctx.topLevel}) is currently drifted onto '${ctx.branch || 'HEAD'}' instead of clean main. Do not edit or commit here; create a sibling worktree (\`${wtCmd}\`).`;
+            ? `[AGY Studio Worktree Policy] Primary checkout (${ctx.topLevel}) is on protected branch '${ctx.branch}'. Read-only research proceeds here. Before any code edit, ALWAYS create an isolated sibling worktree (\`${wtCmd}\`) instead of \`git checkout -b\` or editing here.`
+            : `[AGY Studio Worktree Policy] Primary checkout (${ctx.topLevel}) is currently drifted onto '${ctx.branch || 'HEAD'}' instead of clean main. Do not edit or commit here; create a sibling worktree (\`${wtCmd}\`).`;
       } else if (ctx.branch && prot.has(ctx.branch)) {
-        msg = `[MAGA Git Guardrail] Linked worktree (${ctx.topLevel}) is on protected branch '${ctx.branch}'. Switch to a feature/fix branch inside this worktree before editing or committing.`;
+        msg = `[AGY Studio Git Guardrail] Linked worktree (${ctx.topLevel}) is on protected branch '${ctx.branch}'. Switch to a feature/fix branch inside this worktree before editing or committing.`;
       }
     } else if (eff.mode === 'protect-main') {
       if (ctx.branch && prot.has(ctx.branch)) {
-        msg = `[MAGA Git Workflow] Policy for '${path.basename(ctx.mainRoot || ctx.topLevel)}' is protect-main. Branch '${ctx.branch}' is protected against direct edits/commits; switch branches or create an isolated worktree (\`${wtCmd}\`).`;
+        msg = `[AGY Studio Git Workflow] Policy for '${path.basename(ctx.mainRoot || ctx.topLevel)}' is protect-main. Branch '${ctx.branch}' is protected against direct edits/commits; switch branches or create an isolated worktree (\`${wtCmd}\`).`;
       }
     }
 
@@ -1807,7 +1142,7 @@ export function evaluateHookPayloadDetailed(payload, opts = {}) {
     // Self-tamper protection in ALL tiers (policy file & live installed plugin dir)
     if (isPolicyOrPluginTamperPath(absPath, opts)) {
       return makeDeny(
-        'Blocked by MAGA Git Workflow: editing git-workflow-policy.json or the installed maga-git-workflow plugin directly is forbidden. Change project workflow modes via MAGA Projects Cockpit or MAGA Settings UI.',
+        'Blocked by AGY Studio Git Workflow: editing git-workflow-policy.json or the installed maga-git-workflow plugin directly is forbidden. Change project workflow modes via AGY Studio Projects Cockpit or AGY Studio Settings UI.',
         { tool: toolName, payload }
       );
     }
@@ -1824,7 +1159,7 @@ export function evaluateHookPayloadDetailed(payload, opts = {}) {
         const effErr = resolveEffectiveProjectPolicy(probeCtx, policy, opts);
         if (effErr.mode === 'protect-main' || effErr.mode === 'worktree-only') {
           return makeDeny(
-            `Blocked by MAGA Git Workflow (${effErr.mode}): ${detailed.error}.`,
+            `Blocked by AGY Studio Git Workflow (${effErr.mode}): ${detailed.error}.`,
             { ctx: probeCtx, eff: effErr, tool: toolName, payload }
           );
         }
@@ -1838,7 +1173,7 @@ export function evaluateHookPayloadDetailed(payload, opts = {}) {
 
     if ((eff.mode === 'protect-main' || eff.mode === 'worktree-only' || hasLocal) && isRepoHooksTamperPath(absPath, ctx.mainRoot)) {
       return makeDeny(
-        `Blocked by MAGA Git Workflow (${eff.mode}): editing '.agents/hooks.json' or '.agents/hooks/**' in an enforced repository is forbidden.`,
+        `Blocked by AGY Studio Git Workflow (${eff.mode}): editing '.agents/hooks.json' or '.agents/hooks/**' in an enforced repository is forbidden.`,
         { ctx, eff, tool: toolName, payload }
       );
     }
@@ -1872,7 +1207,7 @@ export function evaluateHookPayloadDetailed(payload, opts = {}) {
         const unbornCheck = isUnbornHead(ctx.topLevel);
         if (unbornCheck.error) {
           return makeDeny(
-            `Blocked by MAGA Worktree Policy: ${unbornCheck.error}.`,
+            `Blocked by AGY Studio Worktree Policy: ${unbornCheck.error}.`,
             { ctx, eff, tool: toolName, payload }
           );
         }
@@ -1882,8 +1217,8 @@ export function evaluateHookPayloadDetailed(payload, opts = {}) {
         const wtCmd = buildWtCommandHint(ctx, opts);
         return makeDeny(
           onProtected
-            ? `Blocked by MAGA Worktree Policy: cannot edit repository files in primary checkout on protected branch '${ctx.branch}' (${ctx.topLevel}). Create an isolated sibling worktree first: \`${wtCmd}\` (emergency override on primary: \`MAGA_ALLOW_PRIMARY_CHECKOUT=1\`).`
-            : `Blocked by MAGA Worktree Policy: primary checkout (${ctx.topLevel}, currently on '${ctx.branch || 'HEAD'}') is reserved for clean main branch. Isolate edits in a sibling worktree: \`${wtCmd}\` (for git bisect/detached override: \`MAGA_ALLOW_PRIMARY_CHECKOUT=1\`).`,
+            ? `Blocked by AGY Studio Worktree Policy: cannot edit repository files in primary checkout on protected branch '${ctx.branch}' (${ctx.topLevel}). Create an isolated sibling worktree first: \`${wtCmd}\` (emergency override on primary: \`MAGA_ALLOW_PRIMARY_CHECKOUT=1\`).`
+            : `Blocked by AGY Studio Worktree Policy: primary checkout (${ctx.topLevel}, currently on '${ctx.branch || 'HEAD'}') is reserved for clean main branch. Isolate edits in a sibling worktree: \`${wtCmd}\` (for git bisect/detached override: \`MAGA_ALLOW_PRIMARY_CHECKOUT=1\`).`,
           { ctx, eff, tool: toolName, payload }
         );
       }
@@ -1895,7 +1230,7 @@ export function evaluateHookPayloadDetailed(payload, opts = {}) {
         }
         const wtCmd = buildWtCommandHint(ctx, opts);
         return makeDeny(
-          `Blocked by MAGA Git Guardrail: cannot edit repository files directly on protected branch '${ctx.branch}' (${ctx.topLevel}). Switch branches or create a worktree: \`${wtCmd}\`.`,
+          `Blocked by AGY Studio Git Guardrail: cannot edit repository files directly on protected branch '${ctx.branch}' (${ctx.topLevel}). Switch branches or create a worktree: \`${wtCmd}\`.`,
           { ctx, eff, tool: toolName, payload }
         );
       }
@@ -1917,14 +1252,14 @@ export function evaluateHookPayloadDetailed(payload, opts = {}) {
       const unbornCheck = isUnbornHead(ctx.topLevel);
       if (unbornCheck.error) {
         return makeDeny(
-          `Blocked by MAGA Git Workflow (protect-main): ${unbornCheck.error}.`,
+          `Blocked by AGY Studio Git Workflow (protect-main): ${unbornCheck.error}.`,
           { ctx, eff, tool: toolName, payload }
         );
       }
       if (!unbornCheck.unborn) {
         const wtCmd = buildWtCommandHint(ctx, opts);
         return makeDeny(
-          `Blocked by MAGA Git Workflow (protect-main): cannot edit files directly on protected branch '${ctx.branch}' (${ctx.topLevel}). Switch to a feature branch or create an isolated worktree: \`${wtCmd}\`.`,
+          `Blocked by AGY Studio Git Workflow (protect-main): cannot edit files directly on protected branch '${ctx.branch}' (${ctx.topLevel}). Switch to a feature branch or create an isolated worktree: \`${wtCmd}\`.`,
           { ctx, eff, tool: toolName, payload }
         );
       }
@@ -1991,7 +1326,7 @@ export function runGuardCli(opts = {}) {
       const failOut = isPre
         ? {
             decision: 'deny',
-            reason: `Blocked by MAGA Git Workflow: guardrail evaluation failed (${String(err?.message || 'error')}). Escape hatch: MAGA_ALLOW_MAIN_COMMIT=1.`,
+            reason: `Blocked by AGY Studio Git Workflow: guardrail evaluation failed (${String(err?.message || 'error')}). Escape hatch: MAGA_ALLOW_MAIN_COMMIT=1.`,
           }
         : {};
       process.stdout.write(`${JSON.stringify(failOut)}\n`);

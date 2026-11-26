@@ -38,7 +38,7 @@ Running multiple repositories and parallel agent sessions in **Google Antigravit
 | Root DOM observers (`window.__agyMagaKernel`) | **`1`** shared `MutationObserver` (`data-maga-own` filtered) |
 | Frame flush cost (`lastFlushMs`, Apple Silicon local CDP check) | **`3.6 ms`** with leaf-only text slot updates (`MetricsBus`) |
 | Global CSS `:has()` selectors | **`0`** (enforced by automated test guards) |
-| Automated regression & invariant suite (`npm test`) | **`150+`** passing tests, **`0`** skipped |
+| Automated regression & invariant suite (`npm test`) | **`175+`** passing tests, **`0`** skipped |
 | Changes to `/Applications/Antigravity.app` | **`0 bytes`** (macOS signature & auto-updates stay intact) |
 | Background runtime footprint | **`1`** local macOS `LaunchAgent` (all data stays on disk) |
 
@@ -87,7 +87,7 @@ bash ./install.sh
 
 - **Project Wall & Detail Workspace**: Sort projects by recent activity, token usage, or name. Inside a project, view version pills, local path or remote repo badges, rendered `AGENTS.md` instructions, and recent conversations with per-chat token badges.
 - **Interactive Git Dirty-Files & Commit Drawers**: Expand modified files with colored `+/-` line stats, click `+` to insert `@file` directly into the prompt box, trigger `Review changes` or `Draft commit`, or inspect any recent commit's file diff and remote link.
-- **Git Worktree UI & `wt` CLI**: Create, switch, and track linked Git worktrees per conversation from the workspace strip or conversation topbar (`#agy-conv-project-bar` + `#agy-wt-menu`), plus `npm run wt:new -- <branch>` and `npm run wt:clean`.
+- **Git Worktree UI, Tiered Branch Policy & `wt` CLI**: Create, switch, and track linked Git worktrees per conversation from the workspace strip or conversation topbar (`#agy-conv-project-bar` + `#agy-wt-menu`), set centralized per-repo workflow policies (`observe` / `protect-main` / `worktree-only`) in Settings without repo config files, or run `npm run wt:new -- <branch>` / universal `wt.mjs`.
 - **Per-Project Token Usage**: Native Day / Week / Month stacked bar charts with hover breakdowns (uncached input, cache read/write, output) and share of total quota, updated via read-only `immutable=1` SQLite queries inside the existing daemon.
 - **Optional Gemini 3.8 Flash Chat Suggestions**: Configure your own Google AI Studio key (stored locally with `0600` permissions) to generate 3 follow-up starter pills grounded in your recent Git history and last 5 chats with cold-start context handoff.
 
@@ -117,6 +117,7 @@ bash ./install.sh
         <li><b>3-Tab Live Settings Studio</b> — Preview capsule visibility, slider motion themes, and Orchestrator styles live; export/import JSON configs or reset to defaults.</li>
         <li><b>Bottom-Dock Subagent Quick Split</b> — Spawns a live dock pill (blue while running, emerald when done); click to open a clean 50/50 split that tucks Overview and the redundant inner list away, click again to fold back.</li>
         <li><b>Silent One-Click <code>Resume</code></b> — Detects interrupted conversations and displays a subtle Row 1 <code>Resume</code> pill that continues silently without flashing template text in your prompt box.</li>
+        <li><b>Cache-Aware Auto-Compact</b> — Coordinates automatic <code>/compact</code> before long scheduled waits (<code>schedule</code>) or at configurable context thresholds while protecting live drafts and prompt cache warmth.</li>
         <li><b>7-Line <code>fast-io</code> Execution Rules</b> — Syncs <code>grep</code>-first batched reading, whitelisted read-only commands, and phase-gated milestone updates to <code>~/.gemini/AGENTS.md</code> without capping final answer depth.</li>
       </ul>
     </td>
@@ -178,11 +179,13 @@ Users often already run other Antigravity plugins. Here is how **AGY Studio** be
 | **Conversation** | Hide Thinking Prose | `On` | Collapse verbose Thought bodies and chevrons |
 | **Conversation** | Step Stream Mode | `Compact` | Unified host `verboseConversationSteps` + step unfold toggle |
 | **Conversation** | Interrupted Resume Pill | `On` | Contextual Row 1 `Resume` capsule for mid-stream interruptions |
+| **Conversation** | Cache-Aware Auto-Compact | `Semi-auto` | Mode (`Off`/`Semi-auto`/`Auto`), context threshold (`50%`), long-wait triggers |
 | **Conversation** | Long Code Folding | `On` | Collapse code blocks over 40 lines with sticky copy header |
 | **Workspace** | Overview & Project Usage | `On` | Right-hand Overview and per-project Day/Week/Month token charts |
 | **Workspace** | Subagent Dock Pill | `On` | Footer subagent status pill and one-click 50/50 split |
 | **Workspace** | Context Ring & Quota Popover | `On` | Real-time context usage ring and 5h/weekly dual-pool popover |
 | **Workspace** | Unified Sidebar Recents | `Off` | Optionally merge native project groups into one chronological list |
+| **Workspace** | Git Workflow Policy | `Observe` | Per-repo `observe` / `protect-main` / `worktree-only` guardrails + force-push block |
 | **Workspace** | AI Chat Suggestions | `Off` (key optional) | Gemini 3.8 Flash starter suggestions from Git history + last 5 chats (`0600` local key) |
 | **Appearance** | Chinese UI Localization | `Off` | Built-in Simplified Chinese UI toggle + CJK optical scale (`94.5%` / `95%` / `100%`) |
 | **Appearance** | Motion Intensity | `Full` | `Full` / `Reduced` / `Off` animation control |
@@ -209,13 +212,15 @@ Users often already run other Antigravity plugins. Here is how **AGY Studio** be
 
 ```text
 .
-├── core/                  # Local CDP daemon + submodules (attach, bootstrap, SQLite, projects, git-exec)
-├── user/src/              # 18 modular ESM frontend files (<2,000 lines each, compiled to user/custom.js)
+├── core/                  # Local CDP daemon + submodules (attach, bootstrap, SQLite, projects, worktrees)
+├── user/src/              # 21 modular ESM frontend files (<2,000 lines each, compiled to user/custom.js)
 ├── vendor/agy-capsule/    # Vendored MIT model/effort picker, motion themes & SQLite parser
 ├── studio/
 │   ├── core/              # MagaKernel (1 root observer), DomFlags, MetricsBus, snapshot
-│   ├── daemon/            # Token usage aggregation, resume detection, AI suggestions & Opus Gate service
-│   ├── modules/           # Dock capsules, 3-tab Settings Studio, project usage, subagent split
+│   ├── shared/            # Single-source preferences schema & sanitization
+│   ├── daemon/            # Usage stats, resume detection, AI suggestions, plugin sync & gate services
+│   ├── modules/           # Dock capsules, 3-tab Settings Studio, auto-compact, subagent split
+│   ├── plugin/            # Managed plugins (maga-opus-gate, maga-auto-compact, maga-git-workflow)
 │   ├── styles/            # Scoped stylesheets (0 :has() selectors)
 │   ├── cli.mjs            # Unified CLI (install / deploy / sync-rules / doctor / rollback)
 │   └── pack-release.mjs   # Zero-npm-install Release tarball packager

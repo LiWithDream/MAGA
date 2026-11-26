@@ -130,7 +130,7 @@ async function main() {
           protectedBranches: prot,
           blockForcePushProtected: eff.blockForcePushProtected,
           blockPushTags: eff.blockPushTags,
-          note: 'Change per-project mode via MAGA Projects Cockpit or MAGA Settings UI.',
+          note: 'Change per-project mode via AGY Studio Projects Cockpit or AGY Studio Settings UI.',
         },
         null,
         2

@@ -21,9 +21,9 @@ export function getHostExecutorSummary(catalog, val, L) {
 export function getViewMeta(view, L) {
   switch (view) {
     case 'l1':
-      return { title: L('MAGA 设置', 'MAGA Settings'), parent: '' };
+      return { title: L('AGY Studio 设置', 'AGY Studio Settings'), parent: '' };
     case 'models':
-      return { title: L('模型与思考', 'Models & Thinking'), parent: L('MAGA 设置', 'MAGA') };
+      return { title: L('模型与思考', 'Models & Thinking'), parent: L('AGY Studio 设置', 'AGY Studio') };
     case 'models-tiers':
       return { title: L('按家族默认思考档位', 'Default Tier by Family'), parent: L('模型与思考', 'Models') };
     case 'models-hidden':
@@ -33,19 +33,19 @@ export function getViewMeta(view, L) {
     case 'models-theme':
       return { title: L('Effort Bar 与主题皮肤', 'Effort Bar & Themes'), parent: L('模型与思考', 'Models') };
     case 'stream':
-      return { title: L('对话与过程流', 'Conversation & Stream'), parent: L('MAGA 设置', 'MAGA') };
+      return { title: L('对话与过程流', 'Conversation & Stream'), parent: L('AGY Studio 设置', 'AGY Studio') };
     case 'stream-auto-compact':
       return { title: L('智能压缩上下文', 'Auto-Compact'), parent: L('对话与过程流', 'Conversation & Stream') };
     case 'workspace':
-      return { title: L('工作区与面板', 'Workspace & Panels'), parent: L('MAGA 设置', 'MAGA') };
+      return { title: L('工作区与面板', 'Workspace & Panels'), parent: L('AGY Studio 设置', 'AGY Studio') };
     case 'workspace-ai-suggestions':
       return { title: L('AI 对话建议', 'AI Chat Suggestions'), parent: L('工作区与面板', 'Workspace & Panels') };
     case 'workspace-git-workflow':
       return { title: L('Git 并行工作流', 'Git Workflow'), parent: L('工作区与面板', 'Workspace & Panels') };
     case 'appearance':
-      return { title: L('语言与外观', 'Language & Appearance'), parent: L('MAGA 设置', 'MAGA') };
+      return { title: L('语言与外观', 'Language & Appearance'), parent: L('AGY Studio 设置', 'AGY Studio') };
     default:
-      return { title: L('MAGA 设置', 'MAGA Settings'), parent: '' };
+      return { title: L('AGY Studio 设置', 'AGY Studio Settings'), parent: '' };
   }
 }
 
@@ -167,7 +167,7 @@ export function renderL1(p, base, catalog, { studioPrefs, state, L }) {
           ${
             state.resetArmed
               ? `<div class="agy-ms-reset-confirm">
-                  <span>${esc(L('确认将 MAGA、外观与默认模型恢复为出厂推荐设置？', 'Reset all MAGA, layout & host model preferences to defaults?'))}</span>
+                  <span>${esc(L('确认将 AGY Studio、外观与默认模型恢复为出厂推荐设置？', 'Reset all AGY Studio, layout & host model preferences to defaults?'))}</span>
                   <span style="display:inline-flex;gap:6px;flex-shrink:0">
                     <button type="button" class="agy-ms-btn" data-ms-action="reset-cancel">${esc(L('取消', 'Cancel'))}</button>
                     <button type="button" class="agy-ms-btn is-danger-solid" data-ms-action="reset-confirm">${esc(L('确认重置', 'Confirm Reset'))}</button>
@@ -179,7 +179,7 @@ export function renderL1(p, base, catalog, { studioPrefs, state, L }) {
       </div>
 
       <div class="agy-ms-foot-meta">
-        <span>MAGA · agy-studio</span>
+        <span>AGY Studio · agy-studio</span>
         <span>${esc(L('改动即时生效并自动保存', 'Instant & persistent'))}</span>
       </div>`;
 }
@@ -922,7 +922,7 @@ export function renderL3GitWorkflow(state, { L }) {
 export function renderL2Appearance(p, base, { L }) {
   return `
       <div class="agy-ms-card">
-        ${renderSwitchRow('i18n', 'base', L('中文界面汉化', 'Chinese UI Localization'), L('将 Antigravity 原生界面与 MAGA 面板切换为简体中文', 'Translates Antigravity UI & MAGA settings into Simplified Chinese'), Boolean(base.modules?.i18n))}
+        ${renderSwitchRow('i18n', 'base', L('中文界面汉化', 'Chinese UI Localization'), L('将 Antigravity 原生界面与 AGY Studio 面板切换为简体中文', 'Translates Antigravity UI & AGY Studio settings into Simplified Chinese'), Boolean(base.modules?.i18n))}
         ${renderSegRow('cjkFontScale', 'cjk', L('中文字体字高校准', 'CJK Optical Font Scale'), L('校准苹方汉字与西文的视觉高度比例（95% 为均衡默认）', 'Calibrates CJK glyph height relative to Latin characters'), [
           ['94.5', '94.5%'],
           ['95', '95%'],

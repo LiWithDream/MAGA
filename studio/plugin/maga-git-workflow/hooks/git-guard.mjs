@@ -877,7 +877,7 @@ function evaluateShellTamperCommand(commandLine, initialCwd, payload, policy, op
         !/studio[\\/]plugin[\\/]maga-git-workflow/.test(expandedText))
     ) {
       return makeDeny(
-        'Blocked by MAGA Git Workflow: modifying git-workflow-policy.json or the installed maga-git-workflow plugin via shell is forbidden. Change project workflow modes via MAGA Projects Cockpit or MAGA Settings UI.',
+        'Blocked by AGY Studio Git Workflow: modifying git-workflow-policy.json or the installed maga-git-workflow plugin via shell is forbidden. Change project workflow modes via AGY Studio Projects Cockpit or AGY Studio Settings UI.',
         { tool: 'run_command', payload }
       );
     }
@@ -905,7 +905,7 @@ function evaluateShellTamperCommand(commandLine, initialCwd, payload, policy, op
             (!ctx.isLinkedWorktree || expandedText.includes(ctx.mainRoot)));
         if (hitsRepoHooks) {
           return makeDeny(
-            `Blocked by MAGA Git Workflow (${eff.mode}): modifying '.agents/hooks.json' or '.agents/hooks/**' via shell in an enforced repository is forbidden.`,
+            `Blocked by AGY Studio Git Workflow (${eff.mode}): modifying '.agents/hooks.json' or '.agents/hooks/**' via shell in an enforced repository is forbidden.`,
             { ctx, eff, tool: 'run_command', payload }
           );
         }
@@ -947,7 +947,7 @@ function evaluateRunCommandDetailed(commandLine, payload, policy, opts) {
       const effErr = resolveEffectiveProjectPolicy(fallbackCtx, policy, opts);
       if (effErr.mode === 'protect-main' || effErr.mode === 'worktree-only') {
         return makeDeny(
-          `Blocked by MAGA Git Workflow (${effErr.mode}): ${detailed.error}. Use MAGA_ALLOW_MAIN_COMMIT=1 / MAGA_ALLOW_PRIMARY_CHECKOUT=1 if intentional.`,
+          `Blocked by AGY Studio Git Workflow (${effErr.mode}): ${detailed.error}. Use MAGA_ALLOW_MAIN_COMMIT=1 / MAGA_ALLOW_PRIMARY_CHECKOUT=1 if intentional.`,
           { ctx: fallbackCtx, eff: effErr, tool: 'run_command', payload }
         );
       }
@@ -966,7 +966,7 @@ function evaluateRunCommandDetailed(commandLine, payload, policy, opts) {
       const { isForce, hasTagsFlag, refspecs } = analyzePushArgs(inv.subArgs);
       if (hasTagsFlag && eff.blockPushTags) {
         return makeDeny(
-          "Blocked by MAGA Git Guardrail: never run 'git push --tags'. Push explicit tags instead: git push origin vX.Y.Z.",
+          "Blocked by AGY Studio Git Guardrail: never run 'git push --tags'. Push explicit tags instead: git push origin vX.Y.Z.",
           { ctx, eff, tool: 'run_command', payload }
         );
       }
@@ -978,7 +978,7 @@ function evaluateRunCommandDetailed(commandLine, payload, policy, opts) {
 
       if (isForce && targetsProtected && eff.blockForcePushProtected) {
         return makeDeny(
-          `Blocked by MAGA Git Workflow: force-pushing to protected branch '${ctx.branch || 'main/master'}' is forbidden.`,
+          `Blocked by AGY Studio Git Workflow: force-pushing to protected branch '${ctx.branch || 'main/master'}' is forbidden.`,
           { ctx, eff, tool: 'run_command', payload }
         );
       }
@@ -1002,14 +1002,14 @@ function evaluateRunCommandDetailed(commandLine, payload, policy, opts) {
           const unbornCheck = isUnbornHead(inv.targetDir);
           if (unbornCheck.error) {
             return makeDeny(
-              `Blocked by MAGA Git Workflow (${eff.mode}): ${unbornCheck.error}. Override intentionally with MAGA_ALLOW_MAIN_COMMIT=1.`,
+              `Blocked by AGY Studio Git Workflow (${eff.mode}): ${unbornCheck.error}. Override intentionally with MAGA_ALLOW_MAIN_COMMIT=1.`,
               { ctx, eff, tool: 'run_command', payload }
             );
           }
           if (!unbornCheck.unborn) {
             const wtCmd = buildWtCommandHint(ctx, opts);
             return makeDeny(
-              `Blocked by MAGA Git Guardrail (${eff.mode}): direct 'git commit' on protected branch '${ctx.branch}' is forbidden. Create a worktree first: \`${wtCmd}\` (or override: \`MAGA_ALLOW_MAIN_COMMIT=1 git commit ...\`).`,
+              `Blocked by AGY Studio Git Guardrail (${eff.mode}): direct 'git commit' on protected branch '${ctx.branch}' is forbidden. Create a worktree first: \`${wtCmd}\` (or override: \`MAGA_ALLOW_MAIN_COMMIT=1 git commit ...\`).`,
               { ctx, eff, tool: 'run_command', payload }
             );
           }
@@ -1017,7 +1017,7 @@ function evaluateRunCommandDetailed(commandLine, payload, policy, opts) {
       } else if (eff.mode === 'worktree-only' && !ctx.isLinkedWorktree && !ctx.merging && inv.env.MAGA_ALLOW_MAIN_COMMIT !== '1') {
         const wtCmd = buildWtCommandHint(ctx, opts);
         return makeDeny(
-          `Blocked by MAGA Worktree Policy: primary checkout (${ctx.topLevel}) must stay on clean main branch. Commit inside an isolated worktree (\`${wtCmd}\`), or override: \`MAGA_ALLOW_MAIN_COMMIT=1\`.`,
+          `Blocked by AGY Studio Worktree Policy: primary checkout (${ctx.topLevel}) must stay on clean main branch. Commit inside an isolated worktree (\`${wtCmd}\`), or override: \`MAGA_ALLOW_MAIN_COMMIT=1\`.`,
           { ctx, eff, tool: 'run_command', payload }
         );
       }
@@ -1035,7 +1035,7 @@ function evaluateRunCommandDetailed(commandLine, payload, policy, opts) {
         if (check.blocked) {
           const wtCmd = buildWtCommandHint(ctx, opts);
           return makeDeny(
-            `Blocked by MAGA Worktree Policy: ${check.reason} is forbidden because primary checkout (${ctx.topLevel}) stays permanently on main. Create an isolated worktree instead: \`${wtCmd}\` (escape hatch: \`MAGA_ALLOW_PRIMARY_CHECKOUT=1\`).`,
+            `Blocked by AGY Studio Worktree Policy: ${check.reason} is forbidden because primary checkout (${ctx.topLevel}) stays permanently on main. Create an isolated worktree instead: \`${wtCmd}\` (escape hatch: \`MAGA_ALLOW_PRIMARY_CHECKOUT=1\`).`,
             { ctx, eff, tool: 'run_command', payload }
           );
         }
@@ -1096,14 +1096,14 @@ export function evaluateHookPayloadDetailed(payload, opts = {}) {
       if (!ctx.isLinkedWorktree) {
         msg =
           ctx.branch && prot.has(ctx.branch)
-            ? `[MAGA Worktree Policy] Primary checkout (${ctx.topLevel}) is on protected branch '${ctx.branch}'. Read-only research proceeds here. Before any code edit, ALWAYS create an isolated sibling worktree (\`${wtCmd}\`) instead of \`git checkout -b\` or editing here.`
-            : `[MAGA Worktree Policy] Primary checkout (${ctx.topLevel}) is currently drifted onto '${ctx.branch || 'HEAD'}' instead of clean main. Do not edit or commit here; create a sibling worktree (\`${wtCmd}\`).`;
+            ? `[AGY Studio Worktree Policy] Primary checkout (${ctx.topLevel}) is on protected branch '${ctx.branch}'. Read-only research proceeds here. Before any code edit, ALWAYS create an isolated sibling worktree (\`${wtCmd}\`) instead of \`git checkout -b\` or editing here.`
+            : `[AGY Studio Worktree Policy] Primary checkout (${ctx.topLevel}) is currently drifted onto '${ctx.branch || 'HEAD'}' instead of clean main. Do not edit or commit here; create a sibling worktree (\`${wtCmd}\`).`;
       } else if (ctx.branch && prot.has(ctx.branch)) {
-        msg = `[MAGA Git Guardrail] Linked worktree (${ctx.topLevel}) is on protected branch '${ctx.branch}'. Switch to a feature/fix branch inside this worktree before editing or committing.`;
+        msg = `[AGY Studio Git Guardrail] Linked worktree (${ctx.topLevel}) is on protected branch '${ctx.branch}'. Switch to a feature/fix branch inside this worktree before editing or committing.`;
       }
     } else if (eff.mode === 'protect-main') {
       if (ctx.branch && prot.has(ctx.branch)) {
-        msg = `[MAGA Git Workflow] Policy for '${path.basename(ctx.mainRoot || ctx.topLevel)}' is protect-main. Branch '${ctx.branch}' is protected against direct edits/commits; switch branches or create an isolated worktree (\`${wtCmd}\`).`;
+        msg = `[AGY Studio Git Workflow] Policy for '${path.basename(ctx.mainRoot || ctx.topLevel)}' is protect-main. Branch '${ctx.branch}' is protected against direct edits/commits; switch branches or create an isolated worktree (\`${wtCmd}\`).`;
       }
     }
 
@@ -1142,7 +1142,7 @@ export function evaluateHookPayloadDetailed(payload, opts = {}) {
     // Self-tamper protection in ALL tiers (policy file & live installed plugin dir)
     if (isPolicyOrPluginTamperPath(absPath, opts)) {
       return makeDeny(
-        'Blocked by MAGA Git Workflow: editing git-workflow-policy.json or the installed maga-git-workflow plugin directly is forbidden. Change project workflow modes via MAGA Projects Cockpit or MAGA Settings UI.',
+        'Blocked by AGY Studio Git Workflow: editing git-workflow-policy.json or the installed maga-git-workflow plugin directly is forbidden. Change project workflow modes via AGY Studio Projects Cockpit or AGY Studio Settings UI.',
         { tool: toolName, payload }
       );
     }
@@ -1159,7 +1159,7 @@ export function evaluateHookPayloadDetailed(payload, opts = {}) {
         const effErr = resolveEffectiveProjectPolicy(probeCtx, policy, opts);
         if (effErr.mode === 'protect-main' || effErr.mode === 'worktree-only') {
           return makeDeny(
-            `Blocked by MAGA Git Workflow (${effErr.mode}): ${detailed.error}.`,
+            `Blocked by AGY Studio Git Workflow (${effErr.mode}): ${detailed.error}.`,
             { ctx: probeCtx, eff: effErr, tool: toolName, payload }
           );
         }
@@ -1173,7 +1173,7 @@ export function evaluateHookPayloadDetailed(payload, opts = {}) {
 
     if ((eff.mode === 'protect-main' || eff.mode === 'worktree-only' || hasLocal) && isRepoHooksTamperPath(absPath, ctx.mainRoot)) {
       return makeDeny(
-        `Blocked by MAGA Git Workflow (${eff.mode}): editing '.agents/hooks.json' or '.agents/hooks/**' in an enforced repository is forbidden.`,
+        `Blocked by AGY Studio Git Workflow (${eff.mode}): editing '.agents/hooks.json' or '.agents/hooks/**' in an enforced repository is forbidden.`,
         { ctx, eff, tool: toolName, payload }
       );
     }
@@ -1207,7 +1207,7 @@ export function evaluateHookPayloadDetailed(payload, opts = {}) {
         const unbornCheck = isUnbornHead(ctx.topLevel);
         if (unbornCheck.error) {
           return makeDeny(
-            `Blocked by MAGA Worktree Policy: ${unbornCheck.error}.`,
+            `Blocked by AGY Studio Worktree Policy: ${unbornCheck.error}.`,
             { ctx, eff, tool: toolName, payload }
           );
         }
@@ -1217,8 +1217,8 @@ export function evaluateHookPayloadDetailed(payload, opts = {}) {
         const wtCmd = buildWtCommandHint(ctx, opts);
         return makeDeny(
           onProtected
-            ? `Blocked by MAGA Worktree Policy: cannot edit repository files in primary checkout on protected branch '${ctx.branch}' (${ctx.topLevel}). Create an isolated sibling worktree first: \`${wtCmd}\` (emergency override on primary: \`MAGA_ALLOW_PRIMARY_CHECKOUT=1\`).`
-            : `Blocked by MAGA Worktree Policy: primary checkout (${ctx.topLevel}, currently on '${ctx.branch || 'HEAD'}') is reserved for clean main branch. Isolate edits in a sibling worktree: \`${wtCmd}\` (for git bisect/detached override: \`MAGA_ALLOW_PRIMARY_CHECKOUT=1\`).`,
+            ? `Blocked by AGY Studio Worktree Policy: cannot edit repository files in primary checkout on protected branch '${ctx.branch}' (${ctx.topLevel}). Create an isolated sibling worktree first: \`${wtCmd}\` (emergency override on primary: \`MAGA_ALLOW_PRIMARY_CHECKOUT=1\`).`
+            : `Blocked by AGY Studio Worktree Policy: primary checkout (${ctx.topLevel}, currently on '${ctx.branch || 'HEAD'}') is reserved for clean main branch. Isolate edits in a sibling worktree: \`${wtCmd}\` (for git bisect/detached override: \`MAGA_ALLOW_PRIMARY_CHECKOUT=1\`).`,
           { ctx, eff, tool: toolName, payload }
         );
       }
@@ -1230,7 +1230,7 @@ export function evaluateHookPayloadDetailed(payload, opts = {}) {
         }
         const wtCmd = buildWtCommandHint(ctx, opts);
         return makeDeny(
-          `Blocked by MAGA Git Guardrail: cannot edit repository files directly on protected branch '${ctx.branch}' (${ctx.topLevel}). Switch branches or create a worktree: \`${wtCmd}\`.`,
+          `Blocked by AGY Studio Git Guardrail: cannot edit repository files directly on protected branch '${ctx.branch}' (${ctx.topLevel}). Switch branches or create a worktree: \`${wtCmd}\`.`,
           { ctx, eff, tool: toolName, payload }
         );
       }
@@ -1252,14 +1252,14 @@ export function evaluateHookPayloadDetailed(payload, opts = {}) {
       const unbornCheck = isUnbornHead(ctx.topLevel);
       if (unbornCheck.error) {
         return makeDeny(
-          `Blocked by MAGA Git Workflow (protect-main): ${unbornCheck.error}.`,
+          `Blocked by AGY Studio Git Workflow (protect-main): ${unbornCheck.error}.`,
           { ctx, eff, tool: toolName, payload }
         );
       }
       if (!unbornCheck.unborn) {
         const wtCmd = buildWtCommandHint(ctx, opts);
         return makeDeny(
-          `Blocked by MAGA Git Workflow (protect-main): cannot edit files directly on protected branch '${ctx.branch}' (${ctx.topLevel}). Switch to a feature branch or create an isolated worktree: \`${wtCmd}\`.`,
+          `Blocked by AGY Studio Git Workflow (protect-main): cannot edit files directly on protected branch '${ctx.branch}' (${ctx.topLevel}). Switch to a feature branch or create an isolated worktree: \`${wtCmd}\`.`,
           { ctx, eff, tool: toolName, payload }
         );
       }
@@ -1326,7 +1326,7 @@ export function runGuardCli(opts = {}) {
       const failOut = isPre
         ? {
             decision: 'deny',
-            reason: `Blocked by MAGA Git Workflow: guardrail evaluation failed (${String(err?.message || 'error')}). Escape hatch: MAGA_ALLOW_MAIN_COMMIT=1.`,
+            reason: `Blocked by AGY Studio Git Workflow: guardrail evaluation failed (${String(err?.message || 'error')}). Escape hatch: MAGA_ALLOW_MAIN_COMMIT=1.`,
           }
         : {};
       process.stdout.write(`${JSON.stringify(failOut)}\n`);

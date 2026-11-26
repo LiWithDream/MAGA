@@ -252,7 +252,7 @@ function collectProxyDiagnostics() {
       };
       const anySysProxy = systemProxy.httpEnabled || systemProxy.httpsEnabled || systemProxy.socksEnabled || systemProxy.pacEnabled;
       if (shellProxyEnvKeys.length > 0 && !anySysProxy) {
-        hint = 'Shell proxy env vars detected while macOS System Proxy is disabled; MAGA auto-forwards proxy env vars during CDP relaunch, and enabling System Proxy or TUN mode is recommended if Antigravity language_server reports loadCodeAssist: EOF.';
+        hint = 'Shell proxy env vars detected while macOS System Proxy is disabled; AGY Studio auto-forwards proxy env vars during CDP relaunch, and enabling System Proxy or TUN mode is recommended if Antigravity language_server reports loadCodeAssist: EOF.';
       }
     } catch {
       systemProxy = null;
@@ -319,6 +319,6 @@ try {
     process.exit(1);
   }
 } catch (err) {
-  console.error('[MAGA]', err?.message || err);
+  console.error('[AGY Studio]', err?.message || err);
   process.exit(1);
 }

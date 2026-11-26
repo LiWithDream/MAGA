@@ -1859,6 +1859,30 @@ test('Remote Desktop Parity: synced studioPrefs, elemental model capsule/picker 
     assert.ok(tlRefs.timeline.querySelector('.rc-checkpoint-divider'), 'CHECKPOINT must render compact divider');
     assert.ok(tlRefs.timeline.textContent.includes('已经全部优化完成。'));
 
+    // Chat bubble separation: compact user/assistant cards omit empty .rc-step-head and place timestamps in .rc-step-foot
+    const compactUserWithTime = timelineMod.renderStepCard(
+      { idx: 10, type: 'USER_INPUT', status: 'DONE', text: '直接部署', createdAt: '2026-11-27T03:08:52+08:00' },
+      { compact: true }
+    );
+    assert.equal(compactUserWithTime.querySelector('.rc-step-head'), null, 'compact user bubble must not render empty top header');
+    assert.ok(compactUserWithTime.querySelector('.rc-step-foot .rc-step-time'), 'compact user bubble must place timestamp in bottom footer');
+    const compactBotWithTime = timelineMod.renderStepCard(
+      { idx: 11, type: 'PLANNER_RESPONSE', status: 'DONE', text: '已完成。', createdAt: '2026-11-27T03:09:10+08:00' },
+      { compact: true }
+    );
+    assert.equal(compactBotWithTime.querySelector('.rc-step-head'), null, 'compact assistant bubble must not render empty top header');
+    assert.ok(compactBotWithTime.querySelector('.rc-step-foot .rc-step-time'), 'compact assistant bubble must place timestamp in bottom footer');
+    const compactUserNoTime = timelineMod.renderStepCard(
+      { idx: 12, type: 'USER_INPUT', status: 'DONE', text: '无时间戳' },
+      { compact: true }
+    );
+    assert.equal(compactUserNoTime.querySelector('.rc-step-foot'), null, 'compact DONE bubble without timestamp should omit footer');
+
+    const chatCss = fs.readFileSync(path.join(PWA_DIR, 'src', 'styles.css'), 'utf8');
+    assert.ok(chatCss.includes('--rc-chat-bg:') && chatCss.includes('--rc-assistant-bubble:') && chatCss.includes('--rc-user-bubble:'));
+    assert.ok(chatCss.includes('align-self: flex-end;') && chatCss.includes('align-self: flex-start;'));
+    assert.equal(chatCss.includes(':has('), false, 'styles.css must never contain :has(');
+
     // With hideThinkingProse=false, thinking disclosure appears
     tlState.studioOverview = { studioPrefs: { ...prefs, hideThinkingProse: false } };
     timelineMod.renderDetailTimeline({ state: tlState, refs: tlRefs, onSelectConversation: () => {}, onApprove: () => {} });

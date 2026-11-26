@@ -916,7 +916,32 @@ test('Phase 2 Dual-Form UI regressions: layout mode, Overview panel, code copy &
     assert.match(appSrc, /onStatus:[\s\S]*?renderStudioPanels\(\)/);
     assert.ok(cssSrc.includes('.rc-composer-card[data-writable="false"]'));
     assert.ok(cssSrc.includes('.rc-group-subagent'));
+    assert.ok(cssSrc.includes('.rc-app[data-layout-mode="mobile"][data-mobile-view="detail"] .rc-topbar'));
+    assert.ok(cssSrc.includes('.rc-readonly-banner[data-writable="true"]'));
+    assert.ok(cssSrc.includes('.rc-app[data-layout-mode="mobile"] .rc-footer-left'));
     assert.equal(cssSrc.includes(':has('), false);
+
+    // 6. Mobile overflow menu Pure-DOM rendering & callbacks
+    const studioPanelMod = await import(pathToFileURL(path.join(PWA_DIR, 'src', 'studio-panel.mjs')).href);
+    const menuEl = dom.window.document.createElement('div');
+    let menuActions = [];
+    studioPanelMod.renderMobileMoreMenu(menuEl, {
+      open: true,
+      hostLine: 'CDP 在线 (cdp)',
+      role: 'steer',
+      presetLabel: 'Review-Driven',
+      layoutLabel: '视图: 自动',
+      onCycleLayout: () => menuActions.push('layout'),
+      onOpenOverview: () => menuActions.push('overview'),
+      onRefreshAll: () => menuActions.push('refresh'),
+      onUnpair: () => menuActions.push('unpair'),
+    });
+    assert.equal(menuEl.classList.contains('rc-hidden'), false);
+    assert.match(menuEl.textContent, /CDP 在线 \(cdp\) · STEER/);
+    for (const btn of menuEl.querySelectorAll('.rc-more-item')) btn.click();
+    assert.deepEqual(menuActions, ['layout', 'overview', 'refresh', 'unpair']);
+    studioPanelMod.renderMobileMoreMenu(menuEl, { open: false });
+    assert.equal(menuEl.classList.contains('rc-hidden'), true);
   } finally {
     if (prevDoc) Object.defineProperty(globalThis, 'document', prevDoc);
     else delete globalThis.document;

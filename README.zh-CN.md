@@ -247,7 +247,7 @@ bash ./install.sh
 | 根 DOM 观测器数量（`MagaKernel`） | **`1`** 个统一 `MutationObserver`（`data-maga-own` 自隔离） |
 | 主线程刷帧耗时（Apple Silicon 本地 CDP 实测） | **`1.5–3.6 ms`**，高频遥测走叶节点原地更新（`MetricsBus`） |
 | 全局 CSS `:has()` 选择器数量 | **`0`**（自动化测试硬守卫） |
-| 自动化回归与不变量测试（`npm test`） | **`175+`** 项全部通过，**`0`** 项跳过 |
+| 自动化回归与不变量测试（`npm test`） | **`195+`** 项全部通过，**`0`** 项跳过 |
 | 后台进程占用 | **`1`** 个本地 macOS `LaunchAgent` |
 
 ---
@@ -298,6 +298,7 @@ bash ./install.sh
 | **工作区与面板** | 侧栏统一「最近对话」 | `关` | 可选把原生项目分组收拢为按时间混排列表 |
 | **工作区与面板** | Git 并行工作流策略 | `观察` | 按仓库配置 `observe` / `protect-main` / `worktree-only` 与强推拦截 |
 | **工作区与面板** | AI 历史对话建议 | `关`（可选 Key） | 使用 Gemini 3.8 Flash 结合 Git 历史与最近 5 条对话推荐下一步起点 |
+| **远程控制** | 网关开关、外网通道与配对 | `关` | 零依赖 `127.0.0.1:18791` 网关、Cloudflare Access / Tailscale / 本机通道、本地 SVG 扫码配对与设备角色/吊销 |
 | **语言与外观** | 中文界面汉化与字高校准 | `关` / `95%` | 内置简体中文开关与苹果苹方视觉字高（`94.5%` / `95%` / `100%`） |
 | **语言与外观** | 交互动效强度 | `完整` | `完整` / `精简` / `关闭` |
 
@@ -325,18 +326,19 @@ bash ./install.sh
 ```text
 .
 ├── core/                  # 本地 CDP 守护进程与子模块（挂载、冷启引导、SQLite、项目扫描、worktrees）
-├── user/src/              # 21 个模块化 ESM 前端源码（全部 <2,000 行，编入 user/custom.js）
+├── user/src/              # 22 个模块化 ESM 前端源码（全部 <2,000 行，编入 user/custom.js）
+├── remote/                # 远程控制零依赖回环网关（7 文件）与手机端 PWA 客户端
 ├── vendor/agy-capsule/    # 内化整合的 MIT 模型/滑轨核心、动效主题与 SQLite 解析
 ├── studio/
 │   ├── core/              # MagaKernel（单根观测器）、DomFlags、MetricsBus、状态快照
 │   ├── shared/            # 单一数据源偏好设置 Schema 与清洗校验
 │   ├── daemon/            # 用量聚合、中断检测、AI 历史建议、插件同步与各服务守护逻辑
-│   ├── modules/           # 底栏胶囊、三标签设置台、智能压缩、子代理分屏
+│   ├── modules/           # 底栏胶囊、设置台（含远程控制与本地二维码）、智能压缩、子代理分屏
 │   ├── plugin/            # 托管原生插件（maga-opus-gate、maga-auto-compact、maga-git-workflow）
 │   ├── styles/            # 作用域样式表（全仓 0 条 :has() 选择器）
-│   ├── cli.mjs            # 统一 CLI（install / deploy / sync-rules / doctor / rollback）
+│   ├── cli.mjs            # 统一 CLI（install / deploy / sync-rules / doctor / rollback / remote）
 │   └── pack-release.mjs   # 零依赖 Release 压缩包打包器
-├── test/                  # 自动化测试套件（175+ 项回归与架构守卫）
+├── test/                  # 自动化测试套件（195+ 项回归与架构守卫）
 ├── install.sh             # 一键安装脚本（支持 --dry-run、预编包与源码模式）
 └── uninstall.sh           # 一键无痕回滚卸载脚本（支持 --dry-run）
 ```
@@ -344,7 +346,7 @@ bash ./install.sh
 | 开发者命令 | 作用 |
 | :--- | :--- |
 | `npm run wt:new -- feat/slug` | 创建隔离开发用 Git Worktree 并自动软链 `node_modules` |
-| `npm test` | 编译 `user/custom.js` 并运行全部 175+ 项回归与不变量测试 |
+| `npm test` | 编译 `user/custom.js` 并运行全部 195+ 项回归与不变量测试 |
 | `npm run deploy` | 在干净 `main` 上秒级热更新至运行中的 Antigravity（无需重启客户端） |
 | `npm run release:pack` | 生成零 `npm install` 的 macOS Release 压缩包及 SHA-256 校验文件到 `dist/` |
 

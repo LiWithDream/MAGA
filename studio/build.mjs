@@ -294,6 +294,7 @@ export async function deployStudio({ allowNonMain = false, metaPath } = {}) {
   }
 
   await buildUserCustomJs({ writeToRepo: true, allowPrebuilt: true });
+  const remotePwa = await buildRemotePwa({ allowPrebuilt: true });
   const { jsBlock, cssBlock, prefs } = await buildStudioBundle();
 
   let baseJs = existsSync(REPO_USER_JS) ? readFileSync(REPO_USER_JS, 'utf8') : readFileSync(TARGET_CUSTOM_JS, 'utf8');
@@ -315,6 +316,7 @@ export async function deployStudio({ allowNonMain = false, metaPath } = {}) {
     configJsonPath: TARGET_CONFIG_JSON,
     jsBytes: Buffer.byteLength(jsBlock, 'utf8'),
     cssBytes: Buffer.byteLength(cssBlock, 'utf8'),
+    remotePwa,
     deployedFrom,
     ...(guard.warnings.length ? { deployWarnings: guard.warnings } : {}),
     prefs,
@@ -326,7 +328,30 @@ export function rollbackStudio() {
   return { ok: true, action: 'rolled_back' };
 }
 
-export async function buildRemotePwa({ outDir = REMOTE_PWA_DIST } = {}) {
+export async function buildRemotePwa({ outDir = REMOTE_PWA_DIST, allowPrebuilt = false } = {}) {
+  const prebuiltAssets = ['index.html', 'app.js', 'styles.css', 'manifest.webmanifest', 'sw.js'];
+  const preferPrebuilt = process.env.MAGA_USE_PREBUILT === '1';
+  if (allowPrebuilt && prebuiltAssets.every((f) => existsSync(path.join(outDir, f)))) {
+    let esbuildMod = null;
+    if (!preferPrebuilt) {
+      try {
+        esbuildMod = await loadEsbuild();
+      } catch {
+        esbuildMod = null;
+      }
+    }
+    if (preferPrebuilt || !esbuildMod) {
+      const appCode = readFileSync(path.join(outDir, 'app.js'), 'utf8');
+      if (appCode.trim()) {
+        new Function(appCode);
+        const files = Object.fromEntries(
+          prebuiltAssets.map((f) => [f, readFileSync(path.join(outDir, f)).byteLength])
+        );
+        return { ok: true, outDir, prebuilt: true, files };
+      }
+    }
+  }
+
   if (!existsSync(REMOTE_PWA_ENTRY)) {
     throw new Error(`Missing remote PWA entry point at ${REMOTE_PWA_ENTRY}`);
   }
@@ -388,6 +413,7 @@ export async function buildRemotePwa({ outDir = REMOTE_PWA_DIST } = {}) {
   return {
     ok: true,
     outDir,
+    prebuilt: false,
     files,
   };
 }

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **AGY Studio Remote Control (`remote/gateway/`, `remote/pwa/`, `core/daemon/remote/`, `user/src/modules/remote-tap.mjs`, `studio/remote-cli.mjs`)**:
+  - **Zero-Dep Loopback Gateway & Edge Security (`remote/gateway/`)**: Standalone 7-file Node gateway binding strictly to `127.0.0.1` (`18791`) with single-use pairing codes, ECDSA P-256 device handshake, device revocation (`4001`) and live role demotion (`4003`), strict CSP, and fail-closed `cloudflare-access` (JWKS RS256) / `tailscale-serve` / `loopback` transports.
+  - **Controlled Write Loop & AGY Studio v1.3 Integration (`core/daemon/remote/`, `user/src/modules/remote-tap.mjs`, `remote/pwa/`)**: Remote permission approval (`convo.approve` with `PermissionScope.ONCE` and `waitingStepHash` CAS), message sending (`convo.send`), cancellation (`convo.cancel`), `/compact` execution (`convo.compact`), interrupted-task `Resume` (`convo.resumeState` / `convo.resume`), per-cascade single-writer lock (`cascade-lock.mjs`), and sanitized Studio overview (`studio.overview`: projects, worktrees, dual-pool quota, today tokens, Opus Gate status & dismiss).
+  - **Desktop Settings & Zero-Dep QR Pairing (`studio/modules/settings/{remote-view,remote-events,qr-svg}.mjs`, `core/daemon/remote/settings-rpc.mjs`)**: Added the `Remote Control` category inside AGY Studio Settings with instant gateway enable/disable, Cloudflare Access / Loopback / Tailscale configuration, local ISO 18004 SVG QR code pairing, device role/revocation controls, and CLI/packaging integration (`studio/cli.mjs remote`, `studio/pack-release.mjs`, `studio/build.mjs`).
+
 ## [1.3.0] - 2026-11-26
 
 Consolidated parallel feature development into a unified, hardened release: added Cache-Aware Auto-Compact and Global Tiered Git Workflow guardrails, centralized plugin syncing and preferences schemas, hardened Resume detection and footer capsule coexistence, and aligned UI/plugin branding to **AGY Studio**.

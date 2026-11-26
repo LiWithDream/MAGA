@@ -265,9 +265,14 @@ export async function buildStudioBundle({ allowPrebuilt = true } = {}) {
   return { jsBlock, cssBlock, prefs };
 }
 
-function syncLiveConfigForStudio() {
-  if (existsSync(TARGET_CONFIG_JSON)) {
-    const raw = readFileSync(TARGET_CONFIG_JSON, 'utf8');
+const VALID_CJK_SCALES = new Set(['94.5', '95', '100']);
+
+export function syncLiveConfigForStudio({
+  configPath = TARGET_CONFIG_JSON,
+  uiPrefsPath = TARGET_UI_PREFS_JSON,
+} = {}) {
+  if (existsSync(configPath)) {
+    const raw = readFileSync(configPath, 'utf8');
     const cfg = JSON.parse(raw);
     cfg.modules = cfg.modules && typeof cfg.modules === 'object' ? cfg.modules : {};
     let dirty = false;
@@ -275,22 +280,23 @@ function syncLiveConfigForStudio() {
       cfg.modules.claudeUxStepUnfold = false;
       dirty = true;
     }
-    if (cfg.cjkFontScale !== '100') {
-      cfg.cjkFontScale = '100';
+    const curScale = String(cfg.cjkFontScale ?? '').trim();
+    if (!VALID_CJK_SCALES.has(curScale)) {
+      cfg.cjkFontScale = '95';
       dirty = true;
     }
     if (dirty) {
-      writeFileSync(TARGET_CONFIG_JSON, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
+      writeFileSync(configPath, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
     }
   }
-  if (existsSync(TARGET_UI_PREFS_JSON)) {
+  if (existsSync(uiPrefsPath)) {
     try {
-      const prefs = JSON.parse(readFileSync(TARGET_UI_PREFS_JSON, 'utf8'));
+      const prefs = JSON.parse(readFileSync(uiPrefsPath, 'utf8'));
       if (prefs && typeof prefs === 'object') {
         prefs.modules = prefs.modules && typeof prefs.modules === 'object' ? prefs.modules : {};
         if (prefs.modules.claudeUxStepUnfold !== false) {
           prefs.modules.claudeUxStepUnfold = false;
-          writeFileSync(TARGET_UI_PREFS_JSON, JSON.stringify(prefs, null, 2) + '\n', 'utf8');
+          writeFileSync(uiPrefsPath, JSON.stringify(prefs, null, 2) + '\n', 'utf8');
         }
       }
     } catch {}

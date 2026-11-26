@@ -7,7 +7,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { buildStudioBundle, CSS_BEGIN, CSS_END, JS_BEGIN, JS_END } from '../studio/build.mjs';
+import { buildStudioBundle, CSS_BEGIN, CSS_END, JS_BEGIN, JS_END, syncLiveConfigForStudio } from '../studio/build.mjs';
 import {
   buildPickerShadowCss,
   createCapsulePickerRuntime,
@@ -4965,4 +4965,32 @@ test('OWN_FOOTER_PILL_IDS stays aligned with CSS exclusions and allows auto-comp
       subRt.dispose();
     }
   });
+});
+
+test('syncLiveConfigForStudio preserves valid user cjkFontScale and defaults missing/invalid to 95', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'agy-cjk-sync-'));
+  try {
+    const cfgPath = path.join(dir, 'config.json');
+    const uiPrefsPath = path.join(dir, 'ui-prefs.json');
+    for (const scale of ['94.5', '95', '100']) {
+      writeFileSync(cfgPath, JSON.stringify({ cjkFontScale: scale, modules: { claudeUxStepUnfold: true } }), 'utf8');
+      writeFileSync(uiPrefsPath, JSON.stringify({ modules: { claudeUxStepUnfold: true } }), 'utf8');
+      syncLiveConfigForStudio({ configPath: cfgPath, uiPrefsPath });
+      const savedCfg = JSON.parse(readFileSync(cfgPath, 'utf8'));
+      const savedUi = JSON.parse(readFileSync(uiPrefsPath, 'utf8'));
+      assert.equal(savedCfg.cjkFontScale, scale, `must preserve cjkFontScale=${scale}`);
+      assert.equal(savedCfg.modules.claudeUxStepUnfold, false);
+      assert.equal(savedUi.modules.claudeUxStepUnfold, false);
+    }
+
+    writeFileSync(cfgPath, JSON.stringify({ cjkFontScale: '80', modules: {} }), 'utf8');
+    syncLiveConfigForStudio({ configPath: cfgPath, uiPrefsPath });
+    assert.equal(JSON.parse(readFileSync(cfgPath, 'utf8')).cjkFontScale, '95');
+
+    writeFileSync(cfgPath, JSON.stringify({ modules: {} }), 'utf8');
+    syncLiveConfigForStudio({ configPath: cfgPath, uiPrefsPath });
+    assert.equal(JSON.parse(readFileSync(cfgPath, 'utf8')).cjkFontScale, '95');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

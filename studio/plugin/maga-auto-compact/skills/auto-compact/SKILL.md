@@ -14,5 +14,7 @@ Queue a cache-aware `/compact` execution for the current conversation so compact
    node ~/.gemini/config/plugins/maga-auto-compact/hooks/compact-check.mjs --request --cid "$ANTIGRAVITY_CONVERSATION_ID" --reason "<concise 1-line reason>"
    ```
 2. Check the JSON output:
-   - `"action": "queued"` -> Write a clear, concise progress summary (verified facts, modified paths, remaining steps) in your final response and end your turn with no further tool calls so MAGA compacts the context cleanly.
+   - `"action": "queued"` (without `"cooldownRemainingSec"`) -> Write a clear, concise progress summary (verified facts, modified paths, remaining steps) in your final response and end your turn with no further tool calls so MAGA compacts the context cleanly.
+   - `"action": "queued"` with `"cooldownRemainingSec"` > 0 -> A 120s post-compaction cooldown is still active; compaction will wait until the cooldown window clears.
    - `"action": "skipped"` -> Auto-Compact is off or model-initiated requests are disabled; proceed without waiting for compaction.
+   - `"ok": false, "error": "invalid_cid"` -> `$ANTIGRAVITY_CONVERSATION_ID` was unset or malformed; pass your exact conversation UUID explicitly to `--cid <uuid>`.

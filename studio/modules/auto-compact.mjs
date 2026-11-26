@@ -12,7 +12,12 @@
 import { markOwn, setAttr, setLeafText } from '../core/dom.mjs';
 import { getActiveRouteCid, isComposerRunning, isZhUi, L } from '../core/env.mjs';
 
-export function createAutoCompactRuntime({ studioPrefs, settleDelayMs = 750, retryDelayMs = 1050 } = {}) {
+export function createAutoCompactRuntime({
+  studioPrefs,
+  settleDelayMs = 750,
+  retryDelayMs = 1050,
+  commitRetryDelayMs = 150,
+} = {}) {
   const PILL_ID = 'agy-auto-compact-pill';
   const DISMISS_STORAGE_KEY = 'agy_studio_auto_compact_dismissed_v1';
   const MAX_DISMISSED = 120;
@@ -25,6 +30,7 @@ export function createAutoCompactRuntime({ studioPrefs, settleDelayMs = 750, ret
   let inFlightClaim = false;
   let statusCache = { cid: '', ts: 0, inFlight: false, data: null };
   const handledRequestIds = new Set();
+  const resyncedIds = new Set();
   const fallbackPillIds = new Set();
   const dismissedSet = new Set();
 
@@ -126,6 +132,11 @@ export function createAutoCompactRuntime({ studioPrefs, settleDelayMs = 750, ret
       );
       if (disposed || !claimRes?.matched || !claimRes?.claimToken) {
         clearCachedRequest(cid, req.id);
+        if (!disposed && !resyncedIds.has(req.id) && !isComposerRunning() && getActiveRouteCid() === cid) {
+          if (resyncedIds.size >= 200) resyncedIds.clear();
+          resyncedIds.add(req.id);
+          fetchStatus(cid, { force: true, allowRetry: false });
+        }
         return false;
       }
 
@@ -159,13 +170,23 @@ export function createAutoCompactRuntime({ studioPrefs, settleDelayMs = 750, ret
 
       if (submitted) {
         handledRequestIds.add(req.id);
-        clearCachedRequest(cid, req.id);
-        removePill();
-        await window.__agProjectCall(
+        let commitRes = await window.__agProjectCall(
           'commitAutoCompactRequest',
           { cascadeId: cid, requestId: req.id, claimToken: token },
           3000
-        ).catch(() => {});
+        ).catch(() => null);
+        if (!disposed && !commitRes?.matched) {
+          await new Promise((r) => setTimeout(r, commitRetryDelayMs));
+          if (!disposed) {
+            await window.__agProjectCall(
+              'commitAutoCompactRequest',
+              { cascadeId: cid, requestId: req.id, claimToken: token },
+              3000
+            ).catch(() => null);
+          }
+        }
+        clearCachedRequest(cid, req.id);
+        removePill();
         return true;
       }
 
@@ -225,6 +246,7 @@ export function createAutoCompactRuntime({ studioPrefs, settleDelayMs = 750, ret
     statusCache.inFlight = true;
     Promise.resolve(window.__agProjectCall('getAutoCompactStatus', { cascadeId: cid }, 3000))
       .then((res) => {
+        if (statusCache.cid === cid) statusCache.inFlight = false;
         if (disposed || statusCache.cid !== cid) return;
         if (res && res.ok) {
           statusCache.data = res;
@@ -241,7 +263,9 @@ export function createAutoCompactRuntime({ studioPrefs, settleDelayMs = 750, ret
           }
         }
       })
-      .catch(() => {})
+      .catch(() => {
+        if (statusCache.cid === cid) statusCache.inFlight = false;
+      })
       .finally(() => {
         if (statusCache.cid === cid) statusCache.inFlight = false;
         if (!disposed) render();

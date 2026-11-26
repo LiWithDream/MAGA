@@ -5,6 +5,7 @@
  * - Idempotently syncs/removes the native `maga-auto-compact` Antigravity plugin
  * - Verifies SQLite `step_type = 132` schedule decoder compatibility for `doctor`
  */
+import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -22,6 +23,8 @@ import {
 const SAFE_CID_RE = /^[A-Za-z0-9_-]{4,128}$/;
 export const AUTO_COMPACT_REQUEST_TTL_MS = 5 * 60 * 1000;
 export const AUTO_COMPACT_LEASE_TTL_MS = 30 * 1000;
+const LOCK_STALE_MS = 5000;
+const SLEEP_BUF = typeof SharedArrayBuffer === 'function' ? new Int32Array(new SharedArrayBuffer(4)) : null;
 const MAX_REQUEST_FILES = 32;
 const MAX_REQUEST_AGE_MS = 24 * 60 * 60 * 1000;
 const PLUGIN_NAME = 'maga-auto-compact';
@@ -41,6 +44,50 @@ export const AUTO_COMPACT_ACTIONS = new Set([
   'dismissAutoCompactRequest',
   'syncAutoCompactPlugin',
 ]);
+
+export function withRequestLock(reqFile, fn, { now = Date.now(), maxWaitMs = 200 } = {}) {
+  if (!reqFile) return fn();
+  const lockPath = `${reqFile}.lock`;
+  fs.mkdirSync(path.dirname(reqFile), { recursive: true });
+  let acquired = false;
+  const deadline = Date.now() + maxWaitMs;
+  for (let attempt = 0; attempt < 25; attempt++) {
+    try {
+      const fd = fs.openSync(lockPath, 'wx');
+      try {
+        fs.writeSync(fd, `${process.pid}:${now}\n`);
+      } finally {
+        fs.closeSync(fd);
+      }
+      acquired = true;
+      break;
+    } catch (err) {
+      if (err?.code !== 'EEXIST') break;
+      try {
+        const st = fs.statSync(lockPath, { throwIfNoEntry: false });
+        if (st && Date.now() - st.mtimeMs > LOCK_STALE_MS) {
+          fs.rmSync(lockPath, { force: true });
+          continue;
+        }
+      } catch {}
+      if (Date.now() >= deadline) break;
+      if (SLEEP_BUF) {
+        try {
+          Atomics.wait(SLEEP_BUF, 0, 0, 8);
+        } catch {}
+      }
+    }
+  }
+  try {
+    return fn();
+  } finally {
+    if (acquired) {
+      try {
+        fs.rmSync(lockPath, { force: true });
+      } catch {}
+    }
+  }
+}
 
 function getRequestsDir(opts = {}) {
   return opts.requestsDir || AUTO_COMPACT_REQUESTS_DIR;
@@ -116,6 +163,52 @@ export function isAutoCompactPluginInstalled(opts = {}) {
   );
 }
 
+function formatPinnedHookCommand(rawCmd, nodeBin) {
+  const cmd = String(rawCmd || '').trim();
+  const m = cmd.match(/^node\s+(.+)$/);
+  if (!m || !nodeBin) return cmd;
+  const quoted =
+    process.platform === 'win32'
+      ? `"${String(nodeBin).replace(/"/g, '\\"')}"`
+      : `'${String(nodeBin).replace(/'/g, `'\\''`)}'`;
+  return `${quoted} ${m[1]}`;
+}
+
+export function buildPinnedHooksJson(rawText, nodeBin = process.execPath) {
+  const parsed = JSON.parse(rawText);
+  const root = parsed?.['maga-auto-compact'];
+  if (root && typeof root === 'object') {
+    for (const handlers of Object.values(root)) {
+      if (!Array.isArray(handlers)) continue;
+      for (const h of handlers) {
+        if (h && typeof h === 'object' && typeof h.command === 'string') {
+          h.command = formatPinnedHookCommand(h.command, nodeBin);
+        }
+        if (Array.isArray(h?.hooks)) {
+          for (const sub of h.hooks) {
+            if (sub && typeof sub === 'object' && typeof sub.command === 'string') {
+              sub.command = formatPinnedHookCommand(sub.command, nodeBin);
+            }
+          }
+        }
+      }
+    }
+  }
+  return `${JSON.stringify(parsed, null, 2)}\n`;
+}
+
+export function extractHookNodeBin(hooksObj) {
+  const stopHandlers = hooksObj?.['maga-auto-compact']?.Stop;
+  const cmd = Array.isArray(stopHandlers) ? String(stopHandlers[0]?.command || '').trim() : '';
+  if (!cmd) return process.execPath;
+  const sq = cmd.match(/^'((?:[^']|'\\'')+)'\s+/);
+  if (sq) return sq[1].replace(/'\\''/g, "'");
+  const dq = cmd.match(/^"([^"]+)"\s+/);
+  if (dq) return dq[1];
+  const bare = cmd.match(/^(\S+)\s+/);
+  return bare ? bare[1] : process.execPath;
+}
+
 export function syncAutoCompactPlugin({ remove = false } = {}, opts = {}) {
   const srcDir = opts.pluginSrcDir || path.join(REPO_ROOT, 'studio', 'plugin', PLUGIN_NAME);
   const targetDir = getPluginTargetDir(opts);
@@ -126,13 +219,20 @@ export function syncAutoCompactPlugin({ remove = false } = {}, opts = {}) {
   if (!fs.existsSync(srcDir)) {
     return { ok: false, error: 'missing_plugin_source', srcDir };
   }
+  const nodeBin = opts.nodeExecPath || process.execPath;
   const copied = [];
   for (const rel of PLUGIN_FILES) {
     const from = path.join(srcDir, rel);
     const to = path.join(targetDir, rel);
     if (!fs.existsSync(from)) continue;
     fs.mkdirSync(path.dirname(to), { recursive: true });
-    writeAtomicUtf8(to, fs.readFileSync(from, 'utf8'));
+    let body = fs.readFileSync(from, 'utf8');
+    if (rel === 'hooks.json') {
+      try {
+        body = buildPinnedHooksJson(body, nodeBin);
+      } catch {}
+    }
+    writeAtomicUtf8(to, body);
     copied.push(rel);
   }
   return {
@@ -140,8 +240,30 @@ export function syncAutoCompactPlugin({ remove = false } = {}, opts = {}) {
     action: 'synced',
     pluginDir: targetDir,
     files: copied,
+    nodeBin,
     installed: isAutoCompactPluginInstalled(opts),
   };
+}
+
+export function verifyInstalledHookNodeRuntime(opts = {}) {
+  const hooksFile = path.join(getPluginTargetDir(opts), 'hooks.json');
+  const hooksObj = readJsonOrFallback(hooksFile, null);
+  const nodeBin = hooksObj ? extractHookNodeBin(hooksObj) : opts.nodeExecPath || process.execPath;
+  try {
+    execFileSync(
+      nodeBin,
+      ['-e', "import('node:sqlite').then(m => { if (!m.DatabaseSync) process.exit(2); })"],
+      { timeout: 2500, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }
+    );
+    return { ok: true, nodeBin, sqliteSupported: true };
+  } catch (err) {
+    return {
+      ok: false,
+      nodeBin,
+      sqliteSupported: false,
+      error: String(err?.message || err).slice(0, 160),
+    };
+  }
 }
 
 export function getAutoCompactStatus(payload = {}, opts = {}) {
@@ -164,25 +286,27 @@ export function claimAutoCompactRequest(payload = {}, opts = {}) {
     return { ok: false, error: 'invalid_cascade_id' };
   }
   const now = Number(opts.now) > 0 ? Number(opts.now) : Date.now();
-  const cur = readAutoCompactRequest(cid, opts);
-  if (!cur || !isRequestActive(cur, now)) {
-    return { ok: true, cascadeId: cid, matched: false };
-  }
-  if (requestId && cur.id && cur.id !== requestId) {
-    return { ok: true, cascadeId: cid, matched: false };
-  }
-  const claimToken = crypto.randomBytes(12).toString('hex');
-  writeAutoCompactRequest(
-    cid,
-    {
-      ...cur,
-      claimToken,
-      claimedAt: now,
-      claimExpiresAt: now + AUTO_COMPACT_LEASE_TTL_MS,
-    },
-    opts
-  );
-  return { ok: true, cascadeId: cid, matched: true, claimToken };
+  return withRequestLock(getRequestFilePath(cid, opts), () => {
+    const cur = readAutoCompactRequest(cid, opts);
+    if (!cur || !isRequestActive(cur, now)) {
+      return { ok: true, cascadeId: cid, matched: false };
+    }
+    if (requestId && cur.id && cur.id !== requestId) {
+      return { ok: true, cascadeId: cid, matched: false };
+    }
+    const claimToken = crypto.randomBytes(12).toString('hex');
+    writeAutoCompactRequest(
+      cid,
+      {
+        ...cur,
+        claimToken,
+        claimedAt: now,
+        claimExpiresAt: now + AUTO_COMPACT_LEASE_TTL_MS,
+      },
+      opts
+    );
+    return { ok: true, cascadeId: cid, matched: true, claimToken };
+  }, { now });
 }
 
 export function commitAutoCompactRequest(payload = {}, opts = {}) {
@@ -193,22 +317,24 @@ export function commitAutoCompactRequest(payload = {}, opts = {}) {
     return { ok: false, error: 'invalid_cascade_id' };
   }
   const now = Number(opts.now) > 0 ? Number(opts.now) : Date.now();
-  const cur = readAutoCompactRequest(cid, opts);
-  if (!cur || cur.consumed === true || cur.dismissed === true) {
-    return { ok: true, cascadeId: cid, matched: false };
-  }
-  if (requestId && cur.id && cur.id !== requestId) {
-    return { ok: true, cascadeId: cid, matched: false };
-  }
-  if (!claimToken || !cur.claimToken || cur.claimToken !== claimToken) {
-    return { ok: true, cascadeId: cid, matched: false };
-  }
-  const next = { ...cur, consumed: true, consumedAt: now };
-  delete next.claimToken;
-  delete next.claimedAt;
-  delete next.claimExpiresAt;
-  writeAutoCompactRequest(cid, next, opts);
-  return { ok: true, cascadeId: cid, matched: true };
+  return withRequestLock(getRequestFilePath(cid, opts), () => {
+    const cur = readAutoCompactRequest(cid, opts);
+    if (!cur || cur.consumed === true || cur.dismissed === true) {
+      return { ok: true, cascadeId: cid, matched: false };
+    }
+    if (requestId && cur.id && cur.id !== requestId) {
+      return { ok: true, cascadeId: cid, matched: false };
+    }
+    if (!claimToken || !cur.claimToken || cur.claimToken !== claimToken) {
+      return { ok: true, cascadeId: cid, matched: false };
+    }
+    const next = { ...cur, consumed: true, consumedAt: now };
+    delete next.claimToken;
+    delete next.claimedAt;
+    delete next.claimExpiresAt;
+    writeAutoCompactRequest(cid, next, opts);
+    return { ok: true, cascadeId: cid, matched: true };
+  }, { now });
 }
 
 export function releaseAutoCompactRequest(payload = {}, opts = {}) {
@@ -218,22 +344,24 @@ export function releaseAutoCompactRequest(payload = {}, opts = {}) {
   if (!cid || !SAFE_CID_RE.test(cid)) {
     return { ok: false, error: 'invalid_cascade_id' };
   }
-  const cur = readAutoCompactRequest(cid, opts);
-  if (!cur || cur.consumed === true || cur.dismissed === true) {
-    return { ok: true, cascadeId: cid, matched: false };
-  }
-  if (requestId && cur.id && cur.id !== requestId) {
-    return { ok: true, cascadeId: cid, matched: false };
-  }
-  if (!claimToken || !cur.claimToken || cur.claimToken !== claimToken) {
-    return { ok: true, cascadeId: cid, matched: false };
-  }
-  const next = { ...cur };
-  delete next.claimToken;
-  delete next.claimedAt;
-  delete next.claimExpiresAt;
-  writeAutoCompactRequest(cid, next, opts);
-  return { ok: true, cascadeId: cid, matched: true };
+  return withRequestLock(getRequestFilePath(cid, opts), () => {
+    const cur = readAutoCompactRequest(cid, opts);
+    if (!cur || cur.consumed === true || cur.dismissed === true) {
+      return { ok: true, cascadeId: cid, matched: false };
+    }
+    if (requestId && cur.id && cur.id !== requestId) {
+      return { ok: true, cascadeId: cid, matched: false };
+    }
+    if (!claimToken || !cur.claimToken || cur.claimToken !== claimToken) {
+      return { ok: true, cascadeId: cid, matched: false };
+    }
+    const next = { ...cur };
+    delete next.claimToken;
+    delete next.claimedAt;
+    delete next.claimExpiresAt;
+    writeAutoCompactRequest(cid, next, opts);
+    return { ok: true, cascadeId: cid, matched: true };
+  });
 }
 
 export function dismissAutoCompactRequest(payload = {}, opts = {}) {
@@ -242,23 +370,26 @@ export function dismissAutoCompactRequest(payload = {}, opts = {}) {
   if (!cid || !SAFE_CID_RE.test(cid)) {
     return { ok: false, error: 'invalid_cascade_id' };
   }
-  const cur = readAutoCompactRequest(cid, opts);
-  if (!cur) {
-    return { ok: true, cascadeId: cid, matched: false };
-  }
-  if (requestId && cur.id && cur.id !== requestId) {
-    return { ok: true, cascadeId: cid, matched: false };
-  }
-  const next = {
-    ...cur,
-    dismissed: true,
-    dismissedAt: Number(opts.now) > 0 ? Number(opts.now) : Date.now(),
-  };
-  delete next.claimToken;
-  delete next.claimedAt;
-  delete next.claimExpiresAt;
-  writeAutoCompactRequest(cid, next, opts);
-  return { ok: true, cascadeId: cid, matched: true };
+  const now = Number(opts.now) > 0 ? Number(opts.now) : Date.now();
+  return withRequestLock(getRequestFilePath(cid, opts), () => {
+    const cur = readAutoCompactRequest(cid, opts);
+    if (!cur) {
+      return { ok: true, cascadeId: cid, matched: false };
+    }
+    if (requestId && cur.id && cur.id !== requestId) {
+      return { ok: true, cascadeId: cid, matched: false };
+    }
+    const next = {
+      ...cur,
+      dismissed: true,
+      dismissedAt: now,
+    };
+    delete next.claimToken;
+    delete next.claimedAt;
+    delete next.claimExpiresAt;
+    writeAutoCompactRequest(cid, next, opts);
+    return { ok: true, cascadeId: cid, matched: true };
+  }, { now });
 }
 
 function parseProtoMap(buf) {

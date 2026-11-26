@@ -26,7 +26,54 @@ const MODEL_REQUEST_TTL_MS = 10 * 60 * 1000;
 const COOLDOWN_MS = 120 * 1000;
 const MAX_AUTO_PER_SESSION = 12;
 const MAX_DIR_FILES = 32;
+const MAX_CONV_STATE_FILES = 256;
 const MAX_DIR_AGE_MS = 24 * 60 * 60 * 1000;
+const LOCK_STALE_MS = 5000;
+const SLEEP_BUF = typeof SharedArrayBuffer === 'function' ? new Int32Array(new SharedArrayBuffer(4)) : null;
+
+function withRequestLock(reqFile, fn, { now = Date.now(), maxWaitMs = 200 } = {}) {
+  if (!reqFile) return fn();
+  const lockPath = `${reqFile}.lock`;
+  fs.mkdirSync(path.dirname(reqFile), { recursive: true });
+  let acquired = false;
+  const deadline = Date.now() + maxWaitMs;
+  for (let attempt = 0; attempt < 25; attempt++) {
+    try {
+      const fd = fs.openSync(lockPath, 'wx');
+      try {
+        fs.writeSync(fd, `${process.pid}:${now}\n`);
+      } finally {
+        fs.closeSync(fd);
+      }
+      acquired = true;
+      break;
+    } catch (err) {
+      if (err?.code !== 'EEXIST') break;
+      try {
+        const st = fs.statSync(lockPath, { throwIfNoEntry: false });
+        if (st && Date.now() - st.mtimeMs > LOCK_STALE_MS) {
+          fs.rmSync(lockPath, { force: true });
+          continue;
+        }
+      } catch {}
+      if (Date.now() >= deadline) break;
+      if (SLEEP_BUF) {
+        try {
+          Atomics.wait(SLEEP_BUF, 0, 0, 8);
+        } catch {}
+      }
+    }
+  }
+  try {
+    return fn();
+  } finally {
+    if (acquired) {
+      try {
+        fs.rmSync(lockPath, { force: true });
+      } catch {}
+    }
+  }
+}
 
 export const DEFAULT_PREFS = {
   autoCompactMode: 'semi',
@@ -181,7 +228,7 @@ function loadConvState(pluginDataDir, cid) {
 function persistConvState(convFile, conv, pluginDataDir, now) {
   if (!convFile) return;
   writeAtomicJson(convFile, conv);
-  pruneDirFiles(pluginDataDir, { pruneNow: now });
+  pruneDirFiles(pluginDataDir, { maxFiles: MAX_CONV_STATE_FILES, pruneNow: now });
 }
 
 /* ---- Cron Interval Estimation (Minimum Gap With Wrap-Around) ---- */
@@ -588,105 +635,111 @@ export function evaluateCompactHookEvent(payload = {}, opts = {}) {
   }
 
   const reqFile = path.join(requestsDir, `${cid}.json`);
-  const existingReq = readJsonSafe(reqFile, null);
-  const hasActiveLease = Boolean(
-    existingReq &&
-      existingReq.consumed !== true &&
-      existingReq.dismissed !== true &&
-      Number(existingReq.claimExpiresAt || 0) > now
-  );
-  if (hasActiveLease) {
-    return {};
-  }
+  return withRequestLock(
+    reqFile,
+    () => {
+      const existingReq = readJsonSafe(reqFile, null);
+      const hasActiveLease = Boolean(
+        existingReq &&
+          existingReq.consumed !== true &&
+          existingReq.dismissed !== true &&
+          Number(existingReq.claimExpiresAt || 0) > now
+      );
+      if (hasActiveLease) {
+        return {};
+      }
 
-  const lastGenIdx = Number(ctxSnap.lastGenIdx || 0);
-  if (lastGenIdx > 0 && lastGenIdx === conv.lastRequestedGenIdx) {
-    return {};
-  }
+      const lastGenIdx = Number(ctxSnap.lastGenIdx || 0);
+      if (lastGenIdx > 0 && lastGenIdx === conv.lastRequestedGenIdx) {
+        return {};
+      }
 
-  const isRefreshingActiveReq = Boolean(
-    existingReq &&
-      existingReq.consumed !== true &&
-      existingReq.dismissed !== true &&
-      Number(existingReq.ts || 0) > 0 &&
-      now - Number(existingReq.ts) < REQUEST_TTL_MS &&
-      lastGenIdx > Number(conv.lastRequestedGenIdx || 0)
-  );
+      const isRefreshingActiveReq = Boolean(
+        existingReq &&
+          existingReq.consumed !== true &&
+          existingReq.dismissed !== true &&
+          Number(existingReq.ts || 0) > 0 &&
+          now - Number(existingReq.ts) < REQUEST_TTL_MS &&
+          lastGenIdx > Number(conv.lastRequestedGenIdx || 0)
+      );
 
-  if (!isRefreshingActiveReq && Number(conv.autoCount || 0) >= MAX_AUTO_PER_SESSION) {
-    return {};
-  }
-  if (!isRefreshingActiveReq && conv.lastRequestedAt > 0 && now - conv.lastRequestedAt < COOLDOWN_MS) {
-    return {};
-  }
+      if (!isRefreshingActiveReq && Number(conv.autoCount || 0) >= MAX_AUTO_PER_SESSION) {
+        return {};
+      }
+      if (!isRefreshingActiveReq && conv.lastRequestedAt > 0 && now - conv.lastRequestedAt < COOLDOWN_MS) {
+        return {};
+      }
 
-  const pendingReq =
-    conv.pendingModelRequest &&
-    Number(conv.pendingModelRequest.ts || 0) > 0 &&
-    now - Number(conv.pendingModelRequest.ts) < MODEL_REQUEST_TTL_MS
-      ? conv.pendingModelRequest
-      : null;
+      const pendingReq =
+        conv.pendingModelRequest &&
+        Number(conv.pendingModelRequest.ts || 0) > 0 &&
+        now - Number(conv.pendingModelRequest.ts) < MODEL_REQUEST_TTL_MS
+          ? conv.pendingModelRequest
+          : null;
 
-  let kind = '';
-  let reason = '';
-  let waitSec = 0;
+      let kind = '';
+      let reason = '';
+      let waitSec = 0;
 
-  if (prefs.autoCompactTriggers.modelRequest && pendingReq) {
-    kind = 'model_request';
-    reason = sanitizeInlineText(pendingReq.reason || 'Agent requested end-of-turn compaction', 180);
-  } else if (
-    prefs.autoCompactTriggers.longTimer &&
-    ctxSnap.activeTimer &&
-    ctxSnap.activeTimer.waitSec >= prefs.autoCompactMinWaitSec &&
-    ctxSnap.ctxPct >= prefs.autoCompactThresholdPct
-  ) {
-    kind = 'long_timer';
-    waitSec = ctxSnap.activeTimer.waitSec;
-    const waitMin = Math.max(1, Math.round(waitSec / 60));
-    reason = `Active ${waitMin}m timer (${ctxSnap.activeTimer.kind}) at ${ctxSnap.ctxPct}% context`;
-  } else if (
-    prefs.autoCompactTriggers.highWater &&
-    prefs.autoCompactHighWaterPct >= 65 &&
-    ctxSnap.ctxPct >= prefs.autoCompactHighWaterPct
-  ) {
-    kind = 'high_water';
-    reason = `Context reached ${ctxSnap.ctxPct}% (>= ${prefs.autoCompactHighWaterPct}%)`;
-  }
+      if (prefs.autoCompactTriggers.modelRequest && pendingReq) {
+        kind = 'model_request';
+        reason = sanitizeInlineText(pendingReq.reason || 'Agent requested end-of-turn compaction', 180);
+      } else if (
+        prefs.autoCompactTriggers.longTimer &&
+        ctxSnap.activeTimer &&
+        ctxSnap.activeTimer.waitSec >= prefs.autoCompactMinWaitSec &&
+        ctxSnap.ctxPct >= prefs.autoCompactThresholdPct
+      ) {
+        kind = 'long_timer';
+        waitSec = ctxSnap.activeTimer.waitSec;
+        const waitMin = Math.max(1, Math.round(waitSec / 60));
+        reason = `Active ${waitMin}m timer (${ctxSnap.activeTimer.kind}) at ${ctxSnap.ctxPct}% context`;
+      } else if (
+        prefs.autoCompactTriggers.highWater &&
+        prefs.autoCompactHighWaterPct >= 65 &&
+        ctxSnap.ctxPct >= prefs.autoCompactHighWaterPct
+      ) {
+        kind = 'high_water';
+        reason = `Context reached ${ctxSnap.ctxPct}% (>= ${prefs.autoCompactHighWaterPct}%)`;
+      }
 
-  if (!kind) {
-    if (conv.pendingModelRequest && !pendingReq) {
+      if (!kind) {
+        if (conv.pendingModelRequest && !pendingReq) {
+          conv.pendingModelRequest = null;
+          persistConvState(convFile, conv, pluginDataDir, now);
+        }
+        return {};
+      }
+
+      const reqObj = {
+        schema: 1,
+        id: sha1Short(`${cid}:${kind}:${lastGenIdx}:${now}`),
+        cid,
+        kind,
+        mode: prefs.autoCompactMode,
+        reason,
+        ctxPct: Number(ctxSnap.ctxPct || 0),
+        ctxTokens: Number(ctxSnap.ctx || 0),
+        limitTokens: Number(ctxSnap.limit || 256000),
+        waitSec,
+        genIdx: lastGenIdx,
+        ts: now,
+        consumed: false,
+        dismissed: false,
+      };
+
+      writeAtomicJson(reqFile, reqObj);
+      pruneDirFiles(requestsDir, { maxFiles: MAX_DIR_FILES, pruneNow: now });
+
+      conv.lastRequestedGenIdx = lastGenIdx;
+      conv.lastRequestedAt = now;
+      if (!isRefreshingActiveReq) conv.autoCount = Number(conv.autoCount || 0) + 1;
       conv.pendingModelRequest = null;
       persistConvState(convFile, conv, pluginDataDir, now);
-    }
-    return {};
-  }
-
-  const reqObj = {
-    schema: 1,
-    id: sha1Short(`${cid}:${kind}:${lastGenIdx}:${now}`),
-    cid,
-    kind,
-    mode: prefs.autoCompactMode,
-    reason,
-    ctxPct: Number(ctxSnap.ctxPct || 0),
-    ctxTokens: Number(ctxSnap.ctx || 0),
-    limitTokens: Number(ctxSnap.limit || 256000),
-    waitSec,
-    genIdx: lastGenIdx,
-    ts: now,
-    consumed: false,
-    dismissed: false,
-  };
-
-  writeAtomicJson(reqFile, reqObj);
-  pruneDirFiles(requestsDir, { pruneNow: now });
-
-  conv.lastRequestedGenIdx = lastGenIdx;
-  conv.lastRequestedAt = now;
-  if (!isRefreshingActiveReq) conv.autoCount = Number(conv.autoCount || 0) + 1;
-  conv.pendingModelRequest = null;
-  persistConvState(convFile, conv, pluginDataDir, now);
-  return {};
+      return {};
+    },
+    { now }
+  );
 }
 
 export function requestAutoCompact(params = {}, opts = {}) {
@@ -708,7 +761,18 @@ export function requestAutoCompact(params = {}, opts = {}) {
   const reason = sanitizeInlineText(params.reason || 'Model requested end-of-turn compaction', 180);
   conv.pendingModelRequest = { reason, ts: now };
   persistConvState(convFile, conv, pluginDataDir, now);
-  return { ok: true, action: 'queued', cid, mode: prefs.autoCompactMode, reason };
+  const cooldownRemainingSec =
+    conv.lastRequestedAt > 0 && now - conv.lastRequestedAt < COOLDOWN_MS
+      ? Math.ceil((COOLDOWN_MS - (now - conv.lastRequestedAt)) / 1000)
+      : 0;
+  return {
+    ok: true,
+    action: 'queued',
+    cid,
+    mode: prefs.autoCompactMode,
+    reason,
+    ...(cooldownRemainingSec > 0 ? { cooldownRemainingSec } : {}),
+  };
 }
 
 export function clearCompactState(params = {}, opts = {}) {

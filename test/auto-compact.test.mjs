@@ -31,6 +31,8 @@ const {
   dismissAutoCompactRequest,
   writeAutoCompactRequest,
   readAutoCompactRequest,
+  withRequestLock,
+  verifyInstalledHookNodeRuntime,
   verifyLiveScheduleStepDecoder,
   handleAutoCompactRpc,
 } = await import('../studio/daemon/auto-compact-service.mjs');
@@ -861,4 +863,176 @@ test('buildStudioBundle compiles Auto-Compact runtime & settings L3 without :has
   assert.match(bundle.jsBlock, /createAutoCompactRuntime/);
   assert.match(bundle.jsBlock, /stream-auto-compact/);
   assert.equal(/[^\n]*:has\s*\(/.test(bundle.cssBlock), false);
+});
+
+test('Opus P2 regressions: O_EXCL stale lock, commit interleave, resync/retry, pinned node, cooldown, fallback draft & module size', async () => {
+  // 1. metrics-quota.mjs line count stays well under 2000 lines after compact-controller split
+  const mqLines = fs.readFileSync(path.join(REPO, 'user', 'src', 'modules', 'metrics-quota.mjs'), 'utf8').split('\n').length;
+  assert.ok(mqLines < 1800, `Expected metrics-quota.mjs < 1800 lines, got ${mqLines}`);
+
+  const dirs = makeTempDirs('ac-p2-');
+  const cid = 'conv_p2_lock_1234';
+  try {
+    // 2. Stale O_EXCL lock eviction & hook-vs-commit interleave protection
+    const reqFile = path.join(dirs.requestsDir, `${cid}.json`);
+    const lockFile = `${reqFile}.lock`;
+    fs.writeFileSync(lockFile, '99999:stale\n', 'utf8');
+    const oldTime = new Date(Date.now() - 10_000);
+    fs.utimesSync(lockFile, oldTime, oldTime);
+    let ran = false;
+    withRequestLock(reqFile, () => {
+      ran = true;
+    });
+    assert.equal(ran, true);
+    assert.equal(fs.existsSync(lockFile), false);
+
+    // Claim req_old, then overwrite with req_new (simulating hook refresh) -> commit for req_old must NOT overwrite req_new
+    const now = 3_000_000;
+    writeAutoCompactRequest(cid, { schema: 1, id: 'req_old', cid, ts: now, consumed: false, dismissed: false }, { ...dirs, now });
+    const claimOld = claimAutoCompactRequest({ cascadeId: cid, requestId: 'req_old' }, { ...dirs, now: now + 100 });
+    assert.equal(claimOld.matched, true);
+    writeAutoCompactRequest(cid, { schema: 1, id: 'req_new', cid, ts: now + 200, consumed: false, dismissed: false }, { ...dirs, now: now + 200 });
+    const commitOld = commitAutoCompactRequest(
+      { cascadeId: cid, requestId: 'req_old', claimToken: claimOld.claimToken },
+      { ...dirs, now: now + 300 }
+    );
+    assert.equal(commitOld.matched, false);
+    assert.equal(readAutoCompactRequest(cid, dirs)?.id, 'req_new');
+    assert.equal(readAutoCompactRequest(cid, dirs)?.consumed, false);
+
+    // 3. syncAutoCompactPlugin pins nodeExecPath in synced hooks.json while keeping source portable
+    const customNode = process.execPath;
+    const syncRes = syncAutoCompactPlugin({}, { ...dirs, nodeExecPath: customNode });
+    assert.equal(syncRes.ok, true);
+    const syncedHooks = JSON.parse(fs.readFileSync(path.join(dirs.pluginsDir, 'maga-auto-compact', 'hooks.json'), 'utf8'));
+    const repoHooks = JSON.parse(
+      fs.readFileSync(path.join(REPO, 'studio', 'plugin', 'maga-auto-compact', 'hooks.json'), 'utf8')
+    );
+    assert.equal(repoHooks['maga-auto-compact'].Stop[0].command, 'node ./hooks/compact-check.mjs');
+    assert.ok(syncedHooks['maga-auto-compact'].Stop[0].command.includes(customNode));
+    const nodeCheck = verifyInstalledHookNodeRuntime(dirs);
+    assert.equal(nodeCheck.ok, true);
+    assert.equal(nodeCheck.sqliteSupported, true);
+
+    // 4. requestAutoCompact reports cooldownRemainingSec when within 120s cooldown
+    fs.writeFileSync(dirs.studioPrefsFile, JSON.stringify({ ...DEFAULT_STUDIO_PREFS, autoCompactMode: 'auto' }));
+    evaluateCompactHookEvent(
+      { hookEventName: 'Stop', conversationId: cid, terminationReason: 'NO_TOOL_CALL' },
+      {
+        ...dirs,
+        now: 4_000_000,
+        ctxSnapshot: { isChild: false, alreadyCompacted: false, ctxPct: 60, ctx: 150000, limit: 256000, lastGenIdx: 12, activeTimer: { waitSec: 600, kind: 'timer' } },
+      }
+    );
+    const qRes = requestAutoCompact({ cid, reason: 'Check cooldown' }, { ...dirs, now: 4_030_000 });
+    assert.equal(qRes.action, 'queued');
+    assert.equal(qRes.cooldownRemainingSec, 90);
+  } finally {
+    dirs.cleanup();
+  }
+
+  // 5. Frontend resync on refreshed-id claim mismatch & commit retry after submit
+  if (!skipDom) {
+    const dom = new JSDOM(
+      `<!doctype html><html><body>
+        <div data-testid="conversation-view" data-cascade-id="conv-p2-ui">
+          <div id="antigravity.agentSidePanelInputBox">
+            <div data-lexical-editor="true"></div>
+            <div class="agy-composer-footer"><div></div><div></div></div>
+          </div>
+        </div>
+      </body></html>`,
+      { url: 'http://127.0.0.1/c/conv-p2-ui' }
+    );
+    await withMockDom(dom, async () => {
+      let statusGets = 0;
+      let commitCalls = 0;
+      let activeReq = { schema: 1, id: 'req_stale_id', cid: 'conv-p2-ui', kind: 'long_timer', ctxPct: 60, ts: Date.now() };
+      let triggerCount = 0;
+
+      window.__agClaudeUxBridge = {
+        detectCompactStatus: () => 'idle',
+        triggerConversationCompact: async () => {
+          triggerCount += 1;
+          return true;
+        },
+      };
+      window.__agProjectCall = async (action, payload) => {
+        if (action === 'getAutoCompactStatus') {
+          statusGets += 1;
+          return { ok: true, request: activeReq };
+        }
+        if (action === 'claimAutoCompactRequest') {
+          if (payload.requestId === 'req_stale_id') {
+            activeReq = { schema: 1, id: 'req_fresh_id', cid: 'conv-p2-ui', kind: 'long_timer', ctxPct: 65, ts: Date.now() };
+            return { ok: true, matched: false };
+          }
+          return { ok: true, matched: true, claimToken: 'tok_fresh' };
+        }
+        if (action === 'commitAutoCompactRequest') {
+          commitCalls += 1;
+          if (commitCalls === 1) return { ok: true, matched: false }; // fail first, succeed on retry
+          activeReq = null;
+          return { ok: true, matched: true };
+        }
+        return { ok: true, matched: true };
+      };
+
+      const studioPrefs = createStudioPrefsRuntime({ initialPrefs: { autoCompactMode: 'auto' } });
+      const runtime = createAutoCompactRuntime({ studioPrefs, settleDelayMs: 10, retryDelayMs: 0, commitRetryDelayMs: 10 });
+      try {
+        const box = document.getElementById('antigravity.agentSidePanelInputBox');
+        const footer = box.querySelector('.agy-composer-footer');
+        runtime.write(null, { enabled: true, mode: 'auto', cid: 'conv-p2-ui', box, footer, leftGroup: footer.children[0], running: true, editorEmpty: true, langTag: 'zh' });
+        runtime.write(null, { enabled: true, mode: 'auto', cid: 'conv-p2-ui', box, footer, leftGroup: footer.children[0], running: false, editorEmpty: true, langTag: 'zh' });
+        await tick(120);
+
+        assert.ok(statusGets >= 2, `expected resync fetchStatus after claim mismatch, got ${statusGets}`);
+        assert.equal(triggerCount, 1);
+        assert.equal(commitCalls, 2, 'expected commit retry once after initial mismatch');
+      } finally {
+        runtime.dispose();
+        studioPrefs.dispose();
+      }
+    });
+
+    // 6. Fallback path without inputBoxRef.current.submit leaves composer text clean (no '/compact ' pollution)
+    const { code } = await buildUserCustomJs({ writeToRepo: false });
+    const testCid = 'b2c3d4e5-2222-4333-8444-555566667777';
+    const fbDom = new JSDOM(
+      `<!doctype html><body>
+        <div data-testid="conversation-view" data-cascade-id="${testCid}">
+          <div id="antigravity.agentSidePanelInputBox">
+            <div data-lexical-editor="true"></div>
+          </div>
+        </div>
+      </body>`,
+      { runScripts: 'outside-only', url: `http://127.0.0.1/c/${testCid}`, pretendToBeVisual: true }
+    );
+    try {
+      const w = fbDom.window;
+      w.ctx = { modules: {}, onCleanup: () => {} };
+      w.eval(code);
+      const box = w.document.getElementById('antigravity.agentSidePanelInputBox');
+      const ed = box.querySelector('[data-lexical-editor="true"]');
+      box.__reactFiber$fb = {
+        memoizedProps: {
+          value: {
+            inputBoxRef: {
+              current: {
+                lexicalRef: { current: { getRootElement: () => ed } },
+                // submit intentionally missing
+              },
+            },
+          },
+        },
+        return: null,
+      };
+      const ok = await w.__agClaudeUxBridge.triggerConversationCompact({ expectedCid: testCid, requireEmptyDraft: true });
+      assert.equal(ok, false);
+      assert.equal(ed.textContent, '', 'missing ref.submit must not pollute composer text');
+    } finally {
+      fbDom.window.close();
+    }
+  }
 });

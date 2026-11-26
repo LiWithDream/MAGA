@@ -4024,3 +4024,211 @@ test('subagent pills handle empty states and footer-capsules.css enforces center
   assert.ok(css.includes('.agy-sub-pill.agy-sub-ctx:not([data-agy-has-ratio="true"])'));
   assert.match(css, /\.agy-composer-footer #ag-claude-ctx-ring#ag-claude-ctx-ring\s*\{[\s\S]*?gap:\s*0\s*!important;/);
 });
+
+test('core/runtime.js never detaches #ag-live-metrics-pill or resurrects __ag_metrics_ro under Studio footer', async () => {
+  const { JSDOM } = await import('jsdom');
+  const runtimeSrc = readFileSync(path.join(REPO, 'core', 'runtime.js'), 'utf8');
+  const cid1 = '11111111-2222-3333-4444-555555555555';
+  const cid2 = '22222222-3333-4444-5555-666666666666';
+
+  const dom = new JSDOM(
+    `<!doctype html><html><body>
+      <div id="antigravity.agentSidePanelInputBox">
+        <div class="surface-composer-card">
+          <div class="agy-composer-footer" data-agy-has-row2="true">
+            <div class="left-group">
+              <button type="button">+</button>
+              <div id="opus-chip">Opus Review</div>
+              <button id="ag-claude-ctx-ring" type="button">410.2k / 512k</button>
+              <button id="agy-main-subagent-pill" type="button">opus-gate</button>
+            </div>
+            <div class="right-group">
+              <button data-testid="send-button" type="button">Send</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </body></html>`,
+    { url: `https://127.0.0.1/c/${cid1}`, runScripts: 'outside-only', pretendToBeVisual: true }
+  );
+
+  const { window } = dom;
+  const doc = window.document;
+  let roCount = 0;
+  let roDisconnects = 0;
+  window.ResizeObserver = class MockResizeObserver {
+    constructor() {
+      roCount += 1;
+    }
+    observe() {}
+    unobserve() {}
+    disconnect() {
+      roDisconnects += 1;
+    }
+  };
+
+  const footer = doc.querySelector('.agy-composer-footer');
+  const leftGroup = footer.children[0];
+  const rightGroup = footer.children[1];
+  const cardParent = footer.parentElement;
+
+  Object.defineProperty(footer, 'clientWidth', { value: 740, configurable: true });
+  Object.defineProperty(rightGroup, 'offsetWidth', { value: 140, configurable: true });
+  for (const ch of leftGroup.children) {
+    Object.defineProperty(ch, 'offsetWidth', { value: 150, configurable: true });
+    Object.defineProperty(ch, 'scrollWidth', { value: 150, configurable: true });
+  }
+
+  try {
+    window.__agyStudioMetricsRenderer = (payload, pill, textEl) => {
+      if (textEl) textEl.textContent = `${Math.round(payload?.metrics?.displayTps || 0)} tok/s`;
+    };
+    const payload = {
+      version: 'anti-claude-test',
+      platform: 'darwin',
+      enabled: true,
+      modules: { i18n: false, metrics: true, zoomShortcuts: false, customCss: false, customJs: false },
+      themeVars: {},
+      darkThemeVars: {},
+      cssText: '',
+      customCss: '',
+      customJs: '',
+      dict: {},
+    };
+    const script = runtimeSrc.replace('(__AG_BOOT_PAYLOAD__);', () => `(${JSON.stringify(payload)});`);
+    window.eval(script);
+
+    assert.equal(roCount, 0, 'Studio-managed boot must not create legacy __ag_metrics_ro');
+    assert.equal(window.__ag_metrics_ro || null, null);
+
+    let ensureSpyCalls = 0;
+    const origEnsure = window.__ag_ensure_metrics_pill_fn;
+    window.__ag_ensure_metrics_pill_fn = (...args) => {
+      ensureSpyCalls += 1;
+      return origEnsure(...args);
+    };
+
+    window.__ag_render_metrics({
+      cascadeId: cid1,
+      hasData: true,
+      metrics: { displayTps: 228, useStream: true, ttft: 4.9 },
+      tooltipHtml: '',
+    });
+    window.history.pushState({}, '', `/c/${cid2}`);
+    window.__ag_check_route_fn();
+    window.__ag_render_metrics({
+      cascadeId: cid2,
+      hasData: true,
+      metrics: { displayTps: 228, useStream: true, ttft: 4.9 },
+      tooltipHtml: '',
+    });
+
+    const pill = doc.getElementById('ag-live-metrics-pill');
+    assert.ok(pill, 'metrics pill must exist');
+    assert.ok(ensureSpyCalls >= 3, 'runtime paths must invoke window.__ag_ensure_metrics_pill_fn');
+    assert.equal(pill.parentElement, leftGroup, 'Studio pill must remain inside footer leftGroup');
+    assert.equal(pill.getAttribute('data-ag-row-mode'), 'middle');
+    assert.equal(footer.getAttribute('data-ag-row-mode'), 'middle');
+    assert.equal(roCount, 0, 'Studio render/route checks must never resurrect ResizeObserver');
+    assert.equal(window.__ag_metrics_ro || null, null);
+
+    // Non-Studio fallback: without Studio renderer & data-agy-has-row2, narrow layout enters bottom row
+    window.__ag_ensure_metrics_pill_fn = origEnsure;
+    window.__agyStudioMetricsRenderer = null;
+    footer.removeAttribute('data-agy-has-row2');
+    window.__ag_last_metrics_layout_sig = '';
+    origEnsure(true, true);
+
+    assert.equal(pill.getAttribute('data-ag-row-mode'), 'bottom');
+    assert.equal(footer.getAttribute('data-ag-row-mode'), 'bottom');
+    assert.equal(pill.parentElement, cardParent);
+    assert.equal(footer.nextElementSibling, pill);
+    assert.equal(roCount, 1);
+    assert.ok(window.__ag_metrics_ro, 'Non-Studio fallback creates __ag_metrics_ro');
+
+    // Re-enabling Studio disconnects __ag_metrics_ro and re-anchors pill into leftGroup
+    footer.setAttribute('data-agy-has-row2', 'true');
+    window.__agyStudioMetricsRenderer = () => {};
+    origEnsure(false, false);
+
+    assert.equal(roDisconnects, 1);
+    assert.equal(window.__ag_metrics_ro, null);
+    assert.equal(pill.parentElement, leftGroup);
+    assert.equal(pill.getAttribute('data-ag-row-mode'), 'middle');
+    assert.equal(footer.getAttribute('data-ag-row-mode'), 'middle');
+  } finally {
+    if (Array.isArray(window.__ag_cleanup_fns)) {
+      for (const fn of window.__ag_cleanup_fns.splice(0)) {
+        try { fn(); } catch {}
+      }
+    }
+    if (window.__ag_metrics_route_watcher) {
+      clearInterval(window.__ag_metrics_route_watcher);
+      window.__ag_metrics_route_watcher = null;
+    }
+    if (window.__ag_metrics_ro) {
+      try { window.__ag_metrics_ro.disconnect(); } catch {}
+      window.__ag_metrics_ro = null;
+    }
+    dom.window.close();
+  }
+});
+
+test('footer-capsules.css hides data-agy-speed-short even outside .agy-composer-footer before tight override', () => {
+  const css = readFileSync(FOOTER_CSS_PATH, 'utf8');
+  const defaultHideMatch = css.match(
+    /#ag-live-metrics-pill\s+#ag-live-metrics-text\s+span\[data-agy-speed-short="1"\][\s\S]*?display:\s*none\s*!important;/
+  );
+  assert.ok(defaultHideMatch, 'default hide rule must apply to #ag-live-metrics-pill even outside .agy-composer-footer');
+  const tightIdx = css.indexOf('[data-agy-dock-tier="tight"] #ag-live-metrics-pill#ag-live-metrics-pill #ag-live-metrics-text span[data-agy-speed-short="1"]:not([hidden])');
+  assert.ok(tightIdx > defaultHideMatch.index, 'tight-tier override must follow default hide rule');
+});
+
+test('footer-unified re-adopts #ag-live-metrics-pill from any direct sibling under footer.parentElement', async () => {
+  const { JSDOM } = await import('jsdom');
+  const dom = new JSDOM(
+    `<!doctype html><html><body>
+      <div id="antigravity.agentSidePanelInputBox">
+        <div class="surface-composer-card">
+          <div class="agy-composer-footer">
+            <div><button type="button">+</button></div>
+            <div><button data-testid="send-button" type="button">Send</button></div>
+          </div>
+          <div id="stray-spacer"></div>
+          <div id="ag-live-metrics-pill" data-ag-row-mode="bottom"><span id="ag-live-metrics-text"></span></div>
+        </div>
+      </div>
+    </body></html>`,
+    { url: 'http://127.0.0.1/c/conv-readopt' }
+  );
+  const doc = dom.window.document;
+  const keys = ['document', 'window', 'location'];
+  const prev = new Map(keys.map((k) => [k, Object.getOwnPropertyDescriptor(globalThis, k)]));
+  globalThis.document = doc;
+  globalThis.window = dom.window;
+  globalThis.location = dom.window.location;
+
+  try {
+    const footer = doc.querySelector('.agy-composer-footer');
+    const leftGroup = footer.children[0];
+    const pill = doc.getElementById('ag-live-metrics-pill');
+    footer.getBoundingClientRect = () => ({ width: 640, height: 64, top: 0, left: 0, right: 640, bottom: 64 });
+    assert.notEqual(footer.nextElementSibling, pill, 'pill is separated from footer by another sibling');
+
+    const rt = createFooterUnifiedRuntime();
+    rt.sync();
+
+    assert.equal(pill.parentElement, leftGroup, 'footer-unified must move detached pill back into leftGroup');
+    assert.equal(pill.getAttribute('data-ag-row-mode'), 'middle');
+    assert.equal(footer.getAttribute('data-ag-row-mode'), 'middle');
+    assert.equal(footer.getAttribute('data-agy-dock-tier'), 'full');
+    rt.dispose();
+  } finally {
+    for (const k of keys) {
+      const desc = prev.get(k);
+      if (desc) Object.defineProperty(globalThis, k, desc);
+      else delete globalThis[k];
+    }
+    dom.window.close();
+  }
+});

@@ -631,6 +631,38 @@
     }
   }
 
+  function isStudioManagedFooter(bottomRow) {
+    return (
+      typeof window.__agyStudioMetricsRenderer === 'function' ||
+      bottomRow?.getAttribute?.('data-agy-has-row2') === 'true'
+    );
+  }
+
+  function disconnectMetricsResizeObserver() {
+    if (window.__ag_metrics_raf) {
+      try {
+        cancelAnimationFrame(window.__ag_metrics_raf);
+      } catch {}
+      window.__ag_metrics_raf = 0;
+    }
+    if (window.__ag_metrics_ro) {
+      try {
+        window.__ag_metrics_ro.disconnect();
+      } catch {}
+    }
+    window.__ag_metrics_ro = null;
+    window.__ag_metrics_ro_target = null;
+    window.__ag_metrics_ro_observed = null;
+  }
+
+  function invokeEnsureMetricsPill(forceLayout = false, resetHysteresis = false) {
+    const fn = window.__ag_ensure_metrics_pill_fn;
+    if (typeof fn === 'function' && fn !== invokeEnsureMetricsPill) {
+      return fn(forceLayout, resetHysteresis);
+    }
+    return ensureMetricsPill(forceLayout, resetHysteresis);
+  }
+
   function ensureMetricsPill(forceLayout = false, resetHysteresis = false) {
     if (runtimeDisposed || !ENABLED) return null;
     if (!MODULES.metrics) {
@@ -667,6 +699,20 @@
         const tt = document.getElementById('ag-live-metrics-tooltip');
         if (tt) tt.removeAttribute('data-visible');
       });
+    }
+
+    if (isStudioManagedFooter(bottomRow)) {
+      disconnectMetricsResizeObserver();
+      if (bottomRow.getAttribute('data-ag-row-mode') !== 'middle') {
+        bottomRow.setAttribute('data-ag-row-mode', 'middle');
+      }
+      if (pill.getAttribute('data-ag-row-mode') !== 'middle') {
+        pill.setAttribute('data-ag-row-mode', 'middle');
+      }
+      if (pill.parentElement !== leftGroup) {
+        leftGroup.appendChild(pill);
+      }
+      return pill;
     }
 
     syncMetricsResizeObserver(bottomRow, leftGroup, rightGroup);
@@ -719,7 +765,7 @@
       window.__ag_last_metrics = payload;
       const currentId = extractCascadeId();
       const hasStudioRenderer = typeof window.__agyStudioMetricsRenderer === 'function';
-      const pill = ensureMetricsPill(false);
+      const pill = invokeEnsureMetricsPill(false);
       const ttEl = ensureMetricsTooltip();
       if (!pill) return;
       const isValid = Boolean(currentId && payload && payload.hasData && payload.cascadeId === currentId);
@@ -755,7 +801,7 @@
       }
       if (pill.style.display !== 'inline-flex') {
         pill.style.display = 'inline-flex';
-        ensureMetricsPill(true);
+        invokeEnsureMetricsPill(true);
       }
     } catch {}
   };
@@ -809,7 +855,7 @@
       if (cid !== window.__ag_watched_cascade_id) {
         window.__ag_watched_cascade_id = cid;
         window.__ag_last_metrics_layout_sig = '';
-        const pill = ensureMetricsPill(true, true);
+        const pill = invokeEnsureMetricsPill(true, true);
         if (pill && (!window.__ag_last_metrics || window.__ag_last_metrics.cascadeId !== cid)) {
           pill.style.display = 'none';
         }
@@ -819,7 +865,7 @@
           } catch {}
         }
       } else if (window.__ag_last_metrics && window.__ag_last_metrics.cascadeId === cid) {
-        const pill = ensureMetricsPill(false);
+        const pill = invokeEnsureMetricsPill(false);
         if (pill && window.__ag_last_metrics.hasData && pill.style.display === 'none') {
           window.__ag_render_metrics(window.__ag_last_metrics);
         }
@@ -955,7 +1001,7 @@
       return window.__ag_last_metrics || null;
     },
     syncPreset: syncThemeMode,
-    ensureMetricsPill,
+    ensureMetricsPill: (...args) => invokeEnsureMetricsPill(...args),
     onCleanup(fn) {
       if (typeof fn === 'function') {
         window.__ag_cleanup_fns.push(fn);

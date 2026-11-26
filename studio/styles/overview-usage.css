@@ -716,3 +716,40 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) :is(#ag-claude-ov-sections
 :is(html[data-ag-theme-mode="dark"], html.dark, body.dark) #agy-usage-tooltip#agy-usage-tooltip .agy-utt-empty {
   color: #9A9994 !important;
 }
+
+/* ==========================================================================
+ * Dynamic Chat Centering Reserve When Right Overview Panel Is Open (Wide Gutter)
+ * Promotes native --overview-panel-gutter-reserve into --overview-panel-reserve
+ * on conversation-view via a two-level custom-property bridge (zero cycle,
+ * zero JS latency) so composer, messages, scroll-to-bottom button, and
+ * overlay-scrollbar animate in lockstep via native 500ms var(--ease-expo-out).
+ * ========================================================================== */
+
+[data-testid="overview-panel-host"] > div.flex-1 {
+  --maga-ov-effective-reserve: calc(var(--overview-panel-reserve, 0px) + var(--overview-panel-gutter-reserve, 0px));
+}
+
+[data-testid="overview-panel-host"] > div.flex-1 [data-testid="conversation-view"] {
+  --overview-panel-reserve: var(--maga-ov-effective-reserve, 0px);
+  --overview-panel-gutter-reserve: 0px;
+}
+
+html[data-agy-motion="reduced"] [data-testid="overview-panel-host"] > div.flex-1 [data-testid="conversation-view"]:not(.no-transitions),
+html[data-agy-motion="reduced"] [data-testid="overview-panel-host"] > div.flex-1 [data-testid="conversation-view"]:not(.no-transitions) > div,
+html[data-agy-motion="reduced"] [data-testid="overview-panel-host"] > div.flex-1 [data-testid="conversation-view"]:not(.no-transitions) [data-testid="autoscroll-viewport"] {
+  transition-duration: 160ms !important;
+}
+
+html[data-agy-motion="off"] [data-testid="overview-panel-host"] > div.flex-1 [data-testid="conversation-view"],
+html[data-agy-motion="off"] [data-testid="overview-panel-host"] > div.flex-1 [data-testid="conversation-view"] > div,
+html[data-agy-motion="off"] [data-testid="overview-panel-host"] > div.flex-1 [data-testid="autoscroll-viewport"] {
+  transition: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-testid="overview-panel-host"] > div.flex-1 [data-testid="conversation-view"],
+  [data-testid="overview-panel-host"] > div.flex-1 [data-testid="conversation-view"] > div,
+  [data-testid="overview-panel-host"] > div.flex-1 [data-testid="autoscroll-viewport"] {
+    transition: none !important;
+  }
+}

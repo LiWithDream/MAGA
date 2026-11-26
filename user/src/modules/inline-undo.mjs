@@ -2,7 +2,7 @@
  * Inline Undo & Edit (Claude-style in-bubble message re-edit with revert previews).
  */
 export function createInlineUndoModule(rt) {
-  const { FEAT, L, state: rtState, frame, later, escapeHtml, hooks } = rt;
+  const { FEAT, L, state: rtState, frame, later, escapeHtml, hooks, platform } = rt;
   const discoverAgentInputProps = (...args) => hooks.discoverAgentInputProps?.(...args);
 
   /* ==========================================================================
@@ -236,13 +236,14 @@ export function createInlineUndoModule(rt) {
       stObj.bubble && stObj.bubble.querySelector('.agy-user-bubble-header, img, [data-testid*="attachment"], [data-testid*="media"]')
     );
     const hasRichRefs = Boolean(cur && cur.hasRichItems);
+    const isMac = !platform || platform === 'darwin';
     metaEl.innerHTML =
       (rState.conversationOnlyRevertEnabled
         ? `<button type="button" class="ag-claude-switch" role="switch" data-ag-revert-files-switch aria-label="${escapeHtml(L('同步撤回文件修改', 'Revert modified files'))}" aria-checked="${!convOnly}"><span></span></button><span>${L('同步撤回文件', 'Revert files')}</span><span style="opacity:0.45">·</span>`
         : '') +
       `<span>${escapeHtml(fileSummary)}</span>` +
       (hasRichRefs
-        ? `<span style="opacity:0.75" title="${escapeHtml(L('自动保留原消息中的 @ 引用、斜杠命令与技能胶囊；按住 ⌥ 点撤回可打开官方撤回界面', 'Preserves original @ mentions, slash commands & skills; Option+click Revert for native UI'))}">· ${L('保留原引用', 'Keep mentions')}</span>`
+        ? `<span style="opacity:0.75" title="${escapeHtml(L(`自动保留原消息中的 @ 引用、斜杠命令与技能胶囊；按住 ${isMac ? '⌥' : 'Alt'} 点撤回可打开官方撤回界面`, `Preserves original @ mentions, slash commands & skills; ${isMac ? 'Option' : 'Alt'}+click Revert for native UI`))}">· ${L('保留原引用', 'Keep mentions')}</span>`
         : '') +
       (hasMedia
         ? `<span style="opacity:0.75" title="${escapeHtml(L('重发时自动保留原消息图片/附件；如需增删附件请点「移至底栏」', 'Keeps original attachments on resend; click Move to input to edit attachments'))}">· ${L('保留原附件', 'Keep attachments')}</span>`

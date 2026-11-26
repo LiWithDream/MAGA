@@ -24,6 +24,7 @@ const {
   AUTO_COMPACT_LEASE_TTL_MS,
   syncAutoCompactPlugin,
   isAutoCompactPluginInstalled,
+  extractHookNodeBin,
   getAutoCompactStatus,
   claimAutoCompactRequest,
   commitAutoCompactRequest,
@@ -909,7 +910,12 @@ test('Opus P2 regressions: O_EXCL stale lock, commit interleave, resync/retry, p
       fs.readFileSync(path.join(REPO, 'studio', 'plugin', 'maga-auto-compact', 'hooks.json'), 'utf8')
     );
     assert.equal(repoHooks['maga-auto-compact'].Stop[0].command, 'node ./hooks/compact-check.mjs');
-    assert.ok(syncedHooks['maga-auto-compact'].Stop[0].command.includes(customNode));
+    const normNode = (p) => {
+      const rp = (fs.realpathSync.native || fs.realpathSync)(p);
+      return process.platform === 'win32' ? rp.toLowerCase() : rp;
+    };
+    assert.equal(normNode(extractHookNodeBin(syncedHooks)), normNode(customNode));
+    assert.ok(syncedHooks['maga-auto-compact'].Stop[0].command.endsWith('./hooks/compact-check.mjs'));
     const nodeCheck = verifyInstalledHookNodeRuntime(dirs);
     assert.equal(nodeCheck.ok, true);
     assert.equal(nodeCheck.sqliteSupported, true);

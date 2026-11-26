@@ -91,6 +91,8 @@ export function createResumeBannerRuntime({ studioPrefs } = {}) {
     if (typeof document === 'undefined') return null;
     const rootEl = document.getElementById('root');
     const anchors = [
+      document.querySelector?.('[data-testid="conversation-list-sidebar"]'),
+      document.querySelector?.('[data-testid="sidebar-navigation-items"]'),
       document.querySelector?.('.bg-sidebar'),
       rootEl?.firstElementChild || rootEl?.children?.[0],
       document.body,

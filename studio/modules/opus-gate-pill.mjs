@@ -92,6 +92,8 @@ export function createOpusGatePillRuntime({ studioPrefs } = {}) {
     const cid = getActiveRouteCid();
     if (!cid) return '';
     const anchors = [
+      document.querySelector('[data-testid="conversation-list-sidebar"]'),
+      document.querySelector('[data-testid="sidebar-navigation-items"]'),
       document.querySelector('.bg-sidebar'),
       document.getElementById('root')?.firstElementChild,
     ].filter(Boolean);

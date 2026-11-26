@@ -130,36 +130,118 @@ export function createProjectsModule(rt, modelApi) {
     buildFolderMenuHtml,
   } = workspaceUi;
 
-  function positionProjectsOverlay() {
-    if (!pState.projectsViewEl || !rtState.projectsViewOpen) return;
-    const sidebar = document.querySelector('.bg-sidebar');
-    let leftPx = 0;
-    if (sidebar) {
-      const r = sidebar.getBoundingClientRect();
-      if (r.width > 20 && r.right > 0 && r.right < window.innerWidth - 160) {
-        leftPx = Math.round(r.right);
+  function isTopMenuBarBgSidebar(el) {
+    if (!el || typeof el.getBoundingClientRect !== 'function') return false;
+    const r = el.getBoundingClientRect();
+    const winW = typeof window !== 'undefined' && window.innerWidth ? window.innerWidth : 0;
+    return Boolean(r.height > 0 && r.height <= 64 && winW > 200 && r.width >= winW - 160);
+  }
+
+  function findLeftSidebarEl() {
+    const anchors = [
+      document.getElementById('ag-claude-projects-nav-btn'),
+      document.querySelector('[data-testid="automations-button"]'),
+      document.querySelector('[data-testid="project-header"]'),
+    ];
+    for (const anchor of anchors) {
+      const sb = anchor && typeof anchor.closest === 'function' ? anchor.closest('.bg-sidebar') : null;
+      if (sb && !isTopMenuBarBgSidebar(sb)) return sb;
+    }
+    const cands = document.querySelectorAll('.bg-sidebar');
+    const winW = typeof window !== 'undefined' && window.innerWidth ? window.innerWidth : 0;
+    for (let i = 0; i < cands.length; i += 1) {
+      const sb = cands[i];
+      const r = sb.getBoundingClientRect();
+      if (r.width > 20 && r.height > 80 && r.right > 0 && (!winW || r.right < winW - 160)) {
+        return sb;
       }
     }
+    for (let i = 0; i < cands.length; i += 1) {
+      const sb = cands[i];
+      if (sb.tagName === 'ASIDE' || (sb.classList && sb.classList.contains('flex-col'))) return sb;
+    }
+    return cands[0] || null;
+  }
+
+  function findLeftSidebarTrackEl(sb) {
+    if (!sb || typeof document === 'undefined' || typeof getComputedStyle !== 'function') return sb || null;
+    const winW = typeof window !== 'undefined' && window.innerWidth ? window.innerWidth : 0;
+    let cur = sb.parentElement;
+    for (let i = 0; i < 4 && cur && cur !== document.body; i += 1, cur = cur.parentElement) {
+      let cs = null;
+      try { cs = getComputedStyle(cur); } catch {}
+      const clip = cs && (cs.overflow === 'hidden' || cs.overflowX === 'hidden' || String(cs.transition || '').includes('width'));
+      if (clip && typeof cur.getBoundingClientRect === 'function') {
+        const r = cur.getBoundingClientRect();
+        if (r.height > 80 && (!winW || r.width < winW - 160)) return cur;
+      }
+    }
+    return sb;
+  }
+
+  function measureTopMenuBarHeight() {
+    const cands = document.querySelectorAll('.bg-sidebar');
+    const winW = typeof window !== 'undefined' && window.innerWidth ? window.innerWidth : 0;
+    for (let i = 0; i < cands.length; i += 1) {
+      const r = cands[i].getBoundingClientRect();
+      if (r.top >= -1 && r.top <= 4 && r.height >= 16 && r.height <= 56 && winW > 200 && r.width >= winW - 160) {
+        return Math.round(r.bottom);
+      }
+    }
+    return 0;
+  }
+
+  function syncWinTopBarCssVar(topPx = measureTopMenuBarHeight()) {
+    const root = typeof document !== 'undefined' ? document.documentElement : null;
+    if (!root || !root.style) return;
+    if (topPx > 0) root.style.setProperty('--ag-win-top-bar', `${topPx}px`);
+    else root.style.removeProperty('--ag-win-top-bar');
+  }
+
+  function positionProjectsOverlay() {
+    const topBarPx = measureTopMenuBarHeight();
+    syncWinTopBarCssVar(topBarPx);
+    if (!pState.projectsViewEl || !rtState.projectsViewOpen) return;
+    const sidebar = findLeftSidebarEl();
+    const track = sidebar ? findLeftSidebarTrackEl(sidebar) : null;
+    const winW = typeof window !== 'undefined' && window.innerWidth ? window.innerWidth : 0;
+    let leftPx = 0;
+    let topPx = 0;
+    let r = sidebar ? sidebar.getBoundingClientRect() : null;
+    if (track && track !== sidebar && typeof track.getBoundingClientRect === 'function') {
+      const tr = track.getBoundingClientRect();
+      if (tr.height > 80 && (!winW || tr.width < winW - 160)) r = tr;
+    }
+    if (r) {
+      if (r.width > 8 && r.right > 8 && (!winW || r.right < winW - 160)) leftPx = Math.round(r.right);
+      if (r.height > 80 && r.top >= 16 && r.top <= 56) topPx = Math.round(r.top);
+    }
+    if (!topPx) topPx = topBarPx;
+    if (topPx > 0) syncWinTopBarCssVar(topPx);
     const collapsed = leftPx < 220;
     const safeLeftPad = collapsed ? Math.max(24, 224 - leftPx) : 24;
     pState.projectsViewEl.style.left = `${leftPx}px`;
+    pState.projectsViewEl.style.setProperty('--ag-proj-top', `${topPx}px`);
     pState.projectsViewEl.setAttribute('data-sidebar-collapsed', collapsed ? 'true' : 'false');
     pState.projectsViewEl.style.setProperty('--ag-proj-topbar-pl', `${safeLeftPad}px`);
   }
 
   function ensureProjectsSidebarObserver() {
     if (typeof ResizeObserver === 'undefined') return;
-    const sb = document.querySelector('.bg-sidebar');
-    if (!sb || pState.projectsSidebarRoTarget === sb) return;
+    const sb = findLeftSidebarEl();
+    const track = sb ? findLeftSidebarTrackEl(sb) : null;
+    if (!sb || (pState.projectsSidebarRoTarget === sb && pState.projectsSidebarRoTrack === track)) return;
     if (pState.projectsSidebarRo) {
       try {
         pState.projectsSidebarRo.disconnect();
       } catch {}
     }
     pState.projectsSidebarRoTarget = sb;
+    pState.projectsSidebarRoTrack = track;
     pState.projectsSidebarRo = new ResizeObserver(() => positionProjectsOverlay());
     try {
       pState.projectsSidebarRo.observe(sb);
+      if (track && track !== sb) pState.projectsSidebarRo.observe(track);
     } catch {}
   }
 
@@ -1763,7 +1845,9 @@ export function createProjectsModule(rt, modelApi) {
       } catch {}
       pState.projectsSidebarRo = null;
       pState.projectsSidebarRoTarget = null;
+      pState.projectsSidebarRoTrack = null;
     }
+    document.documentElement?.style?.removeProperty?.('--ag-win-top-bar');
     if (pState.projectsDocListenerBound) {
       document.removeEventListener('click', onProjectsGlobalClick, true);
       document.removeEventListener('keydown', onProjectsGlobalKeyDown, true);
@@ -1797,6 +1881,7 @@ export function createProjectsModule(rt, modelApi) {
       }
       return;
     }
+    syncWinTopBarCssVar();
     if (rtState.projectsViewOpen) {
       onProjectsNavRouteChange();
     }

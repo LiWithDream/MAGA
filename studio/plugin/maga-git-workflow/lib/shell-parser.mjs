@@ -507,6 +507,65 @@ export function extractInlineShellString(cmdTokens, platform = process.platform)
   return '';
 }
 
+/**
+ * Resolve shell directory-change commands (`cd`, and Windows `Set-Location` / `sl` / `chdir` / `Push-Location` / `pushd`).
+ * Returns `{ nextDir, prevDir }` when matched, or `null` for non-navigation commands.
+ */
+export function resolveDirectoryChange(
+  cmdTokens,
+  currentDir,
+  prevDir,
+  { platform = process.platform, expandTarget = expandHome } = {}
+) {
+  if (!Array.isArray(cmdTokens) || cmdTokens.length === 0) return null;
+  const isWin = platform === 'win32';
+  const cmdHeadLower = isWin ? String(cmdTokens[0] || '').toLowerCase() : String(cmdTokens[0] || '');
+  const isDirCmd =
+    cmdHeadLower === 'cd' ||
+    (isWin &&
+      (cmdHeadLower === 'set-location' ||
+        cmdHeadLower === 'sl' ||
+        cmdHeadLower === 'chdir' ||
+        cmdHeadLower === 'push-location' ||
+        cmdHeadLower === 'pushd'));
+  if (!isDirCmd) return null;
+
+  let argIdx = 1;
+  if (cmdTokens[argIdx] === '--') argIdx += 1;
+  if (isWin) {
+    while (argIdx < cmdTokens.length) {
+      const flagLower = String(cmdTokens[argIdx] || '').toLowerCase();
+      if (flagLower === '/d' || flagLower === '-path' || flagLower === '-literalpath') {
+        argIdx += 1;
+        continue;
+      }
+      break;
+    }
+    if (cmdTokens[argIdx] === '--') argIdx += 1;
+  }
+
+  const rawTarget = cmdTokens[argIdx];
+  let nextDir = currentDir;
+  if (!rawTarget) {
+    nextDir = os.homedir();
+  } else if (rawTarget === '-') {
+    nextDir = prevDir;
+  } else {
+    const expandedTarget = expandTarget(rawTarget);
+    if (isWin && /^[A-Za-z]:$/.test(expandedTarget)) {
+      nextDir = `${expandedTarget}\\`;
+    } else if (isWin && /^[A-Za-z]:[\\/]/.test(expandedTarget)) {
+      nextDir = path.win32.normalize(expandedTarget);
+    } else {
+      nextDir =
+        isWin && /^[A-Za-z]:[\\/]/.test(String(currentDir || ''))
+          ? path.win32.resolve(currentDir, expandedTarget)
+          : path.resolve(currentDir, expandedTarget);
+    }
+  }
+  return { nextDir, prevDir: currentDir };
+}
+
 export function extractGitInvocationsDetailed(
   commandLine,
   initialCwd = process.cwd(),
@@ -517,7 +576,11 @@ export function extractGitInvocationsDetailed(
   const segments = splitShellSegmentsWithOps(commandLine, platform);
   const invocations = [];
   const shellVars = new Map();
-  let currentDir = path.resolve(expandHome(initialCwd) || process.cwd());
+  const expandedInitial = expandHome(initialCwd) || process.cwd();
+  let currentDir =
+    isWin && /^[A-Za-z]:[\\/]/.test(expandedInitial)
+      ? path.win32.normalize(expandedInitial)
+      : path.resolve(expandedInitial);
   let prevDir = currentDir;
 
   for (const seg of segments) {
@@ -547,25 +610,12 @@ export function extractGitInvocationsDetailed(
       continue;
     }
 
-    const cmdHeadLower = isWin ? cmdTokens[0].toLowerCase() : cmdTokens[0];
-    if (cmdHeadLower === 'cd' || (isWin && (cmdHeadLower === 'set-location' || cmdHeadLower === 'sl'))) {
-      if (inPipeline) continue;
-      let argIdx = 1;
-      if (cmdTokens[argIdx] === '--') argIdx += 1;
-      if (isWin && String(cmdTokens[argIdx] || '').toLowerCase() === '/d') argIdx += 1;
-      const rawTarget = cmdTokens[argIdx];
-      let nextDir = currentDir;
-      if (!rawTarget) {
-        nextDir = os.homedir();
-      } else if (rawTarget === '-') {
-        nextDir = prevDir;
-      } else {
-        nextDir = isWin && /^[A-Za-z]:[\\/]/.test(rawTarget)
-          ? path.win32.normalize(rawTarget)
-          : path.resolve(currentDir, expandHome(rawTarget));
+    const dirChange = resolveDirectoryChange(cmdTokens, currentDir, prevDir, { platform });
+    if (dirChange) {
+      if (!inPipeline) {
+        prevDir = dirChange.prevDir;
+        currentDir = dirChange.nextDir;
       }
-      prevDir = currentDir;
-      currentDir = nextDir;
       continue;
     }
 

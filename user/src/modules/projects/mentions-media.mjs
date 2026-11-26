@@ -41,6 +41,8 @@ export function createProjectMentionsMedia(ctx) {
     }
     const rootEl = document.getElementById('root');
     const anchors = [
+      document.querySelector('[data-testid="conversation-list-sidebar"]'),
+      document.querySelector('[data-testid="sidebar-navigation-items"]'),
       document.querySelector('.bg-sidebar'),
       document.querySelector('[data-testid="automations-button"]'),
       document.querySelector('[data-testid="project-header"]'),

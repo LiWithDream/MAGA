@@ -48,7 +48,7 @@ function createTempRepo(branch = 'main') {
 }
 
 test('shell segment splitter and tokenizer handle quotes, escapes, and operators', () => {
-  const segments = splitShellSegments('echo "a && b" ; cd ../wt && git -C sub commit -m \'msg;ok\' | cat');
+  const segments = splitShellSegments('echo "a && b" ; cd ../wt && git -C sub commit -m \'msg;ok\' | cat', 'linux');
   assert.deepEqual(segments, [
     'echo "a && b"',
     'cd ../wt',
@@ -56,7 +56,7 @@ test('shell segment splitter and tokenizer handle quotes, escapes, and operators
     'cat',
   ]);
 
-  assert.deepEqual(tokenizeSegment(`git commit -m "hello \\"world\\"" 'x y'`), [
+  assert.deepEqual(tokenizeSegment(`git commit -m "hello \\"world\\"" 'x y'`, null, 'linux'), [
     'git',
     'commit',
     '-m',

@@ -363,14 +363,24 @@ export function createOpusGatePillRuntime({ studioPrefs } = {}) {
       : '';
     const quotaRows = [];
     if (live.fiveHourPct !== null && live.fiveHourPct !== undefined) {
-      quotaRows.push(`<span class="agy-opus-menu-qrow">${esc(live.spec.poolLabel)} 5h ${Math.round(live.fiveHourPct)}%</span>`);
+      quotaRows.push(
+        `<span class="agy-opus-menu-qrow">` +
+          `<span class="agy-opus-menu-qlbl">5h</span>` +
+          `<span class="agy-opus-menu-qval">${Math.round(live.fiveHourPct)}%</span>` +
+        `</span>`
+      );
     }
     if (live.weeklyPct !== null && live.weeklyPct !== undefined) {
-      quotaRows.push(`<span class="agy-opus-menu-qrow">${esc(L('周剩余', 'Weekly'))} ${Math.round(live.weeklyPct)}%</span>`);
+      quotaRows.push(
+        `<span class="agy-opus-menu-qrow">` +
+          `<span class="agy-opus-menu-qlbl">${esc(L('每周', 'Wk'))}</span>` +
+          `<span class="agy-opus-menu-qval">${Math.round(live.weeklyPct)}%</span>` +
+        `</span>`
+      );
     }
     const quotaRowsHtml = quotaRows.length
       ? quotaRows.join('')
-      : `<span class="agy-opus-menu-qrow">${esc(live.spec.poolLabel)}</span>`;
+      : `<span class="agy-opus-menu-qrow"><span class="agy-opus-menu-qlbl">${esc(live.spec.poolLabel)}</span></span>`;
     const switchHtml =
       `<div class="agy-opus-model-switch" role="group" aria-label="${esc(L('审查模型', 'Review Model'))}">` +
         ['carbon', 'opus']

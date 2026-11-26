@@ -957,7 +957,13 @@ test('opus-gate-pill renders generic label, supports per-click Carbon/Opus switc
       assert.equal(menu.getAttribute('data-reviewer-model'), 'opus');
       assert.equal(menu.querySelector('.agy-opus-menu-model')?.textContent, 'Opus High');
       assert.match(menu.querySelector('.agy-opus-menu-reason')?.textContent || '', /涉及高风险文件：kernel\.mjs/);
-      assert.match(menu.querySelector('.agy-opus-menu-quota')?.textContent || '', /Claude/);
+      const readQRows = () =>
+        [...menu.querySelectorAll('.agy-opus-menu-qrow')].map((el) => [
+          el.querySelector('.agy-opus-menu-qlbl')?.textContent || '',
+          el.querySelector('.agy-opus-menu-qval')?.textContent || '',
+        ]);
+      assert.doesNotMatch(menu.querySelector('.agy-opus-menu-quota')?.textContent || '', /Claude/);
+      assert.deepEqual(readQRows(), [['5h', '12%'], ['每周', '64%']]);
       assert.equal(menu.querySelector('button[data-agy-opus-action="handoff"]'), null);
       const swarmBtn = menu.querySelector('button[data-agy-opus-action="swarm"]');
       assert.ok(swarmBtn);
@@ -970,8 +976,8 @@ test('opus-gate-pill renders generic label, supports per-click Carbon/Opus switc
       assert.equal(menu.getAttribute('data-reviewer-model'), 'carbon');
       assert.equal(menu.getAttribute('data-open'), '1');
       assert.equal(menu.querySelector('.agy-opus-menu-model')?.textContent, 'Carbon High');
-      const qRows = [...menu.querySelectorAll('.agy-opus-menu-qrow')].map((el) => el.textContent);
-      assert.deepEqual(qRows, ['Gemini 5h 89%', '周剩余 91%']);
+      assert.doesNotMatch(menu.querySelector('.agy-opus-menu-quota')?.textContent || '', /Gemini/);
+      assert.deepEqual(readQRows(), [['5h', '89%'], ['每周', '91%']]);
       assert.equal(studioPrefs.get().opusGateModel, 'opus');
 
       // Path A passes per-click model='carbon'

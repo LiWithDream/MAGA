@@ -1760,12 +1760,12 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) :is(#ag-claude-quota-popov
 #agy-opus-gate-menu .agy-opus-menu-quota {
   display: flex !important;
   flex-direction: column !important;
-  align-items: flex-end !important;
+  align-items: stretch !important;
   gap: 1px !important;
   flex-shrink: 0 !important;
   font-size: 10.5px !important;
   line-height: 1.3 !important;
-  padding: 3px 7px !important;
+  padding: 3px 8px !important;
   border-radius: 7px !important;
   background: color-mix(in srgb, var(--agy-gate-accent) 14%, transparent) !important;
   color: var(--agy-gate-accent) !important;
@@ -1773,7 +1773,19 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) :is(#ag-claude-quota-popov
   white-space: nowrap !important;
 }
 #agy-opus-gate-menu .agy-opus-menu-qrow {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 10px !important;
+  width: 100% !important;
   white-space: nowrap !important;
+}
+#agy-opus-gate-menu .agy-opus-menu-qlbl {
+  opacity: 0.78 !important;
+}
+#agy-opus-gate-menu .agy-opus-menu-qval {
+  font-weight: 600 !important;
+  text-align: right !important;
 }
 #agy-opus-gate-menu .agy-opus-model-switch {
   display: grid !important;

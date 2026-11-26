@@ -232,7 +232,15 @@ function findCurrentFamilyInCatalog(catalog, selected) {
 
 function renderModelPopoverPanel(
   container,
-  { open = false, catalog = null, selected = null, modelBusy = false, onSelectModelOption = null, onClose = null } = {}
+  {
+    open = false,
+    catalog = null,
+    selected = null,
+    canWrite = false,
+    modelBusy = false,
+    onSelectModelOption = null,
+    onClose = null,
+  } = {}
 ) {
   if (!container) return;
   clearNode(container);
@@ -248,12 +256,15 @@ function renderModelPopoverPanel(
     el(
       'div',
       { className: 'rc-model-pop-head' },
-      el('strong', { text: '切换模型与思考深度' }),
+      el('strong', { text: canWrite ? '切换模型与思考深度' : '模型与思考深度（只读预览）' }),
       el('button', {
         type: 'button',
         className: 'rc-btn is-sm is-ghost',
         text: '关闭',
-        onClick: () => onClose?.(),
+        onClick: (ev) => {
+          ev?.stopPropagation?.();
+          onClose?.();
+        },
       })
     ),
   ];
@@ -273,14 +284,16 @@ function renderModelPopoverPanel(
           type: 'button',
           className: 'rc-effort-btn',
           'aria-pressed': isActiveVar ? 'true' : 'false',
-          disabled: modelBusy,
+          disabled: !canWrite || modelBusy,
           text: v.displayEffort || v.effort,
-          onClick: () =>
+          onClick: (ev) => {
+            ev?.stopPropagation?.();
             onSelectModelOption?.({
               model: v.value,
               plannerModel: v.plannerValue ?? null,
               customLabel: v.customLabel || '',
-            }),
+            });
+          },
         })
       );
     }
@@ -319,8 +332,9 @@ function renderModelPopoverPanel(
             type: 'button',
             className: 'rc-model-fam-btn',
             'data-selected': isFamActive ? 'true' : 'false',
-            disabled: modelBusy,
-            onClick: () => {
+            disabled: !canWrite || modelBusy,
+            onClick: (ev) => {
+              ev?.stopPropagation?.();
               if (!targetVar) return;
               onSelectModelOption?.({
                 model: targetVar.value,
@@ -371,9 +385,10 @@ export function renderComposerFooterBar(
   const selected = catalog?.selected || null;
   if (refs.modelPopover) {
     renderModelPopoverPanel(refs.modelPopover, {
-      open: modelPopoverOpen && canWrite && online,
+      open: modelPopoverOpen && online,
       catalog,
       selected,
+      canWrite,
       modelBusy,
       onSelectModelOption,
       onClose: onCloseModelPopover,
@@ -403,7 +418,7 @@ export function renderComposerFooterBar(
     ? '切换中…'
     : selected?.baseName || (hasModels ? '选择模型' : '默认模型');
   const effortLabel = !modelBusy && selected?.displayEffort ? selected.displayEffort : '';
-  const modelDisabled = !canWrite || !online || !hasModels || modelBusy;
+  const modelDisabled = !online || !hasModels || modelBusy;
 
   leftCluster.appendChild(
     el(
@@ -413,8 +428,11 @@ export function renderComposerFooterBar(
         className: 'rc-footer-pill rc-model-capsule',
         'aria-expanded': modelPopoverOpen ? 'true' : 'false',
         disabled: modelDisabled,
-        title: canWrite ? '切换当前模型与思考深度' : '只读模式 (observe) 下仅展示当前模型',
-        onClick: () => onToggleModelPopover?.(),
+        title: canWrite ? '切换当前模型与思考深度' : '查看当前可用模型（只读模式，在桌面端升为 steer 后可远程切换）',
+        onClick: (ev) => {
+          ev?.stopPropagation?.();
+          onToggleModelPopover?.();
+        },
       },
       el('span', { className: 'rc-model-capsule-name', text: modelLabel }),
       effortLabel ? el('span', { className: 'rc-model-effort-tag', text: effortLabel }) : null,

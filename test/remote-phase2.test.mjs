@@ -1263,6 +1263,59 @@ test('Phase 2 Composer Footer V2: models.list/select, convo.send image attachmen
       hasSelection: true,
     });
     assert.match(refs.composerFooter.textContent, /生成中 4s · 320字/);
+
+    // Clicking .rc-model-capsule detaches target via clearNode(footer) but must NOT auto-close during document bubble
+    const cardHost = doc.createElement('div');
+    cardHost.appendChild(refs.modelPopover);
+    cardHost.appendChild(refs.composerFooter);
+    doc.body.appendChild(cardHost);
+
+    let popOpen = false;
+    const renderPopTest = () => {
+      composerBarMod.renderComposerFooterBar(refs, {
+        catalog: {
+          selected: { baseName: 'Gemini 4 Carbon', effort: 'High', displayEffort: 'High', value: 101 },
+          families: [
+            {
+              baseName: 'Gemini 4 Carbon',
+              group: 'primary',
+              isOrchestrator: false,
+              variants: [{ effort: 'High', displayEffort: 'High', label: 'Gemini 4 Carbon (High)', value: 101 }],
+            },
+          ],
+        },
+        modelPopoverOpen: popOpen,
+        canWrite: false, // Read-only preview must also open popover
+        online: true,
+        hasSelection: true,
+        onToggleModelPopover: () => {
+          popOpen = !popOpen;
+          renderPopTest();
+        },
+      });
+    };
+    const onOutsideClick = (ev) => {
+      if (!popOpen) return;
+      const p = typeof ev.composedPath === 'function' ? ev.composedPath() : [];
+      if (p.includes(cardHost) || cardHost.contains(ev.target)) return;
+      popOpen = false;
+      renderPopTest();
+    };
+    doc.addEventListener('click', onOutsideClick);
+    try {
+      renderPopTest();
+      const capsuleBtn = refs.composerFooter.querySelector('.rc-model-capsule');
+      assert.ok(capsuleBtn);
+      assert.equal(capsuleBtn.disabled, false, 'read-only user should still inspect available models');
+      capsuleBtn.click();
+      assert.equal(popOpen, true, 'popover must stay open after click despite footer DOM re-render');
+      assert.equal(refs.modelPopover.classList.contains('rc-hidden'), false);
+      doc.body.click();
+      assert.equal(popOpen, false, 'outside click must dismiss popover');
+    } finally {
+      doc.removeEventListener('click', onOutsideClick);
+      cardHost.remove();
+    }
   } finally {
     for (const s of openSockets) {
       try { s.destroy(); } catch {}

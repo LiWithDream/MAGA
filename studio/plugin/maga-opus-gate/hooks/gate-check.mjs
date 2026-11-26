@@ -13,9 +13,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const HIGH_RISK_PATH_RE =
-  /(?:^|\/)(?:kernel|dom|cdp-[^/]+|daemon|prefs-bundle|build|cli|auth|security|migration|schema)\.(?:m?js|ts|sql)$|package\.json$|hooks\.json$/i;
+  /(?:^|[\\/])(?:kernel|dom|cdp-[^\\/]+|daemon|prefs-bundle|build|cli|auth|security|migration|schema)\.(?:m?js|ts|sql)$|package\.json$|hooks\.json$/i;
 const PLAN_PATH_RE =
-  /(?:^|\/)(?:implementation_plan|plan|design|architecture|rfc|spec)(?:[._-][^/]*)?\.md$/i;
+  /(?:^|[\\/])(?:implementation_plan|plan|design|architecture|rfc|spec)(?:[._-][^\\/]*)?\.md$/i;
 const SAFE_CID_RE = /^[A-Za-z0-9_-]{4,128}$/;
 const MAX_DIR_FILES = 32;
 const MAX_DIR_AGE_MS = 24 * 60 * 60 * 1000;

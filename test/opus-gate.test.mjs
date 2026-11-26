@@ -23,6 +23,7 @@ const {
   loadQuotaState,
   syncOpusGatePlugin,
   isOpusGatePluginInstalled,
+  extractOpusGateHookNodeBin,
   verifyOpusGateHookNodeRuntime,
   getOpusGateStatus,
   dismissOpusGateProposal,
@@ -1108,8 +1109,13 @@ test('syncOpusGatePlugin pins absolute Node executable, chmods hook, prunes stal
     const syncedHooks = JSON.parse(fs.readFileSync(path.join(dirs.pluginsDir, 'maga-opus-gate', 'hooks.json'), 'utf8'));
     const repoHooks = JSON.parse(fs.readFileSync(path.join(REPO, 'studio', 'plugin', 'maga-opus-gate', 'hooks.json'), 'utf8'));
     assert.equal(repoHooks['maga-opus-gate'].Stop[0].command, 'node ./hooks/gate-check.mjs');
-    assert.ok(syncedHooks['maga-opus-gate'].Stop[0].command.includes(process.execPath));
-    assert.ok(syncedHooks['maga-opus-gate'].PostToolUse[0].hooks[0].command.includes(process.execPath));
+    const normNode = (p) => {
+      const rp = (fs.realpathSync.native || fs.realpathSync)(p);
+      return process.platform === 'win32' ? rp.toLowerCase() : rp;
+    };
+    assert.equal(normNode(extractOpusGateHookNodeBin(syncedHooks)), normNode(process.execPath));
+    assert.ok(syncedHooks['maga-opus-gate'].Stop[0].command.endsWith('./hooks/gate-check.mjs'));
+    assert.ok(syncedHooks['maga-opus-gate'].PostToolUse[0].hooks[0].command.endsWith('./hooks/gate-check.mjs'));
 
     if (process.platform !== 'win32') {
       const hookStat = fs.statSync(path.join(dirs.pluginsDir, 'maga-opus-gate', 'hooks', 'gate-check.mjs'));

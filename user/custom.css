@@ -3110,7 +3110,7 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) [data-testid="settings-sid
 
 #ag-claude-projects-view {
   position: fixed !important;
-  top: 0 !important;
+  top: var(--ag-proj-top, 0px) !important;
   right: 0 !important;
   bottom: 0 !important;
   left: 260px;
@@ -3576,7 +3576,10 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) [data-testid="settings-sid
 /* Modal overlay (Claude "Use an existing folder" style) */
 #ag-claude-project-modal {
   position: fixed !important;
-  inset: 0 !important;
+  top: var(--ag-win-top-bar, 0px) !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  left: 0 !important;
   z-index: 2147483640 !important;
   display: flex !important;
   align-items: center !important;
@@ -3590,7 +3593,7 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) [data-testid="settings-sid
 #ag-claude-project-modal .ag-pm-dialog {
   width: 100% !important;
   max-width: 540px !important;
-  max-height: calc(100vh - 48px) !important;
+  max-height: calc(100vh - var(--ag-win-top-bar, 0px) - 48px) !important;
   overflow-y: auto !important;
   padding: 22px 24px !important;
   border-radius: 18px !important;

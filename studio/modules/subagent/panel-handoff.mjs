@@ -76,6 +76,8 @@ export function createPanelHandoffController({
   let prevOvOpen = null;
   let mutualGuardUntil = 0;
   let restoreOverviewForCid = '';
+  let restoreHoldReserve = '0px';
+  let restoreHoldGutter = '0px';
   const autoOpenedOverviewCids = new Set();
 
   const activeTimers = new Set();
@@ -249,9 +251,7 @@ export function createPanelHandoffController({
     }, 560);
   }
 
-  function runOverviewToAuxHandoff(openAction) {
-    clearHandoffTimers();
-    const root = document.documentElement;
+  function readHostOverviewHold() {
     const host = document.querySelector('[data-testid="overview-panel-host"]');
     let reserve = '0px';
     let gutter = '0px';
@@ -267,6 +267,37 @@ export function createPanelHandoffController({
         || hostCs?.getPropertyValue?.('--overview-panel-gutter-reserve')
         || '').trim() || '0px';
     }
+    return { reserve, gutter };
+  }
+
+  function armAuxToOvHold({ allowFallback = false } = {}) {
+    if (prefersReducedMotion()) return false;
+    let res = restoreHoldReserve || '0px';
+    let gut = restoreHoldGutter || '0px';
+    if (res === '0px' && gut === '0px' && allowFallback) {
+      const splitW =
+        document.querySelector('[data-testid="aux-pane-split"]')?.getBoundingClientRect?.().width ||
+        (typeof window !== 'undefined' && window.innerWidth ? window.innerWidth : 0);
+      if (splitW >= 960) gut = '336px';
+    }
+    if (res === '0px' && gut === '0px') return false;
+    const root = document.documentElement;
+    if (root) {
+      try {
+        root.style?.setProperty?.('--agy-hold-ov-reserve', res);
+        root.style?.setProperty?.('--agy-hold-ov-gutter', gut);
+      } catch {}
+      root.setAttribute?.('data-agy-panel-handoff', 'aux-to-ov-closing');
+    }
+    return true;
+  }
+
+  function runOverviewToAuxHandoff(openAction) {
+    clearHandoffTimers();
+    const root = document.documentElement;
+    const { reserve, gutter } = readHostOverviewHold();
+    restoreHoldReserve = reserve;
+    restoreHoldGutter = gutter;
 
     if (root) {
       try {
@@ -308,15 +339,20 @@ export function createPanelHandoffController({
     if (!restoreOverviewForCid) return false;
     if (restoreOverviewForCid !== routeKey) {
       restoreOverviewForCid = '';
+      restoreHoldReserve = '0px';
+      restoreHoldGutter = '0px';
       return false;
     }
     if (isOverviewOpen()) {
       restoreOverviewForCid = '';
+      restoreHoldReserve = '0px';
+      restoreHoldGutter = '0px';
       return false;
     }
 
     mutualGuardUntil = Date.now() + 750;
     clearHandoffTimers();
+    const held = armAuxToOvHold({ allowFallback: false });
     const replayDelay = prefersReducedMotion() ? 0 : 240;
 
     trackTimeout(() => {
@@ -343,6 +379,9 @@ export function createPanelHandoffController({
         }
       }
       restoreOverviewForCid = '';
+      restoreHoldReserve = '0px';
+      restoreHoldGutter = '0px';
+      if (held) clearHandoffState();
     }, 540, handoffTimers);
 
     return true;
@@ -427,8 +466,14 @@ export function createPanelHandoffController({
     }
 
     if (auxJustOpened) {
+      if (document.documentElement?.getAttribute?.('data-agy-panel-handoff') === 'aux-to-ov-closing') {
+        clearHandoffState();
+      }
       if (ovOpen) {
         mutualGuardUntil = now + 500;
+        const { reserve, gutter } = readHostOverviewHold();
+        restoreHoldReserve = reserve;
+        restoreHoldGutter = gutter;
         const ovBtn = getOverviewToggleBtn();
         if (ovBtn) {
           restoreOverviewForCid = currentRouteKey();
@@ -555,6 +600,7 @@ export function createPanelHandoffController({
       closeMenu?.();
       restoreOverviewForCid = '';
       clearHandoffState();
+      const held = armAuxToOvHold({ allowFallback: true });
       mutualGuardUntil = Date.now() + 750;
       const a = getAuxToggleBtn();
       if (a) {
@@ -571,6 +617,9 @@ export function createPanelHandoffController({
         if (!isAuxPanelOpen() && !isOverviewOpen()) {
           safeNativeClick(getOverviewToggleBtn());
         }
+        restoreHoldReserve = '0px';
+        restoreHoldGutter = '0px';
+        if (held) clearHandoffState();
       }, 540, handoffTimers);
       return true;
     }
@@ -579,6 +628,8 @@ export function createPanelHandoffController({
       const cid = getActiveRouteCid();
       if (cid) autoOpenedOverviewCids.add(cid);
       restoreOverviewForCid = '';
+      restoreHoldReserve = '0px';
+      restoreHoldGutter = '0px';
       clearHandoffTimers();
     }
 
@@ -602,6 +653,8 @@ export function createPanelHandoffController({
 
   function dispose() {
     restoreOverviewForCid = '';
+    restoreHoldReserve = '0px';
+    restoreHoldGutter = '0px';
     autoOpenedOverviewCids.clear();
     clearHandoffState();
     for (const id of activeTimers) clearTimeout(id);

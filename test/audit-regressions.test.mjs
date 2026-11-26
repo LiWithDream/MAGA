@@ -2972,7 +2972,14 @@ test('[Audit-2026-11-21 · Projects UI] aborts save when readContext fails, rend
   );
   const { window } = dom;
   const doc = window.document;
-  const projDir = '/tmp/proj-audit-ui';
+  const toBrowserPath = (p) => {
+    let pathname = decodeURIComponent(new URL(pathToFileURL(p).href).pathname);
+    if (/^\/[A-Za-z]:/.test(pathname)) pathname = pathname.slice(1);
+    return pathname;
+  };
+  const projDir = toBrowserPath('/tmp/proj-audit-ui');
+  const timeoutProjDir = toBrowserPath('/tmp/proj-timeout-case');
+  const otherFolder = toBrowserPath('/tmp/other-folder');
   const state = {
     sidebarProjects: {
       projects: [{ id: 'p-1', name: 'Alpha Case', folderUris: [pathToFileURL(projDir).href], archived: false }]
@@ -3040,7 +3047,7 @@ test('[Audit-2026-11-21 · Projects UI] aborts save when readContext fails, rend
       };
     }
     if (action === 'readContext') {
-      if (readShouldFail || payload?.dirPath === '/tmp/proj-timeout-case') return { ok: false, error: 'timeout' };
+      if (readShouldFail || payload?.dirPath === timeoutProjDir) return { ok: false, error: 'timeout' };
       return {
         ok: true,
         dirPath: projDir,
@@ -3059,7 +3066,7 @@ test('[Audit-2026-11-21 · Projects UI] aborts save when readContext fails, rend
       return { ok: true, dirPath: projDir, instructions: 'Keep me', files: [], extraFolders: [], scheduledTasks: [] };
     }
     if (action === 'pickFolder') {
-      return { ok: true, folderPath: '/tmp/other-folder', name: 'other-folder' };
+      return { ok: true, folderPath: otherFolder, name: 'other-folder' };
     }
     return { ok: true };
   };
@@ -3117,7 +3124,7 @@ test('[Audit-2026-11-21 · Projects UI] aborts save when readContext fails, rend
     state.sidebarProjects.projects.push({
       id: 'p-timeout',
       name: 'Timeout Case',
-      folderUris: [pathToFileURL('/tmp/proj-timeout-case').href],
+      folderUris: [pathToFileURL(timeoutProjDir).href],
       archived: false
     });
     doc.querySelector('[data-ag-pd-back]').click();
@@ -3975,5 +3982,89 @@ test('Overview Review shortcut tile replaces icon slot with in-flow diff stats i
     /\[data-testid="overview-panel-row-review-diff-stats"\]\s*\{[\s\S]*?font-size:\s*10\.5px\s*!important;/,
     'Review diff stats must override native Tailwind text-sm (14px) to fit inside 68px shortcut tile'
   );
+});
+
+test('[Windows Projects Overlay] skips full-width top menu bar .bg-sidebar, tracks width-animating shell & uses Alt tooltip', { skip: skipDom }, async () => {
+  const customJsSrc = fs.readFileSync(path.join(REPO, 'user', 'custom.js'), 'utf8');
+  const customCssSrc = fs.readFileSync(path.join(REPO, 'user', 'custom.css'), 'utf8');
+  const inlineUndoSrc = fs.readFileSync(path.join(REPO, 'user', 'src', 'modules', 'inline-undo.mjs'), 'utf8');
+  assert.match(customCssSrc, /#ag-claude-projects-view\s*\{[\s\S]*?top:\s*var\(--ag-proj-top,\s*0px\)\s*!important;/);
+  assert.match(customCssSrc, /#ag-claude-project-modal\s*\{[\s\S]*?top:\s*var\(--ag-win-top-bar,\s*0px\)\s*!important;/);
+  assert.match(inlineUndoSrc, /isMac \? '⌥' : 'Alt'/);
+  assert.match(inlineUndoSrc, /isMac \? 'Option' : 'Alt'/);
+
+  const dom = new JSDOM(
+    `<!doctype html><body>
+      <div id="root">
+        <div class="app-shell">
+          <div id="win-top-bar" class="shrink-0 flex bg-sidebar"></div>
+          <div id="win-sb-track" style="overflow: hidden;">
+            <div id="win-left-sb" class="h-full w-full flex flex-col pb-2 bg-sidebar">
+              <div data-testid="project-header"></div>
+              <button data-testid="automations-button">Automations</button>
+            </div>
+          </div>
+          <main><div id="antigravity.agentSidePanelInputBox"></div></main>
+        </div>
+      </div>
+    </body>`,
+    { runScripts: 'outside-only', url: 'http://127.0.0.1/', pretendToBeVisual: true }
+  );
+  const { window } = dom;
+  const doc = window.document;
+  const observedTargets = [];
+  let roCb = null;
+  window.ResizeObserver = class {
+    constructor(cb) { roCb = cb; }
+    observe(el) { observedTargets.push(el); }
+    disconnect() { observedTargets.length = 0; }
+  };
+  Object.defineProperty(window, 'innerWidth', { value: 1920, configurable: true });
+  doc.getElementById('win-top-bar').getBoundingClientRect = () => ({
+    left: 0, top: 0, width: 1920, height: 30, right: 1920, bottom: 30,
+  });
+  const sbTrack = doc.getElementById('win-sb-track');
+  let trackRect = { left: 0, top: 30, width: 256, height: 1002, right: 256, bottom: 1032 };
+  sbTrack.getBoundingClientRect = () => trackRect;
+  const leftSb = doc.getElementById('win-left-sb');
+  leftSb.getBoundingClientRect = () => ({
+    left: trackRect.right - 256, top: 30, width: 256, height: 1002, right: trackRect.right, bottom: 1032,
+  });
+
+  const state = {
+    sidebarProjects: { projects: [{ id: 'proj-win', name: 'agy-studio', folderUris: ['file:///C:/agy-studio'] }] },
+    trajectorySummaries: { summaries: {}, indexes: { byProject: {} } },
+  };
+  const fakeStore = { getState: () => state, subscribe: () => () => {}, dispatch: () => {} };
+  const mockRouter = { state: { location: { pathname: '/', search: {} } }, navigate: () => {} };
+  leftSb.__reactFiber$test = {
+    memoizedProps: { sidebarStore: fakeStore, sidebarRouter: mockRouter },
+    dependencies: { firstContext: { memoizedValue: { store: fakeStore }, next: null } },
+    return: null,
+  };
+  doc.querySelector('[data-testid="project-header"]').__reactFiber$test = leftSb.__reactFiber$test;
+
+  window.__agProjectCall = async () => ({ ok: true, contexts: {}, instructions: '', files: [], extraFolders: [], scheduledTasks: [] });
+  window.ctx = { modules: { i18n: true }, boot: { platform: 'win32' }, onCleanup: () => {} };
+  window.eval(customJsSrc);
+
+  try {
+    doc.getElementById('ag-claude-projects-nav-btn').click();
+    const view = doc.getElementById('ag-claude-projects-view');
+    assert.ok(view, 'projects overlay mounted');
+    assert.equal(view.style.left, '256px');
+    assert.equal(view.style.getPropertyValue('--ag-proj-top'), '30px');
+    assert.equal(doc.documentElement.style.getPropertyValue('--ag-win-top-bar'), '30px');
+    assert.equal(view.getAttribute('data-sidebar-collapsed'), 'false');
+    assert.ok(observedTargets.includes(sbTrack), 'ResizeObserver must track width-animating shell');
+
+    trackRect = { left: 0, top: 30, width: 3, height: 1002, right: 3, bottom: 1032 };
+    roCb?.();
+    assert.equal(view.style.left, '0px', 'sliver <= 8px snaps cleanly to 0px');
+    assert.equal(view.getAttribute('data-sidebar-collapsed'), 'true');
+    window.__agClaudeUxDispose?.();
+  } finally {
+    window.close();
+  }
 });
 

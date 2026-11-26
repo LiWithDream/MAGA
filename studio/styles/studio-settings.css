@@ -44,7 +44,7 @@
 #agy-maga-settings-drawer {
   contain: layout style;
   position: fixed;
-  top: 48px;
+  top: var(--agy-drawer-top, calc(var(--ag-win-top-bar, 0px) + 48px));
   right: 10px;
   bottom: 10px;
   width: min(444px, calc(100vw - 24px));

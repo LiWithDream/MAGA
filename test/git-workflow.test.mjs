@@ -331,6 +331,65 @@ test('self-tampering, anti-forgery defer check, submodule separation, parser har
         `read-only shell command must stay allowed: ${safeCmd}`
       );
     }
+    // P1-3: No-workspace hook execution (cwd omitted while process.cwd() === installed plugin dir) must not false-positive
+    const prevCwd = process.cwd();
+    try {
+      process.chdir(path.join(pluginsDir, 'maga-git-workflow'));
+      const nonPluginTarget = path.join(tmpRoot, 'safe-file.txt');
+      for (const okNoWsCmd of [
+        `rm "${nonPluginTarget}"`,
+        `Set-Location "${mainRepo}"; git checkout -- README.md`,
+      ]) {
+        assert.deepEqual(
+          evaluateHookPayloadWithOptions(
+            { hookEventName: 'PreToolUse', toolCall: { name: 'run_command', args: { CommandLine: okNoWsCmd } } },
+            { stateDir, pluginsDir }
+          ),
+          { decision: 'allow' },
+          `no-workspace command outside plugin dir must stay allowed: ${okNoWsCmd}`
+        );
+      }
+      assert.equal(
+        evaluateHookPayloadWithOptions(
+          {
+            hookEventName: 'PreToolUse',
+            toolCall: { name: 'run_command', args: { CommandLine: `echo '{}' > "${policyFile}"` } },
+          },
+          { stateDir, pluginsDir }
+        ).decision,
+        'deny',
+        'explicit policy tamper must still be denied in no-workspace chat'
+      );
+
+      const pluginDir = path.join(pluginsDir, 'maga-git-workflow');
+      assert.equal(
+        evaluateHookPayloadWithOptions(
+          {
+            hookEventName: 'PreToolUse',
+            cwd: tmpRoot,
+            toolCall: { name: 'run_command', args: { CommandLine: `Set-Location "${pluginDir}"; rm plugin.json` } },
+          },
+          { stateDir, pluginsDir, platform: 'win32' }
+        ).decision,
+        'deny',
+        'Set-Location into installed plugin dir followed by rm must be denied'
+      );
+      assert.deepEqual(
+        evaluateHookPayloadWithOptions(
+          {
+            hookEventName: 'PreToolUse',
+            cwd: pluginDir,
+            toolCall: { name: 'run_command', args: { CommandLine: `Set-Location -Path "${tmpRoot}"; rm safe.txt` } },
+          },
+          { stateDir, pluginsDir, platform: 'win32' }
+        ),
+        { decision: 'allow' },
+        'Set-Location -Path leaving plugin dir before mutating safe path must stay allowed'
+      );
+    } finally {
+      process.chdir(prevCwd);
+    }
+
     fs.rmSync(path.join(mainRepo, '.agents'), { recursive: true, force: true });
 
     // P2-1: Deep subdirectory under broken .git hint fails closed using repo gitHintRoot, not subdir path

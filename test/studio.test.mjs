@@ -2346,13 +2346,13 @@ test('readProjectWorkspaceStatusAsync & handleProjectRpcRequest return Git commi
   const direct = await readProjectWorkspaceStatusAsync(REPO, { force: true });
   assert.equal(direct.ok, true);
   assert.equal(direct.dirPath, REPO);
-  assert.equal(direct.pkgVersion, '1.1.0');
+  assert.equal(direct.pkgVersion, '1.2.0');
   assert.ok(Array.isArray(direct.scripts) && direct.scripts.includes('test'));
   assert.ok(direct.git && direct.git.branch, 'detects live git branch');
   assert.ok(Array.isArray(direct.recentCommits) && direct.recentCommits.length >= 1);
   assert.ok(direct.recentCommits[0].hash && direct.recentCommits[0].fullHash && direct.recentCommits[0].subject);
   assert.ok(Array.isArray(direct.dirtyFiles));
-  assert.match(direct.remoteUrl || '', /github\.com\/LiWithDream\/MAGA/i);
+  assert.match(direct.remoteUrl || '', /github\.com\/LiWithDream\/(MAGA|agy-studio)/i);
   assert.ok(typeof direct.latestTag === 'string' && direct.latestTag.startsWith('v'));
 
   const detailOk = await readGitCommitDetailAsync(REPO, direct.recentCommits[0].hash);
@@ -2378,7 +2378,7 @@ test('readProjectWorkspaceStatusAsync & handleProjectRpcRequest return Git commi
   );
   assert.equal(rpcOk?.reqId, 'ws-1');
   assert.equal(rpcOk?.result?.ok, true);
-  assert.equal(rpcOk?.result?.pkgVersion, '1.1.0');
+  assert.equal(rpcOk?.result?.pkgVersion, '1.2.0');
 
   const unsafeEtc = await readProjectWorkspaceStatusAsync('/etc');
   assert.equal(unsafeEtc.ok, false);

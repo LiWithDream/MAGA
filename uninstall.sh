@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Cleanly removes MAGA studio injection, LaunchAgent daemon, and injected AGENTS.md rules
+# Cleanly removes AGY Studio injection, LaunchAgent daemon, and injected AGENTS.md rules
 # while keeping Antigravity chats and personal studio-prefs.json intact unless --purge is passed.
 
 DRY_RUN=0
 PURGE=0
-INSTALL_DIR="${MAGA_INSTALL_DIR:-$HOME/.local/share/maga}"
+INSTALL_DIR="${AGY_STUDIO_INSTALL_DIR:-${MAGA_INSTALL_DIR:-$HOME/.local/share/agy-studio}}"
 
 usage() {
   cat <<'EOF'
@@ -99,7 +99,7 @@ elif [[ -f "$PWD/studio/cli.mjs" ]]; then
 elif [[ -f "$INSTALL_DIR/studio/cli.mjs" ]]; then
   TARGET_DIR="$INSTALL_DIR"
 else
-  echo "Error: Could not find MAGA directory. Run from your MAGA folder." >&2
+  echo "Error: Could not find AGY Studio directory. Run from your agy-studio folder." >&2
   exit 1
 fi
 
@@ -126,4 +126,4 @@ if [[ "$PURGE" -eq 1 && -f "$PREFS_FILE" ]]; then
   echo "Removed $PREFS_FILE"
 fi
 
-echo "MAGA uninstalled cleanly. /Applications/Antigravity.app remains untouched."
+echo "AGY Studio uninstalled cleanly. /Applications/Antigravity.app remains untouched."

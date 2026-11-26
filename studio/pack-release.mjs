@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Release Packager for MAGA (`agy-studio`).
+ * Release Packager for AGY Studio (`agy-studio`).
  * Pre-compiles browser bundles (`user/custom.js` + `studio/prebuilt/studio-entry.js`)
  * and emits a zero-`npm-install` macOS Release tarball + SHA-256 checksum under `dist/`.
  */
@@ -67,7 +67,7 @@ function parseCliOpts(argv) {
 export async function packRelease({ outDir = DIST_DIR, versionOverride = '' } = {}) {
   const pkg = JSON.parse(readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf8'));
   const version = versionOverride || String(pkg.version || '0.0.0').trim();
-  const rootName = `maga-v${version}-macos`;
+  const rootName = `agy-studio-v${version}-macos`;
   const archiveName = `${rootName}.tar.gz`;
 
   // 1. Pre-compile both runtime bundles so end users do NOT need `npm install` or `esbuild`.

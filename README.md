@@ -1,8 +1,8 @@
 <div align="center">
 
-# MAGA
+# AGY Studio
 
-**A multi-project & Git-worktree cockpit for Google Antigravity Desktop 2.0 on macOS.**  
+**A multi-project & Git-worktree workspace for Google Antigravity Desktop 2.0 on macOS** *(formerly MAGA)*.  
 Per-project token analytics, live Git drawers, dual-pool 5h/weekly quota tracking, quota-guarded Claude Opus Gate, and a single-observer UI runtime — without modifying `/Applications/Antigravity.app`.
 
 **English** · [简体中文](./README.zh-CN.md)
@@ -17,9 +17,9 @@ Per-project token analytics, live Git drawers, dual-pool 5h/weekly quota trackin
 
 <br />
 
-<img src="./docs/images/demo-cockpit.webp" alt="MAGA Projects Cockpit, Git Drawers, Per-Project Usage, and Settings Studio Demo" width="100%" />
+<img src="./docs/images/demo-cockpit.webp" alt="AGY Studio Projects Workspace, Git Drawers, Per-Project Usage, and Settings Demo" width="100%" />
 
-<sub><i>Projects Cockpit sorting, live Git dirty/commit drawers with <code>@file</code> insertion, per-project Token Usage charts, and unified Settings Studio.</i></sub>
+<sub><i>Projects sorting, live Git dirty/commit drawers with <code>@file</code> insertion, per-project Token Usage charts, and unified 3-tab Settings.</i></sub>
 
 </div>
 
@@ -29,7 +29,7 @@ Per-project token analytics, live Git drawers, dual-pool 5h/weekly quota trackin
 
 Running multiple repositories and parallel agent sessions in **Google Antigravity Desktop 2.0** exposes three daily friction points:
 
-1. **Multi-project workflows lack a real cockpit**: Native Projects leave you guessing which repo has uncommitted changes, which branch or worktree an old chat ran in, and which project burned your weekly tokens.
+1. **Multi-project workflows lack a real workspace**: Native Projects leave you guessing which repo has uncommitted changes, which branch or worktree an old chat ran in, and which project burned your weekly tokens.
 2. **Quota and context limits sneak up on you**: Rolling 5-hour limits, weekly Gemini / Claude / GPT pool headroom, cache hit rates, and per-conversation spend stay hidden until you hit a lockout.
 3. **Naive DOM mods lag the Electron window**: Injecting multiple `MutationObserver` loops or global CSS `:has()` selectors slows down streaming text and model menus.
 
@@ -38,7 +38,7 @@ Running multiple repositories and parallel agent sessions in **Google Antigravit
 | Root DOM observers (`window.__agyMagaKernel`) | **`1`** shared `MutationObserver` (`data-maga-own` filtered) |
 | Frame flush cost (`lastFlushMs`, Apple Silicon local CDP check) | **`3.6 ms`** with leaf-only text slot updates (`MetricsBus`) |
 | Global CSS `:has()` selectors | **`0`** (enforced by automated test guards) |
-| Automated regression & invariant suite (`npm test`) | **`150`** passing tests, **`0`** skipped |
+| Automated regression & invariant suite (`npm test`) | **`150+`** passing tests, **`0`** skipped |
 | Changes to `/Applications/Antigravity.app` | **`0 bytes`** (macOS signature & auto-updates stay intact) |
 | Background runtime footprint | **`1`** local macOS `LaunchAgent` (all data stays on disk) |
 
@@ -53,15 +53,15 @@ Running multiple repositories and parallel agent sessions in **Google Antigravit
 Paste this prompt directly into Antigravity or Claude Code:
 
 ```text
-Clone https://github.com/LiWithDream/MAGA.git to ~/Developer/MAGA, read docs/INSTALL_AGENT.md, run bash ./install.sh, and verify with node studio/cli.mjs doctor. Do not touch /Applications/Antigravity.app or delete existing chats.
+Clone https://github.com/LiWithDream/agy-studio.git to ~/Developer/agy-studio, read docs/INSTALL_AGENT.md, run bash ./install.sh, and verify with node studio/cli.mjs doctor. Do not touch /Applications/Antigravity.app or delete existing chats.
 ```
 
 ### Option 2: Prebuilt Release Tarball (Zero `npm install`)
 
-Download the latest `maga-v*-macos.tar.gz` from [Releases](https://github.com/LiWithDream/MAGA/releases), unpack it, and run:
+Download the latest `agy-studio-v*-macos.tar.gz` from [Releases](https://github.com/LiWithDream/agy-studio/releases), unpack it, and run:
 
 ```bash
-tar -xzf maga-v*-macos.tar.gz && cd maga-v*-macos
+tar -xzf agy-studio-v*-macos.tar.gz && cd agy-studio-v*-macos
 bash ./install.sh
 ```
 
@@ -70,8 +70,8 @@ Prebuilt tarballs include pre-compiled `user/custom.js` and `studio/prebuilt/stu
 ### Option 3: From Source (Auto-installs `esbuild` via `npm`)
 
 ```bash
-git clone https://github.com/LiWithDream/MAGA.git ~/Developer/MAGA
-cd ~/Developer/MAGA
+git clone https://github.com/LiWithDream/agy-studio.git ~/Developer/agy-studio
+cd ~/Developer/agy-studio
 bash ./install.sh
 ```
 
@@ -81,15 +81,15 @@ bash ./install.sh
 
 ## What It Adds
 
-### 1. Projects Cockpit, Live Git Drawers & Worktree Parallelism
+### 1. Projects Workspace, Live Git Drawers & Worktree Parallelism
 
-<img src="./docs/images/projects-cockpit.png" alt="Projects Cockpit with Hero Strip, Git Card, and Per-Project Usage" width="100%" />
+<img src="./docs/images/projects-cockpit.png" alt="AGY Studio Projects Workspace with Hero Strip, Git Card, and Per-Project Usage" width="100%" />
 
-- **Project Wall & Detail Cockpit**: Sort projects by recent activity, token usage, or name. Inside a project, view version pills, local path or remote repo badges, rendered `AGENTS.md` instructions, and recent conversations with per-chat token badges.
+- **Project Wall & Detail Workspace**: Sort projects by recent activity, token usage, or name. Inside a project, view version pills, local path or remote repo badges, rendered `AGENTS.md` instructions, and recent conversations with per-chat token badges.
 - **Interactive Git Dirty-Files & Commit Drawers**: Expand modified files with colored `+/-` line stats, click `+` to insert `@file` directly into the prompt box, trigger `Review changes` or `Draft commit`, or inspect any recent commit's file diff and remote link.
-- **Git Worktree UI & `wt` CLI**: Create, switch, and track linked Git worktrees per conversation from the cockpit strip or conversation topbar (`#agy-conv-project-bar` + `#agy-wt-menu`), plus `npm run wt:new -- <branch>` and `npm run wt:clean`.
+- **Git Worktree UI & `wt` CLI**: Create, switch, and track linked Git worktrees per conversation from the workspace strip or conversation topbar (`#agy-conv-project-bar` + `#agy-wt-menu`), plus `npm run wt:new -- <branch>` and `npm run wt:clean`.
 - **Per-Project Token Usage**: Native Day / Week / Month stacked bar charts with hover breakdowns (uncached input, cache read/write, output) and share of total quota, updated via read-only `immutable=1` SQLite queries inside the existing daemon.
-- **Optional Gemini 3.8 Flash Chat Suggestions**: Configure your own Google AI Studio key (stored locally with `0600` permissions) to generate 3 follow-up starter pills from your last 5 chats with cold-start context handoff.
+- **Optional Gemini 3.8 Flash Chat Suggestions**: Configure your own Google AI Studio key (stored locally with `0600` permissions) to generate 3 follow-up starter pills grounded in your recent Git history and last 5 chats with cold-start context handoff.
 
 <p align="center">
   <img src="./docs/images/git-drawers.png" alt="Expanded Git Dirty Files and Commit Diff Drawers with @file Insertion" width="94%" />
@@ -99,7 +99,7 @@ bash ./install.sh
 
 ### 2. Dual-Pool Quota Popover, Effort Sliders & Opus Gate
 
-<img src="./docs/images/hero-workspace.png" alt="MAGA 2-Row 4-Capsule Dock, Dual-Pool Quota Popover, and Overview Usage" width="100%" />
+<img src="./docs/images/hero-workspace.png" alt="AGY Studio 2-Row 4-Capsule Dock, Dual-Pool Quota Popover, and Overview Usage" width="100%" />
 
 - **2-Row 4-Capsule Adaptive Dock**: Separates actions on Row 1 (`+ Add context`, permissions, voice, send) from live telemetry on Row 2 (**Model & Effort**, **Context Ring**, **Live Speed & TTFT**, **Subagents**). Narrow split panes step down badge labels progressively before wrapping or clipping.
 - **Model Family Effort Sliders & Orchestrator Folding**: Switch models and reasoning tiers (`Low` to `Max`) directly inside the picker with per-family animated tracks (Gemini 4 Neon, Carbon, Argon, Hydrogen, Claude Opus), custom hidden-model filtering, and static `Orchestrator` folding.
@@ -142,15 +142,15 @@ bash ./install.sh
 
 ## Compatibility
 
-Users often already run other Antigravity plugins. Here is how MAGA behaves alongside them:
+Users often already run other Antigravity plugins. Here is how **AGY Studio** behaves alongside them:
 
 | Tool / Plugin | Relationship | Notes |
 | :--- | :--- | :--- |
-| **`INK-Q/agy-fast`** | **Compatible** | Complementary MCP tool accelerator. Runs cleanly alongside MAGA's UI layer. |
-| **`oil-oil/agy-fast-io`** | **Rule overlap** | MAGA already includes a distilled 7-line `fast-io` rule block; pass `bash ./install.sh --no-rules` if you prefer keeping standalone `agy-fast-io`. |
-| **`Lumidarin/agy-capsule`** | **Dock overlap** | MAGA vendors and integrates `agy-capsule` (`MIT`) into `vendor/agy-capsule/`. Do not run a separate `agy-capsule` copy at the same time. |
+| **`INK-Q/agy-fast`** | **Compatible** | Complementary MCP tool accelerator. Runs cleanly alongside AGY Studio's UI layer. |
+| **`oil-oil/agy-fast-io`** | **Rule overlap** | AGY Studio already includes a distilled 7-line `fast-io` rule block; pass `bash ./install.sh --no-rules` if you prefer keeping standalone `agy-fast-io`. |
+| **`Lumidarin/agy-capsule`** | **Dock overlap** | AGY Studio vendors and integrates `agy-capsule` (`MIT`) into `vendor/agy-capsule/`. Do not run a separate `agy-capsule` copy at the same time. |
 | **`WhiteBr1ck/agy-powertools`** | **CDP UI overlap** | Both inject into Antigravity's CDP UI layer (`custom.js` / composer dock). Choose one, or run `bash ./uninstall.sh` before switching. |
-| **ASAR Chinese patches** | **Not co-tested** | MAGA includes an optional built-in CN UI toggle in Settings and leaves `app.asar` / `.app` untouched. Co-installing external ASAR patches is untested. |
+| **ASAR Chinese patches** | **Not co-tested** | AGY Studio includes an optional built-in CN UI toggle in Settings and leaves `app.asar` / `.app` untouched. Co-installing external ASAR patches is untested. |
 
 ---
 
@@ -158,14 +158,14 @@ Users often already run other Antigravity plugins. Here is how MAGA behaves alon
 
 - **Currently macOS-only**: Background lifecycle relies on macOS `LaunchAgent` (`com.antigravity.anti-claude.daemon`) and `/usr/bin/open` CDP relaunch (`--remote-debugging-port=0`). Windows and Linux require separate process/credential bootstrap work and are tracked as future milestones on GitHub Issues.
 - **Non-forced agent rules**: The 7-line rule in `~/.gemini/AGENTS.md` guides model behavior (`grep` first, phase briefs), which the model follows most of the time but is not a hard API constraint.
-- **No multi-account OAuth relay**: MAGA focuses on single-workspace ergonomics, Git/Worktree control, and quota visibility — it does not proxy APIs or swap multiple Google accounts.
+- **No multi-account OAuth relay**: AGY Studio focuses on single-workspace ergonomics, Git/Worktree control, and quota visibility — it does not proxy APIs or swap multiple Google accounts.
 
 ---
 
 ## Settings Reference
 
 <details>
-<summary><b>All user-configurable options inside MAGA Settings (live preview + persistent JSON)</b></summary>
+<summary><b>All user-configurable options inside AGY Studio Settings (live preview + persistent JSON)</b></summary>
 
 | Category | Option | Default | What it controls |
 | :--- | :--- | :--- | :--- |
@@ -183,7 +183,7 @@ Users often already run other Antigravity plugins. Here is how MAGA behaves alon
 | **Workspace** | Subagent Dock Pill | `On` | Footer subagent status pill and one-click 50/50 split |
 | **Workspace** | Context Ring & Quota Popover | `On` | Real-time context usage ring and 5h/weekly dual-pool popover |
 | **Workspace** | Unified Sidebar Recents | `Off` | Optionally merge native project groups into one chronological list |
-| **Workspace** | AI Chat Suggestions | `Off` (key optional) | Gemini 3.8 Flash starter suggestions from last 5 chats (`0600` local key) |
+| **Workspace** | AI Chat Suggestions | `Off` (key optional) | Gemini 3.8 Flash starter suggestions from Git history + last 5 chats (`0600` local key) |
 | **Appearance** | Chinese UI Localization | `Off` | Built-in Simplified Chinese UI toggle + CJK optical scale (`94.5%` / `95%` / `100%`) |
 | **Appearance** | Motion Intensity | `Full` | `Full` / `Reduced` / `Off` animation control |
 
@@ -209,17 +209,17 @@ Users often already run other Antigravity plugins. Here is how MAGA behaves alon
 
 ```text
 .
-├── core/                  # Local CDP daemon + 9 submodules (attach, bootstrap, SQLite, projects)
+├── core/                  # Local CDP daemon + submodules (attach, bootstrap, SQLite, projects, git-exec)
 ├── user/src/              # 18 modular ESM frontend files (<2,000 lines each, compiled to user/custom.js)
 ├── vendor/agy-capsule/    # Vendored MIT model/effort picker, motion themes & SQLite parser
 ├── studio/
 │   ├── core/              # MagaKernel (1 root observer), DomFlags, MetricsBus, snapshot
-│   ├── daemon/            # Token usage aggregation, resume detection & Opus Gate service
+│   ├── daemon/            # Token usage aggregation, resume detection, AI suggestions & Opus Gate service
 │   ├── modules/           # Dock capsules, 3-tab Settings Studio, project usage, subagent split
 │   ├── styles/            # Scoped stylesheets (0 :has() selectors)
 │   ├── cli.mjs            # Unified CLI (install / deploy / sync-rules / doctor / rollback)
 │   └── pack-release.mjs   # Zero-npm-install Release tarball packager
-├── test/                  # 150 automated tests (DOM, CSS invariants, Opus Gate, Worktrees, Install kit)
+├── test/                  # Automated regression & invariant suite (DOM, CSS guards, Opus Gate, Worktrees)
 ├── install.sh             # One-line macOS installer (--dry-run, prebuilt & source modes)
 └── uninstall.sh           # Clean rollback & uninstaller (--dry-run supported)
 ```
@@ -235,14 +235,14 @@ Users often already run other Antigravity plugins. Here is how MAGA behaves alon
 This error comes from Antigravity's native `language_server` when its TLS/proxy connection to `daily-cloudcode-pa.googleapis.com` drops; it is not caused by UI injection.
 
 1. Enable **TUN mode** or **System Proxy** in your proxy client (Clash / Mihomo / Surge / V2Ray) so `*.googleapis.com` routes through a stable node.
-2. **Automatic env forwarding**: When launching Antigravity from a shell with proxy or custom CA variables (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`, `SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`) or `--proxy-*` flags, MAGA preserves and forwards them during macOS CDP auto-relaunch. Run `node studio/cli.mjs doctor` to inspect `proxyDiagnostics`.
+2. **Automatic env forwarding**: When launching Antigravity from a shell with proxy or custom CA variables (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`, `SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`) or `--proxy-*` flags, AGY Studio preserves and forwards them during macOS CDP auto-relaunch. Run `node studio/cli.mjs doctor` to inspect `proxyDiagnostics`.
 3. To disable automatic CDP relaunch and manage `--remote-debugging-port=0` manually, start the daemon with `ANTI_CLAUDE_NO_CDP_BOOTSTRAP=1`.
 
 ---
 
 ## Acknowledgements
 
-MAGA builds on and integrates ideas and MIT-licensed code from these community projects:
+AGY Studio (formerly MAGA) builds on and integrates ideas and MIT-licensed code from these community projects:
 
 - [**hongqi7/Anti-Claude**](https://github.com/hongqi7/Anti-Claude) — Provided the zero-`.app`-patch Antigravity CDP daemon foundation (`core/`), Claude-style dark/light visual tokens, Overview panel base, context ring/quota popover scaffolding, and early interleaved narration patterns.
 - [**Lumidarin/agy-capsule**](https://github.com/Lumidarin/agy-capsule) (MIT License) — Directly vendored in `vendor/agy-capsule/` for the enhanced model & effort picker, motion themes, speed/TTFT telemetry, and local SQLite usage parsing.
@@ -252,5 +252,5 @@ MAGA builds on and integrates ideas and MIT-licensed code from these community p
 ---
 
 <div align="center">
-  <sub>MIT Licensed · If this cockpit saves you time and tokens on macOS Antigravity 2.0, feel free to leave a ⭐ or open an issue for Windows support.</sub>
+  <sub>MIT Licensed · If AGY Studio saves you time and tokens on macOS Antigravity 2.0, feel free to leave a ⭐ or open an issue for Windows support.</sub>
 </div>

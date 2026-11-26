@@ -80,7 +80,7 @@ test('packRelease builds zero-npm-install macOS tarball with valid SHA-256, zero
     assert.deepEqual(forbidden, [], `Forbidden paths leaked into release tarball: ${forbidden.join(', ')}`);
 
     execFileSync('tar', ['-xzf', res.archive, '-C', unpackDir]);
-    const extractedRoot = path.join(unpackDir, `maga-v${res.version}-macos`);
+    const extractedRoot = path.join(unpackDir, `agy-studio-v${res.version}-macos`);
     assert.equal(existsSync(path.join(extractedRoot, 'node_modules')), false, 'tarball must exclude node_modules');
     assert.equal(existsSync(path.join(extractedRoot, 'test')), false, 'tarball must exclude test/');
     assert.equal(existsSync(path.join(extractedRoot, 'user', 'custom.js')), true);

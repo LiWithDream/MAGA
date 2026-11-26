@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# MAGA one-command installer for macOS.
+# AGY Studio (formerly MAGA) one-command installer for macOS.
 # Supports:
 #   1) Prebuilt Release tarball (zero npm install, zero esbuild)
 #   2) Local git clone (auto-runs `npm install` when node_modules/esbuild is missing)
-#   3) Remote pipe (`curl -fsSL ... | sh`) cloning to $MAGA_INSTALL_DIR
+#   3) Remote pipe (`curl -fsSL ... | bash`) cloning to $AGY_STUDIO_INSTALL_DIR
 
 DRY_RUN=0
 NO_RULES=0
-INSTALL_DIR="${MAGA_INSTALL_DIR:-$HOME/.local/share/maga}"
-REPO_URL="${MAGA_REPO_URL:-https://github.com/LiWithDream/MAGA.git}"
+INSTALL_DIR="${AGY_STUDIO_INSTALL_DIR:-${MAGA_INSTALL_DIR:-$HOME/.local/share/agy-studio}}"
+REPO_URL="${AGY_STUDIO_REPO_URL:-${MAGA_REPO_URL:-https://github.com/LiWithDream/agy-studio.git}}"
 
 usage() {
   cat <<'EOF'
@@ -18,7 +18,7 @@ Usage: install.sh [options]
 
 Options:
   --dry-run        Print resolved Node binary, mode, and commands without modifying files
-  --dir <path>     Target directory when cloning via curl | sh (default: ~/.local/share/maga)
+  --dir <path>     Target directory when cloning via curl | bash (default: ~/.local/share/agy-studio)
   --no-rules       Skip syncing 7-line phase-sync rules into ~/.gemini/AGENTS.md
   -h, --help       Show this help message
 EOF
@@ -52,7 +52,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
-  echo "MAGA currently supports macOS only (uses LaunchAgent + macOS CDP bootstrap)." >&2
+  echo "AGY Studio currently supports macOS only (uses LaunchAgent + macOS CDP bootstrap)." >&2
   echo "Windows & Linux support is tracked on GitHub Issues — feel free to upvote it." >&2
   exit 1
 fi
@@ -164,11 +164,11 @@ fi
 if [[ "$MODE" == "remote-clone" ]]; then
   command -v git >/dev/null 2>&1 || { echo "Error: git is required for remote install." >&2; exit 1; }
   if [[ -d "$TARGET_DIR/.git" ]]; then
-    echo "Updating existing MAGA clone at $TARGET_DIR..."
+    echo "Updating existing AGY Studio clone at $TARGET_DIR..."
     git -C "$TARGET_DIR" pull --ff-only
   else
     mkdir -p "$(dirname "$TARGET_DIR")"
-    echo "Cloning MAGA into $TARGET_DIR..."
+    echo "Cloning AGY Studio into $TARGET_DIR..."
     git clone "$REPO_URL" "$TARGET_DIR"
   fi
   if [[ -f "$TARGET_DIR/user/custom.js" && -f "$TARGET_DIR/studio/prebuilt/studio-entry.js" ]]; then

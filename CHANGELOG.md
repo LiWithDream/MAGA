@@ -1,16 +1,21 @@
 # Changelog
 
-All notable changes to **MAGA (`agy-studio`)** will be documented in this file.
+All notable changes to **AGY Studio (`agy-studio`, formerly MAGA)** will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-26
+
+Rebranded from **MAGA** to **AGY Studio (`agy-studio`)**, added Git Worktree workspace management, quota-guarded Claude Opus Gate, Git-history-grounded AI chat suggestions, and zero-`npm-install` macOS Release packaging.
+
 ### Added
-- **Git Worktree UI, Per-Conversation Tracking & `wt` CLI (`user/src/modules/projects/worktree-ui.mjs`, `user/src/modules/projects/conv-topbar.mjs`, `studio/wt-cli.mjs`, `studio/deploy-meta.mjs`, `core/daemon/git-exec.mjs`)**: Manage sibling worktrees from the Projects Cockpit strip, track per-conversation worktrees with live branch/dirty pills, create/clean worktrees via `npm run wt:new` / `wt:clean`, and enforce single-desktop deploy provenance.
+- **Rebrand to AGY Studio (`agy-studio`)**: Renamed the public project, Release tarball prefix (`agy-studio-v*-macos.tar.gz`), installer defaults (`~/.local/share/agy-studio`), and documentation while preserving internal compatibility identifiers (`com.antigravity.anti-claude.daemon`, `studio-prefs.json`).
+- **Git Worktree UI, Per-Conversation Tracking & `wt` CLI (`user/src/modules/projects/worktree-ui.mjs`, `user/src/modules/projects/conv-topbar.mjs`, `studio/wt-cli.mjs`, `studio/deploy-meta.mjs`, `core/daemon/git-exec.mjs`)**: Manage sibling worktrees from the Projects workspace strip, track per-conversation worktrees with live branch/dirty pills, create/clean worktrees via `npm run wt:new` / `wt:clean`, and enforce single-desktop deploy provenance.
 - **Quota-Guarded Claude Opus Gate (`studio/daemon/opus-gate-service.mjs`, `studio/modules/opus-gate-pill.mjs`, `studio/plugin/maga-opus-gate/`)**: Added semi-auto (`✦ 请 Opus 把关` dock pill) and quota-guarded auto Claude Opus checkpoints (`plan` / `risk` / `debug` / `stop`), plus Claude/GPT dual-pool quota tracking across Overview and project usage cards.
-- **History-Aware Project AI Chat Suggestions & Redesigned Repo Header (`core/daemon/project-suggestions.mjs`, `user/src/modules/projects/suggestions-ui.mjs`, `user/src/modules/projects/workspace-ui.mjs`)**: Added optional Gemini 3.8 Flash follow-up prompt pills with cold-start context handoff and redesigned single-line repository status pills.
+- **History-Aware Project AI Chat Suggestions & Redesigned Repo Header (`core/daemon/project-suggestions.mjs`, `user/src/modules/projects/suggestions-ui.mjs`, `user/src/modules/projects/workspace-ui.mjs`)**: Added optional Gemini 3.8 Flash follow-up prompt pills grounded in recent git history and refined 3-column strip layout, plus redesigned single-line repository status pills.
 - **Zero-Dependency Release Packager & One-Line Installer (`install.sh`, `uninstall.sh`, `studio/pack-release.mjs`, `docs/INSTALL_AGENT.md`)**: Added prebuilt browser bundle support (`studio/prebuilt/studio-entry.js` + `user/custom.js`), `npm run release:pack` tarball + SHA-256 emitter, `--dry-run` safe `install.sh` / `uninstall.sh` with automatic `npm install` fallback for fresh clones, and an Ask-Agent installation guide.
 - **Proxy Diagnostics in `npm run doctor` (`studio/cli.mjs`)**: Added non-blocking `proxyDiagnostics` reporting (active proxy env key names without exposing values, plus macOS `scutil --proxy` status and troubleshooting hint when shell proxy vars are set without System Proxy).
 

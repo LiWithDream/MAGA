@@ -1,8 +1,8 @@
 <div align="center">
 
-# MAGA
+# AGY Studio
 
-**面向 macOS 上 Google Antigravity Desktop 2.0 的多项目与 Git Worktree 驾驶舱。**  
+**面向 macOS 上 Google Antigravity Desktop 2.0 的多项目与 Git Worktree 桌面工作台** *（原名 MAGA）*。  
 把分项目 Token 用量、实时 Git 改动/提交抽屉、Gemini & Claude/GPT 双池配额、以及配额熔断 Claude Opus 把关整合进同一套单观测器前端，全程不修改 `/Applications/Antigravity.app`。
 
 [English](./README.md) · **简体中文**
@@ -17,9 +17,9 @@
 
 <br />
 
-<img src="./docs/images/demo-cockpit.webp" alt="MAGA 项目驾驶舱、Git 抽屉、分项目 Token 用量与统一设置工作台演示" width="100%" />
+<img src="./docs/images/demo-cockpit.webp" alt="AGY Studio 项目工作台、Git 抽屉、分项目 Token 用量与统一设置台演示" width="100%" />
 
-<sub><i>Projects 排序与详情驾驶舱、Git 未提交清单与 <code>@file</code> 一键引用、分项目 Token 图表与三标签统一设置台。</i></sub>
+<sub><i>Projects 排序与详情工作台、Git 未提交清单与 <code>@file</code> 一键引用、分项目 Token 图表与三标签统一设置台。</i></sub>
 
 </div>
 
@@ -29,7 +29,7 @@
 
 日常在 **Google Antigravity Desktop 2.0** 里同时跑多个仓库和子代理时，最影响效率的主要是三件事：
 
-1. **多项目没有集中驾驶舱**：原生 Projects 页面看不到仓库未提交改动，对话一多也不清楚每场对话跑在哪个分支或 Worktree 上、烧了多少 Token。
+1. **多项目缺少集中工作台**：原生 Projects 页面看不到仓库未提交改动，对话一多也不清楚每场对话跑在哪个分支或 Worktree 上、烧了多少 Token。
 2. **上下文与双池配额不透明**：5 小时滚动窗口、周配额、缓存命中率和按项目消耗都藏得很深，跑长任务很容易突然撞墙。
 3. **堆砌独立监听会拖慢界面**：同时挂多个全树 `MutationObserver` 或大量 CSS `:has()` 选择器，会导致流式输出和模型菜单明显掉帧。
 
@@ -38,7 +38,7 @@
 | 根 DOM 观测器数量 (`window.__agyMagaKernel`) | **`1`** 个统一 `MutationObserver`（`data-maga-own` 自隔离） |
 | 主线程刷帧耗时（Apple Silicon 本地 CDP 实测 `lastFlushMs`） | **`3.6 ms`**，高频遥测走叶节点原地更新（`MetricsBus`） |
 | 全局 CSS `:has()` 选择器数量 | **`0`**（自动化测试硬守卫） |
-| 自动化测试套件 (`npm test`) | **`150`** 项全部通过，**`0`** 项跳过 |
+| 自动化测试套件 (`npm test`) | **`150+`** 项全部通过，**`0`** 项跳过 |
 | 对 `/Applications/Antigravity.app` 的改动 | **`0 bytes`**（苹果官方签名与自动更新完全不受影响） |
 | 本机后台运行形态 | **`1`** 个 `LaunchAgent` 本地守护进程，数据全留本机 |
 
@@ -53,15 +53,15 @@
 把下面这段话发给 Antigravity 或 Claude Code：
 
 ```text
-帮我把 https://github.com/LiWithDream/MAGA.git 克隆到 ~/Developer/MAGA，先阅读 docs/INSTALL_AGENT.md，再执行 bash ./install.sh 并运行 node studio/cli.mjs doctor 验证状态。不要修改 /Applications/Antigravity.app，也不要删除现有对话和配置。
+帮我把 https://github.com/LiWithDream/agy-studio.git 克隆到 ~/Developer/agy-studio，先阅读 docs/INSTALL_AGENT.md，再执行 bash ./install.sh 并运行 node studio/cli.mjs doctor 验证状态。不要修改 /Applications/Antigravity.app，也不要删除现有对话和配置。
 ```
 
 ### 方式二：预编译 Release 压缩包（零 `npm install`）
 
-前往 [Releases](https://github.com/LiWithDream/MAGA/releases) 下载最新 `maga-v*-macos.tar.gz`，解压后直接安装：
+前往 [Releases](https://github.com/LiWithDream/agy-studio/releases) 下载最新 `agy-studio-v*-macos.tar.gz`，解压后直接安装：
 
 ```bash
-tar -xzf maga-v*-macos.tar.gz && cd maga-v*-macos
+tar -xzf agy-studio-v*-macos.tar.gz && cd agy-studio-v*-macos
 bash ./install.sh
 ```
 
@@ -70,8 +70,8 @@ Release 压缩包内已预编好 `user/custom.js` 与 `studio/prebuilt/studio-en
 ### 方式三：从源码克隆安装（自动安装 `esbuild`）
 
 ```bash
-git clone https://github.com/LiWithDream/MAGA.git ~/Developer/MAGA
-cd ~/Developer/MAGA
+git clone https://github.com/LiWithDream/agy-studio.git ~/Developer/agy-studio
+cd ~/Developer/agy-studio
 bash ./install.sh
 ```
 
@@ -81,15 +81,15 @@ bash ./install.sh
 
 ## 核心能力
 
-### 1. Projects 驾驶舱、Git 实时抽屉与 Worktree 并行
+### 1. Projects 工作台、Git 实时抽屉与 Worktree 并行
 
-<img src="./docs/images/projects-cockpit.png" alt="Projects 项目驾驶舱、仓库卡片与分项目 Token 用量" width="100%" />
+<img src="./docs/images/projects-cockpit.png" alt="AGY Studio Projects 项目工作台、仓库卡片与分项目 Token 用量" width="100%" />
 
-- **项目排序墙与详情驾驶舱**：支持按最近活跃、Token 用量、名称排序；进入项目后集中展示版本徽章、本地路径或远端仓库状态、`AGENTS.md` 指令渲染，以及带单场对话 Token 徽章的历史列表。
+- **项目排序墙与详情工作台**：支持按最近活跃、Token 用量、名称排序；进入项目后集中展示版本徽章、本地路径或远端仓库状态、`AGENTS.md` 指令渲染，以及带单场对话 Token 徽章的历史列表。
 - **Git 脏文件与 Commit 详情抽屉**：展开未提交改动清单（带彩色 `+/-` 行数统计），点一下 `+` 直接把 `@file` 插入输入框，支持一键 `Review changes` / `Draft commit`；点开任意 Commit 可查看改动文件清单并跳转远端链接。
-- **Git Worktree 界面与 `wt` 命令行**：在驾驶舱与对话顶部项目栏（`#agy-conv-project-bar` + `#agy-wt-menu`）管理每场对话绑定的隔离 Worktree、实时分支与脏状态，或用 `npm run wt:new -- feat/name` / `wt:clean` 快速建删分身。
+- **Git Worktree 界面与 `wt` 命令行**：在项目工作台与对话顶部项目栏（`#agy-conv-project-bar` + `#agy-wt-menu`）管理每场对话绑定的隔离 Worktree、实时分支与脏状态，或用 `npm run wt:new -- feat/name` / `wt:clean` 快速建删分身。
 - **分项目 Token 用量图表**：右下角原生嵌入日 / 周 / 月堆叠柱状图，悬浮即可核对非缓存输入、缓存读写、输出与全局占比（由单一守护进程以只读 `immutable=1` 扫描本机 SQLite，零额外盘扫）。
-- **可选 Gemini 3.8 Flash 历史建议**：填自己的 Google AI Studio Key（`0600` 权限仅存本地）后，会根据最近 5 条对话与分支状态生成 3 个续跑建议按钮并支持冷启动交接。
+- **可选 Gemini 3.8 Flash 历史建议**：填自己的 Google AI Studio Key（`0600` 权限仅存本地）后，会结合近期 Git 提交历史与最近 5 条对话生成 3 个续跑建议按钮并支持冷启动交接。
 
 <p align="center">
   <img src="./docs/images/git-drawers.png" alt="Git 未提交改动抽屉与 Commit 详情抽屉及 @file 引用" width="94%" />
@@ -99,7 +99,7 @@ bash ./install.sh
 
 ### 2. 双池配额透明、专属思考滑轨与 Opus 额度守门
 
-<img src="./docs/images/hero-workspace.png" alt="MAGA 双行四胶囊底栏、双池配额弹层与 Overview 用量看板" width="100%" />
+<img src="./docs/images/hero-workspace.png" alt="AGY Studio 双行四胶囊底栏、双池配额弹层与 Overview 用量看板" width="100%" />
 
 - **双行四胶囊自适应底栏**：上行集中放操作按钮（`+ Add context`、权限、语音、发送），下行排布**模型与思考强度、上下文水位环、实时速率与 TTFT、子代理状态**；窄分屏与开启 Orchestrator 时按宽度逐级精简徽章，避免换行挤压。
 - **模型家族思考滑轨与静态 Orchestrator 折叠**：支持 Gemini 4 Neon / Carbon / Argon / Hydrogen 与 Claude Opus 专属动效滑轨、常用模型隐藏过滤，以及把静态 `Orchestrator` 折叠进独立开关。
@@ -146,11 +146,11 @@ bash ./install.sh
 
 | 插件 / 项目 | 共存关系 | 使用建议 |
 | :--- | :--- | :--- |
-| **`INK-Q/agy-fast`** | **可共存** | 对方专注 MCP 工具与搜索提效，不改写桌面前端 DOM，与 MAGA 互补。 |
-| **`oil-oil/agy-fast-io`** | **规则二选一** | MAGA 已内置精简版 `7` 行 `fast-io` 规则；若想保留原版，安装时加 `--no-rules`（`bash ./install.sh --no-rules`）。 |
-| **`Lumidarin/agy-capsule`** | **底栏重叠** | MAGA 已在 `vendor/agy-capsule/` 内置整合其 MIT 核心代码，不建议同时再挂一份独立 `agy-capsule`。 |
+| **`INK-Q/agy-fast`** | **可共存** | 对方专注 MCP 工具与搜索提效，不改写桌面前端 DOM，与 AGY Studio 互补。 |
+| **`oil-oil/agy-fast-io`** | **规则二选一** | AGY Studio 已内置精简版 `7` 行 `fast-io` 规则；若想保留原版，安装时加 `--no-rules`（`bash ./install.sh --no-rules`）。 |
+| **`Lumidarin/agy-capsule`** | **底栏重叠** | AGY Studio 已在 `vendor/agy-capsule/` 内置整合其 MIT 核心代码，不建议同时再挂一份独立 `agy-capsule`。 |
 | **`WhiteBr1ck/agy-powertools`** | **CDP 界面重叠** | 两者都会接管 Antigravity 的前端注入层，请勿同时启用；切换前先执行 `bash ./uninstall.sh`。 |
-| **第三方 ASAR 汉化补丁** | **未并发实测** | MAGA 设置页内置了轻量中文汉化开关且不动 `app.asar`；与直接解包修改 `app.asar` 的补丁混用暂未做交叉测试。 |
+| **第三方 ASAR 汉化补丁** | **未并发实测** | AGY Studio 设置页内置了轻量中文汉化开关且不动 `app.asar`；与直接解包修改 `app.asar` 的补丁混用暂未做交叉测试。 |
 
 ---
 
@@ -158,14 +158,14 @@ bash ./install.sh
 
 - **目前仅支持 macOS**：守护进程保活依赖 macOS `LaunchAgent` 与 `/usr/bin/open` CDP 自动重拉机制（`--remote-debugging-port=0`）。Windows 与 Linux 需单独适配进程托管与凭据隔离，已在 GitHub Issues 列为后续里程碑，欢迎前去投票排期。
 - **提示词规则并非硬锁**：`~/.gemini/AGENTS.md` 中的 `7` 行规范能显著降低无效轮次，但大模型仍可能偶尔漏遵。
-- **不做多账号代理与切号**：MAGA 定位在单工作台的多项目 / Worktree 调度、Git 联动与用量透明度，不修改请求网关或做多号轮询。
+- **不做多账号代理与切号**：AGY Studio 定位在单工作台的多项目 / Worktree 调度、Git 联动与用量透明度，不修改请求网关或做多号轮询。
 
 ---
 
 ## 设置项参考
 
 <details>
-<summary><b>MAGA 设置面板完整可开关项清单（实时生效并自动持久化）</b></summary>
+<summary><b>AGY Studio 设置面板完整可开关项清单（实时生效并自动持久化）</b></summary>
 
 | 分类 | 设置项 | 默认值 | 说明 |
 | :--- | :--- | :--- | :--- |
@@ -183,7 +183,7 @@ bash ./install.sh
 | **工作区与面板** | 底部子代理胶囊与分屏 | `开` | 底栏实时状态胶囊与一键 50/50 联动分屏 |
 | **工作区与面板** | 上下文圆环与双池配额弹层 | `开` | 实时上下文水位预警、5h/周限额与一键 `Compact` |
 | **工作区与面板** | 侧栏统一「最近对话」 | `关` | 可选把原生项目分组收拢为按时间混排列表 |
-| **工作区与面板** | AI 历史对话建议 | `关`（可选 Key） | 使用 Gemini 3.8 Flash 基于最近 5 条对话推荐下一步起点 |
+| **工作区与面板** | AI 历史对话建议 | `关`（可选 Key） | 使用 Gemini 3.8 Flash 结合 Git 历史与最近 5 条对话推荐下一步起点 |
 | **语言与外观** | 中文界面汉化与字高校准 | `关` / `95%` | 内置简体中文开关与苹果苹方视觉字高（`94.5%` / `95%` / `100%`） |
 | **语言与外观** | 交互动效强度 | `完整` | `完整` / `精简` / `关闭` |
 
@@ -209,17 +209,17 @@ bash ./install.sh
 
 ```text
 .
-├── core/                  # 本地 CDP 守护进程与 9 个子模块（挂载、冷启引导、SQLite、项目扫描）
+├── core/                  # 本地 CDP 守护进程与子模块（挂载、冷启引导、SQLite、项目扫描、git-exec）
 ├── user/src/              # 18 个模块化 ESM 前端源码（全部 <2,000 行，编入 user/custom.js）
 ├── vendor/agy-capsule/    # 内化整合的 MIT 模型/滑轨核心、动效主题与 SQLite 解析
 ├── studio/
 │   ├── core/              # MagaKernel（单根观测器）、DomFlags、MetricsBus、状态快照
-│   ├── daemon/            # 本机 Token 用量聚合、中断检测与 Opus Gate 服务
+│   ├── daemon/            # 本机 Token 用量聚合、中断检测、AI 历史建议与 Opus Gate 服务
 │   ├── modules/           # 底栏胶囊、三标签设置台、项目用量、子代理分屏
 │   ├── styles/            # 作用域样式表（全仓 0 条 :has() 选择器）
 │   ├── cli.mjs            # 统一 CLI（install / deploy / sync-rules / doctor / rollback）
 │   └── pack-release.mjs   # 零依赖 Release 压缩包打包器
-├── test/                  # 150 项自动化测试（DOM、CSS 守卫、Opus Gate、Worktree、安装链路）
+├── test/                  # 自动化测试套件（DOM、CSS 守卫、Opus Gate、Worktree、安装链路）
 ├── install.sh             # 一键安装脚本（支持 --dry-run、预编包与源码模式）
 └── uninstall.sh           # 一键无痕回滚卸载脚本（支持 --dry-run）
 ```
@@ -235,14 +235,14 @@ bash ./install.sh
 该报错来自 Antigravity 原生后端 `language_server` 访问 `daily-cloudcode-pa.googleapis.com` 时代理或 TLS 断开，与前端注入无关：
 
 1. 在代理客户端（Clash / Mihomo / Surge / V2Ray）开启 **TUN 模式**或**系统代理**，确认 `*.googleapis.com` 走稳定节点。
-2. **启动参数自动透传**：如果在终端带了代理或自定义 CA 环境变量（`HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`、`NO_PROXY`、`SSL_CERT_FILE`、`NODE_EXTRA_CA_CERTS`）或 `--proxy-*` 启动参数，MAGA 在 macOS 自动补充 `--remote-debugging-port=0` 重拉时会完整透传；可运行 `node studio/cli.mjs doctor` 查看 `proxyDiagnostics`。
+2. **启动参数自动透传**：如果在终端带了代理或自定义 CA 环境变量（`HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`、`NO_PROXY`、`SSL_CERT_FILE`、`NODE_EXTRA_CA_CERTS`）或 `--proxy-*` 启动参数，AGY Studio 在 macOS 自动补充 `--remote-debugging-port=0` 重拉时会完整透传；可运行 `node studio/cli.mjs doctor` 查看 `proxyDiagnostics`。
 3. 如希望手动管理 `--remote-debugging-port=0` 而不由守护进程重拉，启动守护进程时加上 `ANTI_CLAUDE_NO_CDP_BOOTSTRAP=1`。
 
 ---
 
 ## 致谢
 
-MAGA 基于以下开源项目构建并集成其 MIT 核心模块：
+AGY Studio（原名 MAGA）基于以下开源项目构建并集成其 MIT 核心模块：
 
 - [**hongqi7/Anti-Claude**](https://github.com/hongqi7/Anti-Claude) — 提供了不修改 `.app` 二进制的 Antigravity 本地 CDP 守护进程底座（`core/`）、Claude 风格明暗视觉体系、Overview 面板框架及上下文/配额弹层基础。
 - [**Lumidarin/agy-capsule**](https://github.com/Lumidarin/agy-capsule)（MIT 协议）— 直接内置整合于 `vendor/agy-capsule/`，提供了模型与思考强度选择器、多模型动效主题、实时速率遥测与本地 SQLite 用量解析逻辑。
@@ -252,5 +252,5 @@ MAGA 基于以下开源项目构建并集成其 MIT 核心模块：
 ---
 
 <div align="center">
-  <sub>MIT License · 如果这套驾驶舱帮你在 macOS 上把 Antigravity 2.0 用得更顺手，欢迎点一颗 ⭐，也欢迎到 Issues 给 Windows 支持投票。</sub>
+  <sub>MIT License · 如果 AGY Studio 帮你在 macOS 上把 Antigravity 2.0 用得更顺手，欢迎点一颗 ⭐，也欢迎到 Issues 给 Windows 支持投票。</sub>
 </div>

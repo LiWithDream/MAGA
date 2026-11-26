@@ -251,10 +251,12 @@ function ensureGlobalUiListeners() {
   if (typeof document !== 'undefined') {
     document.addEventListener('click', (ev) => {
       if (!state.modelPopoverOpen || !workspaceRefs?.composerCard) return;
-      if (!workspaceRefs.composerCard.contains(ev.target)) {
-        state.modelPopoverOpen = false;
-        syncComposerControls();
+      const path = typeof ev.composedPath === 'function' ? ev.composedPath() : [];
+      if (path.includes(workspaceRefs.composerCard) || workspaceRefs.composerCard.contains(ev.target)) {
+        return;
       }
+      state.modelPopoverOpen = false;
+      syncComposerControls();
     });
   }
 }

@@ -3,6 +3,43 @@
  * Strict invariant: NEVER use unsafe HTML injection APIs; build DOM with createElement + textContent only.
  */
 export const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export const DESKTOP_BREAKPOINT_PX = 960;
+
+export function resolveLayoutMode(pref, viewportWidth = 1024) {
+  if (pref === 'desktop' || pref === 'mobile') return pref;
+  const w = Number(viewportWidth);
+  return Number.isFinite(w) && w >= DESKTOP_BREAKPOINT_PX ? 'desktop' : 'mobile';
+}
+
+export function formatResetCountdown(sec) {
+  const total = Number(sec);
+  if (!Number.isFinite(total) || total <= 0) return '';
+  const mins = Math.ceil(total / 60);
+  if (mins < 60) return `${mins}m`;
+  const hours = Math.floor(mins / 60);
+  const remMins = mins % 60;
+  if (hours < 24) return remMins > 0 ? `${hours}h ${remMins}m` : `${hours}h`;
+  const days = Math.floor(hours / 24);
+  const remHours = hours % 24;
+  return remHours > 0 ? `${days}d ${remHours}h` : `${days}d`;
+}
+
+export function copyTextWithFeedback(btn, text, { idleText = '复制', doneText = '已复制' } = {}) {
+  const val = String(text ?? '');
+  if (!val || typeof navigator === 'undefined' || !navigator.clipboard?.writeText) return;
+  navigator.clipboard
+    .writeText(val)
+    .then(() => {
+      if (!btn) return;
+      btn.textContent = doneText;
+      btn.setAttribute('data-copied', 'true');
+      setTimeout(() => {
+        btn.textContent = idleText;
+        btn.removeAttribute('data-copied');
+      }, 1400);
+    })
+    .catch(() => {});
+}
 
 /* Safe DOM helper — strictly textContent / setAttribute only */
 export function el(tag, props = {}, ...children) {

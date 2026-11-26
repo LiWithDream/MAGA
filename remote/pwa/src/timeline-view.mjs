@@ -5,6 +5,7 @@
 import {
   appendNodes,
   clearNode,
+  copyTextWithFeedback,
   el,
   findConversationMeta,
   formatTime,
@@ -80,6 +81,7 @@ export function renderSafeMarkdown(text) {
     const fenceStart = /^\s*```([^\s`]*)\s*$/.exec(line);
     if (fenceStart) {
       flushParagraph();
+      const lang = (fenceStart[1] || '').trim();
       const codeLines = [];
       i += 1;
       while (i < lines.length && !/^\s*```\s*$/.test(lines[i])) {
@@ -87,7 +89,26 @@ export function renderSafeMarkdown(text) {
         i += 1;
       }
       if (i < lines.length) i += 1;
-      root.appendChild(el('pre', { className: 'rc-pre', text: codeLines.join('\n') }));
+      const codeText = codeLines.join('\n');
+      const copyBtn = el('button', {
+        type: 'button',
+        className: 'rc-code-copy',
+        text: '复制',
+        onClick: () => copyTextWithFeedback(copyBtn, codeText),
+      });
+      root.appendChild(
+        el(
+          'div',
+          { className: 'rc-code-block' },
+          el(
+            'div',
+            { className: 'rc-code-head' },
+            el('span', { className: 'rc-code-lang', text: lang || 'code' }),
+            copyBtn
+          ),
+          el('pre', { className: 'rc-pre', text: codeText })
+        )
+      );
       continue;
     }
 
@@ -156,16 +177,30 @@ export function renderStepCard(step) {
   const statusInfo = normalizeStepStatus(step.status);
 
   let roleLabel = typeStr;
-  if (typeStr === 'USER_INPUT' || typeStr === '14') roleLabel = '用户';
-  else if (typeStr === 'PLANNER_RESPONSE' || typeStr === '15') roleLabel = '助手';
-  else if (typeStr === 'GENERIC' || typeStr === '132') roleLabel = '工具调用';
-  else if (typeStr === 'ERROR_MESSAGE' || typeStr === '17') roleLabel = '错误';
-  else if (typeStr === 'CHECKPOINT' || typeStr === '23') roleLabel = '压缩检查点';
-  else if (typeStr === 'SYSTEM_MESSAGE' || typeStr === '101') roleLabel = '系统';
+  let roleAttr = 'system';
+  if (typeStr === 'USER_INPUT' || typeStr === '14') {
+    roleLabel = '用户';
+    roleAttr = 'user';
+  } else if (typeStr === 'PLANNER_RESPONSE' || typeStr === '15') {
+    roleLabel = '助手';
+    roleAttr = 'assistant';
+  } else if (typeStr === 'GENERIC' || typeStr === '132') {
+    roleLabel = '工具调用';
+    roleAttr = 'tool';
+  } else if (typeStr === 'ERROR_MESSAGE' || typeStr === '17') {
+    roleLabel = '错误';
+    roleAttr = 'error';
+  } else if (typeStr === 'CHECKPOINT' || typeStr === '23') {
+    roleLabel = '压缩检查点';
+    roleAttr = 'system';
+  } else if (typeStr === 'SYSTEM_MESSAGE' || typeStr === '101') {
+    roleLabel = '系统';
+    roleAttr = 'system';
+  }
 
   const card = el(
     'article',
-    { className: 'rc-step', 'data-type': typeStr },
+    { className: 'rc-step', 'data-type': typeStr, 'data-role': roleAttr },
     el(
       'div',
       { className: 'rc-step-head' },

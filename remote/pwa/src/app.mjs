@@ -340,6 +340,7 @@ function ensureWorkspaceShell() {
   rootEl.append(topbar, noticeBar, studioStrip, projectsDrawer, main);
 
   workspaceRefs = {
+    topbar,
     brandDot,
     wsPill,
     hostPill,
@@ -1024,7 +1025,7 @@ function applySnapshot(cascadeId, snap) {
   if (snap.resumeState && state.selectedId === cascadeId) {
     state.resumeState = snap.resumeState;
   }
-  if (typeof snap.streamingText === 'string' && snap.streamingText) {
+  if (isRunningStatus(snap.status) && typeof snap.streamingText === 'string' && snap.streamingText) {
     const steps = Array.isArray(snap.steps) ? snap.steps : [];
     const lastIdx = steps.length > 0 ? steps[steps.length - 1].idx : 0;
     state.streams.set(cascadeId, {
@@ -1034,7 +1035,7 @@ function applySnapshot(cascadeId, snap) {
       status: snap.status || '',
       stepCount: steps.length,
     });
-  } else if (!isRunningStatus(snap.status)) {
+  } else {
     state.streams.delete(cascadeId);
   }
 }
@@ -1271,7 +1272,7 @@ function handleTapDelta(delta) {
       stUpper === 'ERROR' ||
       stUpper === 'CANCELED';
 
-    if (isFinished && !nextText && !nextThinking) {
+    if (isFinished) {
       state.streams.delete(cid);
     } else {
       state.streams.set(cid, {

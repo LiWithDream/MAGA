@@ -718,4 +718,72 @@ test('Phase 2 static invariants: 7 gateway files, <2000 lines, Zero-XSS across a
   }
   const cssSrc = fs.readFileSync(path.join(PWA_DIR, 'src', 'styles.css'), 'utf8');
   assert.equal(cssSrc.includes(':has('), false);
+
+  const appSrc = fs.readFileSync(path.join(PWA_DIR, 'src', 'app.mjs'), 'utf8');
+  assert.match(appSrc, /workspaceRefs\s*=\s*\{\s*topbar,/);
+});
+
+test('Phase 2 PWA shell regressions: Markdown Zero-XSS & stale IDLE stream suppression', async () => {
+  const { JSDOM } = await import('jsdom');
+  const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://127.0.0.1/' });
+  const prevDoc = Object.getOwnPropertyDescriptor(globalThis, 'document');
+  globalThis.document = dom.window.document;
+
+  try {
+    const timelineMod = await import(pathToFileURL(path.join(PWA_DIR, 'src', 'timeline-view.mjs')).href);
+    const mdNode = timelineMod.renderSafeMarkdown([
+      '### 总结',
+      '- **重点**：查看 [app.mjs](file:///Users/demo/app.mjs#L10) 与 [Docs](https://example.com/docs)',
+      '- XSS: [bad](javascript:alert(1)) <script>alert(2)</script> `inline()`',
+      '```js',
+      'const x = 1;',
+      '```',
+    ].join('\n'));
+
+    assert.equal(mdNode.querySelector('script'), null, 'Zero-XSS: never create <script> elements');
+    assert.ok(mdNode.querySelector('.rc-md-h[data-level="3"]'));
+    assert.equal(mdNode.querySelector('.rc-md-file')?.textContent, 'app.mjs');
+    const extLink = mdNode.querySelector('a.rc-md-link');
+    assert.equal(extLink?.getAttribute('href'), 'https://example.com/docs');
+    assert.equal(extLink?.getAttribute('rel'), 'noopener noreferrer');
+    assert.equal(mdNode.querySelector('a[href^="javascript:"]'), null, 'javascript: links must be blocked');
+    assert.equal(mdNode.querySelector('code.rc-md-code')?.textContent, 'inline()');
+    assert.equal(mdNode.querySelector('pre.rc-pre')?.textContent, 'const x = 1;');
+
+    // IDLE conversation must NOT render orange .rc-stream-card even if stale stream entry exists
+    const cid = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1';
+    const doc = dom.window.document;
+    const refs = {
+      detailTitle: doc.createElement('h2'),
+      detailSub: doc.createElement('div'),
+      timeline: doc.createElement('div'),
+    };
+    const state = {
+      selectedId: cid,
+      identity: { role: 'observe' },
+      hostAttached: true,
+      wsStatus: 'connected',
+      conversations: [{ id: cid, title: 'Completed Chat', status: 'IDLE', waitingSteps: [] }],
+      snapshots: new Map([
+        [cid, { cascadeId: cid, status: 'IDLE', steps: [{ idx: 1, type: 'PLANNER_RESPONSE', status: 'DONE', text: 'Done' }], waitingSteps: [] }],
+      ]),
+      streams: new Map([[cid, { stepIdx: 1, text: 'Stale leftover text', thinkingText: '', status: 'DONE' }]]),
+      studioOverview: null,
+      snapshotLoading: false,
+      snapshotError: '',
+      approvingHash: '',
+    };
+    timelineMod.renderDetailTimeline({ state, refs, onSelectConversation: () => {}, onApprove: () => {} });
+    assert.equal(refs.timeline.querySelector('.rc-stream-card'), null, 'IDLE snapshot must suppress .rc-stream-card');
+
+    // RUNNING conversation DOES render .rc-stream-card
+    state.snapshots.get(cid).status = 'RUNNING';
+    state.streams.get(cid).status = 'RUNNING';
+    timelineMod.renderDetailTimeline({ state, refs, onSelectConversation: () => {}, onApprove: () => {} });
+    assert.ok(refs.timeline.querySelector('.rc-stream-card'), 'RUNNING snapshot should render .rc-stream-card');
+  } finally {
+    if (prevDoc) Object.defineProperty(globalThis, 'document', prevDoc);
+    else delete globalThis.document;
+    dom.window.close();
+  }
 });

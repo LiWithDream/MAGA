@@ -201,7 +201,7 @@ export function createPairViewController({ state, rootEl, render, onPaired }) {
                 : '⚠ 安全告知：未能确认本机权限预设（按 TURBO 门禁处理）',
             }),
             el('div', {
-              text: '在 TURBO 模式下，本机命令行与文件操作会自动执行而不会弹出审批弹窗。Week 1 为只读观察模式；后续开放写操作后，远程指令权限等同本机 Shell。请务必在核对网关指纹后，仅配对您本人完全信任的设备。',
+              text: '若授予受控协作 (steer) 角色，远程发送指令在 TURBO 模式下会直接执行本机操作。请务必核对网关指纹，仅配对您本人完全信任的设备。',
             }),
             el(
               'label',
@@ -222,7 +222,7 @@ export function createPairViewController({ state, rootEl, render, onPaired }) {
       el(
         'div',
         { className: 'rc-field' },
-        el('label', { className: 'rc-label', for: 'rc-pair-code', text: '一次性配对码（Mac 端运行 maga remote pair 获取）' }),
+        el('label', { className: 'rc-label', for: 'rc-pair-code', text: '一次性配对码（在 Mac 端 AGY Studio 设置 → 远程控制 获取）' }),
         el('input', {
           id: 'rc-pair-code',
           className: 'rc-input is-code',

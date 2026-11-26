@@ -717,6 +717,105 @@ input {
   line-height: 1.55;
 }
 
+/* Zero-XSS Pure-DOM Markdown Typography */
+.rc-md {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13.5px;
+  line-height: 1.55;
+  word-break: break-word;
+}
+
+.rc-md-p {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.rc-md-h {
+  font-weight: 700;
+  line-height: 1.35;
+  margin-top: 4px;
+  color: var(--rc-fg);
+}
+
+.rc-md-h[data-level="1"] {
+  font-size: 16px;
+}
+
+.rc-md-h[data-level="2"] {
+  font-size: 15px;
+}
+
+.rc-md-h[data-level="3"],
+.rc-md-h[data-level="4"] {
+  font-size: 13.5px;
+}
+
+.rc-md-li {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  padding-left: 4px;
+}
+
+.rc-md-li[data-depth="1"] {
+  padding-left: 18px;
+}
+
+.rc-md-li[data-depth="2"] {
+  padding-left: 32px;
+}
+
+.rc-md-li-marker {
+  flex: 0 0 auto;
+  color: var(--rc-muted);
+  font-weight: 600;
+}
+
+.rc-md-li-body {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.rc-md-quote {
+  margin: 0;
+  padding: 4px 10px;
+  border-left: 3px solid var(--rc-accent);
+  background: var(--rc-subtle);
+  border-radius: 0 8px 8px 0;
+  color: var(--rc-muted);
+}
+
+.rc-md-hr {
+  border: none;
+  border-top: 1px solid var(--rc-border);
+  margin: 4px 0;
+  width: 100%;
+}
+
+.rc-md-code,
+.rc-md-file {
+  font-family: var(--rc-mono);
+  font-size: 12px;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--rc-code-bg);
+  border: 1px solid var(--rc-border);
+}
+
+.rc-md-file {
+  background: var(--rc-blue-soft);
+  color: var(--rc-blue);
+  border-color: transparent;
+}
+
+.rc-md-link {
+  color: var(--rc-blue);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 .rc-pre {
   margin: 0;
   padding: 9px 11px;

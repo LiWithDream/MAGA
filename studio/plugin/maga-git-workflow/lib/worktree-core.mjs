@@ -42,6 +42,62 @@ export function normalizePolicyKey(p) {
   return real.replace(/^[A-Z]:(?=\/)/, (m) => m.toLowerCase());
 }
 
+const LOCK_SLEEP_BUF = typeof SharedArrayBuffer === 'function' ? new Int32Array(new SharedArrayBuffer(4)) : null;
+
+export function withFileLock(targetFile, fn, { maxWaitMs = 400, staleMs = 5000, busyError = 'file_locked' } = {}) {
+  const lockPath = `${targetFile}.lock`;
+  fs.mkdirSync(path.dirname(targetFile), { recursive: true });
+  let acquired = false;
+  let lockError = '';
+  const waitBudgetMs = Math.max(0, Number(maxWaitMs) || 0);
+  const deadline = Date.now() + waitBudgetMs;
+  const maxAttempts = Math.max(40, Math.ceil(waitBudgetMs / 10) + 5);
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    try {
+      const fd = fs.openSync(lockPath, 'wx');
+      try {
+        fs.writeSync(fd, `${process.pid}:${Date.now()}\n`);
+      } finally {
+        fs.closeSync(fd);
+      }
+      acquired = true;
+      break;
+    } catch (err) {
+      if (err?.code !== 'EEXIST') {
+        lockError = `${busyError}_error:${err?.code || 'unknown'}`;
+        break;
+      }
+      try {
+        const st = fs.statSync(lockPath, { throwIfNoEntry: false });
+        if (st && Date.now() - st.mtimeMs > staleMs) {
+          fs.rmSync(lockPath, { force: true });
+          continue;
+        }
+      } catch {}
+      if (Date.now() >= deadline) break;
+      if (LOCK_SLEEP_BUF) {
+        try {
+          Atomics.wait(LOCK_SLEEP_BUF, 0, 0, 10);
+        } catch {}
+      }
+    }
+  }
+  if (!acquired) {
+    return {
+      ok: false,
+      error: lockError || busyError,
+      retryable: !lockError,
+    };
+  }
+  try {
+    return { ok: true, value: fn() };
+  } finally {
+    try {
+      fs.rmSync(lockPath, { force: true });
+    } catch {}
+  }
+}
+
 export function writeAtomicUtf8(filePath, content) {
   const dir = path.dirname(filePath);
   fs.mkdirSync(dir, { recursive: true });

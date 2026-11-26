@@ -799,13 +799,15 @@ export function renderL3GitWorkflow(state, { L }) {
   const events = Array.isArray(st?.recentEvents) ? st.recentEvents.slice(0, 5) : [];
 
   const healthWarnHtml =
-    st && !st.guardActive
+    st && (!st.guardActive || st.hookNode?.pinned === false)
       ? `<div class="agy-ms-wf-warn" data-ms-wf-warn="true">
           <div class="agy-ms-wf-warn-txt">
             <strong>${esc(L('护栏未生效', 'Guard inactive'))}</strong>：${esc(
               !st.pluginInstalled
                 ? L('原生插件 maga-git-workflow 尚未同步或文件缺失。', 'Native plugin maga-git-workflow is not synced or incomplete.')
-                : L(`Hook Node 路径不可用（${st.hookNode?.nodeBin || 'node'}），升级 Node 后请重新同步。`, `Hook Node binary is unavailable (${st.hookNode?.nodeBin || 'node'}). Re-sync plugin to refresh path.`)
+                : !st.hookNode?.ok
+                  ? L(`Hook Node 路径不可用（${st.hookNode?.nodeBin || 'node'}），升级 Node 后请重新同步。`, `Hook Node binary is unavailable (${st.hookNode?.nodeBin || 'node'}). Re-sync plugin to refresh path.`)
+                  : L('hooks.json 未使用固定 Node 绝对路径，请重新同步插件。', 'hooks.json is using an unpinned node path. Re-sync plugin to pin binary.')
             )}
           </div>
           <button type="button" class="agy-ms-btn" data-ms-action="sync-git-workflow-plugin">${esc(L('重新同步', 'Re-Sync'))}</button>

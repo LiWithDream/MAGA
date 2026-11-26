@@ -625,7 +625,11 @@ export function createWorktreeUiController(ctx) {
             pState.pdWtBusyKey = '';
             if (rtState.disposed) return;
             if (!res || !res.ok) {
-              showProjectsFloatingNotice(res?.error || L('切换工作流策略失败', 'Failed to update workflow mode'));
+              const errMsg =
+                res?.error === 'policy_locked' || res?.retryable
+                  ? L('策略配置正忙（锁冲突），请重试', 'Policy busy (locked), please retry')
+                  : res?.error || L('切换工作流策略失败', 'Failed to update workflow mode');
+              showProjectsFloatingNotice(errMsg);
               pHooks.renderProjectsView?.();
               return;
             }

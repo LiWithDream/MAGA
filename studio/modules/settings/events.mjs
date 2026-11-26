@@ -168,6 +168,8 @@ export function bindSettingsRootEvents(root, {
             state.gitWorkflowStatus = res;
             renderActiveHost(true);
             flashToast('✓ 已清理失效项目策略', '✓ Pruned stale entries');
+          } else if (res?.error === 'policy_locked' || res?.retryable) {
+            flashToast('策略文件正忙，请重试', 'Policy busy (locked), please retry', 'error');
           } else {
             flashToast('清理失败', 'Prune failed', 'error');
           }
@@ -243,6 +245,8 @@ export function bindSettingsRootEvents(root, {
         state.gitWorkflowStatus = res;
         renderActiveHost(true);
         flashToast('✓ 已更新项目护栏', '✓ Project workflow saved');
+      } else if (res?.error === 'policy_locked' || res?.retryable) {
+        flashToast('策略文件正忙，请重试', 'Policy busy (locked), please retry', 'error');
       } else {
         flashToast('更新项目护栏失败', 'Update failed', 'error');
       }
@@ -298,6 +302,10 @@ export function bindSettingsRootEvents(root, {
           state.gitWorkflowStatus = res;
           renderActiveHost(true);
           flashToast('✓ 已保存', '✓ Saved');
+        } else if (res?.error === 'policy_locked' || res?.retryable) {
+          flashToast('策略文件正忙，请重试', 'Policy busy (locked), please retry', 'error');
+        } else {
+          flashToast('保存失败', 'Save failed', 'error');
         }
       }
       return;
@@ -314,6 +322,10 @@ export function bindSettingsRootEvents(root, {
           state.gitWorkflowStatus = res;
           renderActiveHost(true);
           flashToast('✓ 已保存', '✓ Saved');
+        } else if (res?.error === 'policy_locked' || res?.retryable) {
+          flashToast('策略文件正忙，请重试', 'Policy busy (locked), please retry', 'error');
+        } else {
+          flashToast('保存失败', 'Save failed', 'error');
         }
         return;
       } else if (kind === 'studio') {

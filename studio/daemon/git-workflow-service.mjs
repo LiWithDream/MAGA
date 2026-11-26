@@ -27,6 +27,7 @@ import {
 import {
   normalizePolicyKey,
   resolveCommonGitDirAsync,
+  withFileLock,
 } from '../plugin/maga-git-workflow/lib/worktree-core.mjs';
 
 const PLUGIN_NAME = 'maga-git-workflow';
@@ -41,7 +42,6 @@ const PLUGIN_FILES = [
 ];
 const EXECUTABLE_PLUGIN_FILES = new Set(['hooks/git-guard.mjs', 'bin/wt.mjs']);
 const LOCK_STALE_MS = 5000;
-const SLEEP_BUF = typeof SharedArrayBuffer === 'function' ? new Int32Array(new SharedArrayBuffer(4)) : null;
 
 export const GIT_WORKFLOW_ACTIONS = new Set([
   'getGitWorkflowPolicy',
@@ -50,46 +50,11 @@ export const GIT_WORKFLOW_ACTIONS = new Set([
 ]);
 
 function withPolicyLock(policyFile, fn, { maxWaitMs = 400 } = {}) {
-  const lockPath = `${policyFile}.lock`;
-  fs.mkdirSync(path.dirname(policyFile), { recursive: true });
-  let acquired = false;
-  const deadline = Date.now() + maxWaitMs;
-  for (let attempt = 0; attempt < 40; attempt++) {
-    try {
-      const fd = fs.openSync(lockPath, 'wx');
-      try {
-        fs.writeSync(fd, `${process.pid}:${Date.now()}\n`);
-      } finally {
-        fs.closeSync(fd);
-      }
-      acquired = true;
-      break;
-    } catch (err) {
-      if (err?.code !== 'EEXIST') break;
-      try {
-        const st = fs.statSync(lockPath, { throwIfNoEntry: false });
-        if (st && Date.now() - st.mtimeMs > LOCK_STALE_MS) {
-          fs.rmSync(lockPath, { force: true });
-          continue;
-        }
-      } catch {}
-      if (Date.now() >= deadline) break;
-      if (SLEEP_BUF) {
-        try {
-          Atomics.wait(SLEEP_BUF, 0, 0, 10);
-        } catch {}
-      }
-    }
-  }
-  try {
-    return fn();
-  } finally {
-    if (acquired) {
-      try {
-        fs.rmSync(lockPath, { force: true });
-      } catch {}
-    }
-  }
+  return withFileLock(policyFile, fn, {
+    maxWaitMs,
+    staleMs: LOCK_STALE_MS,
+    busyError: 'policy_locked',
+  });
 }
 
 function getPluginTargetDir(opts = {}) {
@@ -182,23 +147,59 @@ export function verifyGitWorkflowHookNodeRuntime(opts = {}) {
   const hooksFile = path.join(getPluginTargetDir(opts), 'hooks.json');
   const hooksObj = readJsonOrFallback(hooksFile, null);
   const nodeBin = hooksObj ? extractGitWorkflowHookNodeBin(hooksObj) : opts.nodeExecPath || process.execPath;
+  const pinned = Boolean(hooksObj && nodeBin && nodeBin !== 'node' && path.isAbsolute(nodeBin));
   try {
     if (!fs.existsSync(nodeBin) && nodeBin !== 'node') {
-      return { ok: false, nodeBin, error: 'node_binary_missing' };
+      return { ok: false, pinned, nodeBin, error: 'node_binary_missing' };
     }
     const ver = execFileSync(nodeBin, ['--version'], {
       timeout: 2000,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
     }).trim();
-    return { ok: true, nodeBin, version: ver };
+    return {
+      ok: true,
+      pinned,
+      nodeBin,
+      version: ver,
+      ...(!pinned && hooksObj ? { warning: 'unpinned_node_binary' } : {}),
+    };
   } catch (err) {
     return {
       ok: false,
+      pinned,
       nodeBin,
       error: String(err?.message || err).slice(0, 160),
     };
   }
+}
+
+function pruneStalePluginFiles(targetDir, expectedRelFiles) {
+  const removed = [];
+  if (!fs.existsSync(targetDir)) return removed;
+  const expectedSet = new Set(expectedRelFiles.map((rel) => rel.split(path.sep).join('/')));
+  const walk = (absDir, relPrefix = '') => {
+    const entries = fs.readdirSync(absDir, { withFileTypes: true });
+    for (const ent of entries) {
+      const rel = relPrefix ? `${relPrefix}/${ent.name}` : ent.name;
+      const abs = path.join(absDir, ent.name);
+      if (ent.isDirectory()) {
+        walk(abs, rel);
+        try {
+          if (fs.readdirSync(abs).length === 0) fs.rmdirSync(abs);
+        } catch {}
+      } else if (!expectedSet.has(rel)) {
+        try {
+          fs.rmSync(abs, { force: true });
+          removed.push(rel);
+        } catch {}
+      }
+    }
+  };
+  try {
+    walk(targetDir);
+  } catch {}
+  return removed;
 }
 
 export function syncGitWorkflowPlugin({ remove = false } = {}, opts = {}) {
@@ -213,6 +214,8 @@ export function syncGitWorkflowPlugin({ remove = false } = {}, opts = {}) {
   }
   const nodeBin = opts.nodeExecPath || process.execPath;
   const copied = [];
+  let pinned = false;
+  let pinError = '';
   for (const rel of PLUGIN_FILES) {
     const from = path.join(srcDir, rel);
     const to = path.join(targetDir, rel);
@@ -222,7 +225,11 @@ export function syncGitWorkflowPlugin({ remove = false } = {}, opts = {}) {
     if (rel === 'hooks.json') {
       try {
         body = buildPinnedGitWorkflowHooksJson(body, nodeBin);
-      } catch {}
+        pinned = Boolean(nodeBin && path.isAbsolute(nodeBin));
+      } catch (err) {
+        pinned = false;
+        pinError = String(err?.message || err).slice(0, 120);
+      }
     }
     writeAtomicUtf8(to, body);
     if (EXECUTABLE_PLUGIN_FILES.has(rel)) {
@@ -232,12 +239,16 @@ export function syncGitWorkflowPlugin({ remove = false } = {}, opts = {}) {
     }
     copied.push(rel);
   }
+  const staleRemoved = pruneStalePluginFiles(targetDir, copied);
   return {
     ok: true,
     action: 'synced',
     pluginDir: targetDir,
     files: copied,
+    ...(staleRemoved.length > 0 ? { staleRemoved } : {}),
     nodeBin,
+    pinned,
+    ...(pinError ? { pinError } : {}),
     installed: isGitWorkflowPluginInstalled(opts),
   };
 }
@@ -263,31 +274,36 @@ function normalizeProjectPolicyEntry(key, val) {
 
 export function saveGitWorkflowPolicyMutation(mutator, opts = {}) {
   const policyFile = getPolicyFilePath(opts);
-  return withPolicyLock(policyFile, () => {
-    const current = loadGitWorkflowPolicy(opts);
-    const cloned = {
-      schema: 1,
-      defaultMode: current.defaultMode,
-      blockForcePushProtected: current.blockForcePushProtected,
-      blockPushTags: current.blockPushTags,
-      projects: { ...(current.projects || {}) },
-    };
-    const next = mutator(cloned) || cloned;
-    const cleanProjects = {};
-    for (const [k, v] of Object.entries(next.projects || {})) {
-      const normalized = normalizeProjectPolicyEntry(k, v);
-      if (normalized) cleanProjects[k] = normalized;
-    }
-    const finalDoc = {
-      schema: 1,
-      defaultMode: VALID_WORKFLOW_MODES.includes(next.defaultMode) ? next.defaultMode : 'observe',
-      blockForcePushProtected: next.blockForcePushProtected !== false,
-      blockPushTags: next.blockPushTags === true,
-      projects: cleanProjects,
-    };
-    writeAtomicUtf8(policyFile, `${JSON.stringify(finalDoc, null, 2)}\n`);
-    return finalDoc;
-  });
+  const maxWaitMs = opts.lockMaxWaitMs ?? opts.maxWaitMs ?? 400;
+  return withPolicyLock(
+    policyFile,
+    () => {
+      const current = loadGitWorkflowPolicy(opts);
+      const cloned = {
+        schema: 1,
+        defaultMode: current.defaultMode,
+        blockForcePushProtected: current.blockForcePushProtected,
+        blockPushTags: current.blockPushTags,
+        projects: { ...(current.projects || {}) },
+      };
+      const next = mutator(cloned) || cloned;
+      const cleanProjects = {};
+      for (const [k, v] of Object.entries(next.projects || {})) {
+        const normalized = normalizeProjectPolicyEntry(k, v);
+        if (normalized) cleanProjects[k] = normalized;
+      }
+      const finalDoc = {
+        schema: 1,
+        defaultMode: VALID_WORKFLOW_MODES.includes(next.defaultMode) ? next.defaultMode : 'observe',
+        blockForcePushProtected: next.blockForcePushProtected !== false,
+        blockPushTags: next.blockPushTags === true,
+        projects: cleanProjects,
+      };
+      writeAtomicUtf8(policyFile, `${JSON.stringify(finalDoc, null, 2)}\n`);
+      return finalDoc;
+    },
+    { maxWaitMs }
+  );
 }
 
 export function findStalePolicyProjects(policy) {
@@ -413,7 +429,7 @@ export async function getGitWorkflowStatus(payload = {}, opts = {}) {
     ok: true,
     pluginInstalled,
     hookNode,
-    guardActive: Boolean(pluginInstalled && hookNode?.ok),
+    guardActive: Boolean(pluginInstalled && hookNode?.ok && hookNode?.pinned !== false),
     policy,
     projectsSummary,
     staleProjects,
@@ -455,7 +471,7 @@ export async function setGitWorkflowPolicy(payload = {}, opts = {}) {
     return { ok: false, error: 'missing_policy_update' };
   }
 
-  saveGitWorkflowPolicyMutation((draft) => {
+  const lockRes = saveGitWorkflowPolicyMutation((draft) => {
     if (typeof payload.defaultMode === 'string' && VALID_WORKFLOW_MODES.includes(payload.defaultMode)) {
       draft.defaultMode = payload.defaultMode;
     }
@@ -491,6 +507,14 @@ export async function setGitWorkflowPolicy(payload = {}, opts = {}) {
     }
     return draft;
   }, opts);
+
+  if (!lockRes?.ok) {
+    return {
+      ok: false,
+      error: lockRes?.error || 'policy_locked',
+      retryable: lockRes?.retryable !== false,
+    };
+  }
 
   return getGitWorkflowStatus(payload, opts);
 }

@@ -270,7 +270,7 @@ test('self-tampering, anti-forgery defer check, submodule separation, parser har
     fs.writeFileSync(path.join(mainRepo, '.agents', 'hooks', 'noop.mjs'), 'console.log("{decision:\\"allow\\"}")\n', 'utf8');
     assert.equal(hasValidLocalGuardrail(mainRepo), false);
 
-    // Valid local guardrail importing canonical engine passes hasValidLocalGuardrail -> global hook defers
+    // Valid local guardrail importing canonical engine passes hasValidLocalGuardrail -> global hook defers on normal repo files
     fs.writeFileSync(
       path.join(mainRepo, '.agents', 'hooks', 'noop.mjs'),
       "import '../studio/plugin/maga-git-workflow/hooks/git-guard.mjs';\n",
@@ -284,7 +284,81 @@ test('self-tampering, anti-forgery defer check, submodule separation, parser har
       ),
       { decision: 'allow' }
     );
+    // P2-3: Even when local guardrail exists, tampering `.agents/hooks.json` or `.agents/hooks/**` is DENIED before deferring!
+    for (const hookTarget of [
+      path.join(mainRepo, '.agents', 'hooks.json'),
+      path.join(mainRepo, '.agents', 'hooks', 'noop.mjs'),
+    ]) {
+      assert.equal(
+        evaluateHookPayloadWithOptions(
+          { hookEventName: 'PreToolUse', cwd: mainRepo, toolCall: { name: 'edit_file', args: { Path: hookTarget } } },
+          { stateDir, pluginsDir }
+        ).decision,
+        'deny',
+        `hooks tamper must deny before defer: ${hookTarget}`
+      );
+    }
+    // P1-2: Non-git shell self-tamper commands denied BEFORE `\\bgit\\b` hot-path & BEFORE defer
+    for (const cmd of [
+      `echo '{}' > "${policyFile}"`,
+      `tee "${policyFile}.tmp" < /dev/null`,
+      `rm -rf "${path.join(pluginsDir, 'maga-git-workflow')}"`,
+      `cat <<'EOF' > "${path.join(mainRepo, '.agents', 'hooks', 'forged.mjs')}"\nimport '../studio/plugin/maga-git-workflow/hooks/git-guard.mjs';\nEOF`,
+      `echo '{}' > "${path.join(mainRepo, '.agents', 'hooks.json')}"`,
+      `cp /tmp/x.json "${path.join(mainRepo, '.agents', 'hooks.json')}"`,
+    ]) {
+      assert.equal(
+        evaluateHookPayloadWithOptions(
+          { hookEventName: 'PreToolUse', cwd: mainRepo, toolCall: { name: 'run_command', args: { CommandLine: cmd } } },
+          { stateDir, pluginsDir }
+        ).decision,
+        'deny',
+        `shell tamper must be denied: ${cmd}`
+      );
+    }
+    // Benign read-only shell commands referencing policy/plugin/hooks remain allowed
+    for (const safeCmd of [
+      `cat "${policyFile}"`,
+      `cat "${path.join(mainRepo, '.agents', 'hooks.json')}" 2>/dev/null`,
+      `ls -la "${path.join(pluginsDir, 'maga-git-workflow')}"`,
+    ]) {
+      assert.deepEqual(
+        evaluateHookPayloadWithOptions(
+          { hookEventName: 'PreToolUse', cwd: mainRepo, toolCall: { name: 'run_command', args: { CommandLine: safeCmd } } },
+          { stateDir, pluginsDir }
+        ),
+        { decision: 'allow' },
+        `read-only shell command must stay allowed: ${safeCmd}`
+      );
+    }
     fs.rmSync(path.join(mainRepo, '.agents'), { recursive: true, force: true });
+
+    // P2-1: Deep subdirectory under broken .git hint fails closed using repo gitHintRoot, not subdir path
+    const brokenRepo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'maga-wf-broken-')));
+    try {
+      fs.mkdirSync(path.join(brokenRepo, '.git'), { recursive: true });
+      fs.mkdirSync(path.join(brokenRepo, 'src', 'deep'), { recursive: true });
+      writePolicy(stateDir, {
+        schema: 1,
+        defaultMode: 'observe',
+        blockForcePushProtected: true,
+        projects: { [normalizePolicyKey(path.join(brokenRepo, '.git'))]: { mode: 'protect-main', displayRoot: brokenRepo } },
+      });
+      assert.equal(
+        evaluateHookPayloadWithOptions(
+          {
+            hookEventName: 'PreToolUse',
+            cwd: brokenRepo,
+            toolCall: { name: 'edit_file', args: { Path: path.join(brokenRepo, 'src', 'deep', 'app.mjs') } },
+          },
+          { stateDir, pluginsDir }
+        ).decision,
+        'deny',
+        'deep subdir rev-parse failure must resolve gitHintRoot to enforced repo'
+      );
+    } finally {
+      fs.rmSync(brokenRepo, { recursive: true, force: true });
+    }
 
     // 3. Submodule checkout has `.git` file, MUST report `isLinkedWorktree === false`
     execFileSync('git', ['-C', mainRepo, '-c', 'protocol.file.allow=always', 'submodule', 'add', subSource, 'vendor/sub'], {
@@ -332,6 +406,20 @@ test('self-tampering, anti-forgery defer check, submodule separation, parser har
     assert.equal(savedEvents.events.length, 200, 'events ring buffer capped at 200');
     assert.equal(savedEvents.events[0].reason, 'err-5');
     assert.equal(savedEvents.events[199].reason, 'err-204');
+
+    // P2-2: Concurrent lock on events file does not overwrite existing events when lock is held
+    const evLockPath = `${eventsPath}.lock`;
+    fs.writeFileSync(evLockPath, '99999:held\n', 'utf8');
+    try {
+      assert.equal(
+        recordGuardDenyEvent({ cid, repo: mainRepo, mode: 'protect-main', tool: 'edit_file', reason: 'should-wait' }, { stateDir, lockMaxWaitMs: 25 }),
+        false
+      );
+      const untouchedEvents = JSON.parse(fs.readFileSync(eventsPath, 'utf8'));
+      assert.equal(untouchedEvents.events[199].reason, 'err-204');
+    } finally {
+      fs.rmSync(evLockPath, { force: true });
+    }
   } finally {
     fs.rmSync(mainRepo, { recursive: true, force: true });
     fs.rmSync(subSource, { recursive: true, force: true });
@@ -355,14 +443,30 @@ test('git-workflow-service syncs plugin with pinned Node, manages policy atomica
     fs.mkdirSync(path.join(nodeRepo, 'node_modules', 'pkg'), { recursive: true });
     createNativeProj(nativeProjectsDir, 'pyproj', pyRepo);
 
-    // 1. Plugin sync + pinned node verification + removal
+    // 1. Plugin sync + pinned node verification + stale file pruning + unpinned flag
+    const stalePluginFile = path.join(pluginsDir, 'maga-git-workflow', 'hooks', 'legacy-old.mjs');
+    fs.mkdirSync(path.dirname(stalePluginFile), { recursive: true });
+    fs.writeFileSync(stalePluginFile, '// old\n', 'utf8');
     const syncRes = syncGitWorkflowPlugin({}, { pluginsDir });
     assert.equal(syncRes.ok, true);
+    assert.equal(syncRes.pinned, true);
+    assert.equal(fs.existsSync(stalePluginFile), false, 'stale orphaned plugin file pruned on sync');
     assert.equal(isGitWorkflowPluginInstalled({ pluginsDir }), true);
     const syncedHooks = JSON.parse(fs.readFileSync(path.join(pluginsDir, 'maga-git-workflow', 'hooks.json'), 'utf8'));
     assert.match(syncedHooks['maga-git-workflow'].SessionStart[0].command, /git-guard\.mjs/);
     assert.notEqual(syncedHooks['maga-git-workflow'].SessionStart[0].command.startsWith('node '), true);
-    assert.equal(verifyGitWorkflowHookNodeRuntime({ pluginsDir }).ok, true);
+    const runtimeCheck = verifyGitWorkflowHookNodeRuntime({ pluginsDir });
+    assert.equal(runtimeCheck.ok, true);
+    assert.equal(runtimeCheck.pinned, true);
+
+    // P2-4: Unpinned hooks.json explicitly flagged via pinned: false
+    const rawHooks = fs.readFileSync(path.join(REPO_ROOT, 'studio', 'plugin', 'maga-git-workflow', 'hooks.json'), 'utf8');
+    fs.writeFileSync(path.join(pluginsDir, 'maga-git-workflow', 'hooks.json'), rawHooks, 'utf8');
+    assert.equal(verifyGitWorkflowHookNodeRuntime({ pluginsDir }).pinned, false);
+    const stUnpinned = await handleGitWorkflowRpc('getGitWorkflowPolicy', {}, { stateDir, pluginsDir, policyFile, eventsFile, nativeProjectsDir });
+    assert.equal(stUnpinned.guardActive, false);
+    // Re-sync restores pinned state
+    assert.equal(syncGitWorkflowPlugin({}, { pluginsDir }).pinned, true);
 
     // 2. Policy CRUD via daemon service / RPC handler
     const upd = await setGitWorkflowPolicy(
@@ -371,6 +475,22 @@ test('git-workflow-service syncs plugin with pinned Node, manages policy atomica
     );
     assert.equal(upd.ok, true);
     assert.equal(upd.projectsSummary.find((p) => p.dirPath === pyRepo)?.mode, 'protect-main');
+
+    // P1-1: Held policy lock aborts mutation cleanly with retryable policy_locked instead of clobbering
+    const policyLock = `${policyFile}.lock`;
+    fs.writeFileSync(policyLock, '99999:held\n', 'utf8');
+    try {
+      const lockedRes = await setGitWorkflowPolicy(
+        { dirPath: pyRepo, mode: 'observe' },
+        { stateDir, pluginsDir, policyFile, eventsFile, nativeProjectsDir, lockMaxWaitMs: 30 }
+      );
+      assert.equal(lockedRes.ok, false);
+      assert.equal(lockedRes.error, 'policy_locked');
+      assert.equal(lockedRes.retryable, true);
+      assert.equal(loadGitWorkflowPolicy({ policyFile }).projects[normalizePolicyKey(path.join(pyRepo, '.git'))]?.mode, 'protect-main');
+    } finally {
+      fs.rmSync(policyLock, { force: true });
+    }
 
     const rpcSt = await handleGitWorkflowRpc('getGitWorkflowPolicy', {}, { stateDir, pluginsDir, policyFile, eventsFile, nativeProjectsDir });
     assert.equal(rpcSt.ok, true);

@@ -2165,13 +2165,22 @@ test('opus-gate-pill morphs to live reviewing state with Effort canvas & panel j
 
   await withMockDom(dom, async () => {
     const openedSubagents = [];
+    let openId = '';
     let geminiPaints = 0;
     let claudePaints = 0;
+    let lastGeminiOpts = null;
+    let lastClaudeOpts = null;
     const mockThemes = {
       GEMINI_PALETTES: { carbon: { id: 'carbon', speedMul: 0.95 } },
       CLAUDE_PALETTES: { opus: { id: 'opus', speedMul: 0.94 } },
-      paintGeminiSlider: () => { geminiPaints += 1; },
-      paintClaudeSlider: () => { claudePaints += 1; },
+      paintGeminiSlider: (_ctx, _pal, _theme, _w, _h, _flow, _clock, _energy, opts) => {
+        geminiPaints += 1;
+        lastGeminiOpts = opts;
+      },
+      paintClaudeSlider: (_ctx, _pal, _theme, _w, _h, _flow, _clock, _energy, opts) => {
+        claudePaints += 1;
+        lastClaudeOpts = opts;
+      },
     };
     dom.window.HTMLCanvasElement.prototype.getContext = () => ({ setTransform() {} });
     window.__agProjectCall = async () => ({
@@ -2183,7 +2192,7 @@ test('opus-gate-pill morphs to live reviewing state with Effort canvas & panel j
     window.__ag_last_metrics = {
       cascadeId: cid,
       stats: {
-        children: [{ id: 'sub-carbon-1', agentName: 'review-carbon', running: true, killed: false }],
+        children: [{ id: 'sub-carbon-1', agentName: 'review-carbon', running: true, killed: false, calls: 3, outTok: 1500 }],
       },
     };
 
@@ -2192,7 +2201,10 @@ test('opus-gate-pill morphs to live reviewing state with Effort canvas & panel j
       studioPrefs,
       motionThemes: () => mockThemes,
       openSubagent: (id, label) => openedSubagents.push([id, label]),
+      isSubagentOpen: (id) => Boolean(openId && id === openId),
     });
+    const savedRafDesc = Object.getOwnPropertyDescriptor(globalThis, 'requestAnimationFrame');
+    const savedCafDesc = Object.getOwnPropertyDescriptor(globalThis, 'cancelAnimationFrame');
     try {
       assert.ok(runtime.topics.includes('metrics'));
       assert.ok(runtime.topics.includes('subagent'));
@@ -2202,9 +2214,34 @@ test('opus-gate-pill morphs to live reviewing state with Effort canvas & panel j
       assert.ok(pill, 'expected live reviewing pill even with no proposal');
       assert.equal(pill.getAttribute('data-reviewing'), '1');
       assert.equal(pill.getAttribute('data-reviewer-model'), 'carbon');
+      assert.equal(pill.getAttribute('data-linked-open'), '0');
       assert.equal(pill.querySelector('.agy-opus-label')?.textContent, 'Carbon 审查中');
+      const goBtn = pill.querySelector('.agy-opus-go');
+      assert.match(goBtn?.title || '', /3 次调用/);
+      assert.match(goBtn?.title || '', /1\.5k tok/);
+      assert.match(goBtn?.title || '', /点击查看审查子代理进度/);
       assert.ok(pill.querySelector('.agy-opus-fx'));
       assert.equal(geminiPaints >= 1, true);
+      assert.equal(lastGeminiOpts?.isLight, true);
+
+      // Dark theme toggles isLight to false on canvas paint
+      document.documentElement.setAttribute('data-ag-theme-mode', 'dark');
+      runtime.sync();
+      assert.equal(lastGeminiOpts?.isLight, false);
+
+      // Typing in editor does NOT hide active reviewing pill
+      const editor = document.querySelector('[data-lexical-editor="true"]');
+      editor.textContent = 'follow-up draft while reviewing';
+      runtime.sync();
+      assert.ok(document.getElementById('agy-opus-gate-pill'), 'reviewing pill stays visible while typing');
+
+      // Linked side panel open state reflects in data-linked-open & tooltip
+      openId = 'sub-carbon-1';
+      runtime.sync();
+      assert.equal(pill.getAttribute('data-linked-open'), '1');
+      assert.match(goBtn?.title || '', /点击收起审查侧栏/);
+      openId = '';
+      editor.textContent = '';
 
       pill.querySelector('.agy-opus-go')?.click();
       assert.deepEqual(openedSubagents, [['sub-carbon-1', 'review-carbon']]);
@@ -2218,6 +2255,7 @@ test('opus-gate-pill morphs to live reviewing state with Effort canvas & panel j
       assert.equal(pill.getAttribute('data-reviewer-model'), 'opus');
       assert.equal(pill.querySelector('.agy-opus-label')?.textContent, 'Opus 审查中');
       assert.equal(claudePaints >= 1, true);
+      assert.equal(lastClaudeOpts?.isLight, false);
 
       // Multi-word title fallback without agentName
       window.__ag_last_metrics.stats.children = [
@@ -2227,6 +2265,38 @@ test('opus-gate-pill morphs to live reviewing state with Effort canvas & panel j
       assert.equal(pill.getAttribute('data-reviewer-model'), 'carbon');
       assert.equal(pill.querySelector('.agy-opus-label')?.textContent, 'Carbon 审查中');
 
+      // Visibility-aware rAF pauses when document.hidden=true and resumes on visibilitychange
+      let hiddenVal = false;
+      Object.defineProperty(document, 'hidden', { configurable: true, get: () => hiddenVal });
+      let nextRafId = 1;
+      const rafCallbacks = new Map();
+      globalThis.requestAnimationFrame = (cb) => {
+        const id = nextRafId++;
+        rafCallbacks.set(id, cb);
+        return id;
+      };
+      globalThis.cancelAnimationFrame = (id) => {
+        rafCallbacks.delete(id);
+      };
+      studioPrefs.patch({ motionLevel: 'full' });
+      runtime.sync();
+      assert.equal(rafCallbacks.size, 1, 'animated reviewing pill schedules rAF when visible');
+
+      hiddenVal = true;
+      const pausedTick = Array.from(rafCallbacks.values())[0];
+      rafCallbacks.clear();
+      pausedTick(100);
+      assert.equal(rafCallbacks.size, 0, 'rAF loop pauses without rescheduling when document.hidden is true');
+
+      const paintsBeforeResume = geminiPaints;
+      hiddenVal = false;
+      document.dispatchEvent(new dom.window.Event('visibilitychange'));
+      assert.equal(rafCallbacks.size, 1, 'visibilitychange resumes rAF loop when visible again');
+      const resumedTick = Array.from(rafCallbacks.values())[0];
+      rafCallbacks.clear();
+      resumedTick(132);
+      assert.equal(geminiPaints > paintsBeforeResume, true);
+
       // Stopping reviewer removes pill cleanly
       window.__ag_last_metrics.stats.children = [
         { id: 'sub-title-1', title: 'Carbon Review Check', running: false, killed: false },
@@ -2234,6 +2304,10 @@ test('opus-gate-pill morphs to live reviewing state with Effort canvas & panel j
       runtime.sync();
       assert.equal(document.getElementById('agy-opus-gate-pill'), null);
     } finally {
+      if (savedRafDesc) Object.defineProperty(globalThis, 'requestAnimationFrame', savedRafDesc);
+      else delete globalThis.requestAnimationFrame;
+      if (savedCafDesc) Object.defineProperty(globalThis, 'cancelAnimationFrame', savedCafDesc);
+      else delete globalThis.cancelAnimationFrame;
       runtime.dispose();
       studioPrefs.dispose();
     }

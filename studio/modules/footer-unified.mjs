@@ -397,7 +397,9 @@ export function createFooterUnifiedRuntime({ onTierChange, kernel } = {}) {
       const leftGroup = footer.children[0];
       const addCtxBtn = leftGroup?.querySelector(':scope > button:first-of-type') || null;
       const speedPill = footer.querySelector('#ag-live-metrics-pill')
-        || (footer.nextElementSibling?.id === 'ag-live-metrics-pill' ? footer.nextElementSibling : null);
+        || (footer.nextElementSibling?.id === 'ag-live-metrics-pill' ? footer.nextElementSibling : null)
+        || footer.parentElement?.querySelector?.(':scope > #ag-live-metrics-pill')
+        || null;
       const hasSubChip = hasExtraVisibleChip(leftGroup, addCtxBtn);
       const targetTier = computeDockTier(footerW, hasSubChip);
       const sigW = splitAnimating ? Math.floor(footerW / 24) * 24 : footerW;
@@ -434,6 +436,7 @@ export function createFooterUnifiedRuntime({ onTierChange, kernel } = {}) {
         leftGroup.appendChild(speedPill);
         setAttr(speedPill, 'data-ag-row-mode', 'middle');
         setAttr(footer, 'data-ag-row-mode', 'middle');
+        layoutSigCache.delete(footer);
       }
 
       const prevSig = buildFooterLayoutSig(footer, leftGroup, sigW, hasSubChip, addCtxBtn, speedPill, targetTier);
@@ -540,6 +543,8 @@ export function createFooterUnifiedRuntime({ onTierChange, kernel } = {}) {
     if (typeof window !== 'undefined' && window.__ag_metrics_ro) {
       try { window.__ag_metrics_ro.disconnect(); } catch {}
       window.__ag_metrics_ro = null;
+      window.__ag_metrics_ro_target = null;
+      window.__ag_metrics_ro_observed = null;
     }
     metricsBusCleanup = installMetricsBus({
       onMetrics: () => {

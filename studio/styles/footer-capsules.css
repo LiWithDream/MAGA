@@ -838,6 +838,7 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) :is(#ag-claude-quota-popov
   display: none !important;
 }
 
+#ag-live-metrics-pill #ag-live-metrics-text span[data-agy-speed-short="1"],
 .agy-composer-footer #ag-live-metrics-pill #ag-live-metrics-text span[data-agy-speed-short="1"] {
   display: none !important;
 }

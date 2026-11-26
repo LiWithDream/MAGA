@@ -52,6 +52,7 @@ import {
   attachTarget,
   isAllowedOrigin
 } from './daemon/cdp-attach.mjs';
+import { initRemoteBridge, shutdownRemoteBridgeSync } from './daemon/remote-bridge.mjs';
 import { runVerifyOnce, sync } from './daemon/sync-loop.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -133,6 +134,16 @@ if (isMainModule) {
     process.exit(0);
   } else {
     rebuildBundleIfNeeded();
+    if (!RUN_ONCE && !VERIFY_ONCE) {
+      process.on('exit', () => {
+        try {
+          shutdownRemoteBridgeSync();
+        } catch {}
+      });
+      await initRemoteBridge().catch((err) => {
+        console.warn(`[Anti-Claude Daemon] Remote bridge init failed: ${err?.message || err}`);
+      });
+    }
     console.log(`[Anti-Claude Daemon] Started (${getCachedVersion()}) | userDir=${USER_DIR} | sqlite=${Boolean(DatabaseSync)}`);
     await sync();
     setInterval(sync, 2500);

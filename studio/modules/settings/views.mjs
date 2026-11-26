@@ -9,6 +9,7 @@ import {
   TIER_ORDER,
   esc,
 } from './constants.mjs';
+import { getRemoteL1Summary } from './remote-view.mjs';
 
 export function getHostExecutorSummary(catalog, val, L) {
   if (val && val !== 0) {
@@ -42,6 +43,8 @@ export function getViewMeta(view, L) {
       return { title: L('AI 对话建议', 'AI Chat Suggestions'), parent: L('工作区与面板', 'Workspace & Panels') };
     case 'workspace-git-workflow':
       return { title: L('Git 并行工作流', 'Git Workflow'), parent: L('工作区与面板', 'Workspace & Panels') };
+    case 'remote':
+      return { title: L('远程控制', 'Remote Control'), parent: L('AGY Studio 设置', 'AGY Studio') };
     case 'appearance':
       return { title: L('语言与外观', 'Language & Appearance'), parent: L('AGY Studio 设置', 'AGY Studio') };
     default:
@@ -128,10 +131,12 @@ export function renderL1(p, base, catalog, { studioPrefs, state, L }) {
   const motionLabels = { full: L('完整', 'Full'), reduced: L('精简', 'Reduced'), off: L('关闭', 'Off') };
   const appSummary = `${base.modules?.i18n ? '中文' : 'EN'} · ${base.cjkFontScale || '95'}% · ${motionLabels[p.motionLevel] || 'Full'}`;
 
+  const remoteSummary = getRemoteL1Summary(state, L);
   const cats = [
     ['models', L('模型与思考', 'Models & Thinking'), L('胶囊显示、家族档位、隐藏模型、主题与执行器', 'Capsule UI, family tiers, hidden list, themes & executor'), modelsSummary],
     ['stream', L('对话与过程流', 'Conversation & Stream'), L('思考正文显隐、步骤流模式、恢复提示与代码折叠', 'Thinking prose, step flow, resume banner & code fold'), streamSummary],
     ['workspace', L('工作区与面板', 'Workspace & Panels'), L('用量统计、子代理胶囊、侧栏与项目增强', 'Usage card, subagents, sidebar & Projects'), wsSummary],
+    ['remote', L('远程控制', 'Remote Control'), L('本机网关开关、Cloudflare 域通道、扫码配对与设备吊销', 'Gateway switch, Cloudflare tunnel, QR pairing & devices'), remoteSummary],
     ['appearance', L('语言与外观', 'Language & Appearance'), L('界面语言、中文字体字高与动效强度', 'UI language, CJK optical scale & motion'), appSummary],
   ];
 

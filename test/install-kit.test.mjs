@@ -73,7 +73,7 @@ test('packRelease builds zero-npm-install macOS tarball with valid SHA-256, zero
     const tarList = execFileSync('tar', ['-tzf', res.archive], { encoding: 'utf8' });
     const tarEntries = tarList.split('\n').filter(Boolean);
     const forbidden = tarEntries.filter((e) =>
-      /(^|\/)(node_modules|\.git|\.agents|test|DEVELOPMENT_HISTORY\.md|studio-prefs\.json|project-suggestions-config\.json)(\/|$)/.test(
+      /(^|\/)(node_modules|\.git|\.agents|test|DEVELOPMENT_HISTORY\.md|studio-prefs\.json|project-suggestions-config\.json|gateway-identity\.json|pairing\.json|devices\.json|gateway\.pid|bridge\.sock)(\/|$)/.test(
         e
       ) || /^[^/]+\/AGENTS\.md$/.test(e)
     );
@@ -85,6 +85,10 @@ test('packRelease builds zero-npm-install macOS tarball with valid SHA-256, zero
     assert.equal(existsSync(path.join(extractedRoot, 'test')), false, 'tarball must exclude test/');
     assert.equal(existsSync(path.join(extractedRoot, 'user', 'custom.js')), true);
     assert.equal(existsSync(path.join(extractedRoot, 'studio', 'prebuilt', 'studio-entry.js')), true);
+    assert.equal(existsSync(path.join(extractedRoot, 'remote', 'gateway', 'server.mjs')), true);
+    for (const f of ['index.html', 'app.js', 'styles.css', 'manifest.webmanifest', 'sw.js']) {
+      assert.equal(existsSync(path.join(extractedRoot, 'remote', 'pwa', 'dist', f)), true, `tarball missing remote/pwa/dist/${f}`);
+    }
     assert.equal(existsSync(path.join(extractedRoot, 'install.sh')), true);
     assert.equal(existsSync(path.join(extractedRoot, 'docs', 'INSTALL_AGENT.md')), true);
 
@@ -97,14 +101,16 @@ test('packRelease builds zero-npm-install macOS tarball with valid SHA-256, zero
     const fakeHome = path.join(unpackDir, 'fake-home');
     mkdirSync(fakeHome, { recursive: true });
     const verifyScript = `
-      import { buildStudioBundle, buildUserCustomJs } from './studio/build.mjs';
+      import { buildRemotePwa, buildStudioBundle, buildUserCustomJs } from './studio/build.mjs';
       const u = await buildUserCustomJs({ writeToRepo: false, allowPrebuilt: true });
       const b = await buildStudioBundle({ allowPrebuilt: true });
+      const p = await buildRemotePwa({ allowPrebuilt: true });
       if (!u.prebuilt || u.bytes < 1000) throw new Error('Expected prebuilt user/custom.js');
+      if (!p.prebuilt || !p.files?.['app.js']) throw new Error('Expected prebuilt remote PWA bundle');
       if (!b.jsBlock.includes('createMagaKernel') || !b.cssBlock.includes('studio-settings.css')) {
         throw new Error('Prebuilt studio bundle missing expected markers');
       }
-      console.log(JSON.stringify({ ok: true, userBytes: u.bytes, studioBytes: b.jsBlock.length }));
+      console.log(JSON.stringify({ ok: true, userBytes: u.bytes, studioBytes: b.jsBlock.length, remoteBytes: p.files['app.js'] }));
     `;
     const checkOut = execFileSync(process.execPath, ['--input-type=module', '-e', verifyScript], {
       cwd: extractedRoot,

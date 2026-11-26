@@ -2,6 +2,9 @@
  * Delegated DOM Click & Change Event Wiring for MAGA Unified Settings Root.
  */
 import { PREVIEW_SAMPLE_GROUPS, buildDefaultPreviewSelectionMap } from './constants.mjs';
+import { handleRemoteSettingsClick, loadRemoteControlStatusIfNeeded } from './remote-events.mjs';
+
+export { loadRemoteControlStatusIfNeeded };
 
 export function loadAiSuggestionsConfigIfNeeded(state, viewName, onLoaded) {
   if (!state || (viewName !== 'workspace' && viewName !== 'workspace-ai-suggestions')) return;
@@ -85,6 +88,10 @@ export function bindSettingsRootEvents(root, {
     const navBtn = target.closest('[data-ms-nav]');
     if (navBtn) {
       pushView(navBtn.getAttribute('data-ms-nav'));
+      return;
+    }
+
+    if (await handleRemoteSettingsClick(target, root, { state, renderActiveHost, flashToast })) {
       return;
     }
 

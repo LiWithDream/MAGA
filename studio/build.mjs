@@ -3,7 +3,7 @@
  * Compiles studio/entry.mjs (ESM) + studio/styles/*.css into bounded blocks inside
  * ~/.gemini/antigravity/anti-claude/user/{custom.js,custom.css,config.json}.
  */
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -23,7 +23,6 @@ export const PREBUILT_STUDIO_ENTRY = path.join(__dirname, 'prebuilt', 'studio-en
 const USER_ENTRY_FILE = path.join(REPO_ROOT, 'user', 'src', 'entry.mjs');
 const REPO_USER_JS = path.join(REPO_ROOT, 'user', 'custom.js');
 const REPO_USER_CSS = path.join(REPO_ROOT, 'user', 'custom.css');
-
 let _esbuildPromise = null;
 async function loadEsbuild() {
   if (!_esbuildPromise) {
@@ -36,6 +35,10 @@ async function loadEsbuild() {
   }
   return _esbuildPromise;
 }
+const REMOTE_PWA_DIR = path.join(REPO_ROOT, 'remote', 'pwa');
+const REMOTE_PWA_ENTRY = path.join(REMOTE_PWA_DIR, 'src', 'app.mjs');
+const REMOTE_PWA_CSS = path.join(REMOTE_PWA_DIR, 'src', 'styles.css');
+export const REMOTE_PWA_DIST = path.join(REMOTE_PWA_DIR, 'dist');
 const HOME = homedir();
 
 export const STATE_DIR = path.join(HOME, '.gemini', 'antigravity', 'anti-claude');
@@ -291,6 +294,7 @@ export async function deployStudio({ allowNonMain = false, metaPath } = {}) {
   }
 
   await buildUserCustomJs({ writeToRepo: true, allowPrebuilt: true });
+  const remotePwa = await buildRemotePwa({ allowPrebuilt: true });
   const { jsBlock, cssBlock, prefs } = await buildStudioBundle();
 
   let baseJs = existsSync(REPO_USER_JS) ? readFileSync(REPO_USER_JS, 'utf8') : readFileSync(TARGET_CUSTOM_JS, 'utf8');
@@ -312,6 +316,7 @@ export async function deployStudio({ allowNonMain = false, metaPath } = {}) {
     configJsonPath: TARGET_CONFIG_JSON,
     jsBytes: Buffer.byteLength(jsBlock, 'utf8'),
     cssBytes: Buffer.byteLength(cssBlock, 'utf8'),
+    remotePwa,
     deployedFrom,
     ...(guard.warnings.length ? { deployWarnings: guard.warnings } : {}),
     prefs,
@@ -321,4 +326,94 @@ export async function deployStudio({ allowNonMain = false, metaPath } = {}) {
 export function rollbackStudio() {
   stripStudioBlocksOnly();
   return { ok: true, action: 'rolled_back' };
+}
+
+export async function buildRemotePwa({ outDir = REMOTE_PWA_DIST, allowPrebuilt = false } = {}) {
+  const prebuiltAssets = ['index.html', 'app.js', 'styles.css', 'manifest.webmanifest', 'sw.js'];
+  const preferPrebuilt = process.env.MAGA_USE_PREBUILT === '1';
+  if (allowPrebuilt && prebuiltAssets.every((f) => existsSync(path.join(outDir, f)))) {
+    let esbuildMod = null;
+    if (!preferPrebuilt) {
+      try {
+        esbuildMod = await loadEsbuild();
+      } catch {
+        esbuildMod = null;
+      }
+    }
+    if (preferPrebuilt || !esbuildMod) {
+      const appCode = readFileSync(path.join(outDir, 'app.js'), 'utf8');
+      if (appCode.trim()) {
+        new Function(appCode);
+        const files = Object.fromEntries(
+          prebuiltAssets.map((f) => [f, readFileSync(path.join(outDir, f)).byteLength])
+        );
+        return { ok: true, outDir, prebuilt: true, files };
+      }
+    }
+  }
+
+  if (!existsSync(REMOTE_PWA_ENTRY)) {
+    throw new Error(`Missing remote PWA entry point at ${REMOTE_PWA_ENTRY}`);
+  }
+  if (!existsSync(REMOTE_PWA_CSS)) {
+    throw new Error(`Missing remote PWA stylesheet at ${REMOTE_PWA_CSS}`);
+  }
+
+  const esbuild = await loadEsbuild();
+  const bundled = await esbuild.build({
+    entryPoints: [REMOTE_PWA_ENTRY],
+    bundle: true,
+    write: false,
+    format: 'iife',
+    platform: 'browser',
+    target: ['chrome126', 'safari17'],
+    minify: false,
+    keepNames: false,
+    legalComments: 'none',
+  });
+  const compiledJs = (bundled.outputFiles?.[0]?.text || '').trim();
+  if (!compiledJs) {
+    throw new Error('esbuild produced an empty bundle for remote/pwa/src/app.mjs');
+  }
+  const jsOut = `/* AGY Studio Remote PWA — compiled from remote/pwa/src/app.mjs */\n${compiledJs}\n`;
+  new Function(jsOut);
+
+  const cssRaw = readFileSync(REMOTE_PWA_CSS, 'utf8');
+  if (cssRaw.includes(':has(')) {
+    throw new Error('remote/pwa/src/styles.css must not contain :has() selectors');
+  }
+  const cssResult = await esbuild.transform(cssRaw, {
+    loader: 'css',
+    minify: false,
+  });
+  const cssOut = cssResult.code;
+
+  mkdirSync(outDir, { recursive: true });
+
+  const jsDest = path.join(outDir, 'app.js');
+  const cssDest = path.join(outDir, 'styles.css');
+  writeFileSync(jsDest, jsOut, 'utf8');
+  writeFileSync(cssDest, cssOut, 'utf8');
+
+  const files = {
+    'app.js': Buffer.byteLength(jsOut, 'utf8'),
+    'styles.css': Buffer.byteLength(cssOut, 'utf8'),
+  };
+
+  for (const staticFile of ['index.html', 'manifest.webmanifest', 'sw.js']) {
+    const src = path.join(REMOTE_PWA_DIR, staticFile);
+    if (!existsSync(src)) {
+      throw new Error(`Missing remote PWA static asset at ${src}`);
+    }
+    const dst = path.join(outDir, staticFile);
+    copyFileSync(src, dst);
+    files[staticFile] = readFileSync(dst).byteLength;
+  }
+
+  return {
+    ok: true,
+    outDir,
+    prebuilt: false,
+    files,
+  };
 }

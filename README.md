@@ -246,7 +246,7 @@ Small daily friction adds up when you live inside Antigravity all day — every 
 | Root DOM observers (`MagaKernel`) | **`1`** shared `MutationObserver` (`data-maga-own` filtered) |
 | Frame flush cost (Apple Silicon local CDP check) | **`1.5–3.6 ms`** with leaf-only telemetry slots (`MetricsBus`) |
 | Global CSS `:has()` selectors | **`0`** (enforced by automated test guards) |
-| Automated regression & invariant suite (`npm test`) | **`175+`** passing tests, **`0`** skipped |
+| Automated regression & invariant suite (`npm test`) | **`195+`** passing tests, **`0`** skipped |
 | Background footprint | **`1`** local macOS `LaunchAgent` |
 
 ---
@@ -297,6 +297,7 @@ Running other Antigravity plugins? Here is how **AGY Studio** behaves alongside 
 | **Workspace** | Unified Sidebar Recents | `Off` | Optionally merge native project groups into one chronological list |
 | **Workspace** | Git Workflow Policy | `Observe` | Per-repo `observe` / `protect-main` / `worktree-only` guardrails + force-push block |
 | **Workspace** | AI Chat Suggestions | `Off` (key optional) | Gemini 3.8 Flash next-step starter pills from Git history + last 5 chats |
+| **Remote Control** | Loopback Gateway, Edge & QR | `Off` | Zero-dep `127.0.0.1:18791` gateway, Cloudflare Access / Tailscale / loopback transport, local SVG QR pairing & device roles/revocation |
 | **Appearance** | Chinese UI Localization | `Off` | Built-in Simplified Chinese UI toggle + CJK optical scale (`94.5%` / `95%` / `100%`) |
 | **Appearance** | Motion Intensity | `Full` | `Full` / `Reduced` / `Off` animation control |
 
@@ -324,18 +325,19 @@ This comes from Antigravity's native `language_server` when its TLS/proxy connec
 ```text
 .
 ├── core/                  # Local CDP daemon + submodules (attach, bootstrap, SQLite, projects, worktrees)
-├── user/src/              # 21 modular ESM frontend files (<2,000 lines each, compiled to user/custom.js)
+├── user/src/              # 22 modular ESM frontend files (<2,000 lines each, compiled to user/custom.js)
+├── remote/                # Remote Control zero-dep loopback gateway (7 files) & mobile PWA client
 ├── vendor/agy-capsule/    # Vendored MIT model/effort picker, motion themes & SQLite parser
 ├── studio/
 │   ├── core/              # MagaKernel (1 root observer), DomFlags, MetricsBus, snapshot
 │   ├── shared/            # Single-source preferences schema & sanitization
 │   ├── daemon/            # Usage stats, resume detection, AI suggestions, plugin sync & gate services
-│   ├── modules/           # Dock capsules, 3-tab Settings Studio, auto-compact, subagent split
+│   ├── modules/           # Dock capsules, Settings Studio (incl. Remote Control & QR), auto-compact, subagent split
 │   ├── plugin/            # Managed plugins (maga-opus-gate, maga-auto-compact, maga-git-workflow)
 │   ├── styles/            # Scoped stylesheets (0 :has() selectors)
-│   ├── cli.mjs            # Unified CLI (install / deploy / sync-rules / doctor / rollback)
+│   ├── cli.mjs            # Unified CLI (install / deploy / sync-rules / doctor / rollback / remote)
 │   └── pack-release.mjs   # Zero-npm-install Release tarball packager
-├── test/                  # Automated regression & invariant suite (175+ tests)
+├── test/                  # Automated regression & invariant suite (195+ tests)
 ├── install.sh             # One-line macOS installer (--dry-run, prebuilt & source modes)
 └── uninstall.sh           # Clean rollback & uninstaller (--dry-run supported)
 ```
@@ -343,7 +345,7 @@ This comes from Antigravity's native `language_server` when its TLS/proxy connec
 | Contributor Command | Purpose |
 | :--- | :--- |
 | `npm run wt:new -- feat/slug` | Create an isolated sibling Git worktree with symlinked `node_modules` |
-| `npm test` | Compile `user/custom.js` and run the full 175+ test & invariant suite |
+| `npm test` | Compile `user/custom.js` and run the full 195+ test & invariant suite |
 | `npm run deploy` | Hot-reload UI changes into running Antigravity from clean `main` (no app restart) |
 | `npm run release:pack` | Build a zero-`npm-install` macOS tarball + SHA-256 checksum in `dist/` |
 

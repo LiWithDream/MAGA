@@ -24,6 +24,7 @@ import {
   getProjectWorkflowPolicyBadgeAsync,
   handleGitWorkflowRpc,
 } from '../../studio/daemon/git-workflow-service.mjs';
+import { isCascadeWriteActiveOrRecent } from './remote/cascade-lock.mjs';
 import {
   ALLOWED_AGENT_TOOLS,
   GLOBAL_AGENTS_DIR,
@@ -760,6 +761,13 @@ export async function handleProjectRpcRequest(rawPayload, callerEntry = null) {
       return { reqId, result };
     }
     if (action === 'getResumeState') {
+      const cid = typeof payload?.cascadeId === 'string' ? payload.cascadeId.trim() : '';
+      if (cid && isCascadeWriteActiveOrRecent(cid)) {
+        return {
+          reqId,
+          result: { ok: true, cascadeId: cid, interrupted: false, active: true, reason: 'remote_write_active' },
+        };
+      }
       const { collectResumeState } = await import('../../studio/daemon/resume-detector.mjs');
       const result = collectResumeState(payload);
       return { reqId, result };
@@ -791,6 +799,17 @@ export async function handleProjectRpcRequest(rawPayload, callerEntry = null) {
       action === 'syncGitWorkflowPlugin'
     ) {
       return { reqId, result: await handleGitWorkflowRpc(action, payload) };
+    }
+    if (
+      action === 'getRemoteControlStatus' ||
+      action === 'saveRemoteControlConfig' ||
+      action === 'createRemotePairing' ||
+      action === 'revokeRemoteDevice' ||
+      action === 'updateRemoteDeviceRole' ||
+      action === 'runRemoteDiagnostics'
+    ) {
+      const { handleRemoteSettingsRpc } = await import('./remote/settings-rpc.mjs');
+      return { reqId, result: await handleRemoteSettingsRpc(action, payload) };
     }
     if (
       action === 'getProjectSuggestionsConfig' ||

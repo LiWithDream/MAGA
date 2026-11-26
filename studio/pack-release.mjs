@@ -22,6 +22,7 @@ import { fileURLToPath } from 'node:url';
 import {
   PREBUILT_STUDIO_ENTRY,
   REPO_ROOT,
+  buildRemotePwa,
   buildUserCustomJs,
   compileStudioCoreIife,
 } from './build.mjs';
@@ -48,6 +49,7 @@ const INCLUDE_DIRS = [
   'vendor',
   'studio',
   'user',
+  'remote',
 ];
 
 function parseCliOpts(argv) {
@@ -70,8 +72,9 @@ export async function packRelease({ outDir = DIST_DIR, versionOverride = '' } = 
   const rootName = `agy-studio-v${version}-macos`;
   const archiveName = `${rootName}.tar.gz`;
 
-  // 1. Pre-compile both runtime bundles so end users do NOT need `npm install` or `esbuild`.
+  // 1. Pre-compile runtime & remote PWA bundles so end users do NOT need `npm install` or `esbuild`.
   await buildUserCustomJs({ writeToRepo: true });
+  await buildRemotePwa();
   const studioIife = await compileStudioCoreIife();
   mkdirSync(path.dirname(PREBUILT_STUDIO_ENTRY), { recursive: true });
   writeFileSync(PREBUILT_STUDIO_ENTRY, `${studioIife}\n`, 'utf8');
@@ -100,10 +103,20 @@ export async function packRelease({ outDir = DIST_DIR, versionOverride = '' } = 
           recursive: true,
           filter: (srcPath) => {
             const base = path.basename(srcPath);
-            if (base === '.DS_Store' || base.endsWith('.log') || base.endsWith('.tmp') || base.startsWith('.env')) {
+            if (base === '.DS_Store' || base.endsWith('.log') || base.endsWith('.tmp') || base.endsWith('.lock') || base.startsWith('.env')) {
               return false;
             }
-            if (base === 'studio-prefs.json' || base === 'project-suggestions-config.json') {
+            if (
+              base === 'studio-prefs.json' ||
+              base === 'project-suggestions-config.json' ||
+              base === 'gateway.pid' ||
+              base === 'bridge.sock' ||
+              base === 'audit.jsonl' ||
+              base === 'pairing.json' ||
+              base === 'devices.json' ||
+              base === 'gateway-identity.json' ||
+              base === 'device-last-seen.json'
+            ) {
               return false;
             }
             return true;

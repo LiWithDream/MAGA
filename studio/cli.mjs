@@ -8,11 +8,13 @@
  *   node studio/cli.mjs sync-rules      Sync critically pruned fast-io rules into ~/.gemini/AGENTS.md
  *   node studio/cli.mjs doctor          Verify daemon, plist, CDP, usage stats, bundle markers & config
  *   node studio/cli.mjs rollback        Strip studio blocks and restore stock defaults
+ *   node studio/cli.mjs remote <subcmd> Manage AGY Studio Remote gateway & paired devices (on|off|status|pair|devices|revoke)
  */
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   CSS_BEGIN,
   JS_BEGIN,
@@ -25,6 +27,7 @@ import {
   stripBlock,
   stripStudioBlocksOnly,
 } from './build.mjs';
+import { QUOTA_STATE_FILE } from '../core/daemon/env.mjs';
 import { collectUsageStatsAsync } from './daemon/usage-service.mjs';
 import {
   isOpusGatePluginInstalled,
@@ -44,8 +47,10 @@ import {
   syncGitWorkflowPlugin,
   verifyGitWorkflowHookNodeRuntime,
 } from './daemon/git-workflow-service.mjs';
-import { QUOTA_STATE_FILE } from '../core/daemon/env.mjs';
 import { evaluateDeployGuard, readDeployMeta } from './deploy-meta.mjs';
+import { collectRemoteControlDiagnostics, handleRemoteCommand } from './remote-cli.mjs';
+
+export { collectRemoteControlDiagnostics } from './remote-cli.mjs';
 
 const HOME = homedir();
 const AGENTS_MD = path.join(HOME, '.gemini', 'AGENTS.md');
@@ -176,6 +181,7 @@ async function runDoctor() {
   const hasFastIo = existsSync(AGENTS_MD) && readFileSync(AGENTS_MD, 'utf8').includes(RULE_BEGIN);
   const usage = await collectUsageStatsAsync({ force: true });
   const deployMeta = readDeployMeta();
+  const remoteControl = collectRemoteControlDiagnostics();
 
   let daemonAlignedWithDeploy = true;
   if (daemonRepoDir && deployMeta.present && deployMeta.meta?.worktreePath) {
@@ -200,7 +206,8 @@ async function runDoctor() {
       pointsToStudio &&
       hasJsMarker &&
       hasCssMarker &&
-      usage?.ok
+      usage?.ok &&
+      remoteControl.ok
     ),
     repoRoot: REPO_ROOT,
     daemonRepoDir,
@@ -211,6 +218,7 @@ async function runDoctor() {
     daemonPointsToStudio: pointsToStudio,
     studioBundle: { jsInjected: hasJsMarker, cssInjected: hasCssMarker },
     remoteControlEnabled: agyCfg?.userSettings?.remoteControlEnabled ?? agyCfg?.remoteControlEnabled ?? null,
+    remoteControl,
     verboseConversationSteps: agyCfg?.userSettings?.verboseConversationSteps ?? null,
     orchestratorModel: agyCfg?.userSettings?.orchestratorModel ?? null,
     fastIoRuleInstalled: hasFastIo,
@@ -261,64 +269,77 @@ function collectProxyDiagnostics() {
   return { shellProxyEnvKeys, systemProxy, hint };
 }
 
-const [cmd = 'deploy', ...cliArgs] = process.argv.slice(2);
-const allowNonMainDeploy =
-  cliArgs.includes('--preview') ||
-  cliArgs.includes('--force') ||
-  process.env.MAGA_DEPLOY_ALLOW_NON_MAIN === '1';
-const skipRulesSync = cliArgs.includes('--no-rules');
+const isMainModule = (() => {
+  try {
+    return Boolean(process.argv[1]) && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+})();
 
-try {
-  if (cmd === 'install') {
-    const installGuard = evaluateDeployGuard(REPO_ROOT, { allowNonMain: allowNonMainDeploy });
-    if (!installGuard.allowed) {
-      throw new Error(installGuard.reason);
+if (isMainModule) {
+  const [cmd = 'deploy', ...cliArgs] = process.argv.slice(2);
+  const allowNonMainDeploy =
+    cliArgs.includes('--preview') ||
+    cliArgs.includes('--force') ||
+    process.env.MAGA_DEPLOY_ALLOW_NON_MAIN === '1';
+  const skipRulesSync = cliArgs.includes('--no-rules');
+
+  try {
+    if (cmd === 'install') {
+      const installGuard = evaluateDeployGuard(REPO_ROOT, { allowNonMain: allowNonMainDeploy });
+      if (!installGuard.allowed) {
+        throw new Error(installGuard.reason);
+      }
+      await runAntiClaudeInstall();
+      const deployRes = await deployStudio({ allowNonMain: allowNonMainDeploy });
+      const rulesRes = skipRulesSync
+        ? { ok: true, skipped: true, reason: '--no-rules' }
+        : syncFastIoRules();
+      const pluginRes = syncOpusGatePlugin();
+      const compactPluginRes = syncAutoCompactPlugin();
+      const gitWorkflowPluginRes = syncGitWorkflowPlugin();
+      console.log(JSON.stringify({ ok: true, command: 'install', deploy: deployRes, rules: rulesRes, opusGatePlugin: pluginRes, autoCompactPlugin: compactPluginRes, gitWorkflowPlugin: gitWorkflowPluginRes }, null, 2));
+    } else if (cmd === 'deploy') {
+      const res = await deployStudio({ allowNonMain: allowNonMainDeploy });
+      await applyDefaultOrchestratorModelPreference();
+      const shouldSyncPlugins = Boolean(res?.ok && !allowNonMainDeploy && !res?.deployedFrom?.preview);
+      const opusGatePluginRes = shouldSyncPlugins
+        ? syncOpusGatePlugin()
+        : { ok: true, skipped: true, reason: 'preview_deploy' };
+      const compactPluginRes = shouldSyncPlugins
+        ? syncAutoCompactPlugin()
+        : { ok: true, skipped: true, reason: 'preview_deploy' };
+      const gitWorkflowPluginRes = shouldSyncPlugins
+        ? syncGitWorkflowPlugin()
+        : { ok: true, skipped: true, reason: 'preview_deploy' };
+      console.log(JSON.stringify({ ...res, opusGatePlugin: opusGatePluginRes, autoCompactPlugin: compactPluginRes, gitWorkflowPlugin: gitWorkflowPluginRes }, null, 2));
+    } else if (cmd === 'sync-rules') {
+      const rulesRes = syncFastIoRules();
+      const pluginRes = syncOpusGatePlugin();
+      const compactPluginRes = syncAutoCompactPlugin();
+      const gitWorkflowPluginRes = syncGitWorkflowPlugin();
+      console.log(JSON.stringify({ ...rulesRes, opusGatePlugin: pluginRes, autoCompactPlugin: compactPluginRes, gitWorkflowPlugin: gitWorkflowPluginRes }, null, 2));
+    } else if (cmd === 'doctor') {
+      const report = await runDoctor();
+      console.log(JSON.stringify(report, null, 2));
+      process.exit(report.ok ? 0 : 1);
+    } else if (cmd === 'rollback') {
+      const rollbackRes = rollbackStudio();
+      const rulesRes = removeFastIoRules();
+      const pluginRes = syncOpusGatePlugin({ remove: true });
+      const compactPluginRes = syncAutoCompactPlugin({ remove: true });
+      const gitWorkflowPluginRes = syncGitWorkflowPlugin({ remove: true });
+      console.log(JSON.stringify({ ...rollbackRes, rules: rulesRes, opusGatePlugin: pluginRes, autoCompactPlugin: compactPluginRes, gitWorkflowPlugin: gitWorkflowPluginRes }, null, 2));
+    } else if (cmd === 'remote') {
+      const res = await handleRemoteCommand(cliArgs);
+      console.log(JSON.stringify(res, null, 2));
+    } else {
+      console.error(`Unknown command: ${cmd}\nUse: install | deploy | sync-rules | doctor | rollback | remote`);
+      process.exit(1);
     }
-    await runAntiClaudeInstall();
-    const deployRes = await deployStudio({ allowNonMain: allowNonMainDeploy });
-    const rulesRes = skipRulesSync
-      ? { ok: true, skipped: true, reason: '--no-rules' }
-      : syncFastIoRules();
-    const pluginRes = syncOpusGatePlugin();
-    const compactPluginRes = syncAutoCompactPlugin();
-    const gitWorkflowPluginRes = syncGitWorkflowPlugin();
-    console.log(JSON.stringify({ ok: true, command: 'install', deploy: deployRes, rules: rulesRes, opusGatePlugin: pluginRes, autoCompactPlugin: compactPluginRes, gitWorkflowPlugin: gitWorkflowPluginRes }, null, 2));
-  } else if (cmd === 'deploy') {
-    const res = await deployStudio({ allowNonMain: allowNonMainDeploy });
-    await applyDefaultOrchestratorModelPreference();
-    const shouldSyncPlugins = Boolean(res?.ok && !allowNonMainDeploy && !res?.deployedFrom?.preview);
-    const opusGatePluginRes = shouldSyncPlugins
-      ? syncOpusGatePlugin()
-      : { ok: true, skipped: true, reason: 'preview_deploy' };
-    const compactPluginRes = shouldSyncPlugins
-      ? syncAutoCompactPlugin()
-      : { ok: true, skipped: true, reason: 'preview_deploy' };
-    const gitWorkflowPluginRes = shouldSyncPlugins
-      ? syncGitWorkflowPlugin()
-      : { ok: true, skipped: true, reason: 'preview_deploy' };
-    console.log(JSON.stringify({ ...res, opusGatePlugin: opusGatePluginRes, autoCompactPlugin: compactPluginRes, gitWorkflowPlugin: gitWorkflowPluginRes }, null, 2));
-  } else if (cmd === 'sync-rules') {
-    const rulesRes = syncFastIoRules();
-    const pluginRes = syncOpusGatePlugin();
-    const compactPluginRes = syncAutoCompactPlugin();
-    const gitWorkflowPluginRes = syncGitWorkflowPlugin();
-    console.log(JSON.stringify({ ...rulesRes, opusGatePlugin: pluginRes, autoCompactPlugin: compactPluginRes, gitWorkflowPlugin: gitWorkflowPluginRes }, null, 2));
-  } else if (cmd === 'doctor') {
-    const report = await runDoctor();
-    console.log(JSON.stringify(report, null, 2));
-    process.exit(report.ok ? 0 : 1);
-  } else if (cmd === 'rollback') {
-    const rollbackRes = rollbackStudio();
-    const rulesRes = removeFastIoRules();
-    const pluginRes = syncOpusGatePlugin({ remove: true });
-    const compactPluginRes = syncAutoCompactPlugin({ remove: true });
-    const gitWorkflowPluginRes = syncGitWorkflowPlugin({ remove: true });
-    console.log(JSON.stringify({ ...rollbackRes, rules: rulesRes, opusGatePlugin: pluginRes, autoCompactPlugin: compactPluginRes, gitWorkflowPlugin: gitWorkflowPluginRes }, null, 2));
-  } else {
-    console.error(`Unknown command: ${cmd}\nUse: install | deploy | sync-rules | doctor | rollback`);
+  } catch (err) {
+    console.error('[AGY Studio]', err?.message || err);
     process.exit(1);
   }
-} catch (err) {
-  console.error('[AGY Studio]', err?.message || err);
-  process.exit(1);
 }

@@ -142,7 +142,7 @@ export function bindSettingsRootEvents(root, {
       } else if (act === 'sync-opus-plugin') {
         if (typeof window.__agProjectCall === 'function') {
           const res = await window.__agProjectCall('syncOpusGatePlugin', {}, 5000).catch(() => null);
-          if (res?.ok) flashToast('✓ 已同步 Opus Gate 插件', '✓ Opus Gate plugin synced');
+          if (res?.ok) flashToast('✓ 已同步审查关卡插件', '✓ Review Gate plugin synced');
           else flashToast('同步插件失败', 'Plugin sync failed', 'error');
         }
       } else if (act === 'trigger-opus-gate') {

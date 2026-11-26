@@ -32,9 +32,11 @@ const {
   handleOpusGateRpc,
 } = await import('../studio/daemon/opus-gate-service.mjs');
 const {
+  GATE_DEFAULT_PREFS,
   evaluateHookEvent,
   evaluatePreflight,
   clearGateState,
+  isSelfOrHigherModel,
 } = await import('../studio/plugin/maga-opus-gate/hooks/gate-check.mjs');
 const { createOpusGatePillRuntime } = await import('../studio/modules/opus-gate-pill.mjs');
 const { buildStudioBundle } = await import('../studio/build.mjs');
@@ -110,9 +112,10 @@ function tick(ms = 25) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-test('prefs defaults and sanitization handle Opus Gate fields and bounds', () => {
+test('prefs defaults and sanitization handle Review Gate fields, parity, and bounds', () => {
   assert.equal(DEFAULT_STUDIO_PREFS.opusGateMode, 'semi');
-  assert.equal(DEFAULT_STUDIO_PREFS.opusGatePreferredTier, 'high');
+  assert.equal(DEFAULT_STUDIO_PREFS.opusGateModel, 'opus');
+  assert.equal(DEFAULT_STUDIO_PREFS.opusGatePreferredTier, undefined);
   assert.equal(DEFAULT_STUDIO_PREFS.opusGateMinQuota5hPct, 20);
   assert.equal(DEFAULT_STUDIO_PREFS.opusGateMinQuotaWeeklyPct, 15);
   assert.equal(DEFAULT_STUDIO_PREFS.opusGateMaxAutoPerSession, 2);
@@ -123,16 +126,26 @@ test('prefs defaults and sanitization handle Opus Gate fields and bounds', () =>
     stop: true,
   });
 
+  // Parity guard: hook DEFAULT_PREFS stays aligned with schema DEFAULT_STUDIO_PREFS
+  assert.equal(GATE_DEFAULT_PREFS.opusGateMode, DEFAULT_STUDIO_PREFS.opusGateMode);
+  assert.equal(GATE_DEFAULT_PREFS.opusGateModel, DEFAULT_STUDIO_PREFS.opusGateModel);
+  assert.equal(GATE_DEFAULT_PREFS.opusGateMinQuota5hPct, DEFAULT_STUDIO_PREFS.opusGateMinQuota5hPct);
+  assert.equal(GATE_DEFAULT_PREFS.opusGateMinQuotaWeeklyPct, DEFAULT_STUDIO_PREFS.opusGateMinQuotaWeeklyPct);
+  assert.equal(GATE_DEFAULT_PREFS.opusGateMaxAutoPerSession, DEFAULT_STUDIO_PREFS.opusGateMaxAutoPerSession);
+  assert.deepEqual(GATE_DEFAULT_PREFS.opusGateCheckpoints, DEFAULT_STUDIO_PREFS.opusGateCheckpoints);
+
   const clamped = sanitizeStudioPrefs({
     opusGateMode: 'bogus',
-    opusGatePreferredTier: 'ultra',
+    opusGateModel: 'ultra',
+    opusGatePreferredTier: 'medium',
     opusGateMinQuota5hPct: 1,
     opusGateMinQuotaWeeklyPct: 99,
     opusGateMaxAutoPerSession: 12,
     opusGateCheckpoints: { plan: false, stop: 'yes' },
   });
   assert.equal(clamped.opusGateMode, 'semi');
-  assert.equal(clamped.opusGatePreferredTier, 'high');
+  assert.equal(clamped.opusGateModel, 'opus');
+  assert.equal(clamped.opusGatePreferredTier, undefined);
   assert.equal(clamped.opusGateMinQuota5hPct, 5);
   assert.equal(clamped.opusGateMinQuotaWeeklyPct, 60);
   assert.equal(clamped.opusGateMaxAutoPerSession, 5);
@@ -145,14 +158,14 @@ test('prefs defaults and sanitization handle Opus Gate fields and bounds', () =>
 
   const valid = sanitizeStudioPrefs({
     opusGateMode: 'auto',
-    opusGatePreferredTier: 'medium',
+    opusGateModel: 'carbon',
     opusGateMinQuota5hPct: 35,
     opusGateMinQuotaWeeklyPct: 25,
     opusGateMaxAutoPerSession: 3,
     opusGateCheckpoints: { plan: true, risk: false, debug: true, stop: false },
   });
   assert.equal(valid.opusGateMode, 'auto');
-  assert.equal(valid.opusGatePreferredTier, 'medium');
+  assert.equal(valid.opusGateModel, 'carbon');
   assert.equal(valid.opusGateMinQuota5hPct, 35);
   assert.equal(valid.opusGateMinQuotaWeeklyPct, 25);
   assert.equal(valid.opusGateMaxAutoPerSession, 3);
@@ -166,8 +179,10 @@ test('prefs defaults and sanitization handle Opus Gate fields and bounds', () =>
   const rt = createStudioPrefsRuntime();
   try {
     assert.equal(rt.get().opusGateMode, 'semi');
-    rt.patch({ opusGateMode: 'auto', opusGateCheckpoints: { debug: false } });
+    assert.equal(rt.get().opusGateModel, 'opus');
+    rt.patch({ opusGateMode: 'auto', opusGateModel: 'carbon', opusGateCheckpoints: { debug: false } });
     assert.equal(rt.get().opusGateMode, 'auto');
+    assert.equal(rt.get().opusGateModel, 'carbon');
     assert.deepEqual(rt.get().opusGateCheckpoints, {
       plan: true,
       risk: true,
@@ -186,7 +201,7 @@ test('opus-gate-service persists quota, syncs plugin, enforces CAS dismiss, reco
       {
         tierName: 'AI Ultra',
         claude: { fiveHourRemainingPct: 120, weeklyRemainingPct: 48.34, fiveHourResetSec: 1200 },
-        gemini: { fiveHourRemainingPct: -5, weeklyRemainingPct: 90 },
+        gemini: { fiveHourRemainingPct: -5, weeklyRemainingPct: 90, fiveHourResetSec: 900, weeklyResetSec: 86400 },
       },
       { quotaStateFile: dirs.quotaStateFile }
     );
@@ -197,6 +212,8 @@ test('opus-gate-service persists quota, syncs plugin, enforces CAS dismiss, reco
     assert.equal(loaded.claude.weeklyRemainingPct, 48.3);
     assert.equal(loaded.claude.fiveHourResetSec, 1200);
     assert.equal(loaded.gemini.fiveHourRemainingPct, 0);
+    assert.equal(loaded.gemini.fiveHourResetSec, 900);
+    assert.equal(loaded.gemini.weeklyResetSec, 86400);
 
     const rulesStat = fs.statSync(path.join(REPO, 'studio', 'plugin', 'maga-opus-gate', 'rules', 'AGENTS.md'));
     assert.ok(rulesStat.size > 0 && rulesStat.size < 1500, `expected rules/AGENTS.md < 1500 bytes, got ${rulesStat.size}`);
@@ -232,6 +249,7 @@ test('opus-gate-service persists quota, syncs plugin, enforces CAS dismiss, reco
     const active = getOpusGateStatus(
       { cascadeId: cid },
       {
+        studioPrefs: { ...DEFAULT_STUDIO_PREFS, opusGateModel: 'opus' },
         pluginsDir: dirs.pluginsDir,
         quotaStateFile: dirs.quotaStateFile,
         proposalsDir: dirs.proposalsDir,
@@ -241,6 +259,26 @@ test('opus-gate-service persists quota, syncs plugin, enforces CAS dismiss, reco
     assert.equal(active.ok, true);
     assert.equal(active.pluginInstalled, true);
     assert.equal(active.proposal?.kind, 'risk');
+    assert.equal(active.proposal?.reviewerModel, 'opus');
+    assert.equal(active.proposal?.quotaPool, 'claude');
+    assert.equal(active.proposal?.quotaBlocked, false);
+
+    // P0-2 regression: switching opusGateModel to carbon recomputes pool pcts & quotaBlocked from live quotaState
+    const activeCarbon = getOpusGateStatus(
+      { cascadeId: cid },
+      {
+        studioPrefs: { ...DEFAULT_STUDIO_PREFS, opusGateModel: 'carbon', opusGateMinQuota5hPct: 20 },
+        pluginsDir: dirs.pluginsDir,
+        quotaStateFile: dirs.quotaStateFile,
+        proposalsDir: dirs.proposalsDir,
+        now: 120_000,
+      }
+    );
+    assert.equal(activeCarbon.proposal?.reviewerModel, 'carbon');
+    assert.equal(activeCarbon.proposal?.recommendedModelId, 'gemini-4-carbon-high');
+    assert.equal(activeCarbon.proposal?.quotaPool, 'gemini');
+    assert.equal(activeCarbon.proposal?.pool5hPct, 0);
+    assert.equal(activeCarbon.proposal?.quotaBlocked, true);
 
     const expired = getOpusGateStatus(
       { cascadeId: cid },
@@ -269,7 +307,7 @@ test('opus-gate-service persists quota, syncs plugin, enforces CAS dismiss, reco
     const briefHigh = await buildOpusHandoffBrief(
       { cascadeId: cid, dirPath: REPO, note: 'Check `observer`\nisolation' },
       {
-        studioPrefs: { ...DEFAULT_STUDIO_PREFS, opusGatePreferredTier: 'high', opusGateMinQuota5hPct: 20 },
+        studioPrefs: { ...DEFAULT_STUDIO_PREFS, opusGateModel: 'opus', opusGateMinQuota5hPct: 20 },
         quotaStateFile: dirs.quotaStateFile,
         proposalsDir: dirs.proposalsDir,
         allowAnyDir: true,
@@ -277,48 +315,84 @@ test('opus-gate-service persists quota, syncs plugin, enforces CAS dismiss, reco
       }
     );
     assert.equal(briefHigh.ok, true);
+    assert.equal(briefHigh.reviewerModel, 'opus');
+    assert.equal(briefHigh.workerName, 'review-opus');
     assert.equal(briefHigh.recommendedTier, 'high');
     assert.equal(briefHigh.recommendedModelId, 'claude-opus-5-5-high');
+    assert.match(briefHigh.swarmPrompt, /review-opus/);
+    assert.match(briefHigh.swarmPrompt, /claude-opus-5-5-high/);
     assert.match(briefHigh.swarmPrompt, /<= 3 turns/);
     assert.match(briefHigh.swarmPrompt, /500 words/);
     assert.match(briefHigh.handoffPrompt, /APPROVE/);
     assert.match(briefHigh.handoffPrompt, /Check 'observer' isolation/);
     assert.match(briefHigh.handoffPrompt, /Plan \/ Design Artifacts: `docs\/architecture-plan\.md`/);
 
-    // Tight 5h quota recomputes tier to medium even when active proposal previously recorded 'high'
+    // Locked High effort: tight 5h quota and kind='stop' NEVER downgrade to medium
     saveQuotaState(
-      { claude: { fiveHourRemainingPct: 25, weeklyRemainingPct: 50 } },
-      { quotaStateFile: dirs.quotaStateFile }
-    );
-    const briefQuotaDowngraded = await buildOpusHandoffBrief(
-      { cascadeId: cid, kind: 'risk' },
       {
-        studioPrefs: { ...DEFAULT_STUDIO_PREFS, opusGatePreferredTier: 'high', opusGateMinQuota5hPct: 20 },
-        quotaStateFile: dirs.quotaStateFile,
-        proposalsDir: dirs.proposalsDir,
-        allowAnyDir: true,
-        now: 120_000,
-      }
-    );
-    assert.equal(briefQuotaDowngraded.recommendedTier, 'medium');
-    assert.equal(briefQuotaDowngraded.recommendedModelId, 'claude-opus-5-5-medium');
-
-    // Stop gate maps to medium even when 5h quota is abundant
-    saveQuotaState(
-      { claude: { fiveHourRemainingPct: 95, weeklyRemainingPct: 95 } },
+        claude: { fiveHourRemainingPct: 25, weeklyRemainingPct: 50 },
+        gemini: { fiveHourRemainingPct: 88, weeklyRemainingPct: 92 },
+      },
       { quotaStateFile: dirs.quotaStateFile }
     );
-    const briefStop = await buildOpusHandoffBrief(
+    const briefStopOpus = await buildOpusHandoffBrief(
       { cascadeId: cid, kind: 'stop' },
       {
-        studioPrefs: { ...DEFAULT_STUDIO_PREFS, opusGatePreferredTier: 'high' },
+        studioPrefs: { ...DEFAULT_STUDIO_PREFS, opusGateModel: 'opus', opusGateMinQuota5hPct: 20 },
         quotaStateFile: dirs.quotaStateFile,
         proposalsDir: dirs.proposalsDir,
         allowAnyDir: true,
         now: 120_000,
       }
     );
-    assert.equal(briefStop.recommendedTier, 'medium');
+    assert.equal(briefStopOpus.recommendedTier, 'high');
+    assert.equal(briefStopOpus.recommendedModelId, 'claude-opus-5-5-high');
+
+    // Configured Carbon + per-click override in either direction without mutating prefs
+    const briefCarbon = await buildOpusHandoffBrief(
+      { cascadeId: cid, kind: 'risk' },
+      {
+        studioPrefs: { ...DEFAULT_STUDIO_PREFS, opusGateModel: 'carbon' },
+        quotaStateFile: dirs.quotaStateFile,
+        proposalsDir: dirs.proposalsDir,
+        allowAnyDir: true,
+        now: 120_000,
+      }
+    );
+    assert.equal(briefCarbon.reviewerModel, 'carbon');
+    assert.equal(briefCarbon.workerName, 'review-carbon');
+    assert.equal(briefCarbon.quotaPool, 'gemini');
+    assert.equal(briefCarbon.recommendedTier, 'high');
+    assert.equal(briefCarbon.recommendedModelId, 'gemini-4-carbon-high');
+    assert.match(briefCarbon.swarmPrompt, /review-carbon/);
+    assert.match(briefCarbon.swarmPrompt, /gemini-4-carbon-high/);
+    assert.match(briefCarbon.handoffPrompt, /Gemini 4 Carbon \(High\)/);
+
+    const briefOverrideCarbon = await buildOpusHandoffBrief(
+      { cascadeId: cid, kind: 'risk', model: 'carbon' },
+      {
+        studioPrefs: { ...DEFAULT_STUDIO_PREFS, opusGateModel: 'opus' },
+        quotaStateFile: dirs.quotaStateFile,
+        proposalsDir: dirs.proposalsDir,
+        allowAnyDir: true,
+        now: 120_000,
+      }
+    );
+    assert.equal(briefOverrideCarbon.reviewerModel, 'carbon');
+    assert.equal(briefOverrideCarbon.recommendedModelId, 'gemini-4-carbon-high');
+
+    const briefInvalidOverride = await buildOpusHandoffBrief(
+      { cascadeId: cid, kind: 'risk', model: 'invalid-model' },
+      {
+        studioPrefs: { ...DEFAULT_STUDIO_PREFS, opusGateModel: 'carbon' },
+        quotaStateFile: dirs.quotaStateFile,
+        proposalsDir: dirs.proposalsDir,
+        allowAnyDir: true,
+        now: 120_000,
+      }
+    );
+    assert.equal(briefInvalidOverride.reviewerModel, 'carbon');
+    assert.equal(briefInvalidOverride.recommendedModelId, 'gemini-4-carbon-high');
 
     // Compare-And-Set dismiss: mismatched diffHash leaves newer proposal intact
     const casMiss = dismissOpusGateProposal(
@@ -487,7 +561,7 @@ test('gate-check sentinel enforces self-skip, error streak, risk/stop dedup, aut
     );
     assert.equal(fs.existsSync(proposalFile(dirs, cid)), false);
 
-    // 5. Auto mode: high-risk fires first (high), then +3 files / +160 lines fires stop (medium), then cap falls back to proposal
+    // 5. Auto mode: high-risk fires first (high), then +3 files / +160 lines fires stop (still locked high), then cap falls back to proposal
     fs.writeFileSync(
       dirs.studioPrefsFile,
       JSON.stringify({
@@ -504,8 +578,9 @@ test('gate-check sentinel enforces self-skip, error streak, risk/stop dedup, aut
       hookOpts({ gitSummary: { changedFiles: 1, changedLines: 20, gitHighRisk: ['studio/core/kernel.mjs'], diffHash: 'hash_auto_1' } })
     );
     assert.equal(auto1.decision, 'continue');
-    assert.match(auto1.reason, /\[MAGA Opus Gate · risk\]/);
-    assert.match(auto1.reason, /Claude Opus \(high\)/);
+    assert.match(auto1.reason, /\[MAGA Review Gate · risk\]/);
+    assert.match(auto1.reason, /claude-opus-5-5-high/);
+    assert.match(auto1.reason, /review-opus/);
 
     // Same high-risk set + small diff growth stays silent
     assert.deepEqual(
@@ -516,14 +591,14 @@ test('gate-check sentinel enforces self-skip, error streak, risk/stop dedup, aut
       {}
     );
 
-    // Grow diff by +3 files and +160 lines -> risk already audited, stop fires with medium tier!
+    // Grow diff by +3 files and +160 lines -> risk already audited, stop fires with locked high tier
     const auto2 = evaluateHookEvent(
       { hookEventName: 'Stop', conversationId: cid, terminationReason: 'NO_TOOL_CALL' },
       hookOpts({ gitSummary: { changedFiles: 4, changedLines: 180, gitHighRisk: ['studio/core/kernel.mjs'], diffHash: 'hash_auto_2' } })
     );
     assert.equal(auto2.decision, 'continue');
-    assert.match(auto2.reason, /\[MAGA Opus Gate · stop\]/);
-    assert.match(auto2.reason, /Claude Opus \(medium\)/);
+    assert.match(auto2.reason, /\[MAGA Review Gate · stop\]/);
+    assert.match(auto2.reason, /claude-opus-5-5-high/);
 
     // 3rd trigger hits maxAutoPerSession=2 -> falls back to per-cid proposal
     const auto3 = evaluateHookEvent(
@@ -538,7 +613,12 @@ test('gate-check sentinel enforces self-skip, error streak, risk/stop dedup, aut
     const cidBreaker = 'conv_breaker_1111';
     fs.writeFileSync(
       dirs.quotaStateFile,
-      JSON.stringify({ schema: 1, updatedAt: 500_000, claude: { fiveHourRemainingPct: 12, weeklyRemainingPct: 60 } })
+      JSON.stringify({
+        schema: 1,
+        updatedAt: 500_000,
+        claude: { fiveHourRemainingPct: 12, weeklyRemainingPct: 60 },
+        gemini: { fiveHourRemainingPct: 88, weeklyRemainingPct: 92 },
+      })
     );
     evaluateHookEvent(
       {
@@ -556,6 +636,84 @@ test('gate-check sentinel enforces self-skip, error streak, risk/stop dedup, aut
     assert.deepEqual(blockedRes, {});
     prop = readProposal(dirs, cidBreaker);
     assert.equal(prop?.quotaBlocked, true);
+    assert.equal(prop?.quotaPool, 'claude');
+
+    // 7. Carbon reviewer routing: uses Gemini pool, skips Carbon/Opus self-sessions, allows Neon/Hydrogen
+    assert.equal(isSelfOrHigherModel('opus', 'Claude Opus 5.5 (High)'), true);
+    assert.equal(isSelfOrHigherModel('opus', 'Gemini 4 Carbon (High)'), false);
+    assert.equal(isSelfOrHigherModel('carbon', 'Gemini 4 Carbon (High)'), true);
+    assert.equal(isSelfOrHigherModel('carbon', 'Orchestrator (Carbon)'), true);
+    assert.equal(isSelfOrHigherModel('carbon', 'Claude Opus 5.5 (High)'), true);
+    assert.equal(isSelfOrHigherModel('carbon', 'Gemini 4 Neon (High)'), false);
+    assert.equal(isSelfOrHigherModel('carbon', 'Gemini 4 Hydrogen (Low)'), false);
+
+    const cidCarbon = 'conv_carbon_2222';
+    fs.writeFileSync(
+      dirs.studioPrefsFile,
+      JSON.stringify({
+        ...DEFAULT_STUDIO_PREFS,
+        opusGateMode: 'auto',
+        opusGateModel: 'carbon',
+        opusGateMinQuota5hPct: 20,
+        opusGateMinQuotaWeeklyPct: 15,
+      })
+    );
+    evaluateHookEvent(
+      {
+        hookEventName: 'PostToolUse',
+        conversationId: cidCarbon,
+        cwd: REPO,
+        modelName: 'Gemini 4 Neon (High)',
+        toolCall: { name: 'edit_file', args: { Path: path.join(REPO, 'studio/core/kernel.mjs') } },
+      },
+      hookOpts()
+    );
+    // Carbon session skips reviewing itself; Neon session triggers Carbon even though Claude pool is 12%
+    assert.deepEqual(
+      evaluateHookEvent(
+        { hookEventName: 'Stop', conversationId: cidCarbon, modelName: 'Gemini 4 Carbon (High)', terminationReason: 'NO_TOOL_CALL' },
+        hookOpts({ gitSummary: { changedFiles: 1, changedLines: 25, gitHighRisk: ['studio/core/kernel.mjs'], diffHash: 'hash_cb_skip' } })
+      ),
+      {}
+    );
+    const carbonAuto = evaluateHookEvent(
+      { hookEventName: 'Stop', conversationId: cidCarbon, modelName: 'Gemini 4 Neon (High)', terminationReason: 'NO_TOOL_CALL' },
+      hookOpts({ gitSummary: { changedFiles: 1, changedLines: 25, gitHighRisk: ['studio/core/kernel.mjs'], diffHash: 'hash_cb_run' } })
+    );
+    assert.equal(carbonAuto.decision, 'continue');
+    assert.match(carbonAuto.reason, /gemini-4-carbon-high/);
+    assert.match(carbonAuto.reason, /review-carbon/);
+
+    // Low Gemini pool blocks Carbon even when Claude pool is abundant
+    const cidCarbonBlocked = 'conv_carbon_blk_3333';
+    fs.writeFileSync(
+      dirs.quotaStateFile,
+      JSON.stringify({
+        schema: 1,
+        updatedAt: 500_000,
+        claude: { fiveHourRemainingPct: 95, weeklyRemainingPct: 95 },
+        gemini: { fiveHourRemainingPct: 10, weeklyRemainingPct: 80 },
+      })
+    );
+    evaluateHookEvent(
+      {
+        hookEventName: 'PostToolUse',
+        conversationId: cidCarbonBlocked,
+        cwd: REPO,
+        modelName: 'Gemini 4 Hydrogen (Low)',
+        toolCall: { name: 'edit_file', args: { Path: path.join(REPO, 'src/index.mjs') } },
+      },
+      hookOpts()
+    );
+    const cbBlocked = evaluateHookEvent(
+      { hookEventName: 'Stop', conversationId: cidCarbonBlocked, modelName: 'Gemini 4 Hydrogen (Low)', terminationReason: 'NO_TOOL_CALL' },
+      hookOpts({ gitSummary: { changedFiles: 4, changedLines: 150, gitHighRisk: [], diffHash: 'hash_cb_blk' } })
+    );
+    assert.deepEqual(cbBlocked, {});
+    const cbProp = readProposal(dirs, cidCarbonBlocked);
+    assert.equal(cbProp?.reviewerModel, 'carbon');
+    assert.equal(cbProp?.quotaPool, 'gemini');
+    assert.equal(cbProp?.quotaBlocked, true);
   } finally {
     dirs.cleanup();
   }
@@ -689,10 +847,11 @@ test('per-conversation attribution, linked worktree .git file detection, paralle
   }
 });
 
-test('opus-gate-pill renders proposal, opens dual-path menu, submits Path A swarm, and cleans up on dispose', { skip: skipDom }, async () => {
+test('opus-gate-pill renders generic label, supports per-click Carbon/Opus switch without mutating prefs, submits Path A & Path B safely', { skip: skipDom }, async () => {
   const cid = 'conv_dom_123456';
   const dom = new JSDOM(
     `<!doctype html><html data-ag-ux-lang="zh-CN"><body>
+      <button data-testid="model-selector-trigger" type="button"></button>
       <div id="antigravity.agentSidePanelInputBox">
         <div data-lexical-editor="true"></div>
         <div class="agy-composer-footer">
@@ -707,11 +866,28 @@ test('opus-gate-pill renders proposal, opens dual-path menu, submits Path A swar
   await withMockDom(dom, async () => {
     const rpcCalls = [];
     const submittedPrompts = [];
+    const selectedModels = [];
     const box = document.getElementById('antigravity.agentSidePanelInputBox');
     box.__reactFiber$test = {
       memoizedProps: {
         handleSubmit: (chunks) => {
           submittedPrompts.push(chunks?.[0]?.chunk?.value || '');
+        },
+      },
+      return: null,
+    };
+
+    const selectorBtn = document.querySelector('button[data-testid="model-selector-trigger"]');
+    selectorBtn.__reactFiber$test = {
+      memoizedProps: {
+        value: {
+          modelOptions: [
+            { modelId: 'gemini-pro-orchestrator', label: 'Orchestrator (Carbon)', disabled: false },
+            { modelId: 'gemini-4-carbon-medium', label: 'Gemini 4 Carbon (Medium)', disabled: false },
+            { modelId: 'gemini-4-carbon-high', label: 'Gemini 4 Carbon (High)', disabled: false },
+            { modelId: 'claude-opus-5-5-high', label: 'Claude Opus 5.5 (High)', disabled: false },
+          ],
+          setSelectedModel: (opt) => selectedModels.push(opt.modelId),
         },
       },
       return: null,
@@ -723,25 +899,32 @@ test('opus-gate-pill renders proposal, opens dual-path menu, submits Path A swar
         return {
           ok: true,
           pluginInstalled: true,
-          quotaState: { claude: { fiveHourRemainingPct: 72, weeklyRemainingPct: 64 } },
+          quotaState: {
+            claude: { fiveHourRemainingPct: 12, weeklyRemainingPct: 64 },
+            gemini: { fiveHourRemainingPct: 89, weeklyRemainingPct: 91 },
+          },
           proposal: {
             kind: 'risk',
             reason: 'High-risk file changes (kernel.mjs)',
             diffHash: 'dom_hash_1',
+            reviewerModel: 'opus',
+            quotaPool: 'claude',
             recommendedTier: 'high',
-            quotaBlocked: false,
+            quotaBlocked: true,
             ts: Date.now(),
           },
         };
       }
       if (action === 'buildOpusHandoffBrief') {
+        const model = payload.model === 'carbon' ? 'carbon' : 'opus';
         return {
           ok: true,
           kind: payload.kind || 'risk',
+          reviewerModel: model,
           recommendedTier: 'high',
-          recommendedModelId: 'claude-opus-5-5-high',
-          swarmPrompt: '[MAGA Opus Gate · risk] swarm prompt body',
-          handoffPrompt: 'handoff prompt body',
+          recommendedModelId: model === 'carbon' ? 'gemini-4-carbon-high' : 'claude-opus-5-5-high',
+          swarmPrompt: `[MAGA Review Gate · risk] model=${model}`,
+          handoffPrompt: `handoff prompt model=${model}`,
         };
       }
       if (action === 'dismissOpusGateProposal') {
@@ -750,7 +933,7 @@ test('opus-gate-pill renders proposal, opens dual-path menu, submits Path A swar
       return { ok: false };
     };
 
-    const studioPrefs = createStudioPrefsRuntime({ initialPrefs: { opusGateMode: 'semi' } });
+    const studioPrefs = createStudioPrefsRuntime({ initialPrefs: { opusGateMode: 'semi', opusGateModel: 'opus' } });
     const runtime = createOpusGatePillRuntime({ studioPrefs });
     try {
       assert.equal(typeof window.__agyOpusGateTrigger, 'function');
@@ -760,6 +943,16 @@ test('opus-gate-pill renders proposal, opens dual-path menu, submits Path A swar
       const pill = document.getElementById('agy-opus-gate-pill');
       assert.ok(pill, 'expected #agy-opus-gate-pill to be rendered');
       assert.equal(pill.getAttribute('data-maga-own'), '1');
+      assert.equal(pill.getAttribute('data-reviewer-model'), 'opus');
+      assert.equal(pill.getAttribute('data-quota-blocked'), '1');
+      assert.equal(pill.querySelector('.agy-opus-label')?.textContent, '审查配额紧');
+
+      // Live pref change to Carbon switches pill to live Gemini pool (89% >= 20% -> unblocked!)
+      studioPrefs.patch({ opusGateModel: 'carbon' });
+      assert.equal(pill.getAttribute('data-reviewer-model'), 'carbon');
+      assert.equal(pill.getAttribute('data-quota-blocked'), '0');
+      assert.equal(pill.querySelector('.agy-opus-label')?.textContent, '请求审查');
+      studioPrefs.patch({ opusGateModel: 'opus' });
 
       const editor = box.querySelector('[data-lexical-editor="true"]');
       editor.textContent = 'draft text';
@@ -776,16 +969,36 @@ test('opus-gate-pill renders proposal, opens dual-path menu, submits Path A swar
       assert.ok(menu);
       assert.equal(menu.getAttribute('data-maga-own'), '1');
       assert.equal(menu.getAttribute('data-open'), '1');
-      assert.ok(menu.querySelector('button[data-agy-opus-action="swarm"]'));
-      assert.ok(menu.querySelector('button[data-agy-opus-action="handoff"]'));
+      assert.equal(menu.getAttribute('data-reviewer-model'), 'opus');
+      assert.match(menu.querySelector('.agy-opus-menu-quota')?.textContent || '', /Claude/);
 
+      // Per-click switch to Carbon High updates popover in-place WITHOUT mutating studioPrefs
+      const carbonBtn = menu.querySelector('button[data-agy-opus-model="carbon"]');
+      assert.ok(carbonBtn);
+      carbonBtn.click();
+      assert.equal(menu.getAttribute('data-reviewer-model'), 'carbon');
+      assert.equal(menu.getAttribute('data-open'), '1');
+      assert.match(menu.querySelector('.agy-opus-menu-title')?.textContent || '', /Carbon High/);
+      assert.match(menu.querySelector('.agy-opus-menu-quota')?.textContent || '', /Gemini/);
+      assert.equal(studioPrefs.get().opusGateModel, 'opus');
+
+      // Path A passes per-click model='carbon'
       menu.querySelector('button[data-agy-opus-action="swarm"]').click();
       await tick(30);
 
       assert.equal(submittedPrompts.length, 1);
-      assert.match(submittedPrompts[0], /MAGA Opus Gate/);
+      assert.match(submittedPrompts[0], /MAGA Review Gate.*model=carbon/);
+      assert.ok(rpcCalls.some((c) => c.action === 'buildOpusHandoffBrief' && c.payload.model === 'carbon'));
       assert.ok(rpcCalls.some((c) => c.action === 'dismissOpusGateProposal'));
       assert.equal(document.getElementById('agy-opus-gate-pill'), null);
+
+      // Path B with manual trigger selects gemini-4-carbon-high and never picks gemini-pro-orchestrator
+      window.__agyOpusGateTrigger('manual');
+      menu.querySelector('button[data-agy-opus-model="carbon"]').click();
+      menu.querySelector('button[data-agy-opus-action="handoff"]').click();
+      await tick(260);
+      assert.equal(selectedModels[0], 'gemini-4-carbon-high');
+      assert.equal(submittedPrompts.length, 2);
 
       studioPrefs.patch({ opusGateMode: 'off' });
       runtime.sync();
@@ -909,7 +1122,7 @@ test('gate-check sentinel detects plan artifacts & exit_plan_mode in semi and au
       hookOpts({ gitSummary: { gitRoot: REPO, changedAbsFiles: [], changedFiles: 0, changedLines: 0, gitHighRisk: [], diffHash: 'empty' } })
     );
     assert.equal(autoStop.decision, 'continue');
-    assert.match(autoStop.reason, /\[MAGA Opus Gate · plan\]/);
+    assert.match(autoStop.reason, /\[MAGA Review Gate · plan\]/);
     assert.match(autoStop.reason, /Plan artifacts: docs\/architecture-plan\.md/);
     assert.match(autoStop.reason, /Omit fork/);
 
@@ -971,7 +1184,17 @@ test('evaluatePreflight and --preflight CLI enforce mode, checkpoint switch, quo
 
     assert.deepEqual(
       evaluatePreflight({ kind: 'plan', model: 'Claude Opus 5.5 (High)', cid }, pfOpts()),
-      { action: 'skip', reason: 'already_opus' }
+      { action: 'skip', reason: 'already_self_or_higher', reviewerModel: 'opus' }
+    );
+
+    fs.writeFileSync(dirs.studioPrefsFile, JSON.stringify({ ...DEFAULT_STUDIO_PREFS, opusGateMode: 'auto', opusGateModel: 'carbon' }));
+    assert.deepEqual(
+      evaluatePreflight({ kind: 'plan', model: 'Gemini 4 Carbon (High)', cid }, pfOpts()),
+      { action: 'skip', reason: 'already_self_or_higher', reviewerModel: 'carbon' }
+    );
+    assert.deepEqual(
+      evaluatePreflight({ kind: 'plan', model: 'Claude Opus 5.5 (High)', cid }, pfOpts()),
+      { action: 'skip', reason: 'already_self_or_higher', reviewerModel: 'carbon' }
     );
 
     fs.writeFileSync(dirs.studioPrefsFile, JSON.stringify({ ...DEFAULT_STUDIO_PREFS, opusGateMode: 'off' }));
@@ -1035,12 +1258,17 @@ test('evaluatePreflight and --preflight CLI enforce mode, checkpoint switch, quo
 
     fs.writeFileSync(
       dirs.quotaStateFile,
-      JSON.stringify({ schema: 1, updatedAt: 800_000, claude: { fiveHourRemainingPct: 25, weeklyRemainingPct: 70 } })
+      JSON.stringify({
+        schema: 1,
+        updatedAt: 800_000,
+        claude: { fiveHourRemainingPct: 25, weeklyRemainingPct: 70 },
+        gemini: { fiveHourRemainingPct: 90, weeklyRemainingPct: 88 },
+      })
     );
-    const run2 = evaluatePreflight({ kind: 'debug', reason: 'Unexplained cache mismatch', cid }, pfOpts());
+    const run2 = evaluatePreflight({ kind: 'debug', model: 'Gemini 4 Neon (High)', reason: 'Unexplained cache mismatch', cid }, pfOpts());
     assert.equal(run2.action, 'run_swarm');
-    assert.equal(run2.recommendedTier, 'medium');
-    assert.equal(run2.recommendedModelId, 'claude-opus-5-5-medium');
+    assert.equal(run2.recommendedTier, 'high');
+    assert.equal(run2.recommendedModelId, 'claude-opus-5-5-high');
     assert.equal(run2.autoCallsUsed, 2);
 
     const capped = evaluatePreflight({ kind: 'stop', reason: 'Final sanity check', cid }, pfOpts());
@@ -1058,6 +1286,26 @@ test('evaluatePreflight and --preflight CLI enforce mode, checkpoint switch, quo
     assert.equal(blocked.action, 'propose');
     assert.equal(blocked.downgradedReason, 'quota_blocked');
     assert.equal(blocked.quotaBlocked, true);
+
+    // Carbon preflight routes via Gemini pool even when Claude pool is low
+    const cidPrefCarbon = 'conv_preflight_carbon_777';
+    fs.writeFileSync(dirs.studioPrefsFile, JSON.stringify({ ...DEFAULT_STUDIO_PREFS, opusGateMode: 'auto', opusGateModel: 'carbon', opusGateMinQuota5hPct: 20 }));
+    fs.writeFileSync(
+      dirs.quotaStateFile,
+      JSON.stringify({
+        schema: 1,
+        updatedAt: 800_000,
+        claude: { fiveHourRemainingPct: 5, weeklyRemainingPct: 5 },
+        gemini: { fiveHourRemainingPct: 85, weeklyRemainingPct: 80 },
+      })
+    );
+    const runCarbon = evaluatePreflight({ kind: 'risk', model: 'Gemini 4 Neon (High)', reason: 'State machine edge', cid: cidPrefCarbon }, pfOpts());
+    assert.equal(runCarbon.action, 'run_swarm');
+    assert.equal(runCarbon.reviewerModel, 'carbon');
+    assert.equal(runCarbon.workerName, 'review-carbon');
+    assert.equal(runCarbon.quotaPool, 'gemini');
+    assert.equal(runCarbon.recommendedTier, 'high');
+    assert.equal(runCarbon.recommendedModelId, 'gemini-4-carbon-high');
 
     fs.writeFileSync(dirs.studioPrefsFile, JSON.stringify({ ...DEFAULT_STUDIO_PREFS, opusGateMode: 'semi' }));
     const cli = spawnSync(

@@ -67,23 +67,43 @@ function inspectDbFiles(dbPath) {
   const st = statSync(dbPath, { throwIfNoEntry: false });
   if (!st) return null;
   const walSt = statSync(`${dbPath}-wal`, { throwIfNoEntry: false });
-  const hasActiveWal = Boolean(walSt && walSt.size > 0);
+  const shmSt = statSync(`${dbPath}-shm`, { throwIfNoEntry: false });
+  const hasActiveWal = Boolean((walSt && walSt.size > 0) || (shmSt && shmSt.size > 0));
   const walStamp = walSt ? `:${walSt.size}:${Math.trunc(walSt.mtimeMs)}` : '';
+  const shmStamp = shmSt ? `:${shmSt.size}:${Math.trunc(shmSt.mtimeMs)}` : '';
   return {
-    stamp: `${st.size}:${Math.trunc(st.mtimeMs)}${walStamp}`,
+    stamp: `${st.size}:${Math.trunc(st.mtimeMs)}${walStamp}${shmStamp}`,
     hasActiveWal,
   };
 }
 
-function openReadOnlyDb(dbPath, meta) {
-  let location = dbPath;
-  if (!meta.hasActiveWal) {
-    location = pathToFileURL(dbPath);
-    location.searchParams.set('immutable', '1');
+function withReadOnlyDb(dbPath, meta, fn) {
+  const run = (useImmutable) => {
+    let db = null;
+    try {
+      let location = dbPath;
+      if (useImmutable) {
+        location = pathToFileURL(dbPath);
+        location.searchParams.set('immutable', '1');
+      }
+      db = new DatabaseSync(location, { readOnly: true, timeout: 150 });
+      if (!useImmutable) db.exec('PRAGMA busy_timeout = 150');
+      return fn(db);
+    } finally {
+      if (db) {
+        try {
+          db.close();
+        } catch {}
+      }
+    }
+  };
+
+  if (meta.hasActiveWal) return run(false);
+  try {
+    return run(true);
+  } catch {
+    return run(false);
   }
-  const db = new DatabaseSync(location, { readOnly: true, timeout: 150 });
-  if (meta.hasActiveWal) db.exec('PRAGMA busy_timeout = 150');
-  return db;
 }
 
 function parseProtoFields(buf) {
@@ -188,70 +208,64 @@ function extractSummaryTermReason(rawSummaryBuf) {
 
 function readSummaryState(cid, sumDbPath, sumMeta) {
   if (!sumMeta) return null;
-  let db = null;
   try {
-    db = openReadOnlyDb(sumDbPath, sumMeta);
-    const cols = new Set(db.prepare('PRAGMA table_info(conversation_summaries)').all().map((c) => c.name));
-    if (!cols.has('conversation_id')) return null;
+    return withReadOnlyDb(sumDbPath, sumMeta, (db) => {
+      const cols = new Set(db.prepare('PRAGMA table_info(conversation_summaries)').all().map((c) => c.name));
+      if (!cols.has('conversation_id')) return null;
 
-    const selectCols = [
-      cols.has('status') ? 'status' : "'' AS status",
-      cols.has('not_fully_idle') ? 'not_fully_idle' : '0 AS not_fully_idle',
-      cols.has('killed') ? 'killed' : '0 AS killed',
-      cols.has('step_count') ? 'step_count' : '0 AS step_count',
-      cols.has('raw_summary') ? 'raw_summary' : 'NULL AS raw_summary',
-    ].join(', ');
+      const selectCols = [
+        cols.has('status') ? 'status' : "'' AS status",
+        cols.has('not_fully_idle') ? 'not_fully_idle' : '0 AS not_fully_idle',
+        cols.has('killed') ? 'killed' : '0 AS killed',
+        cols.has('step_count') ? 'step_count' : '0 AS step_count',
+        cols.has('raw_summary') ? 'raw_summary' : 'NULL AS raw_summary',
+      ].join(', ');
 
-    const row = db
-      .prepare(`SELECT ${selectCols} FROM conversation_summaries WHERE conversation_id = ?`)
-      .get(cid);
+      const row = db
+        .prepare(`SELECT ${selectCols} FROM conversation_summaries WHERE conversation_id = ?`)
+        .get(cid);
 
-    let runningChildren = 0;
-    if (cols.has('parent_conversation_id')) {
-      const childConds = [];
-      if (cols.has('not_fully_idle')) childConds.push('not_fully_idle = 1');
-      if (cols.has('status')) {
-        childConds.push("status IN ('CASCADE_RUN_STATUS_RUNNING', 'CASCADE_RUN_STATUS_BUSY', 'CASCADE_RUN_STATUS_CANCELING')");
+      let runningChildren = 0;
+      if (cols.has('parent_conversation_id')) {
+        const childConds = [];
+        if (cols.has('not_fully_idle')) childConds.push('not_fully_idle = 1');
+        if (cols.has('status')) {
+          childConds.push("status IN ('CASCADE_RUN_STATUS_RUNNING', 'CASCADE_RUN_STATUS_BUSY', 'CASCADE_RUN_STATUS_CANCELING')");
+        }
+        if (childConds.length > 0) {
+          const killedClause = cols.has('killed') ? 'killed = 0 AND ' : '';
+          const childRow = db
+            .prepare(
+              `SELECT COUNT(*) AS cnt FROM conversation_summaries WHERE parent_conversation_id = ? AND ${killedClause}(${childConds.join(' OR ')})`
+            )
+            .get(cid);
+          runningChildren = Number(childRow?.cnt || 0);
+        }
       }
-      if (childConds.length > 0) {
-        const killedClause = cols.has('killed') ? 'killed = 0 AND ' : '';
-        const childRow = db
-          .prepare(
-            `SELECT COUNT(*) AS cnt FROM conversation_summaries WHERE parent_conversation_id = ? AND ${killedClause}(${childConds.join(' OR ')})`
-          )
-          .get(cid);
-        runningChildren = Number(childRow?.cnt || 0);
-      }
-    }
 
-    if (!row && runningChildren === 0) return null;
+      if (!row && runningChildren === 0) return null;
 
-    const killed = Boolean(Number(row?.killed || 0));
-    const notFullyIdle = Boolean(Number(row?.not_fully_idle || 0));
-    const statusStr = String(row?.status || '');
-    const isRunningStatus = !killed && /RUNNING|BUSY|CANCELING/i.test(statusStr);
-    const isBackgroundWaiting = !killed && (notFullyIdle || runningChildren > 0);
-    const stepCount = Number(row?.step_count || 0);
-    const summaryTermReason = extractSummaryTermReason(row?.raw_summary);
+      const killed = Boolean(Number(row?.killed || 0));
+      const notFullyIdle = Boolean(Number(row?.not_fully_idle || 0));
+      const statusStr = String(row?.status || '');
+      const isRunningStatus = !killed && /RUNNING|BUSY|CANCELING/i.test(statusStr);
+      const isBackgroundWaiting = !killed && (notFullyIdle || runningChildren > 0);
+      const stepCount = Number(row?.step_count || 0);
+      const summaryTermReason = extractSummaryTermReason(row?.raw_summary);
 
-    return {
-      killed,
-      notFullyIdle,
-      statusStr,
-      isRunningStatus,
-      isBackgroundWaiting,
-      runningChildren,
-      stepCount,
-      summaryTermReason,
-    };
+      return {
+        killed,
+        notFullyIdle,
+        statusStr,
+        isRunningStatus,
+        isBackgroundWaiting,
+        runningChildren,
+        stepCount,
+        summaryTermReason,
+      };
+    });
   } catch {
     return null;
-  } finally {
-    if (db) {
-      try {
-        db.close();
-      } catch {}
-    }
   }
 }
 
@@ -285,42 +299,87 @@ export function collectResumeState(payload, { conversationsDir = CONV_DIR } = {}
     return hit.result;
   }
 
-  let db = null;
   try {
-    db = openReadOnlyDb(dbPath, meta);
-    const stepCols = new Set(db.prepare('PRAGMA table_info(steps)').all().map((c) => c.name));
-    const selectCols = [
-      'idx',
-      'step_type',
-      'status',
-      stepCols.has('error_details') ? 'length(error_details) AS err_len' : '0 AS err_len',
-      stepCols.has('metadata') ? 'metadata' : 'NULL AS metadata',
-      stepCols.has('step_payload') ? 'step_payload' : 'NULL AS step_payload',
-    ].join(', ');
+    const dbData = withReadOnlyDb(dbPath, meta, (db) => {
+      const stepCols = new Set(db.prepare('PRAGMA table_info(steps)').all().map((c) => c.name));
+      const selectCols = [
+        'idx',
+        'step_type',
+        'status',
+        stepCols.has('error_details') ? 'length(error_details) AS err_len' : '0 AS err_len',
+        stepCols.has('metadata') ? 'metadata' : 'NULL AS metadata',
+        stepCols.has('step_payload') ? 'step_payload' : 'NULL AS step_payload',
+      ].join(', ');
 
-    const rows = db.prepare(`SELECT ${selectCols} FROM steps ORDER BY idx DESC LIMIT 6`).all();
-    if (!rows.length) {
+      const rows = db.prepare(`SELECT ${selectCols} FROM steps ORDER BY idx DESC LIMIT 24`).all();
+      if (!rows.length) return { empty: true };
+
+      let execMeta = null;
+      try {
+        const hasExecTable = db
+          .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'executor_metadata' LIMIT 1")
+          .get();
+        if (hasExecTable) {
+          const execCols = new Set(db.prepare('PRAGMA table_info(executor_metadata)').all().map((c) => c.name));
+          if (execCols.has('data')) {
+            const orderCol = execCols.has('idx') ? 'idx' : 'rowid';
+            const execRow = db
+              .prepare(`SELECT data FROM executor_metadata ORDER BY ${orderCol} DESC LIMIT 1`)
+              .get();
+            if (execRow?.data) execMeta = extractExecMeta(execRow.data);
+          }
+        }
+      } catch {}
+
+      return { empty: false, rows, execMeta };
+    });
+
+    if (dbData.empty) {
       const emptyRes = { ok: true, cascadeId: cid, interrupted: false, reason: 'empty', lastIdx: -1 };
       setBoundedCache(cacheKey, { stamp, result: emptyRes });
       return emptyRes;
     }
 
-    let execMeta = null;
-    const hasExecTable = db
-      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'executor_metadata' LIMIT 1")
-      .get();
-    if (hasExecTable) {
-      const execRow = db.prepare('SELECT data FROM executor_metadata ORDER BY idx DESC LIMIT 1').get();
-      if (execRow?.data) execMeta = extractExecMeta(execRow.data);
-    }
-
+    const { rows, execMeta } = dbData;
     const summary = readSummaryState(cid, sumDbPath, sumMeta);
     const lastIdx = Number(rows[0].idx ?? -1);
     const headStepType = Number(rows[0].step_type ?? 0);
     const headStatus = Number(rows[0].status ?? 0);
 
-    // A. Active / Background Guard from conversation_summaries.db (unless live UI already proved idle)
-    if (!liveIdle && summary) {
+    // A. Effective Tail Step: skip trailing system/ephemeral/checkpoint metadata markers
+    let effectiveRow = rows[0];
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      const t = Number(r.step_type ?? 0);
+      const s = Number(r.status ?? 0);
+      const err = Number(r.err_len || 0) > 0;
+      if (META_STEP_TYPES.has(t) && s === STATUS_DONE && !err) {
+        continue;
+      }
+      effectiveRow = r;
+      break;
+    }
+
+    const effectiveIdx = Number(effectiveRow.idx ?? lastIdx);
+    const stepType = Number(effectiveRow.step_type ?? 0);
+    const status = Number(effectiveRow.status ?? 0);
+    const hasErr = Number(effectiveRow.err_len || 0) > 0;
+
+    const execCoversTail = Boolean(execMeta && execMeta.lastStepIdx >= effectiveIdx);
+    const execTr = execCoversTail ? execMeta.terminationReason : 0;
+    const hasExecFailure =
+      execTr === EXEC_USER_CANCELED || execTr === EXEC_ERROR || EXEC_MAX_LIMIT_REASONS.has(execTr);
+    const hasStepFailure =
+      status === STATUS_CANCELED ||
+      status === STATUS_INTERRUPTED ||
+      status === STATUS_ERROR ||
+      status === STATUS_INVALID ||
+      stepType === STEP_ERROR_MESSAGE ||
+      hasErr;
+    const hasExplicitFailure = hasExecFailure || hasStepFailure;
+
+    // B. Active / Background Guard from conversation_summaries.db (unless live UI already proved idle or explicit failure exists)
+    if (!liveIdle && summary && !hasExplicitFailure) {
       if (summary.isRunningStatus) {
         const res = {
           ok: true,
@@ -351,26 +410,24 @@ export function collectResumeState(payload, { conversationsDir = CONV_DIR } = {}
       }
     }
 
-    // B. Effective Tail Step: skip trailing system/ephemeral/checkpoint metadata markers
-    let effectiveRow = rows[0];
-    for (let i = 0; i < rows.length; i++) {
-      const r = rows[i];
-      const t = Number(r.step_type ?? 0);
-      const s = Number(r.status ?? 0);
-      const err = Number(r.err_len || 0) > 0;
-      if (META_STEP_TYPES.has(t) && s === STATUS_DONE && !err) {
-        continue;
-      }
-      effectiveRow = r;
-      break;
+    // C. Authoritative abnormal executor_metadata takes precedence even over STATUS_WAITING
+    if (hasExecFailure) {
+      const execReason =
+        execTr === EXEC_USER_CANCELED ? 'canceled' : execTr === EXEC_ERROR ? 'error' : 'max_steps';
+      const res = {
+        ok: true,
+        cascadeId: cid,
+        interrupted: true,
+        reason: execReason,
+        lastIdx,
+        stepType,
+        status,
+      };
+      setBoundedCache(cacheKey, { stamp, result: res });
+      return res;
     }
 
-    const effectiveIdx = Number(effectiveRow.idx ?? lastIdx);
-    const stepType = Number(effectiveRow.step_type ?? 0);
-    const status = Number(effectiveRow.status ?? 0);
-    const hasErr = Number(effectiveRow.err_len || 0) > 0;
-
-    // C. User-Wait Status
+    // D. User-Wait Status
     if (status === STATUS_WAITING) {
       const res = {
         ok: true,
@@ -390,42 +447,21 @@ export function collectResumeState(payload, { conversationsDir = CONV_DIR } = {}
     let reason = 'done';
     let decidedByExec = false;
 
-    // D. Authoritative executor_metadata when covering the effective tail step
-    if (execMeta && execMeta.lastStepIdx >= effectiveIdx) {
-      const tr = execMeta.terminationReason;
-      if (tr === EXEC_USER_CANCELED) {
-        interrupted = true;
-        reason = 'canceled';
+    // E. Remaining authoritative executor_metadata (terminal hooks / step types / injected response)
+    if (
+      execCoversTail &&
+      (execTr === EXEC_TERMINAL_CUSTOM_HOOK ||
+        execTr === EXEC_TERMINAL_STEP_TYPE ||
+        execTr === EXEC_INJECTED_RESPONSE)
+    ) {
+      if (!hasStepFailure && !ACTIVE_STEP_STATUSES.has(status) && stepType !== STEP_USER_INPUT) {
+        interrupted = false;
+        reason = execTr === EXEC_TERMINAL_CUSTOM_HOOK ? 'waiting_swarm' : 'done';
         decidedByExec = true;
-      } else if (tr === EXEC_ERROR) {
-        interrupted = true;
-        reason = 'error';
-        decidedByExec = true;
-      } else if (EXEC_MAX_LIMIT_REASONS.has(tr)) {
-        interrupted = true;
-        reason = 'max_steps';
-        decidedByExec = true;
-      } else if (
-        tr === EXEC_TERMINAL_CUSTOM_HOOK ||
-        tr === EXEC_TERMINAL_STEP_TYPE ||
-        tr === EXEC_INJECTED_RESPONSE
-      ) {
-        const hasStepFailure =
-          status === STATUS_CANCELED ||
-          status === STATUS_INTERRUPTED ||
-          status === STATUS_ERROR ||
-          status === STATUS_INVALID ||
-          stepType === STEP_ERROR_MESSAGE ||
-          hasErr;
-        if (!hasStepFailure && !ACTIVE_STEP_STATUSES.has(status) && stepType !== STEP_USER_INPUT) {
-          interrupted = false;
-          reason = tr === EXEC_TERMINAL_CUSTOM_HOOK ? 'waiting_swarm' : 'done';
-          decidedByExec = true;
-        }
       }
     }
 
-    // E. Step-Level Analysis
+    // F. Step-Level Analysis
     if (!decidedByExec) {
       if (ACTIVE_STEP_STATUSES.has(status)) {
         interrupted = true;
@@ -484,7 +520,7 @@ export function collectResumeState(payload, { conversationsDir = CONV_DIR } = {}
         }
       }
 
-      // F. Summary raw_summary fallback when executor_metadata is absent
+      // G. Summary raw_summary fallback when executor_metadata is absent
       if (!interrupted && !execMeta && summary && summary.stepCount === lastIdx + 1) {
         if (summary.summaryTermReason === EXEC_USER_CANCELED) {
           interrupted = true;
@@ -513,11 +549,5 @@ export function collectResumeState(payload, { conversationsDir = CONV_DIR } = {}
     return result;
   } catch (err) {
     return { ok: false, cascadeId: cid, interrupted: false, error: err?.message || 'read_failed' };
-  } finally {
-    if (db) {
-      try {
-        db.close();
-      } catch {}
-    }
   }
 }

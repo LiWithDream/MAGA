@@ -40,6 +40,8 @@ export function getViewMeta(view, L) {
       return { title: L('工作区与面板', 'Workspace & Panels'), parent: L('MAGA 设置', 'MAGA') };
     case 'workspace-ai-suggestions':
       return { title: L('AI 对话建议', 'AI Chat Suggestions'), parent: L('工作区与面板', 'Workspace & Panels') };
+    case 'workspace-git-workflow':
+      return { title: L('Git 并行工作流', 'Git Workflow'), parent: L('工作区与面板', 'Workspace & Panels') };
     case 'appearance':
       return { title: L('语言与外观', 'Language & Appearance'), parent: L('MAGA 设置', 'MAGA') };
     default:
@@ -651,6 +653,24 @@ export function renderL2Workspace(p, base, { state, L }) {
       : !aiCfg.enabled
         ? `${aiCfg.model || 'gemini-3.8-flash'} · ${L('已关闭', 'Off')}`
         : `${aiCfg.model || 'gemini-3.8-flash'} · ${L('已就绪', 'Ready')}`;
+  const wfSt = state?.gitWorkflowStatus;
+  const wfProtectedCnt = Array.isArray(wfSt?.projectsSummary)
+    ? wfSt.projectsSummary.filter((it) => it && it.mode !== 'observe').length
+    : 0;
+  const wfDefMode = wfSt?.policy?.defaultMode || 'observe';
+  const wfModeLbl =
+    wfDefMode === 'worktree-only'
+      ? L('默认工作树', 'Worktree-Only')
+      : wfDefMode === 'protect-main'
+        ? L('默认护主干', 'Protect Main')
+        : L('默认观察', 'Observe');
+  const wfSum = !wfSt
+    ? L('默认观察 · 分级护栏', 'Observe · Tiered guard')
+    : !wfSt.guardActive
+      ? L('护栏未生效', 'Guard inactive')
+      : wfProtectedCnt > 0
+        ? `${wfModeLbl} · ${L(`${wfProtectedCnt} 项目受保护`, `${wfProtectedCnt} protected`)}`
+        : wfModeLbl;
   return `
       <div class="agy-ms-sec-hdr">${esc(L('Overview 与底栏胶囊', 'Overview & Footer Capsules'))}</div>
       <div class="agy-ms-card">
@@ -673,6 +693,7 @@ export function renderL2Workspace(p, base, { state, L }) {
         ${renderSwitchRow('claudeUxHideSidebarProjects', 'base', L('侧栏统一「最近对话」', 'Unified Sidebar Recents'), L('合并原生项目与普通对话分组，统一按最近时间混排显示', 'Replaces split Projects/Chats with a single chronological Recents list'), base.modules?.claudeUxHideSidebarProjects === true)}
         ${renderSwitchRow('claudeUxProjects', 'base', L('项目工作区 (Projects)', 'Projects Workspace'), L('启用 Claude 风格项目卡片墙、本地 AGENTS 指令与上下文文件管理', 'Enables Claude-style Projects workspace, AGENTS.md & context files'), base.modules?.claudeUxProjects !== false)}
         ${renderDrillRow('workspace-ai-suggestions', L('AI 历史对话建议', 'AI Conversation Suggestions'), L('使用 Gemini 3.8 Flash 基于最近对话推荐新会话起点并自动切换 Worktree', 'Suggests follow-up chats from recent history with cold-start context handoff'), aiSum)}
+        ${renderDrillRow('workspace-git-workflow', L('Git 并行工作流 (Git Workflow)', 'Git Parallel Workflow'), L('全项目分级分支护栏、Worktree 隔离策略与拦截记录', 'Tiered branch protection, parallel worktree isolation & guard logs'), wfSum)}
         ${renderSwitchRow('claudeUxCustomizations', 'base', L('技能与自定义页优化', 'Customizations Layout & Import'), L('增强「技能与自定义」页分类标签与本地技能快捷导入', 'Adds category tabs and quick local skill import'), base.modules?.claudeUxCustomizations !== false)}
       </div>`;
 }
@@ -761,6 +782,139 @@ export function renderL3AiSuggestions(state, { L }) {
         L(
           '隐私与额度说明：API Key 仅保存在本地 ~/.gemini/antigravity/anti-claude/project-suggestions-config.json（0600 权限），不会出现在设置 JSON 导出中；每次建议仅发送最近 5 条对话的脱水摘要（约 800 tokens），不占用 Antigravity 桌面模型主额度。',
           'Security & quota note: Your API key stays strictly in local project-suggestions-config.json (0600) and is excluded from Settings JSON exports. Each refresh sends only a compact summary (~800 tokens) and does not consume Antigravity quota.'
+        )
+      )}</div>`;
+}
+
+export function renderL3GitWorkflow(state, { L }) {
+  const st = state?.gitWorkflowStatus || null;
+  const policy = st?.policy || {
+    defaultMode: 'observe',
+    blockForcePushProtected: true,
+    blockPushTags: false,
+    projects: {},
+  };
+  const projects = Array.isArray(st?.projectsSummary) ? st.projectsSummary : [];
+  const stale = Array.isArray(st?.staleProjects) ? st.staleProjects : [];
+  const events = Array.isArray(st?.recentEvents) ? st.recentEvents.slice(0, 5) : [];
+
+  const healthWarnHtml =
+    st && (!st.guardActive || st.hookNode?.pinned === false)
+      ? `<div class="agy-ms-wf-warn" data-ms-wf-warn="true">
+          <div class="agy-ms-wf-warn-txt">
+            <strong>${esc(L('护栏未生效', 'Guard inactive'))}</strong>：${esc(
+              !st.pluginInstalled
+                ? L('原生插件 maga-git-workflow 尚未同步或文件缺失。', 'Native plugin maga-git-workflow is not synced or incomplete.')
+                : !st.hookNode?.ok
+                  ? L(`Hook Node 路径不可用（${st.hookNode?.nodeBin || 'node'}），升级 Node 后请重新同步。`, `Hook Node binary is unavailable (${st.hookNode?.nodeBin || 'node'}). Re-sync plugin to refresh path.`)
+                  : L('hooks.json 未使用固定 Node 绝对路径，请重新同步插件。', 'hooks.json is using an unpinned node path. Re-sync plugin to pin binary.')
+            )}
+          </div>
+          <button type="button" class="agy-ms-btn" data-ms-action="sync-git-workflow-plugin">${esc(L('重新同步', 'Re-Sync'))}</button>
+        </div>`
+      : '';
+
+  const projectsHtml = projects.length
+    ? projects
+        .map((proj) => {
+          const ctrlHtml = proj.localGuardrailActive
+            ? `<span class="agy-ms-wf-lock">${esc(L('工作树 · 仓库护栏', 'Worktree · Repo Guard'))}</span>`
+            : `<div class="agy-ms-seg" role="radiogroup" aria-label="${esc(proj.name)}">
+                ${[
+                  ['default', L('默认', 'Default')],
+                  ['observe', L('观察', 'Observe')],
+                  ['protect-main', L('护主干', 'Protect')],
+                  ['worktree-only', L('工作树', 'Worktree')],
+                ]
+                  .map(([val, lbl]) => {
+                    const active = val === 'default' ? !proj.overrideMode : proj.overrideMode === val;
+                    return `<button type="button" class="agy-ms-seg-btn" role="radio" data-ms-wf-proj-dir="${esc(proj.dirPath)}" data-ms-wf-proj-mode="${esc(val)}" aria-checked="${active ? 'true' : 'false'}">${esc(lbl)}</button>`;
+                  })
+                  .join('')}
+              </div>`;
+          return `<div class="agy-ms-wf-proj-row">
+            <div class="agy-ms-row-text">
+              <div class="agy-ms-row-title">${esc(proj.name)}</div>
+              <div class="agy-ms-row-desc">${esc(proj.dirPath)}</div>
+            </div>
+            ${ctrlHtml}
+          </div>`;
+        })
+        .join('')
+    : `<div class="agy-ms-row"><div class="agy-ms-row-desc">${esc(
+        state?.gitWorkflowLoading
+          ? L('正在扫描已授权 Git 项目…', 'Scanning registered Git projects…')
+          : L('暂未检测到本地 Git 项目；任何新打开的项目均可自动受控。', 'No local Git projects detected yet.')
+      )}</div></div>`;
+
+  const staleHtml = stale.length
+    ? `<div class="agy-ms-tools" style="border-top:1px solid var(--ms-border)">
+        <span class="agy-ms-row-desc" style="margin-right:auto">${esc(L(`检测到 ${stale.length} 条已移动/删除项目的策略残留`, `${stale.length} stale project entries detected`))}</span>
+        <button type="button" class="agy-ms-btn" data-ms-action="prune-git-workflow-stale">${esc(L('清理残留', 'Prune Stale'))}</button>
+      </div>`
+    : '';
+
+  const eventsHtml = events.length
+    ? events
+        .map((ev) => {
+          const tsLabel = ev.ts ? new Date(ev.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+          return `<div class="agy-ms-wf-event-row">
+            <div class="agy-ms-wf-event-meta">
+              <span class="agy-ms-wf-event-repo">${esc(ev.repoName || L('策略保护', 'Policy'))}</span>
+              <span class="agy-ms-wf-event-mode">${esc(ev.mode)}</span>
+              ${tsLabel ? `<span class="agy-ms-wf-event-time">${esc(tsLabel)}</span>` : ''}
+            </div>
+            <div class="agy-ms-wf-event-reason">${esc(ev.reason)}</div>
+          </div>`;
+        })
+        .join('')
+    : `<div class="agy-ms-row"><div class="agy-ms-row-desc">${esc(L('近期无护栏拦截记录。', 'No recent guard blocks recorded.'))}</div></div>`;
+
+  return `
+      ${healthWarnHtml}
+      <div class="agy-ms-sec-hdr">${esc(L('全局默认策略与安全基线', 'Global Defaults & Safety'))}</div>
+      <div class="agy-ms-card">
+        ${renderSegRow(
+          'defaultMode',
+          'wf-global',
+          L('新项目默认级别', 'Default Project Tier'),
+          L('观察零打扰（仅防强制推送主干并自动追踪 Worktree）；护主干禁止直改主干；工作树锁死主目录', 'Observe (zero friction + force-push guard + auto worktree tracking); Protect Main; or strict Worktree-Only'),
+          [
+            ['observe', L('观察', 'Observe')],
+            ['protect-main', L('护主干', 'Protect Main')],
+            ['worktree-only', L('工作树', 'Worktree')],
+          ],
+          policy.defaultMode || 'observe',
+          true
+        )}
+        ${renderSwitchRow('blockForcePushProtected', 'wf-global', L('禁止强制推送受保护主干', 'Block Force-Push to Protected Branches'), L('拦截对 main / master / origin/HEAD 的 --force 与 +refspec 推送', 'Blocks --force and +refspec pushes targeting main / master / origin/HEAD'), policy.blockForcePushProtected !== false)}
+        ${renderSwitchRow('blockPushTags', 'wf-global', L('全局禁止 git push --tags', 'Block Bulk git push --tags'), L('默认仅建议在历史 Tag 较杂的仓库开启；单 Tag 显式推送始终放行', 'Blocks bulk --tags pushes while allowing explicit single-tag pushes'), policy.blockPushTags === true)}
+      </div>
+
+      <div class="agy-ms-sec-hdr">${esc(L('分项目隔离级别', 'Per-Project Tiers'))}</div>
+      <div class="agy-ms-card">
+        ${projectsHtml}
+        ${staleHtml}
+      </div>
+
+      <div class="agy-ms-sec-hdr">${esc(
+        L(`最近拦截记录（24h：${st?.denyCount24h || 0} 次）`, `Recent Guard Blocks (24h: ${st?.denyCount24h || 0})`)
+      )}</div>
+      <div class="agy-ms-card">
+        ${eventsHtml}
+      </div>
+
+      <div class="agy-ms-sec-hdr">${esc(L('原生插件与工具', 'Native Plugin & CLI'))}</div>
+      <div class="agy-ms-card">
+        <div class="agy-ms-tools">
+          <button type="button" class="agy-ms-btn" data-ms-action="sync-git-workflow-plugin">${esc(L('同步原生插件', 'Sync Native Plugin'))}</button>
+        </div>
+      </div>
+
+      <div class="agy-ms-note">${esc(
+        L(
+          '零仓库污染：分级策略集中保存在 ~/.gemini/antigravity/anti-claude/git-workflow-policy.json，不会往项目写入配置文件；Node 仓库仅在存在 node_modules 时于未跟踪的 .git/info/exclude 中排重。本地 Hook 属于客户端防呆护栏，关键仓库仍建议同时开启远端分支保护。',
+          'Zero repo pollution: policies live centrally in git-workflow-policy.json (Node repos only touch untracked .git/info/exclude when node_modules exists). Client hooks complement server-side remote branch protection.'
         )
       )}</div>`;
 }

@@ -1,0 +1,5 @@
+{
+  "name": "maga-git-workflow",
+  "displayName": "MAGA Git Workflow",
+  "description": "Zero-pollution tiered branch protection, parallel worktree management & per-conversation attribution across all Antigravity Git repositories."
+}

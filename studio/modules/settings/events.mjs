@@ -21,6 +21,24 @@ export function loadAiSuggestionsConfigIfNeeded(state, viewName, onLoaded) {
     });
 }
 
+export function loadGitWorkflowStatusIfNeeded(state, viewName, onLoaded) {
+  if (!state || (viewName !== 'workspace' && viewName !== 'workspace-git-workflow')) return;
+  if (state.gitWorkflowStatus || state.gitWorkflowLoading) return;
+  if (typeof window?.__agProjectCall !== 'function') return;
+  state.gitWorkflowLoading = true;
+  Promise.resolve(window.__agProjectCall('getGitWorkflowPolicy', {}, 4000))
+    .then((res) => {
+      state.gitWorkflowLoading = false;
+      if (res && res.ok) {
+        state.gitWorkflowStatus = res;
+        onLoaded?.();
+      }
+    })
+    .catch(() => {
+      state.gitWorkflowLoading = false;
+    });
+}
+
 function readAiSuggestionsInputs(root) {
   const apiKey = root.querySelector('[data-ms-ai-input="apiKey"]')?.value?.trim() || '';
   const model = root.querySelector('[data-ms-ai-input="model"]')?.value?.trim() || '';
@@ -131,6 +149,31 @@ export function bindSettingsRootEvents(root, {
           if (res?.ok) flashToast('✓ 已同步 Auto-Compact 插件', '✓ Auto-Compact plugin synced');
           else flashToast('同步插件失败', 'Plugin sync failed', 'error');
         }
+      } else if (act === 'sync-git-workflow-plugin') {
+        if (typeof window.__agProjectCall === 'function') {
+          const res = await window.__agProjectCall('syncGitWorkflowPlugin', {}, 5000).catch(() => null);
+          if (res?.ok) {
+            const st = await window.__agProjectCall('getGitWorkflowPolicy', {}, 4000).catch(() => null);
+            if (st?.ok) state.gitWorkflowStatus = st;
+            renderActiveHost(true);
+            flashToast('✓ 已同步 Git 工作流插件', '✓ Git Workflow plugin synced');
+          } else {
+            flashToast('同步插件失败', 'Plugin sync failed', 'error');
+          }
+        }
+      } else if (act === 'prune-git-workflow-stale') {
+        if (typeof window.__agProjectCall === 'function') {
+          const res = await window.__agProjectCall('setGitWorkflowPolicy', { pruneStale: true }, 5000).catch(() => null);
+          if (res?.ok) {
+            state.gitWorkflowStatus = res;
+            renderActiveHost(true);
+            flashToast('✓ 已清理失效项目策略', '✓ Pruned stale entries');
+          } else if (res?.error === 'policy_locked' || res?.retryable) {
+            flashToast('策略文件正忙，请重试', 'Policy busy (locked), please retry', 'error');
+          } else {
+            flashToast('清理失败', 'Prune failed', 'error');
+          }
+        }
       } else if (act === 'trigger-compact-now') {
         closeDrawer({ restore: false });
         const fn = window.__agClaudeUxBridge?.triggerConversationCompact;
@@ -192,6 +235,24 @@ export function bindSettingsRootEvents(root, {
       return;
     }
 
+    const wfProjBtn = target.closest('[data-ms-wf-proj-dir][data-ms-wf-proj-mode]');
+    if (wfProjBtn && typeof window.__agProjectCall === 'function') {
+      const dirPath = wfProjBtn.getAttribute('data-ms-wf-proj-dir') || '';
+      const mode = wfProjBtn.getAttribute('data-ms-wf-proj-mode') || 'default';
+      if (!dirPath) return;
+      const res = await window.__agProjectCall('setGitWorkflowPolicy', { dirPath, mode }, 5000).catch(() => null);
+      if (res?.ok) {
+        state.gitWorkflowStatus = res;
+        renderActiveHost(true);
+        flashToast('✓ 已更新项目护栏', '✓ Project workflow saved');
+      } else if (res?.error === 'policy_locked' || res?.retryable) {
+        flashToast('策略文件正忙，请重试', 'Policy busy (locked), please retry', 'error');
+      } else {
+        flashToast('更新项目护栏失败', 'Update failed', 'error');
+      }
+      return;
+    }
+
     const aiPresetBtn = target.closest('[data-ms-ai-model-preset]');
     if (aiPresetBtn && typeof window.__agProjectCall === 'function') {
       const presetModel = aiPresetBtn.getAttribute('data-ms-ai-model-preset') || '';
@@ -235,6 +296,17 @@ export function bindSettingsRootEvents(root, {
           renderActiveHost(true);
           flashToast('✓ 已保存', '✓ Saved');
         }
+      } else if (kind === 'wf-global' && typeof window.__agProjectCall === 'function') {
+        const res = await window.__agProjectCall('setGitWorkflowPolicy', { [key]: nextVal }, 5000).catch(() => null);
+        if (res?.ok) {
+          state.gitWorkflowStatus = res;
+          renderActiveHost(true);
+          flashToast('✓ 已保存', '✓ Saved');
+        } else if (res?.error === 'policy_locked' || res?.retryable) {
+          flashToast('策略文件正忙，请重试', 'Policy busy (locked), please retry', 'error');
+        } else {
+          flashToast('保存失败', 'Save failed', 'error');
+        }
       }
       return;
     }
@@ -244,7 +316,19 @@ export function bindSettingsRootEvents(root, {
       const kind = segBtn.getAttribute('data-ms-seg-kind');
       const key = segBtn.getAttribute('data-ms-seg-key');
       const val = segBtn.getAttribute('data-ms-seg-val');
-      if (kind === 'studio') {
+      if (kind === 'wf-global' && typeof window.__agProjectCall === 'function') {
+        const res = await window.__agProjectCall('setGitWorkflowPolicy', { [key]: val }, 5000).catch(() => null);
+        if (res?.ok) {
+          state.gitWorkflowStatus = res;
+          renderActiveHost(true);
+          flashToast('✓ 已保存', '✓ Saved');
+        } else if (res?.error === 'policy_locked' || res?.retryable) {
+          flashToast('策略文件正忙，请重试', 'Policy busy (locked), please retry', 'error');
+        } else {
+          flashToast('保存失败', 'Save failed', 'error');
+        }
+        return;
+      } else if (kind === 'studio') {
         const prevMode = studioPrefs.get().opusGateMode;
         const prevAcMode = studioPrefs.get().autoCompactMode;
         studioPrefs.patch({ [key]: val });

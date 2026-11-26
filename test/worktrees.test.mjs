@@ -713,14 +713,25 @@ test('worktree UI (Topbar, #agy-wt-menu, Cockpit strip, chat badges) & compiled 
     d.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     assert.equal(d.getElementById('agy-wt-menu'), null);
 
-    // Open Projects Cockpit: check Active Worktrees strip, switch chip, create & 2-step clean, chat branch badge
+    // Open Projects Cockpit: check Active Worktrees strip, workflow policy selector, parallel nudge, switch chip, create & 2-step clean, chat branch badge
     projMod.openProjectsView('proj-maga');
     await settle(40);
     const pdView = d.getElementById('ag-claude-projects-view');
     assert.ok(pdView.querySelector('[data-ag-pd-wt-wrap]'), 'mounts Active Worktrees strip');
+    assert.ok(pdView.querySelector('[data-ag-pd-wf-policy]'), 'mounts Cockpit workflow tier switcher');
+    assert.ok(pdView.querySelector('[data-ag-pd-wf-nudge]'), 'mounts parallel worktrees nudge when mode is observe');
     assert.equal(pdView.querySelector('.ag-pd-repo-pills .ag-pd-repo-branch'), null, 'does not duplicate branch text in header when worktree strip is rendered');
     assert.ok(pdView.querySelector('.ag-pd-repo-pills .ag-pd-repo-clean'), 'renders structured clean pill when working tree is clean');
     assert.equal(pdView.querySelector('.ag-pd-chat-branch')?.textContent.trim(), 'feat/wt-2', 'chat row renders branch micro-badge');
+
+    // Clicking Protect Main promotes project workflow policy via RPC and hides nudge
+    pdView.querySelector('[data-ag-pd-wf-policy] [data-ag-pd-wf-mode="protect-main"]').click();
+    await settle(30);
+    assert.ok(
+      rpcCalls.some((c) => c.action === 'setGitWorkflowPolicy' && c.payload?.mode === 'protect-main'),
+      'clicking Cockpit workflow pill dispatches setGitWorkflowPolicy RPC'
+    );
+    assert.equal(pdView.querySelector('[data-ag-pd-wf-nudge]'), null, 'hides observe nudge after promoting to protect-main');
 
     // Select dirty wt-1 chip -> renders structured dirty pill with diff stats and chevron, no duplicate branch
     pdView.querySelector(`[data-ag-pd-wt-select="${wt1Path}"]`).click();

@@ -2,14 +2,16 @@
  * Interrupted-Task Resume Capsule (#agy-resume-pill) & Subtle Timeline Divider:
  * 1. Detects when the active main conversation terminated abnormally mid-task via daemon
  *    RPC `getResumeState` and surfaces a calm `[ ▶ Resume × ]` capsule on Row 1 left.
- * 2. Silent submit: invokes AgentInputBox's native React `handleSubmit` directly (zero
- *    text flash in the composer box; falls back cleanly to Lexical + Send if unavailable),
- *    tagging the synthetic continuation prompt with an invisible sentinel.
- * 3. Style B timeline divider: replaces the synthetic user message bubble in the chat
- *    stream with a whisper-quiet centered hairline (`─── ▸ Resumed ───`) via pure CSS.
+ * 2. Suppresses false positives during intentional waiting states (subagents, timers,
+ *    swarm_wait, user approval) via live DOM status, subagent metrics, and React store.
+ * 3. Eliminates missed detections via busy->idle settle retries, pendingForce queueing,
+ *    store subscription, metrics change detection, and visibilitychange recovery.
+ * 4. Silent submit & Style B timeline divider (`─── ▸ Resumed ───`).
  */
-import { markOwn, setAttr, setLeafText } from '../core/dom.mjs';
+import { isVisibleFast, markOwn, setAttr, setLeafText } from '../core/dom.mjs';
 import { getActiveRouteCid, isComposerRunning, isZhUi, L } from '../core/env.mjs';
+
+const ABNORMAL_TERM_REASONS = new Set([1, 2, 3, 6, 11]);
 
 export function createResumeBannerRuntime({ studioPrefs } = {}) {
   const PILL_ID = 'agy-resume-pill';
@@ -20,9 +22,16 @@ export function createResumeBannerRuntime({ studioPrefs } = {}) {
 
   let disposed = false;
   let prevCid = '';
-  let prevRunning = null;
+  let prevBusy = null;
+  let lastMetricsSig = '';
+  let lastLiveSig = '';
+  let lastSubStoreSig = '';
   let settleTimer = 0;
-  let stateCache = { cid: '', ts: 0, inFlight: false, data: null };
+  let kernelMarkDirty = null;
+  let subscribedStore = null;
+  let unsubStore = null;
+  let visibilityBound = false;
+  let stateCache = { cid: '', ts: 0, inFlight: false, pendingForce: false, pendingOpts: null, data: null };
   const scannedSteps = new WeakSet();
   const fallbackTimers = new Set();
 
@@ -77,6 +86,164 @@ export function createResumeBannerRuntime({ studioPrefs } = {}) {
     return text.length === 0;
   }
 
+  function findLiveStore() {
+    if (typeof document === 'undefined') return null;
+    const rootEl = document.getElementById('root');
+    const anchors = [
+      document.querySelector?.('.bg-sidebar'),
+      rootEl?.firstElementChild || rootEl?.children?.[0],
+      document.body,
+    ].filter(Boolean);
+    for (const anchor of anchors) {
+      const fk = Object.keys(anchor).find(
+        (k) => k.startsWith('__reactFiber$') || k.startsWith('__reactContainer$')
+      );
+      let f = fk ? anchor[fk] : null;
+      for (let i = 0; i < 40 && f; i++, f = f.return) {
+        const mp = f.memoizedProps;
+        const candStore = mp?.sidebarStore || mp?.store || mp?.value?.store;
+        if (candStore && typeof candStore.getState === 'function') {
+          try {
+            const st = candStore.getState();
+            if (st && st.trajectorySummaries && typeof st.trajectorySummaries.summaries === 'object') {
+              return candStore;
+            }
+          } catch {}
+        }
+      }
+    }
+    return null;
+  }
+
+  function readSummaryFromStore(store, cid) {
+    if (!store || !cid) return null;
+    try {
+      const st = store.getState?.();
+      const sum = st?.trajectorySummaries?.summaries?.[cid];
+      if (!sum || typeof sum !== 'object') return null;
+      const status = Number(sum.status ?? 0);
+      const notFullyIdle = Boolean(sum.notFullyIdle);
+      const killed = Boolean(sum.killed);
+      const hasRunningSubagents = Boolean(sum.hasRunningSubagents);
+      const hasActiveChildren = Boolean(sum.hasActiveChildren);
+      const backgroundTaskCount = Number(sum.backgroundTaskCount || 0);
+      const waitingCount = Array.isArray(sum.waitingSteps) ? sum.waitingSteps.length : 0;
+      const interrupted = Boolean(sum.interrupted);
+      const termReason = Number(sum.latestExecutorTerminationReason ?? 0);
+      const stepCount = Number(sum.stepCount ?? 0);
+      const isBusy = Boolean(
+        !killed &&
+          (status === 2 ||
+            status === 3 ||
+            status === 4 ||
+            notFullyIdle ||
+            hasRunningSubagents ||
+            hasActiveChildren ||
+            backgroundTaskCount > 0 ||
+            waitingCount > 0)
+      );
+      const isFullyIdle = Boolean(
+        !killed &&
+          status === 1 &&
+          !notFullyIdle &&
+          !hasRunningSubagents &&
+          !hasActiveChildren &&
+          backgroundTaskCount === 0 &&
+          waitingCount === 0
+      );
+      const sig = `${status}|${notFullyIdle ? 1 : 0}|${killed ? 1 : 0}|${hasRunningSubagents ? 1 : 0}|${hasActiveChildren ? 1 : 0}|${backgroundTaskCount}|${waitingCount}|${interrupted ? 1 : 0}|${termReason}|${stepCount}`;
+      return {
+        status,
+        notFullyIdle,
+        killed,
+        hasRunningSubagents,
+        hasActiveChildren,
+        backgroundTaskCount,
+        waitingCount,
+        interrupted,
+        termReason,
+        stepCount,
+        isBusy,
+        isFullyIdle,
+        sig,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  function readLiveConversationSummary(cid) {
+    if (!cid) return null;
+    const store = subscribedStore || findLiveStore();
+    return readSummaryFromStore(store, cid);
+  }
+
+  function ensureStoreSubscription() {
+    if (disposed) return;
+    const store = findLiveStore();
+    if (!store || typeof store.subscribe !== 'function') return;
+    if (subscribedStore === store && unsubStore) return;
+    unsubStore?.();
+    unsubStore = null;
+    subscribedStore = store;
+    lastSubStoreSig = '';
+    try {
+      const maybeUnsub = store.subscribe(() => {
+        if (disposed) return;
+        const curCid = getActiveRouteCid();
+        if (!curCid) return;
+        const summary = readSummaryFromStore(store, curCid);
+        const sig = summary ? `${curCid}:${summary.sig}` : `${curCid}:none`;
+        if (sig !== lastSubStoreSig) {
+          lastSubStoreSig = sig;
+          if (kernelMarkDirty) kernelMarkDirty(['composer'], true);
+          else sync();
+        }
+      });
+      if (typeof maybeUnsub === 'function') unsubStore = maybeUnsub;
+    } catch {}
+  }
+
+  function hasVisibleIdleStatusText() {
+    if (typeof document === 'undefined') return false;
+    const nodes = document.querySelectorAll?.('[data-testid="conversation-view"] [data-testid="idle-status-text"]') || [];
+    for (const el of nodes) {
+      if (isVisibleFast(el)) return true;
+    }
+    return false;
+  }
+
+  function hasRunningSubagentFromMetrics(cid) {
+    if (typeof window === 'undefined' || !cid) return false;
+    const m = window.__ag_last_metrics;
+    if (!m || (m.cascadeId && m.cascadeId !== cid)) return false;
+    const children = m?.stats?.children;
+    if (!Array.isArray(children) || !children.length) return false;
+    return children.some((c) => c && c.running && !c.killed);
+  }
+
+  function getMetricsSig(cid) {
+    if (typeof window === 'undefined' || !cid) return '';
+    const m = window.__ag_last_metrics;
+    if (!m || (m.cascadeId && m.cascadeId !== cid)) return '';
+    const st = m.stats || {};
+    const mk = m.metrics || {};
+    const children = Array.isArray(st.children) ? st.children : [];
+    const runningCnt = children.filter((c) => c && c.running && !c.killed).length;
+    if (!m.hasData && children.length === 0 && st.turns == null && st.calls == null && mk.genIdx == null) return '';
+    return `${st.turns ?? ''}|${st.calls ?? ''}|${mk.genIdx ?? ''}|${children.length}|${runningCnt}`;
+  }
+
+  function getLiveBusyFlags(cid = getActiveRouteCid()) {
+    const running = isComposerRunning();
+    const idleStatusWaiting = hasVisibleIdleStatusText();
+    const subagentRunning = hasRunningSubagentFromMetrics(cid);
+    const liveSummary = cid ? readLiveConversationSummary(cid) : null;
+    const busy = Boolean(running || idleStatusWaiting || subagentRunning || liveSummary?.isBusy);
+    const liveIdle = Boolean(!running && !idleStatusWaiting && !subagentRunning && liveSummary?.isFullyIdle);
+    return { running, idleStatusWaiting, subagentRunning, liveSummary, busy, liveIdle };
+  }
+
   function reasonText(reason) {
     switch (reason) {
       case 'aborted':
@@ -85,8 +252,12 @@ export function createResumeBannerRuntime({ studioPrefs } = {}) {
         return L('上次工具执行后未继续完成', 'Interrupted right after a tool step');
       case 'canceled':
         return L('上次执行被暂停', 'Previous run was stopped');
+      case 'interrupted':
+        return L('上次执行被中断', 'Previous run was interrupted');
       case 'error':
         return L('上次执行遇到错误而停止', 'Previous run stopped due to an error');
+      case 'max_steps':
+        return L('上次任务达到步数或额度上限而停止', 'Previous run stopped at step/budget limit');
       case 'unanswered':
         return L('上一条指令尚未得到回复', 'Last message did not receive a reply');
       default:
@@ -243,30 +414,104 @@ export function createResumeBannerRuntime({ studioPrefs } = {}) {
     }
   }
 
-  function tagResumedSteps() {
-    writeStepTags(readStepTags());
+  function scheduleSettleRetry(cid, delayMs, nextRetryLeft, retryOnClean = false) {
+    if (disposed || !cid) return;
+    if (settleTimer) clearTimeout(settleTimer);
+    settleTimer = setTimeout(() => {
+      settleTimer = 0;
+      if (disposed || !isEnabled() || getActiveRouteCid() !== cid) return;
+      const flags = getLiveBusyFlags(cid);
+      if (!flags.busy) {
+        fetchResumeState(cid, {
+          force: true,
+          liveIdle: flags.liveIdle,
+          retryLeft: nextRetryLeft,
+          retryOnClean,
+        });
+      }
+    }, delayMs);
   }
 
-  function fetchResumeState(cid, { force = false } = {}) {
+  function fetchResumeState(cid, { force = false, liveIdle = false, retryLeft = 0, retryOnClean = false } = {}) {
     if (!cid || disposed || typeof window.__agProjectCall !== 'function') return;
     const now = Date.now();
     if (!force && stateCache.cid === cid && (stateCache.inFlight || now - stateCache.ts < 3500)) return;
-    if (stateCache.inFlight && stateCache.cid === cid) return;
+    if (stateCache.inFlight && stateCache.cid === cid) {
+      if (force) {
+        stateCache.pendingForce = true;
+        stateCache.pendingOpts = {
+          liveIdle: Boolean(liveIdle || stateCache.pendingOpts?.liveIdle),
+          retryLeft: Math.max(retryLeft, stateCache.pendingOpts?.retryLeft || 0),
+          retryOnClean: Boolean(retryOnClean || stateCache.pendingOpts?.retryOnClean),
+        };
+      }
+      return;
+    }
 
     stateCache.cid = cid;
     stateCache.inFlight = true;
-    Promise.resolve(window.__agProjectCall('getResumeState', { cascadeId: cid }, 3000))
+    stateCache.pendingForce = false;
+    stateCache.pendingOpts = null;
+
+    let resolvedRes = null;
+    const rpcPayload = liveIdle ? { cascadeId: cid, liveIdle: true } : { cascadeId: cid };
+    Promise.resolve(window.__agProjectCall('getResumeState', rpcPayload, 3000))
       .then((res) => {
         if (disposed || stateCache.cid !== cid) return;
-        if (res && res.ok) {
+        resolvedRes = res;
+        if (res && res.ok && !getLiveBusyFlags(cid).busy) {
           stateCache.data = res;
           stateCache.ts = Date.now();
         }
       })
       .catch(() => {})
       .finally(() => {
-        if (stateCache.cid === cid) stateCache.inFlight = false;
-        if (!disposed) render();
+        const sameCid = stateCache.cid === cid;
+        const pendingForce = sameCid && stateCache.pendingForce;
+        const pendingOpts = sameCid ? stateCache.pendingOpts : null;
+        if (sameCid) {
+          stateCache.inFlight = false;
+          stateCache.pendingForce = false;
+          stateCache.pendingOpts = null;
+        }
+        if (disposed) return;
+
+        if (pendingForce && getActiveRouteCid() === cid) {
+          const flags = getLiveBusyFlags(cid);
+          if (!flags.busy) {
+            fetchResumeState(cid, {
+              force: true,
+              liveIdle: Boolean(pendingOpts?.liveIdle || flags.liveIdle),
+              retryLeft: pendingOpts?.retryLeft ?? retryLeft,
+              retryOnClean: Boolean(pendingOpts?.retryOnClean),
+            });
+          }
+          render();
+          return;
+        }
+
+        if (retryLeft > 0 && getActiveRouteCid() === cid && isEnabled()) {
+          const flags = getLiveBusyFlags(cid);
+          if (!flags.busy) {
+            const res = resolvedRes;
+            const needRetry =
+              !res ||
+              !res.ok ||
+              res.active === true ||
+              (!res.interrupted &&
+                flags.liveSummary &&
+                (flags.liveSummary.stepCount > (res.lastIdx ?? -1) + 1 ||
+                  flags.liveSummary.interrupted ||
+                  ABNORMAL_TERM_REASONS.has(flags.liveSummary.termReason))) ||
+              (!res.interrupted && retryOnClean);
+            if (needRetry) {
+              const delayMs = retryLeft >= 2 ? 750 : 1500;
+              scheduleSettleRetry(cid, delayMs, retryLeft - 1, false);
+            }
+          }
+        }
+
+        render();
       });
   }
 
@@ -286,9 +531,9 @@ export function createResumeBannerRuntime({ studioPrefs } = {}) {
       return;
     }
 
-    const running = plan ? plan.running : isComposerRunning();
+    const busy = plan ? plan.busy : getLiveBusyFlags(cid).busy;
     const editorEmpty = plan ? plan.editorEmpty : isEditorEmpty(box);
-    if (running || !editorEmpty) {
+    if (busy || !editorEmpty) {
       removePill();
       return;
     }
@@ -363,6 +608,28 @@ export function createResumeBannerRuntime({ studioPrefs } = {}) {
     }
   }
 
+  const onVisibilityChange = () => {
+    if (disposed || typeof document === 'undefined' || document.hidden) return;
+    const cid = getActiveRouteCid();
+    if (!cid || !isEnabled()) return;
+    if (kernelMarkDirty) {
+      kernelMarkDirty(['composer'], true);
+    } else {
+      const flags = getLiveBusyFlags(cid);
+      if (!flags.busy) fetchResumeState(cid, { force: true, liveIdle: flags.liveIdle, retryLeft: 1 });
+    }
+  };
+
+  function mount({ markDirty } = {}) {
+    if (disposed) return;
+    if (typeof markDirty === 'function') kernelMarkDirty = markDirty;
+    if (!visibilityBound && typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+      document.addEventListener('visibilitychange', onVisibilityChange);
+      visibilityBound = true;
+    }
+    ensureStoreSubscription();
+  }
+
   function read(snapshot = null) {
     if (disposed) return null;
     const topics = snapshot?.topics;
@@ -375,6 +642,13 @@ export function createResumeBannerRuntime({ studioPrefs } = {}) {
     const footer = box?.querySelector?.('.agy-composer-footer') || null;
     const leftGroup = footer?.children?.[0] || null;
     const running = snapshot ? snapshot.isRunning : isComposerRunning();
+    const idleStatusWaiting = hasVisibleIdleStatusText();
+    const subagentRunning = hasRunningSubagentFromMetrics(cid);
+    const liveSummary = cid ? readLiveConversationSummary(cid) : null;
+    const busy = Boolean(running || idleStatusWaiting || subagentRunning || liveSummary?.isBusy);
+    const liveIdle = Boolean(!running && !idleStatusWaiting && !subagentRunning && liveSummary?.isFullyIdle);
+    const metricsSig = getMetricsSig(cid);
+    const liveSig = liveSummary?.sig || '';
     const editorEmpty = enabled && cid && leftGroup ? isEditorEmpty(box) : true;
     const langTag = snapshot ? snapshot.langTag : (isZhUi() ? 'zh' : 'en');
     return {
@@ -384,6 +658,10 @@ export function createResumeBannerRuntime({ studioPrefs } = {}) {
       footer,
       leftGroup,
       running,
+      busy,
+      liveIdle,
+      metricsSig,
+      liveSig,
       editorEmpty,
       langTag,
       stepTags,
@@ -395,6 +673,7 @@ export function createResumeBannerRuntime({ studioPrefs } = {}) {
     const plan = planArg !== undefined ? planArg : read(snapshot);
     if (!plan) return;
     writeStepTags(plan.stepTags);
+    ensureStoreSubscription();
 
     if (!plan.enabled) {
       if (settleTimer) {
@@ -405,28 +684,56 @@ export function createResumeBannerRuntime({ studioPrefs } = {}) {
       return;
     }
 
-    const { cid, running } = plan;
+    const { cid, busy, liveIdle, metricsSig, liveSig } = plan;
     if (cid !== prevCid) {
       prevCid = cid;
-      stateCache = { cid: '', ts: 0, inFlight: false, data: null };
+      prevBusy = null;
+      lastMetricsSig = '';
+      lastLiveSig = '';
+      stateCache = { cid: '', ts: 0, inFlight: false, pendingForce: false, pendingOpts: null, data: null };
       if (settleTimer) {
         clearTimeout(settleTimer);
         settleTimer = 0;
       }
-      if (cid && !running) fetchResumeState(cid, { force: true });
-    } else if (prevRunning === true && !running && cid) {
+      if (cid && !busy) {
+        fetchResumeState(cid, { force: true, liveIdle, retryLeft: 1 });
+      }
+    } else if (busy) {
+      if (settleTimer) {
+        clearTimeout(settleTimer);
+        settleTimer = 0;
+      }
+      if (stateCache.cid === cid) {
+        stateCache.data = null;
+        stateCache.pendingForce = false;
+        stateCache.pendingOpts = null;
+      }
+    } else if (prevBusy === true && !busy && cid) {
       if (settleTimer) clearTimeout(settleTimer);
       settleTimer = setTimeout(() => {
         settleTimer = 0;
-        if (!disposed && isEnabled() && !isComposerRunning() && getActiveRouteCid() === cid) {
-          fetchResumeState(cid, { force: true });
+        if (disposed || !isEnabled() || getActiveRouteCid() !== cid) return;
+        const flags = getLiveBusyFlags(cid);
+        if (!flags.busy) {
+          fetchResumeState(cid, {
+            force: true,
+            liveIdle: flags.liveIdle,
+            retryLeft: 2,
+            retryOnClean: true,
+          });
         }
-      }, 650);
-    } else if (cid && !running && stateCache.cid !== cid) {
-      fetchResumeState(cid);
+      }, 350);
+    } else if (cid && !busy) {
+      if (stateCache.cid !== cid) {
+        fetchResumeState(cid, { force: true, liveIdle, retryLeft: 1 });
+      } else if (!settleTimer && ((metricsSig && metricsSig !== lastMetricsSig) || (liveSig && liveSig !== lastLiveSig))) {
+        fetchResumeState(cid, { force: true, liveIdle, retryLeft: 1 });
+      }
     }
 
-    prevRunning = running;
+    prevBusy = busy;
+    lastMetricsSig = metricsSig;
+    lastLiveSig = liveSig;
     render(plan);
   }
 
@@ -439,6 +746,13 @@ export function createResumeBannerRuntime({ studioPrefs } = {}) {
     if (disposed) return;
     disposed = true;
     offStudioPrefs?.();
+    unsubStore?.();
+    unsubStore = null;
+    subscribedStore = null;
+    if (visibilityBound && typeof document !== 'undefined' && typeof document.removeEventListener === 'function') {
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      visibilityBound = false;
+    }
     if (settleTimer) {
       clearTimeout(settleTimer);
       settleTimer = 0;
@@ -453,7 +767,8 @@ export function createResumeBannerRuntime({ studioPrefs } = {}) {
   }
 
   return {
-    topics: ['composer', 'stream', 'route', 'prefs'],
+    topics: ['composer', 'stream', 'route', 'metrics', 'subagent', 'prefs'],
+    mount,
     read,
     write,
     sync,

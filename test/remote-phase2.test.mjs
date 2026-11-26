@@ -781,6 +781,35 @@ test('Phase 2 PWA shell regressions: Markdown Zero-XSS & stale IDLE stream suppr
     state.streams.get(cid).status = 'RUNNING';
     timelineMod.renderDetailTimeline({ state, refs, onSelectConversation: () => {}, onApprove: () => {} });
     assert.ok(refs.timeline.querySelector('.rc-stream-card'), 'RUNNING snapshot should render .rc-stream-card');
+
+    // No literal "null" text in detailSub when wtMeta.branch is absent
+    assert.equal(refs.detailSub.textContent.includes('null'), false, 'detailSub must not contain literal "null"');
+
+    // Nested inline Markdown inside **bold**
+    const nestedMd = timelineMod.renderSafeMarkdown('回归测试（**隔离工作树 `8d1b3f0` 内查看 [sw.js](file:///tmp/sw.js)**）');
+    const strongEl = nestedMd.querySelector('strong');
+    assert.ok(strongEl, 'expected <strong> element for bold span');
+    assert.equal(strongEl.querySelector('code.rc-md-code')?.textContent, '8d1b3f0');
+    assert.equal(strongEl.querySelector('code.rc-md-file')?.textContent, 'sw.js');
+    assert.equal(strongEl.textContent.includes('`'), false, 'nested inline code must not leave raw backticks inside <strong>');
+
+    // renderOpusGateBanner & renderResumeBanner must not emit literal "null"
+    const studioPanelMod = await import(pathToFileURL(path.join(PWA_DIR, 'src', 'studio-panel.mjs')).href);
+    const opusContainer = doc.createElement('div');
+    studioPanelMod.renderOpusGateBanner(opusContainer, {
+      opusGate: { proposal: { id: 'p-1', kind: 'plan', recommendedTier: 'high', summary: 'Plan finalized' } },
+      canWrite: false,
+    });
+    assert.equal(opusContainer.textContent.includes('null'), false, 'Opus Gate banner must not contain literal "null"');
+
+    const resumeContainer = doc.createElement('div');
+    studioPanelMod.renderResumeBanner(resumeContainer, {
+      resumeState: { interrupted: true, active: false, lastIdx: 7, reason: 'interrupted' },
+      canWrite: true,
+      online: true,
+      needTurboConfirm: false,
+    });
+    assert.equal(resumeContainer.textContent.includes('null'), false, 'Resume banner must not contain literal "null"');
   } finally {
     if (prevDoc) Object.defineProperty(globalThis, 'document', prevDoc);
     else delete globalThis.document;

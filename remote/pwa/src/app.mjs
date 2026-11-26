@@ -447,7 +447,7 @@ function syncComposerControls() {
     refs.roleBannerPill.textContent = String(state.identity?.role || 'steer').toUpperCase();
     refs.composerRow.classList.remove('rc-hidden');
   } else {
-    refs.roleBannerText.textContent = '只读观察模式 (observe)：如需远程发送、停止或审批，请在 Mac 端以 --role steer 重新配对。';
+    refs.roleBannerText.textContent = '只读观察模式 (observe)：如需远程发送、停止或审批，请在 Mac 桌面端「AGY Studio 设置 → 远程控制」将此设备一键升为协作 (steer) 或重新配对。';
     refs.roleBannerPill.setAttribute('data-tone', 'info');
     refs.roleBannerPill.textContent = 'READ-ONLY';
     refs.composerRow.classList.add('rc-hidden');

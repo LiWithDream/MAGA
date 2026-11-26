@@ -372,7 +372,7 @@ export function renderL2Models(p, catalog, { studioPrefs, state, L, renderCapsul
         ${renderDrillRow(
           'models-opus-gate',
           L('审查关卡 (Review Gate)', 'Review Gate'),
-          L('在方案定型、高风险改动、连续报错与收尾节点调度 Carbon High 或 Opus High 把关，支持分池配额熔断', 'Quota-guarded Carbon High / Opus High checkpoints via /swarm or standalone handoff'),
+          L('在方案定型、高风险改动、连续报错与收尾节点调度 Carbon High 或 Opus High 把关，支持分池配额熔断', 'Quota-guarded Carbon High / Opus High checkpoints via /swarm'),
           opusSum
         )}
       </div>

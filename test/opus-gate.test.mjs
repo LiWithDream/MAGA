@@ -302,7 +302,10 @@ test('opus-gate-service persists quota, syncs plugin, enforces CAS dismiss, reco
         now: 100_000 + 31 * 60 * 1000,
       }
     );
-    assert.doesNotMatch(briefExpired.handoffPrompt, /High-risk file changes/);
+    const expiredHeader = briefExpired.swarmPrompt.split('\n- Git Status:')[0].split('\n- Diff Snippet')[0];
+    assert.doesNotMatch(expiredHeader, /High-risk file changes/);
+    assert.doesNotMatch(expiredHeader, /Plan \/ Design Artifacts/);
+    assert.equal(briefExpired.handoffPrompt, undefined);
 
     const briefHigh = await buildOpusHandoffBrief(
       { cascadeId: cid, dirPath: REPO, note: 'Check `observer`\nisolation' },
@@ -319,13 +322,14 @@ test('opus-gate-service persists quota, syncs plugin, enforces CAS dismiss, reco
     assert.equal(briefHigh.workerName, 'review-opus');
     assert.equal(briefHigh.recommendedTier, 'high');
     assert.equal(briefHigh.recommendedModelId, 'claude-opus-5-5-high');
+    assert.equal(briefHigh.handoffPrompt, undefined);
     assert.match(briefHigh.swarmPrompt, /review-opus/);
     assert.match(briefHigh.swarmPrompt, /claude-opus-5-5-high/);
     assert.match(briefHigh.swarmPrompt, /<= 3 turns/);
     assert.match(briefHigh.swarmPrompt, /500 words/);
-    assert.match(briefHigh.handoffPrompt, /APPROVE/);
-    assert.match(briefHigh.handoffPrompt, /Check 'observer' isolation/);
-    assert.match(briefHigh.handoffPrompt, /Plan \/ Design Artifacts: `docs\/architecture-plan\.md`/);
+    assert.match(briefHigh.swarmPrompt, /APPROVE/);
+    assert.match(briefHigh.swarmPrompt, /Check 'observer' isolation/);
+    assert.match(briefHigh.swarmPrompt, /Plan \/ Design Artifacts: `docs\/architecture-plan\.md`/);
 
     // Locked High effort: tight 5h quota and kind='stop' NEVER downgrade to medium
     saveQuotaState(
@@ -366,7 +370,7 @@ test('opus-gate-service persists quota, syncs plugin, enforces CAS dismiss, reco
     assert.equal(briefCarbon.recommendedModelId, 'gemini-4-carbon-high');
     assert.match(briefCarbon.swarmPrompt, /review-carbon/);
     assert.match(briefCarbon.swarmPrompt, /gemini-4-carbon-high/);
-    assert.match(briefCarbon.handoffPrompt, /Gemini 4 Carbon \(High\)/);
+    assert.match(briefCarbon.swarmPrompt, /Gemini 4 Carbon \(High\)/);
 
     const briefOverrideCarbon = await buildOpusHandoffBrief(
       { cascadeId: cid, kind: 'risk', model: 'carbon' },
@@ -847,11 +851,10 @@ test('per-conversation attribution, linked worktree .git file detection, paralle
   }
 });
 
-test('opus-gate-pill renders generic label, supports per-click Carbon/Opus switch without mutating prefs, submits Path A & Path B safely', { skip: skipDom }, async () => {
+test('opus-gate-pill renders generic label, supports per-click Carbon/Opus switch without mutating prefs, and submits /swarm only', { skip: skipDom }, async () => {
   const cid = 'conv_dom_123456';
   const dom = new JSDOM(
     `<!doctype html><html data-ag-ux-lang="zh-CN"><body>
-      <button data-testid="model-selector-trigger" type="button"></button>
       <div id="antigravity.agentSidePanelInputBox">
         <div data-lexical-editor="true"></div>
         <div class="agy-composer-footer">
@@ -866,28 +869,11 @@ test('opus-gate-pill renders generic label, supports per-click Carbon/Opus switc
   await withMockDom(dom, async () => {
     const rpcCalls = [];
     const submittedPrompts = [];
-    const selectedModels = [];
     const box = document.getElementById('antigravity.agentSidePanelInputBox');
     box.__reactFiber$test = {
       memoizedProps: {
         handleSubmit: (chunks) => {
           submittedPrompts.push(chunks?.[0]?.chunk?.value || '');
-        },
-      },
-      return: null,
-    };
-
-    const selectorBtn = document.querySelector('button[data-testid="model-selector-trigger"]');
-    selectorBtn.__reactFiber$test = {
-      memoizedProps: {
-        value: {
-          modelOptions: [
-            { modelId: 'gemini-pro-orchestrator', label: 'Orchestrator (Carbon)', disabled: false },
-            { modelId: 'gemini-4-carbon-medium', label: 'Gemini 4 Carbon (Medium)', disabled: false },
-            { modelId: 'gemini-4-carbon-high', label: 'Gemini 4 Carbon (High)', disabled: false },
-            { modelId: 'claude-opus-5-5-high', label: 'Claude Opus 5.5 (High)', disabled: false },
-          ],
-          setSelectedModel: (opt) => selectedModels.push(opt.modelId),
         },
       },
       return: null,
@@ -924,7 +910,6 @@ test('opus-gate-pill renders generic label, supports per-click Carbon/Opus switc
           recommendedTier: 'high',
           recommendedModelId: model === 'carbon' ? 'gemini-4-carbon-high' : 'claude-opus-5-5-high',
           swarmPrompt: `[MAGA Review Gate · risk] model=${model}`,
-          handoffPrompt: `handoff prompt model=${model}`,
         };
       }
       if (action === 'dismissOpusGateProposal') {
@@ -971,6 +956,8 @@ test('opus-gate-pill renders generic label, supports per-click Carbon/Opus switc
       assert.equal(menu.getAttribute('data-open'), '1');
       assert.equal(menu.getAttribute('data-reviewer-model'), 'opus');
       assert.match(menu.querySelector('.agy-opus-menu-quota')?.textContent || '', /Claude/);
+      assert.equal(menu.querySelector('button[data-agy-opus-action="handoff"]'), null);
+      assert.ok(menu.querySelector('button[data-agy-opus-action="swarm"]'));
 
       // Per-click switch to Carbon High updates popover in-place WITHOUT mutating studioPrefs
       const carbonBtn = menu.querySelector('button[data-agy-opus-model="carbon"]');
@@ -991,14 +978,6 @@ test('opus-gate-pill renders generic label, supports per-click Carbon/Opus switc
       assert.ok(rpcCalls.some((c) => c.action === 'buildOpusHandoffBrief' && c.payload.model === 'carbon'));
       assert.ok(rpcCalls.some((c) => c.action === 'dismissOpusGateProposal'));
       assert.equal(document.getElementById('agy-opus-gate-pill'), null);
-
-      // Path B with manual trigger selects gemini-4-carbon-high and never picks gemini-pro-orchestrator
-      window.__agyOpusGateTrigger('manual');
-      menu.querySelector('button[data-agy-opus-model="carbon"]').click();
-      menu.querySelector('button[data-agy-opus-action="handoff"]').click();
-      await tick(260);
-      assert.equal(selectedModels[0], 'gemini-4-carbon-high');
-      assert.equal(submittedPrompts.length, 2);
 
       studioPrefs.patch({ opusGateMode: 'off' });
       runtime.sync();

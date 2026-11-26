@@ -1,10 +1,10 @@
 /**
- * MAGA Review Gate Cockpit Pill (#agy-opus-gate-pill) & Dual-Path Action Popover (#agy-opus-gate-menu):
+ * MAGA Review Gate Cockpit Pill (#agy-opus-gate-pill) & Action Popover (#agy-opus-gate-menu):
  * - Single-observer MagaKernel citizen (zero standalone MutationObserver).
  * - Polls daemon `getOpusGateStatus` on route/turn-settle transitions to surface non-intrusive
  *   Row 1 proposal pills when `opusGateMode !== 'off'` and a checkpoint fires.
  * - Supports Carbon High (`gemini-4-carbon-high`) & Opus High (`claude-opus-5-5-high`) with live
- *   per-pool quota tracking, per-click popover override, Path A (/swarm), Path B (standalone chat),
+ *   per-pool quota tracking, per-click popover override, in-turn `/swarm` audit,
  *   and on-demand invocation via `window.__agyOpusGateTrigger`.
  */
 import { markOwn, setAttr, setLeafText } from '../core/dom.mjs';
@@ -204,49 +204,6 @@ export function createOpusGatePillRuntime({ studioPrefs } = {}) {
     return true;
   }
 
-  function discoverModelSelectorFromDom() {
-    if (typeof window !== 'undefined' && typeof window.__agClaudeUxBridge?.getProjectModelSelector === 'function') {
-      try {
-        const bridged = window.__agClaudeUxBridge.getProjectModelSelector();
-        if (bridged && typeof bridged.setSelectedModel === 'function') return bridged;
-      } catch {}
-    }
-    const nativeBtn = document.querySelector('button[data-testid="model-selector-trigger"]');
-    if (!nativeBtn) return null;
-    const fk = Object.keys(nativeBtn).find((k) => k.startsWith('__reactFiber$'));
-    let f = fk ? nativeBtn[fk] : null;
-    for (let i = 0; i < 40 && f; i++, f = f.return) {
-      const p = f.memoizedProps;
-      const cand = p?.value && typeof p.value === 'object' ? p.value : p;
-      if (cand && typeof cand.setSelectedModel === 'function' && Array.isArray(cand.modelOptions)) {
-        return cand;
-      }
-    }
-    return null;
-  }
-
-  function selectReviewerOption(api, reviewerModel, recommendedModelId) {
-    const opts = (api?.modelOptions || []).filter((o) => o && !o.disabled);
-    if (!opts.length) return false;
-    const key = normalizeReviewerModel(reviewerModel, 'opus');
-    const isOrch = (o) => /orchestrator/i.test(`${o.modelId || ''} ${o.label || ''}`);
-    let match = (recommendedModelId && opts.find((o) => o.modelId === recommendedModelId)) || null;
-    if (!match) {
-      if (key === 'carbon') {
-        match =
-          opts.find((o) => !isOrch(o) && /gemini-4-carbon.*-high|gemini\s*4\s*carbon.*high/i.test(`${o.modelId || ''} ${o.label || ''}`)) ||
-          opts.find((o) => !isOrch(o) && /gemini-4-carbon|gemini\s*4\s*carbon/i.test(`${o.modelId || ''} ${o.label || ''}`));
-      } else {
-        match =
-          opts.find((o) => !isOrch(o) && /claude-opus.*-high|claude\s*opus.*high/i.test(`${o.modelId || ''} ${o.label || ''}`)) ||
-          opts.find((o) => !isOrch(o) && /claude-opus|claude\s*opus/i.test(`${o.modelId || ''} ${o.label || ''}`));
-      }
-    }
-    if (!match) return false;
-    api.setSelectedModel(match);
-    return true;
-  }
-
   function closeMenu() {
     menuOpen = false;
     activeMenuProp = null;
@@ -285,46 +242,6 @@ export function createOpusGatePillRuntime({ studioPrefs } = {}) {
       .catch(() => null);
     if (disposed || !res?.ok || !res.swarmPrompt) return;
     submitPromptIntoBox(box, res.swarmPrompt);
-    if (cid && curProp) dismissCurrent(cid, curProp);
-  }
-
-  async function runPathBStandalone(kind, modelOverride) {
-    closeMenu();
-    const cid = getActiveRouteCid();
-    const curProp = statusCache.cid === cid ? statusCache.data?.proposal : null;
-    if (typeof window.__agProjectCall !== 'function') return;
-    const model = normalizeReviewerModel(modelOverride, getDefaultReviewerModel());
-    const res = await window
-      .__agProjectCall('buildOpusHandoffBrief', { cascadeId: cid, dirPath: resolveActiveDirPath(), kind, model }, 6000)
-      .catch(() => null);
-    if (disposed || !res?.ok || !res.handoffPrompt) return;
-
-    try {
-      navigator.clipboard?.writeText?.(res.handoffPrompt)?.catch?.(() => {});
-    } catch {}
-
-    const prevBox = getMainBox();
-    const newBtn = document.querySelector('[data-testid="new-conversation-button"]');
-    if (newBtn) newBtn.click();
-
-    let tries = 0;
-    const waitAndSubmit = () => {
-      if (disposed) return;
-      const box = getMainBox();
-      const api = discoverModelSelectorFromDom();
-      const ready = Boolean(box && api && (!newBtn || box !== prevBox || !getActiveRouteCid() || tries >= 12));
-      if (!ready) {
-        if (++tries < 30) trackTimer(waitAndSubmit, 80);
-        return;
-      }
-      selectReviewerOption(api, res.reviewerModel || model, res.recommendedModelId);
-      trackTimer(() => {
-        const latestBox = getMainBox();
-        if (latestBox) submitPromptIntoBox(latestBox, res.handoffPrompt);
-      }, 90);
-    };
-    trackTimer(waitAndSubmit, 90);
-
     if (cid && curProp) dismissCurrent(cid, curProp);
   }
 
@@ -412,7 +329,6 @@ export function createOpusGatePillRuntime({ studioPrefs } = {}) {
         e.stopPropagation();
         const act = btn.getAttribute('data-agy-opus-action');
         if (act === 'swarm') runPathASwarm(activeMenuKind, selectedMenuModel);
-        else if (act === 'handoff') runPathBStandalone(activeMenuKind, selectedMenuModel);
       });
       document.body.appendChild(menuEl);
     } else {
@@ -460,10 +376,6 @@ export function createOpusGatePillRuntime({ studioPrefs } = {}) {
           `<span class="agy-opus-act-t">${esc(L(`当前对话 /swarm 请 ${live.spec.shortLabel} 审查`, `Audit in-turn via /swarm (${live.spec.shortLabel})`))}</span>` +
           `<span class="agy-opus-act-d">${esc(L(`拉起单兵只读 ${live.spec.shortLabel} 并自动回传当前线程`, `Spawns 1 read-only ${live.spec.shortLabel} worker & returns verdict here`))}</span>` +
         `</button>` +
-        `<button type="button" class="agy-opus-act" data-agy-opus-action="handoff">` +
-          `<span class="agy-opus-act-t">${esc(L(`另开独立 ${live.spec.shortLabel} 评审会话`, `Open dedicated ${live.spec.shortLabel} chat`))}</span>` +
-          `<span class="agy-opus-act-d">${esc(L(`打包精简上下文并切换 ${live.spec.shortLabel} 发起深聊`, `Opens fresh ${live.spec.shortLabel} session with compact brief`))}</span>` +
-        `</button>` +
       `</div>`;
   }
 
@@ -503,7 +415,7 @@ export function createOpusGatePillRuntime({ studioPrefs } = {}) {
   const onDocClick = (e) => {
     if (!menuOpen) return;
     if (menuEl?.contains(e.target)) return;
-    if (e.target?.closest?.(`#${PILL_ID}`) || e.target?.closest?.('[data-ag-qp-opus]')) return;
+    if (e.target?.closest?.(`#${PILL_ID}`)) return;
     closeMenu();
   };
   const onDocKey = (e) => {

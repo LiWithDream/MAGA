@@ -961,23 +961,6 @@ export function createMetricsQuotaModule(rt) {
         renderQuotaPopoverBody();
         return;
       }
-      const opusBtn = e.target.closest('[data-ag-qp-opus]');
-      if (opusBtn) {
-        e.preventDefault();
-        e.stopPropagation();
-        closeQuotaPopover();
-        if (typeof window.__agyOpusGateTrigger === 'function') {
-          window.__agyOpusGateTrigger('manual');
-        }
-        return;
-      }
-      const jumpBtn = e.target.closest('[data-ag-quota-jump]');
-      if (jumpBtn) {
-        e.stopPropagation();
-        selectedQuotaGroupIdx = Number(jumpBtn.getAttribute('data-ag-quota-jump')) || 0;
-        renderQuotaPopoverBody();
-        return;
-      }
       const viewAll = e.target.closest('[data-ag-quota-view-all]');
       if (viewAll) {
         e.stopPropagation();
@@ -1138,66 +1121,13 @@ export function createMetricsQuotaModule(rt) {
         .join('');
     }
 
-    const showOpusBtn =
-      typeof window.__agyOpusGateTrigger === 'function' &&
-      window.__agyStudioPrefs?.get?.()?.opusGateMode !== 'off';
-    const opusBtnHtml = showOpusBtn
-      ? `<button type="button" class="ag-qp-opus-btn" data-ag-qp-opus="true" title="${escapeHtml(
-          L('调度审查模型对当前任务进行架构/风险把关', 'Invoke Review Gate checkpoint for the current task')
-        )}">✦ ${escapeHtml(L('审查', 'Review'))}</button>`
-      : '';
-
-    let otherPoolsHtml = '';
-    if (groups.length > 1) {
-      const sortBuckets = (list) =>
-        (list || []).slice().sort((a, b) => {
-          const rank = (w) => (w === '5h' ? 0 : w === 'daily' ? 1 : 2);
-          return rank(String(a.window || '').toLowerCase()) - rank(String(b.window || '').toLowerCase());
-        });
-      const items = [];
-      groups.forEach((g, idx) => {
-        if (idx === selectedQuotaGroupIdx) return;
-        const gShort = localizeGroupShortName(g.displayName);
-        const dotCol = barColorForPoolPct(0, g.displayName);
-        const rows = sortBuckets(g.buckets)
-          .map((b) => {
-            const usedRaw = Math.max(0, Math.min(100, (1 - readBucketRemaining(b)) * 100));
-            const usedPctStr = formatQuotaUsedPctStr(usedRaw);
-            const win = String(b.window || '').trim().toLowerCase();
-            const winLbl =
-              win === '5h' ? '5h' : win === 'weekly' ? L('每周', 'Weekly') : win === 'daily' ? L('每日', 'Daily') : b.displayName || '';
-            const resetTxt = formatResetLabel(b, usedRaw);
-            const fillCol = barColorForPoolPct(usedRaw, g.displayName, 75, 90);
-            return `<div class="ag-qp-other-row">
-              <span class="ag-qp-other-lbl">${escapeHtml(winLbl)}</span>
-              <span class="ag-qp-other-reset">${escapeHtml(resetTxt)}</span>
-              <span class="ag-qp-other-meter">
-                <span class="ag-qp-other-track"><span class="ag-qp-other-fill" style="width:${usedRaw.toFixed(1)}%;background:${fillCol}"></span></span>
-                <span class="ag-qp-other-pct">${usedPctStr}%</span>
-              </span>
-            </div>`;
-          })
-          .join('');
-        items.push(`<button type="button" class="ag-qp-other-pool" data-ag-quota-jump="${idx}">
-          <div class="ag-qp-other-hdr"><i class="ag-qp-other-dot" style="background:${dotCol}"></i><span>${escapeHtml(gShort)}</span></div>
-          ${rows}
-        </button>`);
-      });
-      if (items.length > 0) {
-        otherPoolsHtml = `<div class="ag-qp-divider"></div><div class="ag-qp-other-pools">${items.join('')}</div>`;
-      }
-    }
-
     pop.innerHTML = `
       <div class="ag-qp-hdr">
         <span class="ag-qp-tier">${L('套餐使用限额', 'Plan usage')}${tierSuffix}</span>
-        <span class="ag-qp-hdr-actions">
-          ${opusBtnHtml}
-          <button type="button" class="ag-qp-all" data-ag-quota-view-all="true">
-            <span>${L('查看全部', 'View all')}</span>
-            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3.5 8h9m0 0L8.8 4.3M12.5 8l-3.7 3.7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-          </button>
-        </span>
+        <button type="button" class="ag-qp-all" data-ag-quota-view-all="true">
+          <span>${L('查看全部', 'View all')}</span>
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3.5 8h9m0 0L8.8 4.3M12.5 8l-3.7 3.7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
       </div>
       <div class="ag-qp-item">
         <div class="ag-qp-row">
@@ -1212,7 +1142,6 @@ export function createMetricsQuotaModule(rt) {
       <div class="ag-qp-divider"></div>
       ${tabsHtml}
       <div class="ag-qp-group-list">${quotaRowsHtml}</div>
-      ${otherPoolsHtml}
     `;
     positionQuotaPopover();
     if (typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {

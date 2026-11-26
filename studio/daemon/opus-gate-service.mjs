@@ -2,7 +2,7 @@
  * Daemon-side Opus Gate Service:
  * - Persists sanitized dual-pool quota snapshots (`quota-state.json`) synced from UI
  * - Reads/CAS-dismisses per-conversation Opus checkpoint proposals (`opus-gate-proposals/<cid>.json`)
- * - Builds compact, evidence-first Swarm & Standalone Handoff briefs
+ * - Builds compact, evidence-first Swarm briefs
  * - Idempotently syncs/removes the native `maga-opus-gate` Antigravity plugin
  */
 import { execFile } from 'node:child_process';
@@ -463,21 +463,6 @@ export async function buildOpusHandoffBrief(payload = {}, opts = {}) {
     scopeBlock,
   ].join('\n');
 
-  const handoffPrompt = [
-    `Perform a focused, high-signal ${spec.label} architecture & code review (${sanitizeInlineText(kind, 32)} checkpoint).`,
-    'Inspect read-only first using batched parallel reads/checks (<= 3 turns) and keep the final report under 500 words.',
-    '',
-    '### Context & Scope',
-    scopeBlock,
-    '',
-    '### Required Output Format',
-    '- **Verdict**: `APPROVE` | `REVISE` | `HOLD`',
-    '- **P0 (Blockers / Data Loss / Broken Invariants)**',
-    '- **P1 (Functional Bugs / Races / Edge Cases)**',
-    '- **P2 (Hardening & Missing Tests)**',
-    'Include exact `file:line`, failure scenario, and minimal fix sketch per item.',
-  ].join('\n');
-
   return {
     ok: true,
     kind,
@@ -488,7 +473,6 @@ export async function buildOpusHandoffBrief(payload = {}, opts = {}) {
     recommendedModelId,
     quotaState,
     swarmPrompt,
-    handoffPrompt,
   };
 }
 

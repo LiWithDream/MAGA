@@ -955,9 +955,13 @@ test('opus-gate-pill renders generic label, supports per-click Carbon/Opus switc
       assert.equal(menu.getAttribute('data-maga-own'), '1');
       assert.equal(menu.getAttribute('data-open'), '1');
       assert.equal(menu.getAttribute('data-reviewer-model'), 'opus');
+      assert.equal(menu.querySelector('.agy-opus-menu-model')?.textContent, 'Opus High');
+      assert.match(menu.querySelector('.agy-opus-menu-reason')?.textContent || '', /涉及高风险文件：kernel\.mjs/);
       assert.match(menu.querySelector('.agy-opus-menu-quota')?.textContent || '', /Claude/);
       assert.equal(menu.querySelector('button[data-agy-opus-action="handoff"]'), null);
-      assert.ok(menu.querySelector('button[data-agy-opus-action="swarm"]'));
+      const swarmBtn = menu.querySelector('button[data-agy-opus-action="swarm"]');
+      assert.ok(swarmBtn);
+      assert.doesNotMatch(swarmBtn.textContent || '', /\/swarm/);
 
       // Per-click switch to Carbon High updates popover in-place WITHOUT mutating studioPrefs
       const carbonBtn = menu.querySelector('button[data-agy-opus-model="carbon"]');
@@ -965,8 +969,9 @@ test('opus-gate-pill renders generic label, supports per-click Carbon/Opus switc
       carbonBtn.click();
       assert.equal(menu.getAttribute('data-reviewer-model'), 'carbon');
       assert.equal(menu.getAttribute('data-open'), '1');
-      assert.match(menu.querySelector('.agy-opus-menu-title')?.textContent || '', /Carbon High/);
-      assert.match(menu.querySelector('.agy-opus-menu-quota')?.textContent || '', /Gemini/);
+      assert.equal(menu.querySelector('.agy-opus-menu-model')?.textContent, 'Carbon High');
+      const qRows = [...menu.querySelectorAll('.agy-opus-menu-qrow')].map((el) => el.textContent);
+      assert.deepEqual(qRows, ['Gemini 5h 89%', '周剩余 91%']);
       assert.equal(studioPrefs.get().opusGateModel, 'opus');
 
       // Path A passes per-click model='carbon'

@@ -1703,7 +1703,7 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) :is(#ag-claude-quota-popov
   --agy-gate-accent: #C15F3C;
   position: fixed !important;
   z-index: 99992 !important;
-  width: 280px !important;
+  width: 240px !important;
   padding: 10px !important;
   border-radius: 12px !important;
   border: 1px solid color-mix(in srgb, currentColor 12%, transparent) !important;
@@ -1731,21 +1731,46 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) :is(#ag-claude-quota-popov
 }
 #agy-opus-gate-menu .agy-opus-menu-hdr {
   display: flex !important;
-  align-items: center !important;
+  align-items: flex-start !important;
   justify-content: space-between !important;
-  gap: 8px !important;
+  gap: 10px !important;
+}
+#agy-opus-gate-menu .agy-opus-menu-id {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 2px !important;
+  min-width: 0 !important;
 }
 #agy-opus-gate-menu .agy-opus-menu-title {
   font-size: 12.5px !important;
   font-weight: 600 !important;
+  line-height: 1.25 !important;
+  white-space: nowrap !important;
+}
+#agy-opus-gate-menu .agy-opus-menu-model {
+  font-size: 11px !important;
+  font-weight: 550 !important;
+  line-height: 1.25 !important;
+  color: var(--agy-gate-accent) !important;
+  white-space: nowrap !important;
 }
 #agy-opus-gate-menu .agy-opus-menu-quota {
-  font-size: 11px !important;
-  padding: 1px 6px !important;
-  border-radius: 999px !important;
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: flex-end !important;
+  gap: 1px !important;
+  flex-shrink: 0 !important;
+  font-size: 10.5px !important;
+  line-height: 1.3 !important;
+  padding: 3px 7px !important;
+  border-radius: 7px !important;
   background: color-mix(in srgb, var(--agy-gate-accent) 14%, transparent) !important;
   color: var(--agy-gate-accent) !important;
   font-variant-numeric: tabular-nums !important;
+  white-space: nowrap !important;
+}
+#agy-opus-gate-menu .agy-opus-menu-qrow {
+  white-space: nowrap !important;
 }
 #agy-opus-gate-menu .agy-opus-model-switch {
   display: grid !important;
@@ -1781,19 +1806,24 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) :is(#ag-claude-quota-popov
 #agy-opus-gate-menu .agy-opus-menu-meta {
   display: flex !important;
   flex-direction: column !important;
-  gap: 3px !important;
+  gap: 4px !important;
+  padding: 7px 8px !important;
+  border-radius: 8px !important;
+  background: color-mix(in srgb, currentColor 4%, transparent) !important;
+  border: 1px solid color-mix(in srgb, currentColor 7%, transparent) !important;
 }
 #agy-opus-gate-menu .agy-opus-menu-badge {
   align-self: flex-start !important;
-  font-size: 10.5px !important;
-  font-weight: 500 !important;
+  font-size: 10px !important;
+  font-weight: 600 !important;
   padding: 1px 6px !important;
-  border-radius: 5px !important;
+  border-radius: 4px !important;
   background: color-mix(in srgb, currentColor 8%, transparent) !important;
 }
 #agy-opus-gate-menu .agy-opus-menu-reason {
-  font-size: 11.5px !important;
+  font-size: 11px !important;
   line-height: 1.4 !important;
+  word-break: break-word !important;
   color: var(--muted-foreground, #787774) !important;
 }
 #agy-opus-gate-menu .agy-opus-menu-warn {
@@ -1811,16 +1841,16 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) :is(#ag-claude-quota-popov
 }
 #agy-opus-gate-menu .agy-opus-act {
   display: flex !important;
-  flex-direction: column !important;
-  align-items: flex-start !important;
-  gap: 2px !important;
+  align-items: center !important;
+  justify-content: center !important;
   width: 100% !important;
-  padding: 7px 9px !important;
+  height: 32px !important;
+  padding: 0 10px !important;
   border-radius: 8px !important;
   border: 1px solid color-mix(in srgb, currentColor 11%, transparent) !important;
   background: transparent !important;
   color: inherit !important;
-  text-align: left !important;
+  text-align: center !important;
   cursor: pointer !important;
 }
 #agy-opus-gate-menu .agy-opus-act.is-primary {
@@ -1836,10 +1866,6 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) :is(#ag-claude-quota-popov
 #agy-opus-gate-menu .agy-opus-act-t {
   font-size: 12px !important;
   font-weight: 550 !important;
-}
-#agy-opus-gate-menu .agy-opus-act-d {
-  font-size: 10.5px !important;
-  color: var(--muted-foreground, #787774) !important;
 }
 
 /* ==========================================================================

@@ -337,13 +337,40 @@ export function createOpusGatePillRuntime({ studioPrefs } = {}) {
     return menuEl;
   }
 
+  function formatReason(rawReason) {
+    const raw = String(rawReason || '').trim();
+    if (!raw) return L('对当前工作区发起只读审查', 'Run a focused read-only review');
+    if (!isZhUi()) return raw;
+    let m = raw.match(/^Substantial workspace diff \((\d+) files?, (\d+) lines?\)$/i);
+    if (m) return `工作区较大改动 · ${m[1]} 个文件，约 ${m[2]} 行`;
+    m = raw.match(/^High-risk file changes \((.+)\)$/i);
+    if (m) return `涉及高风险文件：${m[1]}`;
+    m = raw.match(/^Consecutive command failures \((\d+)\)$/i);
+    if (m) return `命令连续失败 ${m[1]} 次`;
+    if (/^Plan finalized via exit_plan_mode$/i.test(raw)) return '执行计划已定型';
+    m = raw.match(/^Plan artifact updated \((.+)\)$/i);
+    if (m) return `方案文档已更新：${m[1]}`;
+    if (/^Plan artifact ready for review$/i.test(raw)) return '方案已就绪';
+    return raw;
+  }
+
   function renderMenuContent(el, prop = activeMenuProp) {
     const quota = statusCache.data?.quotaState || null;
     const live = computeLivePoolState(selectedMenuModel, quota, prop);
-    const reason = prop?.reason || L('调度高阶审查模型对当前工作区进行结构化只读把关', 'Run a quota-guarded high-tier checkpoint review');
+    const reason = formatReason(prop?.reason);
     const warnHtml = live.quotaBlocked
       ? `<div class="agy-opus-menu-warn">${esc(L(`${live.spec.poolLabel} 配额已低于熔断水位，自动把关已暂停（仍可手动放行）`, `${live.spec.poolLabel} quota below breaker floor; manual confirmation required`))}</div>`
       : '';
+    const quotaRows = [];
+    if (live.fiveHourPct !== null && live.fiveHourPct !== undefined) {
+      quotaRows.push(`<span class="agy-opus-menu-qrow">${esc(live.spec.poolLabel)} 5h ${Math.round(live.fiveHourPct)}%</span>`);
+    }
+    if (live.weeklyPct !== null && live.weeklyPct !== undefined) {
+      quotaRows.push(`<span class="agy-opus-menu-qrow">${esc(L('周剩余', 'Weekly'))} ${Math.round(live.weeklyPct)}%</span>`);
+    }
+    const quotaRowsHtml = quotaRows.length
+      ? quotaRows.join('')
+      : `<span class="agy-opus-menu-qrow">${esc(live.spec.poolLabel)}</span>`;
     const switchHtml =
       `<div class="agy-opus-model-switch" role="group" aria-label="${esc(L('审查模型', 'Review Model'))}">` +
         ['carbon', 'opus']
@@ -362,8 +389,11 @@ export function createOpusGatePillRuntime({ studioPrefs } = {}) {
     setAttr(el, 'data-reviewer-model', selectedMenuModel);
     el.innerHTML =
       `<div class="agy-opus-menu-hdr">` +
-        `<span class="agy-opus-menu-title">✦ ${esc(L('审查关卡', 'Review Gate'))} · ${esc(live.spec.shortLabel)}</span>` +
-        `<span class="agy-opus-menu-quota">${esc(live.quotaText)}</span>` +
+        `<div class="agy-opus-menu-id">` +
+          `<span class="agy-opus-menu-title">✦ ${esc(L('审查关卡', 'Review Gate'))}</span>` +
+          `<span class="agy-opus-menu-model">${esc(live.spec.shortLabel)}</span>` +
+        `</div>` +
+        `<div class="agy-opus-menu-quota">${quotaRowsHtml}</div>` +
       `</div>` +
       switchHtml +
       `<div class="agy-opus-menu-meta">` +
@@ -373,8 +403,7 @@ export function createOpusGatePillRuntime({ studioPrefs } = {}) {
       warnHtml +
       `<div class="agy-opus-menu-actions">` +
         `<button type="button" class="agy-opus-act is-primary" data-agy-opus-action="swarm">` +
-          `<span class="agy-opus-act-t">${esc(L(`当前对话 /swarm 请 ${live.spec.shortLabel} 审查`, `Audit in-turn via /swarm (${live.spec.shortLabel})`))}</span>` +
-          `<span class="agy-opus-act-d">${esc(L(`拉起单兵只读 ${live.spec.shortLabel} 并自动回传当前线程`, `Spawns 1 read-only ${live.spec.shortLabel} worker & returns verdict here`))}</span>` +
+          `<span class="agy-opus-act-t">${esc(L(`发起 ${live.spec.shortLabel} 审查`, `Review with ${live.spec.shortLabel}`))}</span>` +
         `</button>` +
       `</div>`;
   }
@@ -390,7 +419,7 @@ export function createOpusGatePillRuntime({ studioPrefs } = {}) {
     el.setAttribute('data-open', '1');
     menuOpen = true;
     const r = anchorEl.getBoundingClientRect();
-    const mw = el.offsetWidth || 276;
+    const mw = el.offsetWidth || 240;
     const left = Math.round(Math.max(10, Math.min(r.left, window.innerWidth - mw - 12)));
     const bottom = Math.round(Math.max(10, window.innerHeight - r.top + 8));
     el.style.left = `${left}px`;

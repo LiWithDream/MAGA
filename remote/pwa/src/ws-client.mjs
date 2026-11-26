@@ -513,22 +513,67 @@ export function createRemoteWsClient(identity, handlers = {}) {
     return request('convo.snapshot', { cascadeId });
   }
 
-  function sendMessage(cascadeId, text, { idempotencyKey = createIdempotencyKey(), turboWriteConfirmed = false } = {}) {
+  function sendMessage(
+    cascadeId,
+    text = '',
+    { idempotencyKey = createIdempotencyKey(), turboWriteConfirmed = false, media = [] } = {}
+  ) {
     if (!cascadeId || !UUID_RE.test(cascadeId)) {
       return Promise.reject(new Error('invalid_cascade_id'));
     }
-    if (typeof text !== 'string' || !text.trim()) {
+    const cleanText = typeof text === 'string' ? text : '';
+    const cleanMedia = Array.isArray(media)
+      ? media
+          .filter((m) => m && typeof m.dataBase64 === 'string' && typeof m.mimeType === 'string')
+          .slice(0, 4)
+          .map((m) => ({
+            name: String(m.name || 'remote-image.png').slice(0, 128),
+            mimeType: String(m.mimeType),
+            dataBase64: String(m.dataBase64),
+          }))
+      : [];
+    if (!cleanText.trim() && cleanMedia.length === 0) {
       return Promise.reject(new Error('empty_message'));
     }
     return request(
       'convo.send',
       {
         cascadeId,
-        text,
+        text: cleanText,
+        ...(cleanMedia.length ? { media: cleanMedia } : {}),
         idempotencyKey,
         turboWriteConfirmed: Boolean(turboWriteConfirmed),
       },
-      25_000
+      cleanMedia.length ? 30_000 : 25_000
+    );
+  }
+
+  function fetchModels(cascadeId = '') {
+    const cid = typeof cascadeId === 'string' && UUID_RE.test(cascadeId.trim()) ? cascadeId.trim() : '';
+    return request('models.list', cid ? { cascadeId: cid } : {}, 8_000);
+  }
+
+  function selectModel({
+    cascadeId = '',
+    model,
+    plannerModel = null,
+    customLabel = '',
+    idempotencyKey = createIdempotencyKey(),
+  } = {}) {
+    const cid = typeof cascadeId === 'string' && UUID_RE.test(cascadeId.trim()) ? cascadeId.trim() : '';
+    if (model === undefined || model === null || model === '') {
+      return Promise.reject(new Error('invalid_model'));
+    }
+    return request(
+      'models.select',
+      {
+        ...(cid ? { cascadeId: cid } : {}),
+        model,
+        ...(plannerModel !== undefined && plannerModel !== null && plannerModel !== '' ? { plannerModel } : {}),
+        ...(customLabel ? { customLabel: String(customLabel) } : {}),
+        idempotencyKey,
+      },
+      12_000
     );
   }
 
@@ -675,6 +720,8 @@ export function createRemoteWsClient(identity, handlers = {}) {
     resumeConversation,
     compactConversation,
     dismissOpusProposal,
+    fetchModels,
+    selectModel,
     reconnectNow: () => {
       if (!disposed) {
         attempt = 0;

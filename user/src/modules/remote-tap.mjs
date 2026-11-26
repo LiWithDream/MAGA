@@ -3,14 +3,30 @@
  * Zero MutationObserver, zero DOM mutations. Discovers Redux store & lsClient
  * via duck-typed BFS from #root only when queried or enabled.
  */
-export function createRemoteTapModule(rt) {
+export function createRemoteTapModule(rt, modelApi = null) {
   const { state: rtState } = rt;
   const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   const MAX_BFS_NODES = 2500;
   const MAX_STREAMS = 3;
   const MAX_STEPS_SNAPSHOT = 200;
   const MAX_FIELD_CHARS = 16384;
-  const INVOKE_METHODS = new Set(['convo.owns', 'convo.send', 'convo.approve', 'convo.cancel', 'convo.compact']);
+  const MAX_MEDIA_ITEMS = 4;
+  const MAX_MEDIA_B64_ITEM = 620_000;
+  const MAX_MEDIA_B64_TOTAL = 1_400_000;
+  const ALLOWED_MEDIA_MIMES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+  const BASE64_RE = /^[A-Za-z0-9+/=]+$/;
+  const EFFORT_LABEL_RE = /^(.*?)\s*\((Low|Medium|High|XHigh|Extra|Max)\)\s*$/i;
+  const EFFORT_NORM = { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'XHigh', extra: 'XHigh', max: 'Max' };
+  const EFFORT_DISPLAY = { XHigh: 'Extra' };
+  const INVOKE_METHODS = new Set([
+    'convo.owns',
+    'convo.send',
+    'convo.approve',
+    'convo.cancel',
+    'convo.compact',
+    'models.list',
+    'models.select',
+  ]);
 
   let active = false;
   let rpcToken = '';
@@ -438,6 +454,8 @@ export function createRemoteTapModule(rt) {
     let text = '';
     let thinking = '';
     const toolCalls = [];
+    let mediaCount = 0;
+    let mediaNames = null;
 
     if (stepCase === 'userInput' || type === 'USER_INPUT') {
       if (typeof val.userResponse === 'string' && val.userResponse) {
@@ -447,6 +465,12 @@ export function createRemoteTapModule(rt) {
           .filter((it) => it && it.chunk && it.chunk.case === 'text')
           .map((it) => it.chunk.value || '')
           .join('');
+      }
+      if (Array.isArray(val.media) && val.media.length > 0) {
+        mediaCount = val.media.length;
+        mediaNames = val.media
+          .slice(0, 4)
+          .map((m) => String(m?.description || m?.displayName || 'image').slice(0, 80));
       }
     } else if (stepCase === 'plannerResponse' || type === 'PLANNER_RESPONSE') {
       text = String(val.modifiedResponse || val.response || '');
@@ -494,6 +518,7 @@ export function createRemoteTapModule(rt) {
       text: truncateStr(text),
       thinking: truncateStr(thinking),
       toolCalls,
+      ...(mediaCount > 0 ? { mediaCount, mediaNames } : {}),
       error,
     };
   }
@@ -758,6 +783,8 @@ export function createRemoteTapModule(rt) {
           typeof window !== 'undefined' &&
             typeof window.__agClaudeUxBridge?.triggerConversationCompact === 'function'
         ),
+        modelSelect: Boolean(store && typeof store.dispatch === 'function'),
+        imageAttachments: Boolean(lsClient && typeof lsClient.sendUserCascadeMessage === 'function'),
         diskRead: true,
       },
     };
@@ -940,12 +967,405 @@ export function createRemoteTapModule(rt) {
     return { ok: true, owned, active };
   }
 
+  function decodeBase64ToBytes(b64) {
+    if (typeof atob === 'function') {
+      const bin = atob(b64);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i += 1) {
+        bytes[i] = bin.charCodeAt(i);
+      }
+      return bytes;
+    }
+    if (typeof Buffer !== 'undefined') {
+      return new Uint8Array(Buffer.from(b64, 'base64'));
+    }
+    throw new Error('base64_decode_unavailable');
+  }
+
+  function buildTapMediaObjects(rawMedia) {
+    if (rawMedia === undefined || rawMedia === null) return { ok: true, media: [] };
+    if (!Array.isArray(rawMedia)) return { ok: false, error: 'invalid_media' };
+    if (rawMedia.length > MAX_MEDIA_ITEMS) return { ok: false, error: 'too_many_media_items' };
+    let totalB64Len = 0;
+    const out = [];
+    const zeroTs = typeof BigInt === 'function' ? BigInt(0) : 0;
+    for (const item of rawMedia) {
+      if (!item || typeof item !== 'object') return { ok: false, error: 'invalid_media_item' };
+      const mimeType = typeof item.mimeType === 'string' ? item.mimeType.trim().toLowerCase() : '';
+      if (!ALLOWED_MEDIA_MIMES.has(mimeType)) return { ok: false, error: 'unsupported_media_mime' };
+      const b64 = typeof item.dataBase64 === 'string' ? item.dataBase64.trim() : '';
+      if (!b64 || b64.length > MAX_MEDIA_B64_ITEM || !BASE64_RE.test(b64)) {
+        return { ok: false, error: 'invalid_media_data' };
+      }
+      totalB64Len += b64.length;
+      if (totalB64Len > MAX_MEDIA_B64_TOTAL) return { ok: false, error: 'media_payload_too_large' };
+      const bytes = decodeBase64ToBytes(b64);
+      if (!bytes.length) return { ok: false, error: 'invalid_media_data' };
+      const name = String(item.name || 'remote-image.png').slice(0, 128);
+      out.push({
+        $typeName: 'exa.codeium_common_pb.Media',
+        mimeType,
+        description: name,
+        payload: { case: 'inlineData', value: bytes },
+        uri: '',
+        thumbnail: bytes,
+        durationSeconds: 0,
+        mediaId: '',
+        displayName: '',
+        startTimeMs: zeroTs,
+        endTimeMs: zeroTs,
+        fps: 0,
+        mediaResolution: 0,
+        contentLayers: [],
+        documentContentLayers: [],
+        visibleCells: '',
+        spreadsheetContentLayers: [],
+      });
+    }
+    return { ok: true, media: out };
+  }
+
+  function parseEffortSuffix(rawLabel) {
+    const normalized = String(rawLabel || '')
+      .replace(/编排器\s*\(([^)]+)\)/g, 'Orchestrator ($1)')
+      .replace(/\s*\(Extra High\)\s*$/i, ' (XHigh)');
+    const m = normalized.match(EFFORT_LABEL_RE);
+    const baseName = m ? m[1].trim() : normalized.trim();
+    const effort = m ? EFFORT_NORM[m[2].toLowerCase()] || m[2] : null;
+    return { baseName, effort };
+  }
+
+  function formatDisplayEffort(effort) {
+    return (effort && EFFORT_DISPLAY[effort]) || effort || '';
+  }
+
+  function readReduxModelOptions(st) {
+    const cfgData = st?.userStatus?.cascadeModelConfigData || null;
+    const rawCfgs = Array.isArray(cfgData?.clientModelConfigs) ? cfgData.clientModelConfigs : [];
+    const modelOptions = [];
+    for (const c of rawCfgs) {
+      if (!c || !c.label) continue;
+      const val = c.modelOrAlias?.choice ? c.modelOrAlias.choice.value : c.value;
+      if (val === undefined || val === null) continue;
+      modelOptions.push({
+        label: String(c.label),
+        value: val,
+        modelId: String(c.modelId || ''),
+        disabled: Boolean(c.disabled),
+        customLabel: '',
+      });
+    }
+    const rawCustom = Array.isArray(st?.customModels?.models)
+      ? st.customModels.models
+      : Array.isArray(st?.customModels)
+        ? st.customModels
+        : [];
+    const customModels = [];
+    for (const c of rawCustom) {
+      if (!c || !c.label || c.value === undefined || c.value === null) continue;
+      customModels.push({
+        label: String(c.label),
+        value: c.value,
+        modelId: String(c.modelId || ''),
+        disabled: Boolean(c.disabled),
+        customLabel: String(c.label),
+      });
+    }
+    return { modelOptions, customModels };
+  }
+
+  function normalizeModelCatalog(store, cid = '') {
+    const st = safeCall(() => store.getState()) || {};
+    const api = safeCall(() => modelApi?.discoverModelSelectorApi?.()) || null;
+    const familiesOut = [];
+    const ms = st.modelSelection || {};
+    const convPick = (cid && ms.byConversation && ms.byConversation[cid]) || ms.default || null;
+    const convOrch =
+      cid && ms.orchestratorByConversation && ms.orchestratorByConversation[cid] !== undefined
+        ? ms.orchestratorByConversation[cid]
+        : ms.orchestratorByConversation?.[''];
+
+    let fallbackSelected = null;
+
+    if (api && typeof modelApi?.buildModelCatalog === 'function') {
+      const cat = safeCall(() => modelApi.buildModelCatalog(api));
+      if (cat && (Array.isArray(cat.primaryFamilies) || Array.isArray(cat.moreFamilies))) {
+        const pushFamily = (fam, group) => {
+          if (!fam || !Array.isArray(fam.variants) || !fam.variants.length) return;
+          const variants = [];
+          for (const v of fam.variants) {
+            const opt = v?.opt;
+            if (!opt || opt.disabled || opt.value === undefined || opt.value === null) continue;
+            const plannerOpt = v.plannerOpt || null;
+            const effort = v.effort || null;
+            variants.push({
+              effort,
+              displayEffort: formatDisplayEffort(effort),
+              label: String(plannerOpt?.label || opt.label || fam.baseName),
+              value: toJsonSafe(opt.value),
+              customLabel: String(opt.customLabel || ''),
+              plannerValue: plannerOpt && plannerOpt.value !== undefined ? toJsonSafe(plannerOpt.value) : null,
+              modelId: String(plannerOpt?.modelId || opt.modelId || ''),
+            });
+          }
+          if (variants.length > 0) {
+            familiesOut.push({
+              baseName: String(fam.baseName || variants[0].label),
+              group,
+              isOrchestrator: Boolean(fam.isOrchestratorFamily || group === 'orch'),
+              variants,
+            });
+          }
+        };
+        for (const f of cat.primaryFamilies || []) pushFamily(f, 'primary');
+        for (const entry of cat.moreFamilies || []) {
+          pushFamily(entry?.fam || entry, entry?.group === 'orch' ? 'orch' : 'other');
+        }
+        if (cat.activeFamily && cat.activeVariant?.opt) {
+          const ao = cat.activeVariant.opt;
+          const ap = cat.activeVariant.plannerOpt || null;
+          const eff = cat.activeVariant.effort || null;
+          fallbackSelected = {
+            label: String(ap?.label || ao.label || cat.activeFamily.baseName),
+            baseName: String(cat.activeFamily.baseName || ''),
+            effort: eff,
+            displayEffort: formatDisplayEffort(eff),
+            value: toJsonSafe(ao.value),
+            customLabel: String(ao.customLabel || ''),
+            modelId: String(ap?.modelId || ao.modelId || ''),
+            isOrchestrator: Boolean(cat.activeFamily.isOrchestratorFamily),
+            plannerValue: ap && ap.value !== undefined ? toJsonSafe(ap.value) : null,
+            plannerLabel: ap?.label ? String(ap.label) : '',
+          };
+        }
+      }
+    }
+
+    if (familiesOut.length === 0) {
+      const { modelOptions, customModels } = readReduxModelOptions(st);
+      const merged = modelOptions.concat(customModels).filter((o) => !o.disabled);
+      const famMap = new Map();
+      for (const opt of merged) {
+        const parsed = parseEffortSuffix(opt.label);
+        const base = parsed.baseName || opt.label;
+        if (!famMap.has(base)) {
+          famMap.set(base, {
+            baseName: base,
+            group: /orchestrator|编排器/i.test(base) ? 'orch' : 'primary',
+            isOrchestrator: /orchestrator|编排器/i.test(base),
+            variants: [],
+          });
+        }
+        famMap.get(base).variants.push({
+          effort: parsed.effort,
+          displayEffort: formatDisplayEffort(parsed.effort),
+          label: opt.label,
+          value: toJsonSafe(opt.value),
+          customLabel: opt.customLabel || '',
+          plannerValue: null,
+          modelId: opt.modelId || '',
+        });
+      }
+      for (const fam of famMap.values()) familiesOut.push(fam);
+    }
+
+    let selected = null;
+    const convModelVal = convPick && typeof convPick === 'object' ? convPick.model : convPick;
+    const convCustomLbl = convPick && typeof convPick === 'object' ? String(convPick.customLabel || '') : '';
+    const convOrchVal = convOrch && typeof convOrch === 'object' ? convOrch.model : convOrch;
+
+    if (convModelVal !== undefined && convModelVal !== null) {
+      for (const fam of familiesOut) {
+        for (const v of fam.variants) {
+          const valMatch = v.value === convModelVal || String(v.value) === String(convModelVal);
+          const customOk = !convCustomLbl || v.customLabel === convCustomLbl || v.label === convCustomLbl;
+          const plannerOk =
+            !fam.isOrchestrator ||
+            convOrchVal === undefined ||
+            convOrchVal === null ||
+            convOrchVal === 0 ||
+            v.plannerValue === convOrchVal ||
+            String(v.plannerValue) === String(convOrchVal);
+          if (valMatch && customOk && plannerOk) {
+            selected = {
+              label: v.label,
+              baseName: fam.baseName,
+              effort: v.effort,
+              displayEffort: v.displayEffort,
+              value: v.value,
+              customLabel: v.customLabel,
+              modelId: v.modelId,
+              isOrchestrator: fam.isOrchestrator,
+              plannerValue: v.plannerValue,
+              plannerLabel: fam.isOrchestrator ? v.label : '',
+            };
+            break;
+          }
+        }
+        if (selected) break;
+      }
+    }
+
+    if (!selected) {
+      if (fallbackSelected) {
+        selected = fallbackSelected;
+      } else if (familiesOut.length > 0 && familiesOut[0].variants.length > 0) {
+        const f0 = familiesOut[0];
+        const v0 = f0.variants[0];
+        selected = {
+          label: v0.label,
+          baseName: f0.baseName,
+          effort: v0.effort,
+          displayEffort: v0.displayEffort,
+          value: v0.value,
+          customLabel: v0.customLabel,
+          modelId: v0.modelId,
+          isOrchestrator: f0.isOrchestrator,
+          plannerValue: v0.plannerValue,
+          plannerLabel: f0.isOrchestrator ? v0.label : '',
+        };
+      }
+    }
+
+    return {
+      ok: true,
+      cascadeId: cid || '',
+      selected,
+      families: familiesOut,
+    };
+  }
+
+  function listModels(payload = {}) {
+    const rawCid = typeof payload?.cascadeId === 'string' ? payload.cascadeId.trim() : '';
+    if (rawCid && !UUID_RE.test(rawCid)) {
+      return { ok: false, error: 'invalid_cascade_id' };
+    }
+    let { store } = locateHandles();
+    if (!store) ({ store } = locateHandles(true));
+    if (!store) return { ok: false, error: 'store_unavailable' };
+    return normalizeModelCatalog(store, rawCid);
+  }
+
+  function selectModel(payload = {}) {
+    const rawCid = typeof payload?.cascadeId === 'string' ? payload.cascadeId.trim() : '';
+    if (rawCid && !UUID_RE.test(rawCid)) {
+      return { ok: false, error: 'invalid_cascade_id' };
+    }
+    const targetModel = payload?.model;
+    const validTarget =
+      (typeof targetModel === 'number' && Number.isFinite(targetModel)) ||
+      (typeof targetModel === 'string' && targetModel.trim().length > 0 && targetModel.trim().length <= 128);
+    if (!validTarget) return { ok: false, error: 'invalid_model' };
+
+    const customLabel = typeof payload?.customLabel === 'string' ? payload.customLabel.trim().slice(0, 128) : '';
+    const hasPlanner =
+      payload?.plannerModel !== undefined && payload?.plannerModel !== null && payload?.plannerModel !== '';
+    const plannerTarget = payload?.plannerModel;
+    if (hasPlanner) {
+      const validPlanner =
+        (typeof plannerTarget === 'number' && Number.isFinite(plannerTarget)) ||
+        (typeof plannerTarget === 'string' && plannerTarget.trim().length > 0 && plannerTarget.trim().length <= 128);
+      if (!validPlanner) return { ok: false, error: 'invalid_planner_model' };
+    }
+
+    let { store } = locateHandles();
+    if (!store) ({ store } = locateHandles(true));
+    if (!store || typeof store.dispatch !== 'function') return { ok: false, error: 'store_unavailable' };
+
+    const st = safeCall(() => store.getState()) || {};
+    const api = safeCall(() => modelApi?.discoverModelSelectorApi?.()) || null;
+    const reduxOpts = readReduxModelOptions(st);
+    const allOpts = []
+      .concat(Array.isArray(api?.modelOptions) ? api.modelOptions : reduxOpts.modelOptions)
+      .concat(Array.isArray(api?.customModels) ? api.customModels : reduxOpts.customModels)
+      .filter((o) => o && !o.disabled);
+
+    const findMatch = (val, prefCustom) => {
+      if (prefCustom) {
+        const byCustom = allOpts.find(
+          (o) =>
+            (o.value === val || String(o.value) === String(val) || o.modelId === val) &&
+            (o.customLabel === prefCustom || o.label === prefCustom)
+        );
+        if (byCustom) return byCustom;
+      }
+      return allOpts.find((o) => o.value === val || String(o.value) === String(val) || o.modelId === val) || null;
+    };
+
+    const matched = findMatch(targetModel, customLabel);
+    if (!matched) return { ok: false, error: 'model_not_found' };
+
+    let matchedPlanner = null;
+    if (hasPlanner) {
+      const plannerPool = Array.isArray(api?.orchestratorPlanners)
+        ? api.orchestratorPlanners.filter((o) => o && !o.disabled)
+        : allOpts;
+      matchedPlanner =
+        plannerPool.find(
+          (o) => o.value === plannerTarget || String(o.value) === String(plannerTarget) || o.modelId === plannerTarget
+        ) || null;
+      if (!matchedPlanner) return { ok: false, error: 'model_not_found' };
+    }
+
+    const selCid =
+      typeof document !== 'undefined'
+        ? document.querySelector('[data-testid="conversation-row-sidebar"][data-selected="true"]')?.getAttribute('data-cascade-id')
+        : '';
+    const isActivePane =
+      !rawCid ||
+      (typeof window !== 'undefined' &&
+        ((typeof window.location?.pathname === 'string' && window.location.pathname.includes(rawCid)) ||
+          window.__ag_watched_cascade_id === rawCid ||
+          selCid === rawCid));
+
+    let appliedViaNative = false;
+    if (isActivePane && api && typeof modelApi?.applyModelSelectionOption === 'function') {
+      try {
+        modelApi.applyModelSelectionOption(api, matched, matchedPlanner);
+        appliedViaNative = true;
+      } catch {}
+    }
+
+    if (!appliedViaNative || api?.isReduxFallback || rawCid) {
+      if (matchedPlanner) {
+        store.dispatch({
+          type: 'modelSelection/orchestratorModelPicked',
+          payload: {
+            ...(rawCid ? { cascadeId: rawCid, conversationId: rawCid } : {}),
+            model: matchedPlanner.value,
+          },
+        });
+      }
+      store.dispatch({
+        type: 'modelSelection/modelPicked',
+        payload: {
+          ...(rawCid ? { cascadeId: rawCid, conversationId: rawCid } : {}),
+          model: matched.value,
+          ...(matched.customLabel || customLabel ? { customLabel: matched.customLabel || customLabel } : {}),
+        },
+      });
+    }
+
+    const catalog = normalizeModelCatalog(store, rawCid);
+    return {
+      ok: true,
+      cascadeId: rawCid || '',
+      selected: catalog.selected,
+      catalog,
+    };
+  }
+
   async function sendMessage(payload) {
     const cid = typeof payload?.cascadeId === 'string' ? payload.cascadeId.trim() : '';
     if (!UUID_RE.test(cid)) return { ok: false, error: 'invalid_cascade_id' };
     if (typeof payload?.text !== 'string') return { ok: false, error: 'invalid_text' };
     const text = payload.text;
-    if (!text.trim() || text.length > MAX_FIELD_CHARS) return { ok: false, error: 'invalid_text_length' };
+    const mediaRes = buildTapMediaObjects(payload?.media);
+    if (!mediaRes.ok) return { ok: false, error: mediaRes.error };
+    const mediaObjs = mediaRes.media;
+    if ((!text.trim() && mediaObjs.length === 0) || text.length > MAX_FIELD_CHARS) {
+      return { ok: false, error: 'invalid_text_length' };
+    }
 
     let { store, lsClient, prefStore } = locateHandles();
     if (!lsClient) {
@@ -964,9 +1384,10 @@ export function createRemoteTapModule(rt) {
     try {
       await lsClient.sendUserCascadeMessage({
         cascadeId: cid,
-        items: [{ chunk: { case: 'text', value: text } }],
+        items: text ? [{ chunk: { case: 'text', value: text } }] : [],
+        ...(mediaObjs.length ? { media: mediaObjs } : {}),
       });
-      return { ok: true, cascadeId: cid, globalPreset: globalPreset ?? null };
+      return { ok: true, cascadeId: cid, globalPreset: globalPreset ?? null, mediaCount: mediaObjs.length };
     } catch (err) {
       return { ok: false, error: String(err?.message || err || 'send_failed') };
     }
@@ -1106,6 +1527,8 @@ export function createRemoteTapModule(rt) {
     if (method === 'convo.approve') return approveInteraction(payload);
     if (method === 'convo.cancel') return cancelConversation(payload);
     if (method === 'convo.compact') return compactConversation(payload);
+    if (method === 'models.list') return listModels(payload);
+    if (method === 'models.select') return selectModel(payload);
     return { ok: false, error: 'disallowed_invoke_method' };
   }
 

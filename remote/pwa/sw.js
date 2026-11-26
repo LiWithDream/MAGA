@@ -1,4 +1,4 @@
-const CACHE_NAME = 'maga-remote-shell-v5';
+const CACHE_NAME = 'maga-remote-shell-v6';
 const SHELL_PATHS = ['/', '/index.html', '/app.js', '/styles.css', '/manifest.webmanifest'];
 const SHELL_SET = new Set(SHELL_PATHS);
 

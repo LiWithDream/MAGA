@@ -8,7 +8,8 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { NATIVE_PROJECTS_DIR, UUID_RE, readJsonOrFallback } from '../env.mjs';
+import { HOME, NATIVE_PROJECTS_DIR, UUID_RE, readJsonOrFallback } from '../env.mjs';
+import { parseConversationMetrics } from '../metrics-db.mjs';
 import {
   extractNativeProjectFolderUris,
   getAuthorizedProjectDirs,
@@ -302,7 +303,38 @@ export async function collectStudioOverview(params = {}, opts = {}) {
         : null,
     };
 
-    activeCascade = { cascadeId, opusGate, autoCompact };
+    let metrics = null;
+    try {
+      const convDir = opts.conversationsDir || path.join(HOME, '.gemini', 'antigravity', 'conversations');
+      const mRes = (opts.parseConversationMetrics || parseConversationMetrics)(cascadeId, convDir);
+      if (mRes?.hasData && mRes.metrics) {
+        const m = mRes.metrics;
+        metrics = {
+          ctxPct: Number(m.ctxPct || 0),
+          ctxRatioStr: String(m.ctxRatioStr || ''),
+          ctx: Number(m.ctx || 0),
+          ctxLimit: Number(m.ctxLimit || 0),
+          ctxLimitStr: String(m.ctxLimitStr || ''),
+          ctxClass: String(m.ctxClass || 'ag-ctx-ok'),
+          displayTps: Number(m.displayTps || 0),
+          useStream: Boolean(m.useStream),
+          ttft: Number(m.ttft || 0),
+          totDur: Number(m.totDur || 0),
+          outTok: Number(m.outTok || 0),
+          lastCacheRate: Number(m.lastCacheRate || 0),
+          sessionCacheRate: Number(m.sessionCacheRate || 0),
+          turns: Number(mRes.stats?.turns || 0),
+          calls: Number(mRes.stats?.calls || 0),
+        };
+      }
+    } catch {}
+
+    activeCascade = {
+      cascadeId,
+      opusGate,
+      autoCompact,
+      ...(metrics ? { metrics } : {}),
+    };
   }
 
   return {

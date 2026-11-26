@@ -1102,6 +1102,14 @@ export async function initRemoteBridge({ env = process.env, gatewayScript } = {}
   return bridgeState;
 }
 
+export function triggerRemoteGatewayReconcile() {
+  if (bridgeState && !bridgeState.shuttingDown) {
+    reconcileGatewayProcess(bridgeState);
+    return true;
+  }
+  return false;
+}
+
 export function shutdownRemoteBridgeSync() {
   if (!bridgeState) return;
   bridgeState.shuttingDown = true;

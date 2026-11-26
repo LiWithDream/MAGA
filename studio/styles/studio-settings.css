@@ -1033,3 +1033,159 @@ html[data-agy-motion="off"] #agy-maga-settings-trigger svg {
   animation: none !important;
   transition: none !important;
 }
+
+/* L2 Remote Control Settings */
+.agy-ms-remote-hdr {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 11px 14px;
+}
+.agy-ms-remote-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 600;
+  background: color-mix(in srgb, var(--ms-muted) 14%, transparent);
+  color: var(--ms-muted);
+}
+.agy-ms-remote-pill[data-tone="ok"] {
+  background: rgba(22, 163, 74, 0.14);
+  color: #16a34a;
+}
+.agy-ms-remote-pill[data-tone="warn"] {
+  background: rgba(217, 119, 6, 0.14);
+  color: #d97706;
+}
+.agy-ms-remote-pill[data-tone="err"] {
+  background: color-mix(in srgb, var(--ms-danger) 14%, transparent);
+  color: var(--ms-danger);
+}
+.agy-ms-remote-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.agy-ms-remote-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  padding: 0 14px 10px;
+  font-size: 11.5px;
+  color: var(--ms-muted);
+}
+.agy-ms-remote-diag-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--ms-border);
+}
+.agy-ms-remote-diag-item {
+  font-size: 11.5px;
+  line-height: 1.4;
+  padding: 6px 9px;
+  border-radius: 7px;
+  background: var(--ms-subtle);
+  color: var(--ms-fg);
+}
+.agy-ms-remote-diag-item[data-level="error"] {
+  background: color-mix(in srgb, var(--ms-danger) 11%, transparent);
+  color: var(--ms-danger);
+}
+.agy-ms-remote-diag-item[data-level="warn"] {
+  background: rgba(217, 119, 6, 0.12);
+}
+.agy-ms-remote-tunnel-hint {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--ms-subtle);
+  border: 1px solid var(--ms-border);
+  font-size: 11.5px;
+  color: var(--ms-muted);
+}
+.agy-ms-remote-tunnel-hint code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--ms-fg);
+}
+.agy-ms-remote-qr-stage {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 14px;
+  border-top: 1px solid var(--ms-border);
+  background: var(--ms-subtle);
+}
+.agy-ms-remote-qr-box {
+  padding: 10px;
+  border-radius: 12px;
+  background: #FFFFFF;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.08);
+  line-height: 0;
+}
+.agy-ms-remote-qr-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: var(--ms-fg);
+}
+.agy-ms-remote-qr-url {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 10px;
+  border-radius: 7px;
+  background: var(--ms-surface);
+  border: 1px solid var(--ms-border);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--ms-muted);
+  word-break: break-all;
+  text-align: center;
+}
+.agy-ms-remote-dev-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 14px;
+}
+.agy-ms-remote-dev-row + .agy-ms-remote-dev-row {
+  border-top: 1px solid var(--ms-border);
+}
+.agy-ms-remote-dev-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--ms-muted);
+}
+.agy-ms-remote-role-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 5px;
+  font-size: 10.5px;
+  font-weight: 600;
+  background: color-mix(in srgb, var(--ms-accent) 12%, transparent);
+  color: var(--ms-accent);
+}
+.agy-ms-remote-dev-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}

@@ -801,6 +801,17 @@ export async function handleProjectRpcRequest(rawPayload, callerEntry = null) {
       return { reqId, result: await handleGitWorkflowRpc(action, payload) };
     }
     if (
+      action === 'getRemoteControlStatus' ||
+      action === 'saveRemoteControlConfig' ||
+      action === 'createRemotePairing' ||
+      action === 'revokeRemoteDevice' ||
+      action === 'updateRemoteDeviceRole' ||
+      action === 'runRemoteDiagnostics'
+    ) {
+      const { handleRemoteSettingsRpc } = await import('./remote/settings-rpc.mjs');
+      return { reqId, result: await handleRemoteSettingsRpc(action, payload) };
+    }
+    if (
       action === 'getProjectSuggestionsConfig' ||
       action === 'saveProjectSuggestionsConfig' ||
       action === 'testProjectSuggestionsConfig' ||

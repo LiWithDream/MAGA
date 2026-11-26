@@ -330,8 +330,15 @@ test('Static security & MAGA architecture invariants for remote control modules'
     assert.ok(src.split('\n').length < 2000, `${path.relative(REPO, filePath)} must stay < 2000 lines`);
   }
 
-  for (const rel of ['core/daemon/remote-bridge.mjs', 'studio/remote-cli.mjs']) {
-    const abs = path.join(REPO, rel);
+  const bridgeSubmodules = collectFiles(path.join(REPO, 'core', 'daemon', 'remote'), { exts: ['.mjs'] });
+  assert.ok(bridgeSubmodules.length >= 2, 'expected core/daemon/remote/* submodules');
+
+  for (const abs of [
+    path.join(REPO, 'core', 'daemon', 'remote-bridge.mjs'),
+    path.join(REPO, 'studio', 'remote-cli.mjs'),
+    ...bridgeSubmodules,
+  ]) {
+    const rel = path.relative(REPO, abs);
     execFileSync(process.execPath, ['--check', abs], { stdio: 'pipe' });
     const src = fs.readFileSync(abs, 'utf8');
     assert.ok(src.split('\n').length < 2000, `${rel} must stay < 2000 lines`);

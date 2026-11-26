@@ -2035,6 +2035,8 @@ test('Stage 4: daemon, studio-settings & subagent-footer maintain thin orchestra
     'core/daemon/cdp-bootstrap.mjs',
     'core/daemon/cdp-attach.mjs',
     'core/daemon/remote-bridge.mjs',
+    'core/daemon/remote/disk-fallback.mjs',
+    'core/daemon/remote/gateway-supervisor.mjs',
     'core/daemon/sync-loop.mjs',
     'studio/modules/settings/constants.mjs',
     'studio/modules/settings/events.mjs',

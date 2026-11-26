@@ -6,8 +6,9 @@
 import { signChallengePayload } from './crypto-store.mjs';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const PING_INTERVAL_MS = 20_000;
-const STALE_TIMEOUT_MS = 50_000;
+const PING_INTERVAL_MS = 18_000;
+const STALE_TIMEOUT_MS = 65_000;
+const RESUME_PROBE_MS = 3_500;
 const BASE_BACKOFF_MS = 800;
 const MAX_BACKOFF_MS = 15_000;
 
@@ -72,42 +73,16 @@ function normalizeDelta(raw) {
   };
 }
 
-function loadCursor(deviceId) {
-  if (!deviceId || typeof localStorage === 'undefined') return { lastSeq: 0, lastEpoch: '' };
-  try {
-    const raw = localStorage.getItem(`maga_remote_cursor:${deviceId}`);
-    if (!raw) return { lastSeq: 0, lastEpoch: '' };
-    const parsed = JSON.parse(raw);
-    const seqNum = Number(parsed?.lastSeq);
-    const epochStr = typeof parsed?.lastEpoch === 'string' ? parsed.lastEpoch : '';
-    return {
-      lastSeq: Number.isInteger(seqNum) && seqNum >= 0 ? seqNum : 0,
-      lastEpoch: epochStr,
-    };
-  } catch {
-    return { lastSeq: 0, lastEpoch: '' };
-  }
-}
-
-function saveCursor(deviceId, lastSeq, lastEpoch) {
-  if (!deviceId || typeof localStorage === 'undefined') return;
-  try {
-    localStorage.setItem(
-      `maga_remote_cursor:${deviceId}`,
-      JSON.stringify({ lastSeq: Number(lastSeq) || 0, lastEpoch: String(lastEpoch || '') })
-    );
-  } catch {}
-}
-
 export function createRemoteWsClient(identity, handlers = {}) {
-  const initialCursor = loadCursor(identity?.deviceId);
   let ws = null;
+  let connectInFlight = false;
   let disposed = false;
   let reconnectTimer = null;
   let pingTimer = null;
+  let resumeProbeTimer = null;
   let attempt = 0;
-  let lastSeq = initialCursor.lastSeq;
-  let lastEpoch = initialCursor.lastEpoch;
+  let lastSeq = 0;
+  let lastEpoch = '';
   let lastActivityAt = 0;
   let connected = false;
   let desiredWatchId = null;
@@ -121,6 +96,13 @@ export function createRemoteWsClient(identity, handlers = {}) {
     } catch {}
   };
 
+  const clearResumeProbeTimer = () => {
+    if (resumeProbeTimer) {
+      clearTimeout(resumeProbeTimer);
+      resumeProbeTimer = null;
+    }
+  };
+
   const clearTimers = () => {
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
@@ -130,6 +112,7 @@ export function createRemoteWsClient(identity, handlers = {}) {
       clearInterval(pingTimer);
       pingTimer = null;
     }
+    clearResumeProbeTimer();
   };
 
   const rejectAllPending = (reason) => {
@@ -220,6 +203,7 @@ export function createRemoteWsClient(identity, handlers = {}) {
 
   const handleMessage = (rawData) => {
     lastActivityAt = Date.now();
+    clearResumeProbeTimer();
     let msg = null;
     try {
       msg = JSON.parse(String(rawData || ''));
@@ -258,7 +242,6 @@ export function createRemoteWsClient(identity, handlers = {}) {
       if (Number.isFinite(Number(msg.seq))) {
         lastSeq = Number(msg.seq);
       }
-      saveCursor(identity?.deviceId, lastSeq, lastEpoch);
       connected = true;
       attempt = 0;
       startHeartbeat();
@@ -275,7 +258,6 @@ export function createRemoteWsClient(identity, handlers = {}) {
       if (msgEpoch && lastEpoch && msgEpoch !== lastEpoch) {
         lastEpoch = msgEpoch;
         lastSeq = Number.isFinite(Number(msg.seq)) ? Number(msg.seq) : 0;
-        saveCursor(identity?.deviceId, lastSeq, lastEpoch);
         if (connected) {
           refreshList(false).catch(() => {});
         }
@@ -294,6 +276,9 @@ export function createRemoteWsClient(identity, handlers = {}) {
           syncWatchOnServer();
         }
       }
+      if (msg.health && typeof msg.health === 'object') {
+        handlers.onHealth?.(msg.health);
+      }
       const items = Array.isArray(msg.items) ? msg.items : [];
       for (const item of items) {
         const norm = normalizeDelta(item);
@@ -302,7 +287,6 @@ export function createRemoteWsClient(identity, handlers = {}) {
           handlers.onDelta?.(norm);
         }
       }
-      saveCursor(identity?.deviceId, lastSeq, lastEpoch);
       return;
     }
 
@@ -319,7 +303,6 @@ export function createRemoteWsClient(identity, handlers = {}) {
         if (norm.seq !== null && norm.seq > lastSeq && (!msgEpoch || msgEpoch === lastEpoch)) {
           lastSeq = norm.seq;
         }
-        saveCursor(identity?.deviceId, lastSeq, lastEpoch);
         handlers.onDelta?.(norm);
       }
       return;
@@ -347,136 +330,164 @@ export function createRemoteWsClient(identity, handlers = {}) {
   };
 
   async function connect() {
-    if (disposed) return;
+    if (disposed || connectInFlight) return;
     if (ws && (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN)) {
       return;
     }
+    connectInFlight = true;
     connected = false;
     emitStatus(attempt === 0 ? 'connecting' : 'reconnecting', '');
 
-    let challenge = null;
     try {
-      const res = await fetch('/api/auth/challenge', {
-        method: 'GET',
-        cache: 'no-store',
-        credentials: 'same-origin',
-      });
-      const data = await res.json().catch(() => null);
-      if (!res.ok || !data?.nonce) {
-        if (res.status === 401 || res.status === 403) {
-          emitStatus('error', data?.error || `鉴权拒绝 (HTTP ${res.status})`);
-          scheduleReconnect(8_000, '等待认证恢复');
-          return;
+      let challenge = null;
+      try {
+        const res = await fetch('/api/auth/challenge', {
+          method: 'GET',
+          cache: 'no-store',
+          credentials: 'same-origin',
+        });
+        const data = await res.json().catch(() => null);
+        if (!res.ok || !data?.nonce) {
+          if (res.status === 401 || res.status === 403) {
+            emitStatus('error', data?.error || `鉴权拒绝 (HTTP ${res.status})`);
+            scheduleReconnect(8_000, '等待认证恢复');
+            return;
+          }
+          if (res.status === 429) {
+            emitStatus('error', '鉴权失败次数过多，已暂时锁定');
+            scheduleReconnect(20_000, '已限流，20s 后重试');
+            return;
+          }
+          throw new Error(data?.error || `获取 challenge 失败 (HTTP ${res.status})`);
         }
-        if (res.status === 429) {
-          emitStatus('error', '鉴权失败次数过多，已暂时锁定');
-          scheduleReconnect(20_000, '已限流，20s 后重试');
-          return;
-        }
-        throw new Error(data?.error || `获取 challenge 失败 (HTTP ${res.status})`);
-      }
-      challenge = data;
-    } catch (err) {
-      handlers.onError?.(err);
-      scheduleReconnect(null, String(err?.message || '网络不可达'));
-      return;
-    }
-
-    let signature = '';
-    const helloSeq = lastEpoch ? lastSeq : 0;
-    const helloEpoch = lastEpoch || '';
-    try {
-      signature = await signChallengePayload({
-        privateKey: identity.privateKey,
-        nonce: challenge.nonce,
-        deviceId: identity.deviceId,
-        lastSeq: helloSeq,
-        lastEpoch: helloEpoch,
-      });
-    } catch (err) {
-      disposed = true;
-      emitStatus('revoked', String(err?.message || '设备签名失败'));
-      return;
-    }
-
-    if (disposed) return;
-
-    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const socket = new WebSocket(`${proto}//${window.location.host}/ws`);
-    ws = socket;
-
-    socket.addEventListener('open', () => {
-      if (ws !== socket || disposed) return;
-      lastActivityAt = Date.now();
-      sendJson({
-        type: 'hello',
-        protocol: 'maga-remote/1',
-        deviceId: identity.deviceId,
-        nonce: challenge.nonce,
-        signature,
-        lastSeq: helloSeq,
-        lastEpoch: helloEpoch,
-      });
-    });
-
-    socket.addEventListener('message', (ev) => {
-      if (ws !== socket || disposed) return;
-      handleMessage(ev.data);
-    });
-
-    socket.addEventListener('close', (ev) => {
-      if (ws !== socket) return;
-      ws = null;
-      connected = false;
-      activeWatchId = null;
-      if (pingTimer) {
-        clearInterval(pingTimer);
-        pingTimer = null;
-      }
-      rejectAllPending('connection_closed');
-      if (disposed) return;
-
-      const reason = String(ev.reason || '');
-      const isTimeoutOrNonce = /timeout|nonce/i.test(reason);
-      if (
-        (ev.code === 4001 && !isTimeoutOrNonce) ||
-        ev.code === 4003 ||
-        ev.code === 4401 ||
-        ev.code === 4403 ||
-        /revoked|unknown_device|fingerprint/i.test(reason)
-      ) {
-        disposed = true;
-        const msg =
-          ev.code === 4003 || reason === 'device_role_demoted'
-            ? '设备权限已降级，请重新配对或刷新权限'
-            : reason === 'device_revoked' || ev.code === 4001
-              ? '设备已被吊销，请重新配对'
-              : reason || '设备已吊销或网关身份已变更';
-        emitStatus('revoked', msg);
+        challenge = data;
+      } catch (err) {
+        handlers.onError?.(err);
+        scheduleReconnect(null, String(err?.message || '网络不可达'));
         return;
       }
-      scheduleReconnect(null, reason || `连接已断开 (${ev.code || 1006})`);
-    });
 
-    socket.addEventListener('error', () => {
-      // close event handles reconnect transition
-    });
+      let signature = '';
+      const helloSeq = lastEpoch ? lastSeq : 0;
+      const helloEpoch = lastEpoch || '';
+      try {
+        signature = await signChallengePayload({
+          privateKey: identity.privateKey,
+          nonce: challenge.nonce,
+          deviceId: identity.deviceId,
+          lastSeq: helloSeq,
+          lastEpoch: helloEpoch,
+        });
+      } catch (err) {
+        disposed = true;
+        emitStatus('revoked', String(err?.message || '设备签名失败'));
+        return;
+      }
+
+      if (disposed) return;
+
+      const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const socket = new WebSocket(`${proto}//${window.location.host}/ws`);
+      ws = socket;
+
+      socket.addEventListener('open', () => {
+        if (ws !== socket || disposed) return;
+        lastActivityAt = Date.now();
+        sendJson({
+          type: 'hello',
+          protocol: 'maga-remote/1',
+          deviceId: identity.deviceId,
+          nonce: challenge.nonce,
+          signature,
+          lastSeq: helloSeq,
+          lastEpoch: helloEpoch,
+        });
+      });
+
+      socket.addEventListener('message', (ev) => {
+        if (ws !== socket || disposed) return;
+        handleMessage(ev.data);
+      });
+
+      socket.addEventListener('close', (ev) => {
+        if (ws !== socket) return;
+        ws = null;
+        connected = false;
+        activeWatchId = null;
+        if (pingTimer) {
+          clearInterval(pingTimer);
+          pingTimer = null;
+        }
+        clearResumeProbeTimer();
+        rejectAllPending('connection_closed');
+        if (disposed) return;
+
+        const reason = String(ev.reason || '');
+        const isTimeoutOrNonce = /timeout|nonce/i.test(reason);
+        if (
+          (ev.code === 4001 && !isTimeoutOrNonce) ||
+          ev.code === 4003 ||
+          ev.code === 4401 ||
+          ev.code === 4403 ||
+          /revoked|unknown_device|fingerprint/i.test(reason)
+        ) {
+          disposed = true;
+          const msg =
+            ev.code === 4003 || reason === 'device_role_demoted'
+              ? '设备权限已降级，请重新配对或刷新权限'
+              : reason === 'device_revoked' || ev.code === 4001
+                ? '设备已被吊销，请重新配对'
+                : reason || '设备已吊销或网关身份已变更';
+          emitStatus('revoked', msg);
+          return;
+        }
+        if (reason === 'resume_probe_timeout') {
+          attempt = 0;
+          scheduleReconnect(200, '网络恢复中');
+          return;
+        }
+        scheduleReconnect(null, reason || `连接已断开 (${ev.code || 1006})`);
+      });
+
+      socket.addEventListener('error', () => {
+        // close event handles reconnect transition
+      });
+    } finally {
+      connectInFlight = false;
+    }
   }
 
   const onVisibilityOrOnline = () => {
     if (disposed) return;
     if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
-    if (!ws || ws.readyState === WebSocket.CLOSED) {
+    if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
+      if (connectInFlight) return;
+      attempt = 0;
       if (reconnectTimer) {
         clearTimeout(reconnectTimer);
         reconnectTimer = null;
       }
       connect();
+      return;
+    }
+    if (ws.readyState === WebSocket.OPEN && connected) {
+      sendJson({ type: 'ping', ts: Date.now() });
+      if (!resumeProbeTimer) {
+        resumeProbeTimer = setTimeout(() => {
+          resumeProbeTimer = null;
+          if (disposed || !ws || ws.readyState !== WebSocket.OPEN) return;
+          try {
+            ws.close(4000, 'resume_probe_timeout');
+          } catch {}
+        }, RESUME_PROBE_MS);
+      }
     }
   };
 
   if (typeof window !== 'undefined') {
     window.addEventListener('online', onVisibilityOrOnline);
+    window.addEventListener('pageshow', onVisibilityOrOnline);
+    window.addEventListener('focus', onVisibilityOrOnline);
   }
   if (typeof document !== 'undefined') {
     document.addEventListener('visibilitychange', onVisibilityOrOnline);
@@ -681,6 +692,8 @@ export function createRemoteWsClient(identity, handlers = {}) {
     rejectAllPending('disposed');
     if (typeof window !== 'undefined') {
       window.removeEventListener('online', onVisibilityOrOnline);
+      window.removeEventListener('pageshow', onVisibilityOrOnline);
+      window.removeEventListener('focus', onVisibilityOrOnline);
     }
     if (typeof document !== 'undefined') {
       document.removeEventListener('visibilitychange', onVisibilityOrOnline);

@@ -93,27 +93,57 @@ function pickPrimaryHostEntry() {
   return best;
 }
 
-async function resolvePrimaryHostEntry() {
+function hasFreshRemoteCapCache(entry, nowTs, maxCacheAgeMs) {
+  return Boolean(
+    maxCacheAgeMs > 0 &&
+      entry?._remoteCap &&
+      entry._remoteCapAt &&
+      nowTs - entry._remoteCapAt < maxCacheAgeMs &&
+      entry._remoteCap.capabilities?.reduxSummaries
+  );
+}
+
+async function resolvePrimaryHostEntry({ maxCacheAgeMs = 15_000 } = {}) {
   const hosts = getConfirmedHostEntries();
   if (hosts.length === 0) return null;
+  const nowTs = Date.now();
   if (hosts.length === 1) {
     const only = hosts[0];
+    if (hasFreshRemoteCapCache(only, nowTs, maxCacheAgeMs)) {
+      return only;
+    }
     const r = await evalOnHost(only, 'window.__agRemoteTap ? window.__agRemoteTap.getCapabilities() : null', 2500);
     if (r.ok && r.value && typeof r.value === 'object') {
       only._remoteCap = r.value;
       only._remoteCapScore = scoreHostCapabilities(r.value);
+      only._remoteCapAt = r.value.capabilities?.reduxSummaries ? Date.now() : 0;
+    } else {
+      only._remoteCap = null;
+      only._remoteCapAt = 0;
+      only._remoteCapScore = -1;
     }
     return only;
   }
   const results = await Promise.all(
     hosts.map(async (entry) => {
+      if (hasFreshRemoteCapCache(entry, nowTs, maxCacheAgeMs)) {
+        return {
+          entry,
+          score: typeof entry._remoteCapScore === 'number' ? entry._remoteCapScore : scoreHostCapabilities(entry._remoteCap),
+        };
+      }
       const r = await evalOnHost(entry, 'window.__agRemoteTap ? window.__agRemoteTap.getCapabilities() : null', 2500);
       const cap = r.ok && r.value && typeof r.value === 'object' ? r.value : null;
       if (cap) {
         entry._remoteCap = cap;
         entry._remoteCapScore = scoreHostCapabilities(cap);
+        entry._remoteCapAt = cap.capabilities?.reduxSummaries ? Date.now() : 0;
+      } else {
+        entry._remoteCap = null;
+        entry._remoteCapAt = 0;
+        entry._remoteCapScore = -1;
       }
-      return { entry, score: cap ? scoreHostCapabilities(cap) : -1 };
+      return { entry, score: cap ? entry._remoteCapScore : -1 };
     })
   );
   results.sort((a, b) => b.score - a.score);
@@ -200,9 +230,9 @@ function verifyUdsWriteToken(provided, expected) {
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
-export async function probeRemoteCapabilities() {
+export async function probeRemoteCapabilities({ bypassCache = false } = {}) {
   const hosts = getConfirmedHostEntries();
-  const primary = await resolvePrimaryHostEntry();
+  const primary = await resolvePrimaryHostEntry({ maxCacheAgeMs: bypassCache ? 0 : 4000 });
   const diskPreset = readDiskGlobalPreset();
   const state = bridgeState;
 
@@ -230,13 +260,7 @@ export async function probeRemoteCapabilities() {
 
   if (!primary) return base;
 
-  const capRes = await evalOnHost(primary, 'window.__agRemoteTap ? window.__agRemoteTap.getCapabilities() : null', 2500);
-  const liveCap = capRes.ok && capRes.value && typeof capRes.value === 'object' ? capRes.value : null;
-  if (liveCap) {
-    primary._remoteCap = liveCap;
-    primary._remoteCapScore = scoreHostCapabilities(liveCap);
-  }
-  const tapCap = liveCap || primary._remoteCap || null;
+  const tapCap = primary._remoteCap || null;
   if (!tapCap || typeof tapCap !== 'object') return base;
 
   return {
@@ -283,27 +307,32 @@ function broadcastTapEvent(kind, data) {
 
 async function applyTapStateToHost(entry, active, skipWatchCid = null) {
   if (!entry?.hostConfirmed || entry.type !== 'page' || !entry.rpcToken) return false;
-  if (active) {
-    const r = await evalOnHost(
-      entry,
-      `window.__agRemoteTap ? window.__agRemoteTap.enable(${JSON.stringify({ token: entry.rpcToken, throttleMs: 150 })}) : { ok: false }`,
-      3000
-    );
-    if (!r.ok || !r.value?.ok) return false;
-    if (bridgeState) {
-      for (const cid of bridgeState.watchedStreams.keys()) {
-        if (skipWatchCid && cid === skipWatchCid) continue;
-        await evalOnHost(
-          entry,
-          `window.__agRemoteTap ? window.__agRemoteTap.watch(${JSON.stringify(cid)}) : { ok: false }`,
-          3000
-        );
+  entry._remoteCapAt = 0;
+  try {
+    if (active) {
+      const r = await evalOnHost(
+        entry,
+        `window.__agRemoteTap ? window.__agRemoteTap.enable(${JSON.stringify({ token: entry.rpcToken, throttleMs: 150 })}) : { ok: false }`,
+        3000
+      );
+      if (!r.ok || !r.value?.ok) return false;
+      if (bridgeState) {
+        for (const cid of bridgeState.watchedStreams.keys()) {
+          if (skipWatchCid && cid === skipWatchCid) continue;
+          await evalOnHost(
+            entry,
+            `window.__agRemoteTap ? window.__agRemoteTap.watch(${JSON.stringify(cid)}) : { ok: false }`,
+            3000
+          );
+        }
       }
+      return true;
     }
+    await evalOnHost(entry, 'window.__agRemoteTap ? window.__agRemoteTap.disable() : { ok: true }', 2500);
     return true;
+  } finally {
+    entry._remoteCapAt = 0;
   }
-  await evalOnHost(entry, 'window.__agRemoteTap ? window.__agRemoteTap.disable() : { ok: true }', 2500);
-  return true;
 }
 
 async function setTapActive(active, { skipWatchCid = null } = {}) {
@@ -886,7 +915,7 @@ async function dispatchUdsRpc(client, req) {
 
   try {
     if (method === 'bridge.health') {
-      const res = await probeRemoteCapabilities();
+      const res = await probeRemoteCapabilities({ bypassCache: Boolean(params?.fresh) });
       reply(true, res, null);
     } else if (method === 'tap.setActive') {
       const res = await setTapActive(Boolean(params.active));
@@ -1024,6 +1053,13 @@ function handleTapBindingEvent(parsed) {
   const kind = parsed.kind;
   if (kind !== 'summaries' && kind !== 'stream' && kind !== 'host_status') return;
   let data = parsed.data && typeof parsed.data === 'object' ? parsed.data : {};
+  if (kind === 'host_status' || (kind === 'summaries' && data.globalPreset !== undefined)) {
+    for (const entry of getConfirmedHostEntries()) {
+      if (kind === 'host_status' || entry._remoteCap?.globalPreset !== data.globalPreset) {
+        entry._remoteCapAt = 0;
+      }
+    }
+  }
   if (kind === 'summaries' && Array.isArray(data.changed)) {
     data = {
       ...data,

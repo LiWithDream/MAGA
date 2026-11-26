@@ -135,9 +135,13 @@ export async function createGatewayServer(options = {}) {
       autoConnect: true,
     });
 
-  async function queryBridgeHealth() {
+  async function queryBridgeHealth({ fresh = false } = {}) {
     try {
-      return await udsClient.request('bridge.health', {}, { timeoutMs: 1500 });
+      return await udsClient.request(
+        'bridge.health',
+        fresh ? { fresh: true } : {},
+        { timeoutMs: fresh ? 3000 : 1500 }
+      );
     } catch {
       return null;
     }
@@ -146,7 +150,7 @@ export async function createGatewayServer(options = {}) {
   const auth = createAuthManager({
     remoteDir: paths.remoteDir,
     audit,
-    getHealth: queryBridgeHealth,
+    getHealth: () => queryBridgeHealth({ fresh: true }),
     now,
   });
 
@@ -293,9 +297,8 @@ export async function createGatewayServer(options = {}) {
       res.statusCode = 200;
       res.setHeader('Content-Type', resolved.contentType);
       res.setHeader('Content-Length', resolved.size);
-      if (resolved.relPath === 'sw.js' || resolved.relPath === 'index.html') {
-        res.setHeader('Cache-Control', 'no-cache');
-      }
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+      res.setHeader('Pragma', 'no-cache');
       if (method === 'HEAD') {
         res.end();
         return;

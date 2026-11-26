@@ -1359,3 +1359,298 @@ test('Phase 2 Composer Footer V2: models.list/select, convo.send image attachmen
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   }
 });
+
+test('Remote stability & cache busting: versioned PWA assets, no-store headers, app-level ping alive, deltas.health & fresh page-load cursor', async () => {
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'maga-rem-stab-'));
+  const remoteDir = path.join(tmpRoot, 'remote');
+  const distOut = path.join(tmpRoot, 'dist');
+  const openSockets = [];
+  let gw = null;
+
+  try {
+    // 1. buildRemotePwa injects shared 8-hex buildHash into index.html & sw.js
+    const buildMod = await import(pathToFileURL(path.join(REPO, 'studio', 'build.mjs')).href);
+    const built = await buildMod.buildRemotePwa({ outDir: distOut, allowPrebuilt: false });
+    assert.equal(built.ok, true);
+    assert.match(built.buildHash, /^[0-9a-f]{8}$/);
+    const builtHtml = fs.readFileSync(path.join(distOut, 'index.html'), 'utf8');
+    const builtSw = fs.readFileSync(path.join(distOut, 'sw.js'), 'utf8');
+    assert.ok(builtHtml.includes(`/styles.css?v=${built.buildHash}`), 'index.html must version styles.css');
+    assert.ok(builtHtml.includes(`/app.js?v=${built.buildHash}`), 'index.html must version app.js');
+    assert.ok(builtSw.includes(`maga-remote-shell-${built.buildHash}`), 'sw.js CACHE_NAME must match buildHash');
+    assert.ok(
+      builtSw.includes("const PRECACHE_PATHS = ['/', '/index.html', '/app.js', '/styles.css', '/manifest.webmanifest'];"),
+      'sw.js must precache offline shell CSS/JS'
+    );
+
+    const appSrc = fs.readFileSync(path.join(PWA_DIR, 'src', 'app.mjs'), 'utf8');
+    const ccMatch = appSrc.match(/addEventListener\('controllerchange',[\s\S]{0,400}/);
+    assert.ok(ccMatch, 'app.mjs must register controllerchange listener');
+    for (const guardKey of ['state.pairingCode', 'state.pairingBusy', 'state.sendBusy', 'state.draftText', 'state.draftMedia']) {
+      assert.ok(ccMatch[0].includes(guardKey), `controllerchange must guard ${guardKey}`);
+    }
+
+    // 2. Gateway sets anti-cache headers on all static assets, resets ping timeout on app-level ping, uses fresh probe on pairing, and includes health in deltas replay
+    const tapListeners = new Set();
+    const bridgeHealthParams = [];
+    const mockUds = {
+      onTap(fn) {
+        tapListeners.add(fn);
+        return () => tapListeners.delete(fn);
+      },
+      onConnect() {
+        return () => {};
+      },
+      async request(method, params) {
+        if (method === 'bridge.health') {
+          bridgeHealthParams.push(params || {});
+          return { ok: true, hostAttached: true, globalPreset: 2, capabilities: { reduxSummaries: true, sendMessage: true } };
+        }
+        if (method === 'convo.list') {
+          return { source: 'cdp', globalPreset: 2, conversations: [{ id: '11111111-1111-4111-8111-111111111111', title: 'Live' }] };
+        }
+        return { ok: true };
+      },
+      close() {},
+    };
+
+    gw = await serverMod.createGatewayServer({
+      remoteDir,
+      pwaDistDir: distOut,
+      udsClient: mockUds,
+      port: 0,
+      writePid: false,
+      pingIntervalMs: 35,
+    });
+
+    for (const assetPath of ['/', '/app.js?v=' + built.buildHash, '/styles.css?v=' + built.buildHash, '/sw.js']) {
+      const res = await fetch(`http://127.0.0.1:${gw.port}${assetPath}`);
+      assert.equal(res.status, 200);
+      assert.equal(res.headers.get('cache-control'), 'no-store, no-cache, must-revalidate', `${assetPath} must prevent CDN/browser cache`);
+      assert.equal(res.headers.get('pragma'), 'no-cache');
+    }
+
+    const kp = await crypto.webcrypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign', 'verify']);
+    const publicKeyJwk = await crypto.webcrypto.subtle.exportKey('jwk', kp.publicKey);
+    configMod.writePairing(
+      { code: 'STAB01', expiresAt: Date.now() + 60_000, role: 'steer', gatewayFingerprint: gw.gatewayFingerprint },
+      { remoteDir }
+    );
+    const pairRes = await (
+      await fetch(`http://127.0.0.1:${gw.port}/api/pair/complete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: 'STAB01', deviceName: 'StabTest', publicKeyJwk, turboAcknowledged: true }),
+      })
+    ).json();
+    assert.equal(pairRes.ok, true);
+    assert.ok(
+      bridgeHealthParams.some((p) => p?.fresh === true),
+      'pairing must bypass bridge capability cache with fresh: true'
+    );
+
+    const readAppMsg = async (reader, expectType) => {
+      for (let i = 0; i < 16; i += 1) {
+        const frm = await reader.nextFrame();
+        if (frm.opcode !== 0x1) continue;
+        const parsed = JSON.parse(frm.payload.toString('utf8'));
+        if (expectType === 'pong') {
+          if (parsed?.type === 'pong') return parsed;
+          continue;
+        }
+        if (parsed?.type === 'ping' || parsed?.type === 'pong') continue;
+        if (!expectType || parsed?.type === expectType) return parsed;
+      }
+      throw new Error(`expected_frame_${expectType || 'app'}`);
+    };
+
+    const ch1 = await (await fetch(`http://127.0.0.1:${gw.port}/api/auth/challenge`)).json();
+    const sig1 = await signHello(kp.privateKey, { nonce: ch1.nonce, deviceId: pairRes.deviceId, lastSeq: 0, lastEpoch: '' });
+    const ws1 = await rawWsUpgrade(gw.port);
+    openSockets.push(ws1.socket);
+    const r1 = readServerFrames(ws1.socket, ws1.head);
+    ws1.socket.write(
+      makeMaskedClientFrame(
+        0x1,
+        Buffer.from(
+          JSON.stringify({
+            type: 'hello',
+            protocol: 'maga-remote/1',
+            deviceId: pairRes.deviceId,
+            nonce: ch1.nonce,
+            signature: sig1,
+            lastSeq: 0,
+            lastEpoch: '',
+          })
+        )
+      )
+    );
+    const welcomeMsg = await readAppMsg(r1, 'welcome');
+    assert.equal(welcomeMsg.type, 'welcome');
+    assert.equal(welcomeMsg.conversations.length, 1);
+
+    // Respond only with application-level JSON pong/ping over 5 server ping cycles (> 3x pingIntervalMs): must NOT close!
+    let closedEarly = false;
+    ws1.socket.once('close', () => { closedEarly = true; });
+    for (let i = 0; i < 5; i += 1) {
+      await new Promise((r) => setTimeout(r, 38));
+      ws1.socket.write(makeMaskedClientFrame(0x1, Buffer.from(JSON.stringify({ type: 'ping', ts: Date.now() }))));
+    }
+    assert.equal(closedEarly, false, 'app-level ping activity must reset server heartbeat watchdog');
+
+    // Non-numeric ping.ts coerces to finite numeric pong.ts
+    ws1.socket.write(makeMaskedClientFrame(0x1, Buffer.from(JSON.stringify({ type: 'ping', ts: 'bad-ts' }))));
+    const coercedPong = await readAppMsg(r1, 'pong');
+    assert.equal(typeof coercedPong.ts, 'number');
+    assert.equal(Number.isFinite(coercedPong.ts), true);
+
+    for (const fn of tapListeners) {
+      fn({ kind: 'summaries', ts: Date.now(), data: { source: 'cdp', upserts: [] } });
+      fn({ kind: 'summaries', ts: Date.now(), data: { source: 'cdp', upserts: [] } });
+    }
+    ws1.socket.destroy();
+
+    // Replay reconnect receives deltas.health
+    const ch2 = await (await fetch(`http://127.0.0.1:${gw.port}/api/auth/challenge`)).json();
+    const sig2 = await signHello(kp.privateKey, { nonce: ch2.nonce, deviceId: pairRes.deviceId, lastSeq: 1, lastEpoch: gw.epoch });
+    const ws2 = await rawWsUpgrade(gw.port);
+    openSockets.push(ws2.socket);
+    const r2 = readServerFrames(ws2.socket, ws2.head);
+    ws2.socket.write(
+      makeMaskedClientFrame(
+        0x1,
+        Buffer.from(
+          JSON.stringify({
+            type: 'hello',
+            protocol: 'maga-remote/1',
+            deviceId: pairRes.deviceId,
+            nonce: ch2.nonce,
+            signature: sig2,
+            lastSeq: 1,
+            lastEpoch: gw.epoch,
+          })
+        )
+      )
+    );
+    const deltasMsg = await readAppMsg(r2, 'deltas');
+    assert.equal(deltasMsg.type, 'deltas');
+    assert.equal(deltasMsg.items.map((x) => x.seq).at(-1), 2);
+    assert.equal(deltasMsg.health?.hostAttached, true);
+    ws2.socket.destroy();
+
+    // 3. ws-client.mjs: fresh page-load cursor, single in-flight connect() on wake burst, and connected=true before deltas.onHealth
+    const sentHellos = [];
+    const sentRequests = [];
+    let challengeFetchCount = 0;
+    let onHealthError = null;
+    const origWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+    const origDoc = Object.getOwnPropertyDescriptor(globalThis, 'document');
+    const origFetch = Object.getOwnPropertyDescriptor(globalThis, 'fetch');
+    const origWs = Object.getOwnPropertyDescriptor(globalThis, 'WebSocket');
+    const origLs = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+    const listeners = new Map();
+    const docListeners = new Map();
+    let activeClient = null;
+    try {
+      globalThis.localStorage = {
+        getItem: () => JSON.stringify({ lastSeq: 999, lastEpoch: 'stale-epoch-123' }),
+        setItem: () => {},
+      };
+      globalThis.window = {
+        location: { protocol: 'https:', host: 'agy.miracleli.com' },
+        addEventListener: (ev, fn) => listeners.set(ev, fn),
+        removeEventListener: (ev) => listeners.delete(ev),
+      };
+      globalThis.document = {
+        visibilityState: 'visible',
+        addEventListener: (ev, fn) => docListeners.set(ev, fn),
+        removeEventListener: (ev) => docListeners.delete(ev),
+      };
+      globalThis.fetch = async () => {
+        challengeFetchCount += 1;
+        await new Promise((r) => setTimeout(r, 25));
+        return { ok: true, json: async () => ({ nonce: `nonce-fresh-${challengeFetchCount}` }) };
+      };
+      class MockWs {
+        static OPEN = 1;
+        static CONNECTING = 0;
+        static CLOSING = 2;
+        static CLOSED = 3;
+        constructor() {
+          this.readyState = 1;
+          this._handlers = new Map();
+          setTimeout(() => this._handlers.get('open')?.(), 0);
+        }
+        addEventListener(ev, fn) {
+          this._handlers.set(ev, fn);
+        }
+        send(raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed.type === 'hello') {
+            sentHellos.push(parsed);
+            setTimeout(() => {
+              this._handlers.get('message')?.({
+                data: JSON.stringify({
+                  type: 'deltas',
+                  seq: 1,
+                  epoch: 'ep-mock-1',
+                  health: { hostAttached: true, globalPreset: 2 },
+                  items: [],
+                }),
+              });
+            }, 0);
+          } else if (parsed.type === 'req') {
+            sentRequests.push(parsed);
+          }
+        }
+        close() {
+          this.readyState = 3;
+        }
+      }
+      globalThis.WebSocket = MockWs;
+      const wsClientMod = await import(pathToFileURL(path.join(PWA_DIR, 'src', 'ws-client.mjs')).href);
+      activeClient = wsClientMod.createRemoteWsClient(
+        { deviceId: pairRes.deviceId, privateKey: kp.privateKey },
+        {
+          onHealth: () => {
+            activeClient?.refreshList(false).catch((err) => {
+              onHealthError = err;
+            });
+          },
+        }
+      );
+      // Simultaneous wake events while /api/auth/challenge fetch is in flight must coalesce into 1 connect attempt
+      listeners.get('focus')?.();
+      listeners.get('online')?.();
+      listeners.get('pageshow')?.();
+      docListeners.get('visibilitychange')?.();
+      await new Promise((r) => setTimeout(r, 80));
+      assert.equal(challengeFetchCount, 1, 'concurrent wake events must share single in-flight connect()');
+      assert.equal(sentHellos.length, 1);
+      assert.equal(sentHellos[0].lastSeq, 0, 'fresh page load must always send lastSeq=0 to get full welcome');
+      assert.equal(sentHellos[0].lastEpoch, '', 'fresh page load must always send empty lastEpoch');
+      assert.equal(onHealthError, null, 'deltas.onHealth must see connected=true without ws_not_connected');
+      assert.ok(
+        sentRequests.some((r) => r.method === 'convo.list'),
+        'deltas.onHealth refreshList call must dispatch convo.list RPC'
+      );
+    } finally {
+      activeClient?.dispose();
+      const restore = (k, desc) => {
+        if (desc) Object.defineProperty(globalThis, k, desc);
+        else delete globalThis[k];
+      };
+      restore('window', origWindow);
+      restore('document', origDoc);
+      restore('fetch', origFetch);
+      restore('WebSocket', origWs);
+      restore('localStorage', origLs);
+    }
+  } finally {
+    for (const s of openSockets) {
+      try { s.destroy(); } catch {}
+    }
+    await gw?.close().catch(() => {});
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});

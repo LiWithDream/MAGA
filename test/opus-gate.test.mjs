@@ -2219,9 +2219,17 @@ test('opus-gate-pill morphs to live reviewing state with Effort canvas & panel j
       assert.equal(pill.querySelector('.agy-opus-label')?.textContent, 'Opus 审查中');
       assert.equal(claudePaints >= 1, true);
 
+      // Multi-word title fallback without agentName
+      window.__ag_last_metrics.stats.children = [
+        { id: 'sub-title-1', title: 'Carbon Review Check', running: true, killed: false },
+      ];
+      runtime.sync();
+      assert.equal(pill.getAttribute('data-reviewer-model'), 'carbon');
+      assert.equal(pill.querySelector('.agy-opus-label')?.textContent, 'Carbon 审查中');
+
       // Stopping reviewer removes pill cleanly
       window.__ag_last_metrics.stats.children = [
-        { id: 'sub-opus-1', agentName: 'review-opus', running: false, killed: false },
+        { id: 'sub-title-1', title: 'Carbon Review Check', running: false, killed: false },
       ];
       runtime.sync();
       assert.equal(document.getElementById('agy-opus-gate-pill'), null);

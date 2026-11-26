@@ -234,7 +234,7 @@ export function createOpusGatePillRuntime({ studioPrefs, motionThemes, openSubag
       const ch = raw[i];
       if (!ch || !ch.id || ch.running !== true || ch.killed) continue;
       const rawName = String(ch.agentName || ch.title || '').trim();
-      if (!/(?:^|[-_])(?:opus|carbon|review)(?:[-_]|$)/i.test(rawName)) continue;
+      if (!/(?:^|[\s@_-])(?:opus|carbon|review)(?:[\s_-]|$)/i.test(rawName)) continue;
       const hint = `${rawName} ${ch.modelName || ''} ${ch.model || ''}`;
       let model = getDefaultReviewerModel();
       if (/carbon|gemini/i.test(hint)) model = 'carbon';

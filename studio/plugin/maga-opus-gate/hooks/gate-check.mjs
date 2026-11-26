@@ -1246,7 +1246,7 @@ export function evaluateHookEvent(payload = {}, opts = {}) {
           includeBranchDiff: true,
           mergeRepoDir: landing.repoDir,
           mergeSourceRef: landing.sourceRef,
-          includeUpstreamOnMain: landing.action === 'push',
+          includeUpstreamOnMain: landing.action === 'push' || landing.action === 'deploy',
         });
       if (!git.gitRoot && effectiveGitRoot) git.gitRoot = effectiveGitRoot;
 

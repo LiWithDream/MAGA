@@ -99,7 +99,7 @@ export function sanitizeQuotaState(raw) {
     updatedAt: Number(src.updatedAt) > 0 ? Math.floor(Number(src.updatedAt)) : Date.now(),
     tierName: typeof src.tierName === 'string' ? src.tierName.trim().slice(0, 64) : '',
     claude: sanitizePool(src.claude, true),
-    gemini: sanitizePool(src.gemini, false),
+    gemini: sanitizePool(src.gemini, true),
   };
 }
 
@@ -214,10 +214,46 @@ export function syncOpusGatePlugin({ remove = false } = {}, opts = {}) {
 export function getOpusGateStatus(payload = {}, opts = {}) {
   const cid = typeof payload?.cascadeId === 'string' ? payload.cascadeId.trim() : '';
   const now = Number(opts.now) > 0 ? Number(opts.now) : Date.now();
+  const prefs = opts.studioPrefs || loadStudioPrefs(opts);
   const pluginDir = getPluginTargetDir(opts);
   const pluginInstalled = isOpusGatePluginInstalled(opts);
   const quotaState = loadQuotaState(opts);
-  const proposal = cid && SAFE_CID_RE.test(cid) ? readActiveProposal(cid, opts, now) : null;
+  const rawProp = cid && SAFE_CID_RE.test(cid) ? readActiveProposal(cid, opts, now) : null;
+  let proposal = rawProp;
+  if (rawProp) {
+    const live = evaluateLivePoolQuota(prefs, quotaState, prefs?.opusGateModel);
+    const hasLivePool = live.fiveHourPct !== null || live.weeklyPct !== null;
+    const pool5hPct =
+      live.fiveHourPct ??
+      (rawProp.quotaPool === live.quotaPool ? rawProp.pool5hPct : null) ??
+      (live.quotaPool === 'gemini' ? rawProp.gemini5hPct : rawProp.claude5hPct) ??
+      null;
+    const poolWeeklyPct =
+      live.weeklyPct ??
+      (rawProp.quotaPool === live.quotaPool ? rawProp.poolWeeklyPct : null) ??
+      (live.quotaPool === 'gemini' ? rawProp.geminiWeeklyPct : rawProp.claudeWeeklyPct) ??
+      null;
+    const quotaBlocked = hasLivePool
+      ? live.quotaBlocked
+      : rawProp.quotaPool === live.quotaPool
+        ? Boolean(rawProp.quotaBlocked)
+        : false;
+    proposal = {
+      ...rawProp,
+      reviewerModel: live.reviewerModel,
+      recommendedModelId: live.recommendedModelId,
+      recommendedTier: 'high',
+      workerName: live.workerName,
+      quotaPool: live.quotaPool,
+      pool5hPct,
+      poolWeeklyPct,
+      claude5hPct: quotaState?.claude?.fiveHourRemainingPct ?? rawProp.claude5hPct ?? null,
+      claudeWeeklyPct: quotaState?.claude?.weeklyRemainingPct ?? rawProp.claudeWeeklyPct ?? null,
+      gemini5hPct: quotaState?.gemini?.fiveHourRemainingPct ?? rawProp.gemini5hPct ?? null,
+      geminiWeeklyPct: quotaState?.gemini?.weeklyRemainingPct ?? rawProp.geminiWeeklyPct ?? null,
+      quotaBlocked,
+    };
+  }
   return { ok: true, pluginInstalled, pluginDir, quotaState, proposal };
 }
 
@@ -265,16 +301,58 @@ function execGitBriefAsync(absDir, args) {
   });
 }
 
-function resolveOpusModelIdForTier(tier) {
-  return tier === 'medium' ? 'claude-opus-5-5-medium' : 'claude-opus-5-5-high';
+const REVIEWER_MODELS = Object.freeze({
+  opus: Object.freeze({
+    key: 'opus',
+    modelId: 'claude-opus-5-5-high',
+    workerName: 'review-opus',
+    label: 'Claude Opus 5.5 (High)',
+    shortLabel: 'Opus High',
+    pool: 'claude',
+    poolLabel: 'Claude',
+  }),
+  carbon: Object.freeze({
+    key: 'carbon',
+    modelId: 'gemini-4-carbon-high',
+    workerName: 'review-carbon',
+    label: 'Gemini 4 Carbon (High)',
+    shortLabel: 'Carbon High',
+    pool: 'gemini',
+    poolLabel: 'Gemini',
+  }),
+});
+
+export function normalizeReviewerModel(raw, fallback = 'opus') {
+  const s = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+  if (s === 'carbon') return 'carbon';
+  if (s === 'opus') return 'opus';
+  return fallback === 'carbon' ? 'carbon' : 'opus';
 }
 
-function computeRecommendedTier(prefs, quotaState, kind) {
-  if (kind === 'stop') return 'medium';
-  const claude5h = quotaState?.claude?.fiveHourRemainingPct ?? null;
-  const preferredTier = prefs?.opusGatePreferredTier === 'medium' ? 'medium' : 'high';
+export function resolveReviewerSpec(rawModel) {
+  return REVIEWER_MODELS[normalizeReviewerModel(rawModel, 'opus')];
+}
+
+function evaluateLivePoolQuota(prefs, quotaState, reviewerKey) {
+  const spec = resolveReviewerSpec(reviewerKey);
+  const poolObj = quotaState?.[spec.pool] || null;
+  const fiveHourPct = poolObj?.fiveHourRemainingPct ?? null;
+  const weeklyPct = poolObj?.weeklyRemainingPct ?? null;
   const min5h = Number(prefs?.opusGateMinQuota5hPct ?? 20);
-  return preferredTier === 'high' && (claude5h === null || claude5h >= min5h + 15) ? 'high' : 'medium';
+  const minWeekly = Number(prefs?.opusGateMinQuotaWeeklyPct ?? 15);
+  const quotaBlocked =
+    (fiveHourPct !== null && fiveHourPct < min5h) ||
+    (weeklyPct !== null && weeklyPct < minWeekly);
+  return {
+    reviewerModel: spec.key,
+    recommendedModelId: spec.modelId,
+    recommendedTier: 'high',
+    workerName: spec.workerName,
+    quotaPool: spec.pool,
+    fiveHourPct,
+    weeklyPct,
+    quotaBlocked,
+  };
 }
 
 function resolveVerifiedWorkspaceDir(candidate, allowAnyDir = false) {
@@ -303,8 +381,11 @@ export async function buildOpusHandoffBrief(payload = {}, opts = {}) {
   const prop = cid && SAFE_CID_RE.test(cid) ? readActiveProposal(cid, opts, now) : null;
 
   const kind = rawKind || prop?.kind || 'review';
-  const recommendedTier = computeRecommendedTier(prefs, quotaState, kind);
-  const recommendedModelId = resolveOpusModelIdForTier(recommendedTier);
+  const defaultModel = normalizeReviewerModel(prefs?.opusGateModel, 'opus');
+  const selectedModel = normalizeReviewerModel(payload?.model, defaultModel);
+  const spec = resolveReviewerSpec(selectedModel);
+  const recommendedTier = 'high';
+  const recommendedModelId = spec.modelId;
 
   const absDir =
     resolveVerifiedWorkspaceDir(prop?.worktreeRoot, opts.allowAnyDir) ||
@@ -335,7 +416,7 @@ export async function buildOpusHandoffBrief(payload = {}, opts = {}) {
 
   const scopeLines = [];
   if (absDir) scopeLines.push(`- Active Worktree: \`${sanitizePathSafe(absDir)}\``);
-  scopeLines.push(`- Gate Kind: \`${sanitizeInlineText(kind, 32)}\` (target tier: \`${recommendedModelId}\`)`);
+  scopeLines.push(`- Gate Kind: \`${sanitizeInlineText(kind, 32)}\` (target model: \`${spec.modelId}\`)`);
   if (prop?.reason) scopeLines.push(`- Trigger Reason: ${sanitizeInlineText(prop.reason, 220)}`);
   if (safeHighRisk.length > 0) {
     scopeLines.push(`- High-Risk Files: ${safeHighRisk.map((f) => `\`${f}\``).join(', ')}`);
@@ -361,16 +442,16 @@ export async function buildOpusHandoffBrief(payload = {}, opts = {}) {
   const scopeBlock = scopeLines.join('\n');
 
   const swarmPrompt = [
-    `[MAGA Opus Gate · ${sanitizeInlineText(kind, 32)}] Please load the \`opus-gate\` skill and delegate a compact, read-only Claude Opus (${recommendedTier}) checkpoint review via \`swarm\`.`,
+    `[MAGA Review Gate · ${sanitizeInlineText(kind, 32)}] Please load the \`opus-gate\` skill and delegate a compact, read-only ${spec.label} checkpoint review via \`swarm\` using worker \`${spec.workerName}\` with \`model: "${spec.modelId}"\`.`,
     `- Only use \`fork: "coordinator"\` if \`${sanitizeInlineText(kind, 32)}\` is \`debug\` escalation; otherwise omit \`fork\` to keep context compact.`,
-    `- Instruct \`opus-gate\` to inspect read-only using batched parallel reads/checks within **<= 3 turns**, keep output under **500 words**, and post \`@coordinator [done]\` with Verdict (\`APPROVE\` / \`REVISE\` / \`HOLD\`) and P0/P1/P2 findings (\`file:line\`).`,
+    `- Instruct \`${spec.workerName}\` to inspect read-only using batched parallel reads/checks within **<= 3 turns**, keep output under **500 words**, and post \`@coordinator [done]\` with Verdict (\`APPROVE\` / \`REVISE\` / \`HOLD\`) and P0/P1/P2 findings (\`file:line\`).`,
     '',
     '### Gate Context',
     scopeBlock,
   ].join('\n');
 
   const handoffPrompt = [
-    `Perform a focused, high-signal Claude Opus architecture & code review (${sanitizeInlineText(kind, 32)} checkpoint).`,
+    `Perform a focused, high-signal ${spec.label} architecture & code review (${sanitizeInlineText(kind, 32)} checkpoint).`,
     'Inspect read-only first using batched parallel reads/checks (<= 3 turns) and keep the final report under 500 words.',
     '',
     '### Context & Scope',
@@ -387,6 +468,9 @@ export async function buildOpusHandoffBrief(payload = {}, opts = {}) {
   return {
     ok: true,
     kind,
+    reviewerModel: spec.key,
+    workerName: spec.workerName,
+    quotaPool: spec.pool,
     recommendedTier,
     recommendedModelId,
     quotaState,

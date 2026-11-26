@@ -1,13 +1,38 @@
 /**
- * MAGA Opus Gate Cockpit Pill (#agy-opus-gate-pill) & Dual-Path Action Popover (#agy-opus-gate-menu):
+ * MAGA Review Gate Cockpit Pill (#agy-opus-gate-pill) & Dual-Path Action Popover (#agy-opus-gate-menu):
  * - Single-observer MagaKernel citizen (zero standalone MutationObserver).
  * - Polls daemon `getOpusGateStatus` on route/turn-settle transitions to surface non-intrusive
  *   Row 1 proposal pills when `opusGateMode !== 'off'` and a checkpoint fires.
- * - Supports Path A (in-turn `/swarm` Claude Opus worker) and Path B (standalone Opus chat handoff),
- *   plus on-demand invocation via `window.__agyOpusGateTrigger`.
+ * - Supports Carbon High (`gemini-4-carbon-high`) & Opus High (`claude-opus-5-5-high`) with live
+ *   per-pool quota tracking, per-click popover override, Path A (/swarm), Path B (standalone chat),
+ *   and on-demand invocation via `window.__agyOpusGateTrigger`.
  */
 import { markOwn, setAttr, setLeafText } from '../core/dom.mjs';
 import { getActiveRouteCid, isComposerRunning, isZhUi, L } from '../core/env.mjs';
+
+const REVIEWER_META = Object.freeze({
+  opus: Object.freeze({
+    key: 'opus',
+    modelId: 'claude-opus-5-5-high',
+    shortLabel: 'Opus High',
+    pool: 'claude',
+    poolLabel: 'Claude',
+  }),
+  carbon: Object.freeze({
+    key: 'carbon',
+    modelId: 'gemini-4-carbon-high',
+    shortLabel: 'Carbon High',
+    pool: 'gemini',
+    poolLabel: 'Gemini',
+  }),
+});
+
+function normalizeReviewerModel(raw, fallback = 'opus') {
+  const s = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+  if (s === 'carbon') return 'carbon';
+  if (s === 'opus') return 'opus';
+  return fallback === 'carbon' ? 'carbon' : 'opus';
+}
 
 export function createOpusGatePillRuntime({ studioPrefs } = {}) {
   const PILL_ID = 'agy-opus-gate-pill';
@@ -22,10 +47,13 @@ export function createOpusGatePillRuntime({ studioPrefs } = {}) {
   let menuOpen = false;
   let menuEl = null;
   let activeMenuKind = 'review';
+  let activeMenuProp = null;
+  let selectedMenuModel = 'opus';
   let statusCache = { cid: '', ts: 0, inFlight: false, data: null };
   const fallbackTimers = new Set();
 
   const isEnabled = () => (studioPrefs?.get?.()?.opusGateMode || 'semi') !== 'off';
+  const getDefaultReviewerModel = () => normalizeReviewerModel(studioPrefs?.get?.()?.opusGateModel, 'opus');
 
   function trackTimer(fn, ms) {
     if (disposed) return 0;
@@ -197,14 +225,23 @@ export function createOpusGatePillRuntime({ studioPrefs } = {}) {
     return null;
   }
 
-  function selectOpusOption(api, recommendedModelId, recommendedTier) {
+  function selectReviewerOption(api, reviewerModel, recommendedModelId) {
     const opts = (api?.modelOptions || []).filter((o) => o && !o.disabled);
     if (!opts.length) return false;
-    const wantTier = recommendedTier === 'medium' ? 'medium' : 'high';
-    const match =
-      (recommendedModelId && opts.find((o) => o.modelId === recommendedModelId)) ||
-      opts.find((o) => new RegExp(`claude-opus.*-${wantTier}`, 'i').test(o.modelId || o.label || '')) ||
-      opts.find((o) => /claude-opus|claude opus/i.test(`${o.modelId || ''} ${o.label || ''}`));
+    const key = normalizeReviewerModel(reviewerModel, 'opus');
+    const isOrch = (o) => /orchestrator/i.test(`${o.modelId || ''} ${o.label || ''}`);
+    let match = (recommendedModelId && opts.find((o) => o.modelId === recommendedModelId)) || null;
+    if (!match) {
+      if (key === 'carbon') {
+        match =
+          opts.find((o) => !isOrch(o) && /gemini-4-carbon.*-high|gemini\s*4\s*carbon.*high/i.test(`${o.modelId || ''} ${o.label || ''}`)) ||
+          opts.find((o) => !isOrch(o) && /gemini-4-carbon|gemini\s*4\s*carbon/i.test(`${o.modelId || ''} ${o.label || ''}`));
+      } else {
+        match =
+          opts.find((o) => !isOrch(o) && /claude-opus.*-high|claude\s*opus.*high/i.test(`${o.modelId || ''} ${o.label || ''}`)) ||
+          opts.find((o) => !isOrch(o) && /claude-opus|claude\s*opus/i.test(`${o.modelId || ''} ${o.label || ''}`));
+      }
+    }
     if (!match) return false;
     api.setSelectedModel(match);
     return true;
@@ -212,6 +249,7 @@ export function createOpusGatePillRuntime({ studioPrefs } = {}) {
 
   function closeMenu() {
     menuOpen = false;
+    activeMenuProp = null;
     if (menuEl) menuEl.removeAttribute('data-open');
   }
 
@@ -235,27 +273,29 @@ export function createOpusGatePillRuntime({ studioPrefs } = {}) {
     }
   }
 
-  async function runPathASwarm(kind) {
+  async function runPathASwarm(kind, modelOverride) {
     closeMenu();
     const cid = getActiveRouteCid();
     const curProp = statusCache.cid === cid ? statusCache.data?.proposal : null;
     const box = getMainBox();
     if (!box || typeof window.__agProjectCall !== 'function') return;
+    const model = normalizeReviewerModel(modelOverride, getDefaultReviewerModel());
     const res = await window
-      .__agProjectCall('buildOpusHandoffBrief', { cascadeId: cid, dirPath: resolveActiveDirPath(), kind }, 6000)
+      .__agProjectCall('buildOpusHandoffBrief', { cascadeId: cid, dirPath: resolveActiveDirPath(), kind, model }, 6000)
       .catch(() => null);
     if (disposed || !res?.ok || !res.swarmPrompt) return;
     submitPromptIntoBox(box, res.swarmPrompt);
     if (cid && curProp) dismissCurrent(cid, curProp);
   }
 
-  async function runPathBStandalone(kind) {
+  async function runPathBStandalone(kind, modelOverride) {
     closeMenu();
     const cid = getActiveRouteCid();
     const curProp = statusCache.cid === cid ? statusCache.data?.proposal : null;
     if (typeof window.__agProjectCall !== 'function') return;
+    const model = normalizeReviewerModel(modelOverride, getDefaultReviewerModel());
     const res = await window
-      .__agProjectCall('buildOpusHandoffBrief', { cascadeId: cid, dirPath: resolveActiveDirPath(), kind }, 6000)
+      .__agProjectCall('buildOpusHandoffBrief', { cascadeId: cid, dirPath: resolveActiveDirPath(), kind, model }, 6000)
       .catch(() => null);
     if (disposed || !res?.ok || !res.handoffPrompt) return;
 
@@ -277,7 +317,7 @@ export function createOpusGatePillRuntime({ studioPrefs } = {}) {
         if (++tries < 30) trackTimer(waitAndSubmit, 80);
         return;
       }
-      selectOpusOption(api, res.recommendedModelId, res.recommendedTier);
+      selectReviewerOption(api, res.reviewerModel || model, res.recommendedModelId);
       trackTimer(() => {
         const latestBox = getMainBox();
         if (latestBox) submitPromptIntoBox(latestBox, res.handoffPrompt);
@@ -303,13 +343,39 @@ export function createOpusGatePillRuntime({ studioPrefs } = {}) {
     }
   }
 
-  function formatQuotaMeta(prop, quota) {
-    const c5 = prop?.claude5hPct ?? quota?.claude?.fiveHourRemainingPct ?? null;
-    const cw = prop?.claudeWeeklyPct ?? quota?.claude?.weeklyRemainingPct ?? null;
+  function computeLivePoolState(modelKey, quotaState, prop) {
+    const key = normalizeReviewerModel(modelKey, 'opus');
+    const spec = REVIEWER_META[key];
+    const prefs = studioPrefs?.get?.() || {};
+    const min5h = Number(prefs.opusGateMinQuota5hPct ?? 20);
+    const minWeekly = Number(prefs.opusGateMinQuotaWeeklyPct ?? 15);
+    const livePool = quotaState?.[spec.pool] || null;
+    const live5h = livePool?.fiveHourRemainingPct ?? null;
+    const liveWeekly = livePool?.weeklyRemainingPct ?? null;
+    const fallback5h =
+      spec.pool === 'gemini'
+        ? (prop?.quotaPool === 'gemini' ? prop?.pool5hPct : null) ?? prop?.gemini5hPct ?? null
+        : (prop?.quotaPool === 'claude' || !prop?.quotaPool ? prop?.pool5hPct : null) ?? prop?.claude5hPct ?? null;
+    const fallbackWeekly =
+      spec.pool === 'gemini'
+        ? (prop?.quotaPool === 'gemini' ? prop?.poolWeeklyPct : null) ?? prop?.geminiWeeklyPct ?? null
+        : (prop?.quotaPool === 'claude' || !prop?.quotaPool ? prop?.poolWeeklyPct : null) ?? prop?.claudeWeeklyPct ?? null;
+    const hasLivePool = live5h !== null || liveWeekly !== null;
+    const fiveHourPct = live5h ?? fallback5h;
+    const weeklyPct = liveWeekly ?? fallbackWeekly;
+    const samePoolAsProp = prop?.quotaPool ? prop.quotaPool === spec.pool : spec.pool === 'claude';
+    const quotaBlocked = hasLivePool
+      ? (fiveHourPct !== null && fiveHourPct < min5h) || (weeklyPct !== null && weeklyPct < minWeekly)
+      : fiveHourPct !== null || weeklyPct !== null
+        ? (fiveHourPct !== null && fiveHourPct < min5h) || (weeklyPct !== null && weeklyPct < minWeekly)
+        : samePoolAsProp
+          ? Boolean(prop?.quotaBlocked)
+          : false;
     const parts = [];
-    if (c5 !== null && c5 !== undefined) parts.push(`5h ${Math.round(c5)}%`);
-    if (cw !== null && cw !== undefined) parts.push(`${L('周', 'Wk')} ${Math.round(cw)}%`);
-    return parts.length ? `Claude ${parts.join(' · ')}` : 'Claude Opus';
+    if (fiveHourPct !== null && fiveHourPct !== undefined) parts.push(`5h ${Math.round(fiveHourPct)}%`);
+    if (weeklyPct !== null && weeklyPct !== undefined) parts.push(`${L('周', 'Wk')} ${Math.round(weeklyPct)}%`);
+    const quotaText = parts.length ? `${spec.poolLabel} ${parts.join(' · ')}` : spec.shortLabel;
+    return { spec, fiveHourPct, weeklyPct, quotaBlocked, quotaText };
   }
 
   function esc(str) {
@@ -329,13 +395,24 @@ export function createOpusGatePillRuntime({ studioPrefs } = {}) {
       markOwn(menuEl);
       menuEl.setAttribute('data-ag-i18n-ignore', '1');
       menuEl.addEventListener('click', (e) => {
+        const modelBtn = e.target?.closest?.('button[data-agy-opus-model]');
+        if (modelBtn) {
+          e.preventDefault();
+          e.stopPropagation();
+          const nextModel = normalizeReviewerModel(modelBtn.getAttribute('data-agy-opus-model'), selectedMenuModel);
+          if (nextModel !== selectedMenuModel) {
+            selectedMenuModel = nextModel;
+            renderMenuContent(menuEl, activeMenuProp);
+          }
+          return;
+        }
         const btn = e.target?.closest?.('button[data-agy-opus-action]');
         if (!btn) return;
         e.preventDefault();
         e.stopPropagation();
         const act = btn.getAttribute('data-agy-opus-action');
-        if (act === 'swarm') runPathASwarm(activeMenuKind);
-        else if (act === 'handoff') runPathBStandalone(activeMenuKind);
+        if (act === 'swarm') runPathASwarm(activeMenuKind, selectedMenuModel);
+        else if (act === 'handoff') runPathBStandalone(activeMenuKind, selectedMenuModel);
       });
       document.body.appendChild(menuEl);
     } else {
@@ -344,22 +421,35 @@ export function createOpusGatePillRuntime({ studioPrefs } = {}) {
     return menuEl;
   }
 
-  function openMenuFor(anchorEl, kind = 'review', prop = null) {
-    if (!anchorEl) return;
-    activeMenuKind = kind || prop?.kind || 'review';
-    const el = ensureMenuEl();
+  function renderMenuContent(el, prop = activeMenuProp) {
     const quota = statusCache.data?.quotaState || null;
-    const quotaText = formatQuotaMeta(prop, quota);
-    const reason = prop?.reason || L('调度 Claude Opus 对当前工作区进行结构化只读把关', 'Run a quota-guarded Claude Opus checkpoint');
-    const warnHtml = prop?.quotaBlocked
-      ? `<div class="agy-opus-menu-warn">${esc(L('已触发配额熔断阈值，自动把关已暂停（仍可手动放行）', 'Quota circuit breaker active; manual confirmation required'))}</div>`
+    const live = computeLivePoolState(selectedMenuModel, quota, prop);
+    const reason = prop?.reason || L('调度高阶审查模型对当前工作区进行结构化只读把关', 'Run a quota-guarded high-tier checkpoint review');
+    const warnHtml = live.quotaBlocked
+      ? `<div class="agy-opus-menu-warn">${esc(L(`${live.spec.poolLabel} 配额已低于熔断水位，自动把关已暂停（仍可手动放行）`, `${live.spec.poolLabel} quota below breaker floor; manual confirmation required`))}</div>`
       : '';
+    const switchHtml =
+      `<div class="agy-opus-model-switch" role="group" aria-label="${esc(L('审查模型', 'Review Model'))}">` +
+        ['carbon', 'opus']
+          .map((key) => {
+            const m = REVIEWER_META[key];
+            const active = selectedMenuModel === key;
+            return (
+              `<button type="button" class="agy-opus-model-opt${active ? ' is-active' : ''}" data-agy-opus-model="${key}" aria-pressed="${active ? 'true' : 'false'}">` +
+                `${esc(m.shortLabel)}` +
+              `</button>`
+            );
+          })
+          .join('') +
+      `</div>`;
 
+    setAttr(el, 'data-reviewer-model', selectedMenuModel);
     el.innerHTML =
       `<div class="agy-opus-menu-hdr">` +
-        `<span class="agy-opus-menu-title">✦ ${esc(L('Opus 协同把关', 'Opus Gate'))}</span>` +
-        `<span class="agy-opus-menu-quota">${esc(quotaText)}</span>` +
+        `<span class="agy-opus-menu-title">✦ ${esc(L('审查关卡', 'Review Gate'))} · ${esc(live.spec.shortLabel)}</span>` +
+        `<span class="agy-opus-menu-quota">${esc(live.quotaText)}</span>` +
       `</div>` +
+      switchHtml +
       `<div class="agy-opus-menu-meta">` +
         `<span class="agy-opus-menu-badge">${esc(kindLabel(activeMenuKind))}</span>` +
         `<span class="agy-opus-menu-reason">${esc(reason)}</span>` +
@@ -367,14 +457,23 @@ export function createOpusGatePillRuntime({ studioPrefs } = {}) {
       warnHtml +
       `<div class="agy-opus-menu-actions">` +
         `<button type="button" class="agy-opus-act is-primary" data-agy-opus-action="swarm">` +
-          `<span class="agy-opus-act-t">${esc(L('当前对话 /swarm 请 Opus 把关', 'Audit in-turn via /swarm'))}</span>` +
-          `<span class="agy-opus-act-d">${esc(L('拉起单兵只读审查并自动回传当前线程', 'Spawns 1 read-only Opus worker & returns verdict here'))}</span>` +
+          `<span class="agy-opus-act-t">${esc(L(`当前对话 /swarm 请 ${live.spec.shortLabel} 审查`, `Audit in-turn via /swarm (${live.spec.shortLabel})`))}</span>` +
+          `<span class="agy-opus-act-d">${esc(L(`拉起单兵只读 ${live.spec.shortLabel} 并自动回传当前线程`, `Spawns 1 read-only ${live.spec.shortLabel} worker & returns verdict here`))}</span>` +
         `</button>` +
         `<button type="button" class="agy-opus-act" data-agy-opus-action="handoff">` +
-          `<span class="agy-opus-act-t">${esc(L('另开独立 Opus 评审会话', 'Open dedicated Opus chat'))}</span>` +
-          `<span class="agy-opus-act-d">${esc(L('打包精简上下文并切换 Claude Opus 发起深聊', 'Opens fresh Opus session with compact brief'))}</span>` +
+          `<span class="agy-opus-act-t">${esc(L(`另开独立 ${live.spec.shortLabel} 评审会话`, `Open dedicated ${live.spec.shortLabel} chat`))}</span>` +
+          `<span class="agy-opus-act-d">${esc(L(`打包精简上下文并切换 ${live.spec.shortLabel} 发起深聊`, `Opens fresh ${live.spec.shortLabel} session with compact brief`))}</span>` +
         `</button>` +
       `</div>`;
+  }
+
+  function openMenuFor(anchorEl, kind = 'review', prop = null) {
+    if (!anchorEl) return;
+    activeMenuKind = kind || prop?.kind || 'review';
+    activeMenuProp = prop || null;
+    selectedMenuModel = getDefaultReviewerModel();
+    const el = ensureMenuEl();
+    renderMenuContent(el, activeMenuProp);
 
     el.setAttribute('data-open', '1');
     menuOpen = true;
@@ -516,15 +615,18 @@ export function createOpusGatePillRuntime({ studioPrefs } = {}) {
       }
     }
 
-    const label = prop.quotaBlocked
-      ? L('Opus 配额紧', 'Opus Low Quota')
-      : L('请 Opus 把关', 'Opus Review');
+    const defaultModel = getDefaultReviewerModel();
+    const live = computeLivePoolState(defaultModel, statusCache.data?.quotaState, prop);
+    const label = live.quotaBlocked
+      ? L('审查配额紧', 'Review · Low Quota')
+      : L('请求审查', 'Review');
     const langTag = plan ? plan.langTag : (isZhUi() ? 'zh' : 'en');
-    const tip = `${kindLabel(prop.kind)}: ${prop.reason || ''} · ${formatQuotaMeta(prop, statusCache.data?.quotaState)}`;
-    const sig = `${key}|${langTag}|${label}|${prop.quotaBlocked ? 1 : 0}`;
+    const tip = `${kindLabel(prop.kind)}: ${prop.reason || ''} · ${live.spec.shortLabel} · ${live.quotaText}`;
+    const sig = `${key}|${langTag}|${defaultModel}|${label}|${live.quotaBlocked ? 1 : 0}|${live.quotaText}`;
     if (pill.getAttribute('data-sig') !== sig) {
       setAttr(pill, 'data-sig', sig);
-      setAttr(pill, 'data-quota-blocked', prop.quotaBlocked ? '1' : '0');
+      setAttr(pill, 'data-reviewer-model', defaultModel);
+      setAttr(pill, 'data-quota-blocked', live.quotaBlocked ? '1' : '0');
       const lblEl = pill.querySelector('.agy-opus-label');
       if (lblEl) setLeafText(lblEl, label);
       const goBtn = pill.querySelector('.agy-opus-go');

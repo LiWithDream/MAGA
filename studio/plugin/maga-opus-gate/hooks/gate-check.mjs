@@ -22,14 +22,46 @@ const MAX_DIR_AGE_MS = 24 * 60 * 60 * 1000;
 const GIT_DEADLINE_MS = 3000;
 const VALID_KINDS = new Set(['plan', 'risk', 'debug', 'stop', 'review']);
 
-const DEFAULT_PREFS = {
+export const GATE_DEFAULT_PREFS = Object.freeze({
   opusGateMode: 'semi',
-  opusGatePreferredTier: 'high',
+  opusGateModel: 'opus',
   opusGateMinQuota5hPct: 20,
   opusGateMinQuotaWeeklyPct: 15,
   opusGateMaxAutoPerSession: 2,
-  opusGateCheckpoints: { plan: true, risk: true, debug: true, stop: true },
-};
+  opusGateCheckpoints: Object.freeze({ plan: true, risk: true, debug: true, stop: true }),
+});
+const DEFAULT_PREFS = GATE_DEFAULT_PREFS;
+
+const REVIEWER_MODELS = Object.freeze({
+  opus: Object.freeze({
+    key: 'opus',
+    modelId: 'claude-opus-5-5-high',
+    workerName: 'review-opus',
+    label: 'Claude Opus 5.5 (High)',
+    pool: 'claude',
+  }),
+  carbon: Object.freeze({
+    key: 'carbon',
+    modelId: 'gemini-4-carbon-high',
+    workerName: 'review-carbon',
+    label: 'Gemini 4 Carbon (High)',
+    pool: 'gemini',
+  }),
+});
+
+export function resolveReviewerSpec(rawModel) {
+  const s = typeof rawModel === 'string' ? rawModel.trim().toLowerCase() : '';
+  return s === 'carbon' ? REVIEWER_MODELS.carbon : REVIEWER_MODELS.opus;
+}
+
+export function isSelfOrHigherModel(reviewerKey, currentModelName) {
+  const m = String(currentModelName || '').trim();
+  if (!m) return false;
+  if (resolveReviewerSpec(reviewerKey).key === 'carbon') {
+    return /carbon|opus/i.test(m);
+  }
+  return /opus/i.test(m);
+}
 
 function readJsonSafe(filePath, fallback = null) {
   try {
@@ -174,9 +206,9 @@ function loadPrefs(prefsPath) {
   const cpRaw = raw.opusGateCheckpoints && typeof raw.opusGateCheckpoints === 'object' ? raw.opusGateCheckpoints : {};
   return {
     opusGateMode: ['off', 'semi', 'auto'].includes(raw.opusGateMode) ? raw.opusGateMode : DEFAULT_PREFS.opusGateMode,
-    opusGatePreferredTier: ['high', 'medium'].includes(raw.opusGatePreferredTier)
-      ? raw.opusGatePreferredTier
-      : DEFAULT_PREFS.opusGatePreferredTier,
+    opusGateModel: ['carbon', 'opus'].includes(raw.opusGateModel)
+      ? raw.opusGateModel
+      : DEFAULT_PREFS.opusGateModel,
     opusGateMinQuota5hPct: clampInt(raw.opusGateMinQuota5hPct, 5, 80, DEFAULT_PREFS.opusGateMinQuota5hPct),
     opusGateMinQuotaWeeklyPct: clampInt(raw.opusGateMinQuotaWeeklyPct, 5, 60, DEFAULT_PREFS.opusGateMinQuotaWeeklyPct),
     opusGateMaxAutoPerSession: clampInt(raw.opusGateMaxAutoPerSession, 1, 5, DEFAULT_PREFS.opusGateMaxAutoPerSession),
@@ -192,6 +224,7 @@ function loadPrefs(prefsPath) {
 function resolveQuotaSnapshot(quotaPath) {
   const raw = readJsonSafe(quotaPath, null);
   const claude = raw && typeof raw.claude === 'object' ? raw.claude : {};
+  const gemini = raw && typeof raw.gemini === 'object' ? raw.gemini : {};
   const toPct = (v) => {
     if (v === null || v === undefined || v === '') return null;
     const n = Number(v);
@@ -200,21 +233,29 @@ function resolveQuotaSnapshot(quotaPath) {
   return {
     claude5hPct: toPct(claude.fiveHourRemainingPct),
     claudeWeeklyPct: toPct(claude.weeklyRemainingPct),
+    gemini5hPct: toPct(gemini.fiveHourRemainingPct),
+    geminiWeeklyPct: toPct(gemini.weeklyRemainingPct),
   };
 }
 
-function evaluateQuotaPolicy(prefs, quota, kind = '') {
+function evaluateQuotaPolicy(prefs, quota) {
+  const spec = resolveReviewerSpec(prefs.opusGateModel);
+  const pool5hPct = spec.pool === 'gemini' ? quota.gemini5hPct : quota.claude5hPct;
+  const poolWeeklyPct = spec.pool === 'gemini' ? quota.geminiWeeklyPct : quota.claudeWeeklyPct;
   const healthy =
-    (quota.claude5hPct === null || quota.claude5hPct >= prefs.opusGateMinQuota5hPct) &&
-    (quota.claudeWeeklyPct === null || quota.claudeWeeklyPct >= prefs.opusGateMinQuotaWeeklyPct);
-  const recommendedTier =
-    kind === 'stop'
-      ? 'medium'
-      : prefs.opusGatePreferredTier === 'high' &&
-          (quota.claude5hPct === null || quota.claude5hPct >= prefs.opusGateMinQuota5hPct + 15)
-        ? 'high'
-        : 'medium';
-  return { healthy, recommendedTier };
+    (pool5hPct === null || pool5hPct >= prefs.opusGateMinQuota5hPct) &&
+    (poolWeeklyPct === null || poolWeeklyPct >= prefs.opusGateMinQuotaWeeklyPct);
+  return {
+    healthy,
+    recommendedTier: 'high',
+    reviewerModel: spec.key,
+    recommendedModelId: spec.modelId,
+    workerName: spec.workerName,
+    label: spec.label,
+    quotaPool: spec.pool,
+    pool5hPct,
+    poolWeeklyPct,
+  };
 }
 
 function resolvePaths(opts = {}) {
@@ -552,10 +593,18 @@ function buildProposalRecord({
     worktreeRoot: worktreeRoot ? sanitizePathDisplay(worktreeRoot) : '',
     consecutiveErrors: conv.consecutiveErrors,
     lastErrorSig: sanitizePromptText(conv.lastErrorSig, 160),
-    recommendedTier: quotaPolicy.recommendedTier,
+    reviewerModel: quotaPolicy.reviewerModel,
+    recommendedModelId: quotaPolicy.recommendedModelId,
+    workerName: quotaPolicy.workerName,
+    quotaPool: quotaPolicy.quotaPool,
+    pool5hPct: quotaPolicy.pool5hPct,
+    poolWeeklyPct: quotaPolicy.poolWeeklyPct,
+    recommendedTier: 'high',
     quotaBlocked: !quotaPolicy.healthy,
     claude5hPct: quota.claude5hPct,
     claudeWeeklyPct: quota.claudeWeeklyPct,
+    gemini5hPct: quota.gemini5hPct,
+    geminiWeeklyPct: quota.geminiWeeklyPct,
     ts: now,
     dismissed: false,
   };
@@ -567,11 +616,11 @@ function buildProposalRecord({
  */
 export function evaluateHookEvent(payload = {}, opts = {}) {
   if (!payload || typeof payload !== 'object') return {};
-  if (/opus/i.test(String(payload.modelName || ''))) return {};
 
   const { prefsFile, quotaFile, proposalsDir, pluginDataDir } = resolvePaths(opts);
   const prefs = loadPrefs(prefsFile);
   if (prefs.opusGateMode === 'off') return {};
+  if (isSelfOrHigherModel(prefs.opusGateModel, payload.modelName)) return {};
 
   const cid = getSafeCid(payload.conversationId);
   if (!cid) return {};
@@ -811,8 +860,8 @@ export function evaluateHookEvent(payload = {}, opts = {}) {
       return {
         decision: 'continue',
         reason:
-          `[MAGA Opus Gate · ${kind}] ${safeReason}.${wtNote}${planNote}${riskNote} ` +
-          `Load the \`opus-gate\` skill and invoke \`swarm\` with one read-only Claude Opus (${quotaPolicy.recommendedTier}) worker \`opus-gate\`.${forkNote} ` +
+          `[MAGA Review Gate · ${kind}] ${safeReason}.${wtNote}${planNote}${riskNote} ` +
+          `Load the \`opus-gate\` skill and invoke \`swarm\` with one read-only ${quotaPolicy.label} worker \`${quotaPolicy.workerName}\` (\`model: "${quotaPolicy.recommendedModelId}"\`).${forkNote} ` +
           `Instruct it to post \`@coordinator [done]\` with Verdict (APPROVE/REVISE/HOLD) and P0/P1/P2 findings.`,
       };
     }
@@ -859,14 +908,14 @@ export function evaluateHookEvent(payload = {}, opts = {}) {
 export function evaluatePreflight(params = {}, opts = {}) {
   const rawKind = String(params?.kind || '').trim().toLowerCase();
   const kind = VALID_KINDS.has(rawKind) ? rawKind : 'review';
-  if (/opus/i.test(String(params?.model || ''))) {
-    return { action: 'skip', reason: 'already_opus' };
-  }
 
   const { prefsFile, quotaFile, proposalsDir, pluginDataDir } = resolvePaths(opts);
   const prefs = loadPrefs(prefsFile);
   if (prefs.opusGateMode === 'off') {
     return { action: 'skip', reason: 'mode_off', mode: 'off' };
+  }
+  if (isSelfOrHigherModel(prefs.opusGateModel, params?.model)) {
+    return { action: 'skip', reason: 'already_self_or_higher', reviewerModel: prefs.opusGateModel };
   }
 
   const cpEnabled =
@@ -879,7 +928,7 @@ export function evaluatePreflight(params = {}, opts = {}) {
   const { convFile, touchLogFile, conv, hadLog } = loadConvState(pluginDataDir, cid);
   const now = Number(opts.now) > 0 ? Number(opts.now) : Date.now();
   const quota = resolveQuotaSnapshot(quotaFile);
-  const quotaPolicy = evaluateQuotaPolicy(prefs, quota, kind);
+  const quotaPolicy = evaluateQuotaPolicy(prefs, quota);
 
   const reasonText = sanitizePromptText(params?.reason || '', 220) || `Semantic ${kind} checkpoint`;
   const fileList = (Array.isArray(params?.files) ? params.files : String(params?.files || '').split(','))
@@ -887,8 +936,7 @@ export function evaluatePreflight(params = {}, opts = {}) {
     .filter(Boolean)
     .slice(0, 10);
   const semanticHash = sha1Short(`${kind}|${reasonText}|${fileList.join(',')}`);
-  const recommendedModelId =
-    quotaPolicy.recommendedTier === 'medium' ? 'claude-opus-5-5-medium' : 'claude-opus-5-5-high';
+  const recommendedModelId = quotaPolicy.recommendedModelId;
   const proposalPublished = Boolean(cid);
   const effectiveGitRoot = resolveEffectiveGitRoot(conv.touchedAbsFiles, opts.cwd || '');
 
@@ -928,12 +976,19 @@ export function evaluatePreflight(params = {}, opts = {}) {
         action: 'run_swarm',
         mode: 'auto',
         kind,
-        recommendedTier: quotaPolicy.recommendedTier,
+        reviewerModel: quotaPolicy.reviewerModel,
+        workerName: quotaPolicy.workerName,
+        quotaPool: quotaPolicy.quotaPool,
+        recommendedTier: 'high',
         recommendedModelId,
         autoCallsUsed: conv.autoCalls,
         autoCallsMax: prefs.opusGateMaxAutoPerSession,
+        pool5hPct: quotaPolicy.pool5hPct,
+        poolWeeklyPct: quotaPolicy.poolWeeklyPct,
         claude5hPct: quota.claude5hPct,
         claudeWeeklyPct: quota.claudeWeeklyPct,
+        gemini5hPct: quota.gemini5hPct,
+        geminiWeeklyPct: quota.geminiWeeklyPct,
       };
     }
 
@@ -946,12 +1001,19 @@ export function evaluatePreflight(params = {}, opts = {}) {
       mode: 'auto',
       downgradedReason,
       kind,
-      recommendedTier: quotaPolicy.recommendedTier,
+      reviewerModel: quotaPolicy.reviewerModel,
+      workerName: quotaPolicy.workerName,
+      quotaPool: quotaPolicy.quotaPool,
+      recommendedTier: 'high',
       recommendedModelId,
       quotaBlocked: !quotaPolicy.healthy,
       proposalPublished,
+      pool5hPct: quotaPolicy.pool5hPct,
+      poolWeeklyPct: quotaPolicy.poolWeeklyPct,
       claude5hPct: quota.claude5hPct,
       claudeWeeklyPct: quota.claudeWeeklyPct,
+      gemini5hPct: quota.gemini5hPct,
+      geminiWeeklyPct: quota.geminiWeeklyPct,
     };
   }
 
@@ -966,12 +1028,19 @@ export function evaluatePreflight(params = {}, opts = {}) {
     action: 'propose',
     mode: 'semi',
     kind,
-    recommendedTier: quotaPolicy.recommendedTier,
+    reviewerModel: quotaPolicy.reviewerModel,
+    workerName: quotaPolicy.workerName,
+    quotaPool: quotaPolicy.quotaPool,
+    recommendedTier: 'high',
     recommendedModelId,
     quotaBlocked: !quotaPolicy.healthy,
     proposalPublished,
+    pool5hPct: quotaPolicy.pool5hPct,
+    poolWeeklyPct: quotaPolicy.poolWeeklyPct,
     claude5hPct: quota.claude5hPct,
     claudeWeeklyPct: quota.claudeWeeklyPct,
+    gemini5hPct: quota.gemini5hPct,
+    geminiWeeklyPct: quota.geminiWeeklyPct,
   };
 }
 

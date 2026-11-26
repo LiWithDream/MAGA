@@ -1143,8 +1143,8 @@ export function createMetricsQuotaModule(rt) {
       window.__agyStudioPrefs?.get?.()?.opusGateMode !== 'off';
     const opusBtnHtml = showOpusBtn
       ? `<button type="button" class="ag-qp-opus-btn" data-ag-qp-opus="true" title="${escapeHtml(
-          L('调度 Claude Opus 对当前任务进行架构/风险把关', 'Invoke Claude Opus checkpoint for the current task')
-        )}">✦ Opus</button>`
+          L('调度审查模型对当前任务进行架构/风险把关', 'Invoke Review Gate checkpoint for the current task')
+        )}">✦ ${escapeHtml(L('审查', 'Review'))}</button>`
       : '';
 
     let otherPoolsHtml = '';

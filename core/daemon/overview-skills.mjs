@@ -21,6 +21,10 @@ import {
   resolveConversationWorktreeAsync,
 } from './worktrees.mjs';
 import {
+  getProjectWorkflowPolicyBadgeAsync,
+  handleGitWorkflowRpc,
+} from '../../studio/daemon/git-workflow-service.mjs';
+import {
   ALLOWED_AGENT_TOOLS,
   GLOBAL_AGENTS_DIR,
   GLOBAL_SKILLS_DIR,
@@ -353,6 +357,11 @@ export async function readProjectWorkspaceStatusAsync(rawDir, { force = false, w
       }
     } catch {}
 
+    let workflowPolicy = null;
+    try {
+      workflowPolicy = await getProjectWorkflowPolicyBadgeAsync(wtListRes.mainDirPath || absDir);
+    } catch {}
+
     const data = {
       ok: true,
       dirPath: absDir,
@@ -367,6 +376,7 @@ export async function readProjectWorkspaceStatusAsync(rawDir, { force = false, w
       remoteUrl,
       remoteLabel,
       dirtyFiles,
+      workflowPolicy,
       fetchedAt: Date.now()
     };
     setBounded(projectWorkspaceCache, cacheKey, { ts: Date.now(), data }, 32);
@@ -774,6 +784,13 @@ export async function handleProjectRpcRequest(rawPayload, callerEntry = null) {
     ) {
       const { handleAutoCompactRpc } = await import('../../studio/daemon/auto-compact-service.mjs');
       return { reqId, result: await handleAutoCompactRpc(action, payload) };
+    }
+    if (
+      action === 'getGitWorkflowPolicy' ||
+      action === 'setGitWorkflowPolicy' ||
+      action === 'syncGitWorkflowPlugin'
+    ) {
+      return { reqId, result: await handleGitWorkflowRpc(action, payload) };
     }
     if (
       action === 'getProjectSuggestionsConfig' ||

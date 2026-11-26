@@ -8,32 +8,12 @@
 
 import { markOwn, setAttr, setLeafText } from '../core/dom.mjs';
 import { getActiveRouteCid, isZhUi } from '../core/env.mjs';
-import {
-  DRAWER_ID,
-  NAV_WRAP_ID,
-  PANEL_ID,
-  ROOT_ID,
-  SVG_BACK,
-  SVG_CLOSE,
-  SVG_GEAR,
-  TRIGGER_ID,
-  buildDefaultPreviewSelectionMap,
-  esc,
-} from './settings/constants.mjs';
-import { bindSettingsRootEvents, loadAiSuggestionsConfigIfNeeded } from './settings/events.mjs';
+import { DRAWER_ID, NAV_WRAP_ID, PANEL_ID, ROOT_ID, SVG_BACK, SVG_CLOSE, SVG_GEAR, TRIGGER_ID, buildDefaultPreviewSelectionMap, esc } from './settings/constants.mjs';
+import { bindSettingsRootEvents, loadAiSuggestionsConfigIfNeeded, loadGitWorkflowStatusIfNeeded } from './settings/events.mjs';
 import { createFxPreviewController } from './settings/preview.mjs';
 import {
-  getViewMeta,
-  renderL1,
-  renderL2Appearance,
-  renderL2Models,
-  renderL2Stream,
-  renderL2Workspace,
-  renderL3AiSuggestions,
-  renderL3AutoCompact,
-  renderL3HiddenModels,
-  renderL3ModelTiers,
-  renderL3OpusGate,
+  getViewMeta, renderL1, renderL2Appearance, renderL2Models, renderL2Stream, renderL2Workspace,
+  renderL3AiSuggestions, renderL3AutoCompact, renderL3GitWorkflow, renderL3HiddenModels, renderL3ModelTiers, renderL3OpusGate,
 } from './settings/views.mjs';
 
 export function createStudioSettingsRuntime({
@@ -68,6 +48,8 @@ export function createStudioSettingsRuntime({
     aiSuggestionsCfg: null,
     aiSuggestionsLoading: false,
     aiSuggestionsTestStatus: null,
+    gitWorkflowStatus: null,
+    gitWorkflowLoading: false,
   };
 
   const isZh = () => isZhUi();
@@ -296,6 +278,7 @@ export function createStudioSettingsRuntime({
     const catalog = studioPrefs.getModelCatalog();
     const cur = currentView();
     loadAiSuggestionsConfigIfNeeded(state, cur.view, () => renderActiveHost(true));
+    loadGitWorkflowStatusIfNeeded(state, cur.view, () => renderActiveHost(true));
     const meta = getViewMeta(cur.view, L);
     const viewCtx = {
       studioPrefs,
@@ -315,6 +298,7 @@ export function createStudioSettingsRuntime({
     else if (cur.view === 'stream-auto-compact') bodyHtml = renderL3AutoCompact(p, viewCtx);
     else if (cur.view === 'workspace') bodyHtml = renderL2Workspace(p, base, viewCtx);
     else if (cur.view === 'workspace-ai-suggestions') bodyHtml = renderL3AiSuggestions(state, viewCtx);
+    else if (cur.view === 'workspace-git-workflow') bodyHtml = renderL3GitWorkflow(state, viewCtx);
     else if (cur.view === 'appearance') bodyHtml = renderL2Appearance(p, base, viewCtx);
 
     const canBack = viewStack.length > 1;

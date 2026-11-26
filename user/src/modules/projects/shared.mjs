@@ -124,6 +124,8 @@ export function createProjectSharedContext(rt, modelApi) {
     pdWtCreateOpenByProj: {},
     pdWtConfirmRemovePath: '',
     pdWtBusyKey: '',
+    pdWorkflowPolicyByProj: {},
+    pdWtNudgeDismissedByProj: {},
     projectSuggestionsMap: {},
     projectSuggestionsBusyDirs: new Set(),
   };

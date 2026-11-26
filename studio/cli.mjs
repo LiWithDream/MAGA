@@ -33,6 +33,13 @@ import {
   verifyInstalledHookNodeRuntime,
   verifyLiveScheduleStepDecoder,
 } from './daemon/auto-compact-service.mjs';
+import {
+  findStalePolicyProjects,
+  isGitWorkflowPluginInstalled,
+  loadGitWorkflowPolicy,
+  syncGitWorkflowPlugin,
+  verifyGitWorkflowHookNodeRuntime,
+} from './daemon/git-workflow-service.mjs';
 import { QUOTA_STATE_FILE } from '../core/daemon/env.mjs';
 import { evaluateDeployGuard, readDeployMeta } from './deploy-meta.mjs';
 
@@ -195,6 +202,9 @@ async function runDoctor() {
     autoCompactPluginInstalled: isAutoCompactPluginInstalled(),
     autoCompactHookNode: verifyInstalledHookNodeRuntime(),
     autoCompactDecoder: verifyLiveScheduleStepDecoder(),
+    gitWorkflowPluginInstalled: isGitWorkflowPluginInstalled(),
+    gitWorkflowHookNode: verifyGitWorkflowHookNodeRuntime(),
+    gitWorkflowStaleProjects: findStalePolicyProjects(loadGitWorkflowPolicy()),
     proxyDiagnostics: collectProxyDiagnostics(),
     usageSummary: {
       daysCount: usage.days.length,
@@ -253,7 +263,8 @@ try {
       : syncFastIoRules();
     const pluginRes = syncOpusGatePlugin();
     const compactPluginRes = syncAutoCompactPlugin();
-    console.log(JSON.stringify({ ok: true, command: 'install', deploy: deployRes, rules: rulesRes, opusGatePlugin: pluginRes, autoCompactPlugin: compactPluginRes }, null, 2));
+    const gitWorkflowPluginRes = syncGitWorkflowPlugin();
+    console.log(JSON.stringify({ ok: true, command: 'install', deploy: deployRes, rules: rulesRes, opusGatePlugin: pluginRes, autoCompactPlugin: compactPluginRes, gitWorkflowPlugin: gitWorkflowPluginRes }, null, 2));
   } else if (cmd === 'deploy') {
     const res = await deployStudio({ allowNonMain: allowNonMainDeploy });
     await applyDefaultOrchestratorModelPreference();
@@ -261,12 +272,17 @@ try {
       res?.ok && !allowNonMainDeploy && !res?.deployedFrom?.preview
         ? syncAutoCompactPlugin()
         : { ok: true, skipped: true, reason: 'preview_deploy' };
-    console.log(JSON.stringify({ ...res, autoCompactPlugin: compactPluginRes }, null, 2));
+    const gitWorkflowPluginRes =
+      res?.ok && !allowNonMainDeploy && !res?.deployedFrom?.preview
+        ? syncGitWorkflowPlugin()
+        : { ok: true, skipped: true, reason: 'preview_deploy' };
+    console.log(JSON.stringify({ ...res, autoCompactPlugin: compactPluginRes, gitWorkflowPlugin: gitWorkflowPluginRes }, null, 2));
   } else if (cmd === 'sync-rules') {
     const rulesRes = syncFastIoRules();
     const pluginRes = syncOpusGatePlugin();
     const compactPluginRes = syncAutoCompactPlugin();
-    console.log(JSON.stringify({ ...rulesRes, opusGatePlugin: pluginRes, autoCompactPlugin: compactPluginRes }, null, 2));
+    const gitWorkflowPluginRes = syncGitWorkflowPlugin();
+    console.log(JSON.stringify({ ...rulesRes, opusGatePlugin: pluginRes, autoCompactPlugin: compactPluginRes, gitWorkflowPlugin: gitWorkflowPluginRes }, null, 2));
   } else if (cmd === 'doctor') {
     const report = await runDoctor();
     console.log(JSON.stringify(report, null, 2));
@@ -275,7 +291,8 @@ try {
     const rollbackRes = rollbackStudio();
     const pluginRes = syncOpusGatePlugin({ remove: true });
     const compactPluginRes = syncAutoCompactPlugin({ remove: true });
-    console.log(JSON.stringify({ ...rollbackRes, opusGatePlugin: pluginRes, autoCompactPlugin: compactPluginRes }, null, 2));
+    const gitWorkflowPluginRes = syncGitWorkflowPlugin({ remove: true });
+    console.log(JSON.stringify({ ...rollbackRes, opusGatePlugin: pluginRes, autoCompactPlugin: compactPluginRes, gitWorkflowPlugin: gitWorkflowPluginRes }, null, 2));
   } else {
     console.error(`Unknown command: ${cmd}\nUse: install | deploy | sync-rules | doctor | rollback`);
     process.exit(1);

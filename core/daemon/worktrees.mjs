@@ -1,9 +1,8 @@
 /**
  * Hardened Git Worktree Discovery, Per-Conversation Pinning & Lifecycle Service.
- * Imports only Node built-ins, `./env.mjs`, `./git-exec.mjs`, and `./projects.mjs`
- * so CLI tools (`studio/wt-cli.mjs`) never pull CDP or bundle runtime state.
+ * Delegates pure Git worktree operations to `../../studio/plugin/maga-git-workflow/lib/worktree-core.mjs`
+ * while managing daemon authorization, caches, stats gating, and per-conversation bindings.
  */
-import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
@@ -22,36 +21,39 @@ import {
   getRegisteredProjectDirs,
   resolveLocalProjectDir,
 } from './projects.mjs';
+import {
+  ACTIVE_CID_TTL_MS,
+  ALLOWED_WORKTREE_TYPES,
+  SAFE_CID_RE,
+  SAFE_SLUG_RE,
+  createRepoWorktreeCore,
+  execGitAsyncWithRaw,
+  getProtectedBranchesForRepo,
+  getRealPathPreserveCase,
+  normalizeRealPath,
+  parseWorktreeListPorcelainZ,
+  removeRepoWorktreeCore,
+  resolveCommonGitDirAsync,
+} from '../../studio/plugin/maga-git-workflow/lib/worktree-core.mjs';
 
 export const CONV_WORKTREES_DIR = path.join(STATE_DIR, 'conv-worktrees');
 export const PINS_FILE_NAME = 'pins.json';
-export const SAFE_CID_RE = /^[A-Za-z0-9_-]{6,128}$/;
-export const ALLOWED_WORKTREE_TYPES = new Set(['feat', 'fix', 'perf', 'refactor', 'docs', 'chore', 'release']);
-export const SAFE_SLUG_RE = /^[a-z0-9][a-z0-9._-]{0,48}$/;
+export {
+  ALLOWED_WORKTREE_TYPES,
+  SAFE_CID_RE,
+  SAFE_SLUG_RE,
+  getRealPathPreserveCase,
+  normalizeRealPath,
+  parseWorktreeListPorcelainZ,
+};
 
 const MAX_HOOK_FILES = 64;
-const ACTIVE_CID_TTL_MS = 10 * 60 * 1000;
 const WORKTREE_CACHE_TTL_MS = 5000;
 const STATS_CONCURRENCY = 3;
-const CASE_INSENSITIVE_FS = process.platform === 'darwin' || process.platform === 'win32';
 
 const worktreeListCache = new Map();
 const worktreeListInFlight = new Map();
 const worktreeAheadCache = new Map();
-
-export function getRealPathPreserveCase(p) {
-  const resolved = path.resolve(String(p || ''));
-  try {
-    return fs.realpathSync(resolved);
-  } catch {
-    return resolved;
-  }
-}
-
-export function normalizeRealPath(p) {
-  const real = getRealPathPreserveCase(p);
-  return CASE_INSENSITIVE_FS ? real.toLowerCase() : real;
-}
 
 function getPinsFilePath(convWtDir = CONV_WORKTREES_DIR) {
   return path.join(convWtDir, PINS_FILE_NAME);
@@ -111,80 +113,6 @@ export function isAuthorizedProjectDir(absDir, opts = {}) {
   }
   const targetNorm = normalizeRealPath(absDir);
   return getAuthorizedProjectDirs(opts).some((d) => normalizeRealPath(d) === targetNorm);
-}
-
-export function parseWorktreeListPorcelainZ(raw) {
-  if (!raw || typeof raw !== 'string') return [];
-  const tokens = raw.split('\0');
-  const entries = [];
-  let cur = null;
-
-  const pushCur = () => {
-    if (!cur || !cur.path) return;
-    const realPath = getRealPathPreserveCase(cur.path);
-    const branch = cur.branchRef ? cur.branchRef.replace(/^refs\/heads\//, '') : '';
-    const isMain = entries.length === 0;
-    const isProtected = branch === 'main' || branch === 'master';
-    entries.push({
-      path: cur.path,
-      realPath,
-      head: cur.head || '',
-      branch,
-      isMain,
-      isProtected,
-      detached: Boolean(cur.detached),
-      bare: Boolean(cur.bare),
-      locked: Boolean(cur.locked),
-      lockReason: cur.lockReason || '',
-      prunable: Boolean(cur.prunable),
-      prunableReason: cur.prunableReason || '',
-    });
-    cur = null;
-  };
-
-  for (const tok of tokens) {
-    if (tok === '') {
-      pushCur();
-      continue;
-    }
-    if (tok.startsWith('worktree ')) {
-      pushCur();
-      cur = {
-        path: tok.slice('worktree '.length),
-        head: '',
-        branchRef: '',
-        detached: false,
-        bare: false,
-        locked: false,
-        lockReason: '',
-        prunable: false,
-        prunableReason: '',
-      };
-      continue;
-    }
-    if (!cur) continue;
-    if (tok.startsWith('HEAD ')) {
-      cur.head = tok.slice('HEAD '.length).trim();
-    } else if (tok.startsWith('branch ')) {
-      cur.branchRef = tok.slice('branch '.length).trim();
-    } else if (tok === 'detached') {
-      cur.detached = true;
-    } else if (tok === 'bare') {
-      cur.bare = true;
-    } else if (tok === 'locked') {
-      cur.locked = true;
-    } else if (tok.startsWith('locked ')) {
-      cur.locked = true;
-      cur.lockReason = tok.slice('locked '.length).trim();
-    } else if (tok === 'prunable') {
-      cur.prunable = true;
-    } else if (tok.startsWith('prunable ')) {
-      cur.prunable = true;
-      cur.prunableReason = tok.slice('prunable '.length).trim();
-    }
-  }
-  pushCur();
-  return entries;
 }
 
 export function loadConversationWorktreeMap({ convWtDir = CONV_WORKTREES_DIR } = {}) {
@@ -309,9 +237,13 @@ async function fetchBaseWorktreeListAsync(absDir, { force = false } = {}) {
 
   const task = (async () => {
     let entries = [];
-    const out = await execGitAsync(absDir, ['worktree', 'list', '--porcelain', '-z'], 1500);
+    const [out, gitCtx] = await Promise.all([
+      execGitAsync(absDir, ['worktree', 'list', '--porcelain', '-z'], 1500),
+      resolveCommonGitDirAsync(absDir),
+    ]);
     if (out !== null) {
-      entries = parseWorktreeListPorcelainZ(out);
+      const prot = getProtectedBranchesForRepo(gitCtx?.commonDir || '');
+      entries = parseWorktreeListPorcelainZ(out, prot);
     } else if (prevGood) {
       entries = prevGood;
     }
@@ -526,47 +458,6 @@ export async function setConversationWorktreeBindingAsync(
   };
 }
 
-function execGitWithStatusAsync(absDir, args, timeoutMs = 4000) {
-  return execGitAsyncWithRaw(absDir, args, timeoutMs);
-}
-
-function execGitAsyncWithRaw(absDir, args, timeoutMs = 4000) {
-  return new Promise((resolve) => {
-    execFile(
-      'git',
-      ['-C', absDir, ...args],
-      {
-        timeout: timeoutMs,
-        maxBuffer: 256 * 1024,
-        encoding: 'utf8',
-        env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
-      },
-      (err, stdout, stderr) => {
-        resolve({
-          ok: !err,
-          stdout: String(stdout || ''),
-          stderr: String(stderr || ''),
-        });
-      }
-    );
-  });
-}
-
-async function ensureNodeModulesExcludedAsync(repoDir) {
-  const commonOut = await execGitAsync(repoDir, ['rev-parse', '--git-common-dir'], 1000);
-  if (!commonOut) return;
-  const commonDir = path.resolve(repoDir, commonOut.trim());
-  const excludeFile = path.join(commonDir, 'info', 'exclude');
-  try {
-    const existing = fs.existsSync(excludeFile) ? fs.readFileSync(excludeFile, 'utf8') : '';
-    const hasEntry = existing.split(/\r?\n/).some((line) => line.trim() === '/node_modules');
-    if (!hasEntry) {
-      const prefix = existing && !existing.endsWith('\n') ? '\n' : '';
-      writeAtomicUtf8(excludeFile, `${existing}${prefix}/node_modules\n`);
-    }
-  } catch {}
-}
-
 export async function createRepoWorktreeAsync(
   projectDir,
   {
@@ -575,6 +466,7 @@ export async function createRepoWorktreeAsync(
     branch = '',
     baseBranch = '',
     cid = '',
+    allowGenericBranch = false,
     allowUnregistered = false,
     authorizedDirs = null,
     nativeProjectsDir = NATIVE_PROJECTS_DIR,
@@ -592,98 +484,23 @@ export async function createRepoWorktreeAsync(
   if (!mainEntry) return { ok: false, error: 'not_git_repo' };
   const mainReal = getRealPathPreserveCase(mainEntry.realPath);
 
-  let wtType = String(type || 'feat').trim().toLowerCase();
-  let wtSlug = String(slug || '').trim().toLowerCase();
-  const rawBranch = String(branch || '').trim();
-  if (rawBranch) {
-    const m = rawBranch.match(/^([a-z]+)\/(.+)$/i);
-    if (!m) return { ok: false, error: 'invalid_branch_format' };
-    wtType = m[1].toLowerCase();
-    wtSlug = m[2].toLowerCase();
-  }
-
-  if (!ALLOWED_WORKTREE_TYPES.has(wtType)) {
-    return { ok: false, error: 'invalid_worktree_type' };
-  }
-  if (
-    !SAFE_SLUG_RE.test(wtSlug) ||
-    wtSlug.includes('..') ||
-    wtSlug.endsWith('.lock') ||
-    wtSlug.endsWith('.') ||
-    wtSlug.startsWith('.')
-  ) {
-    return { ok: false, error: 'invalid_worktree_slug' };
-  }
-
-  const fullBranch = `${wtType}/${wtSlug}`;
-  if (fullBranch === 'main' || fullBranch === 'master') {
-    return { ok: false, error: 'protected_branch_forbidden' };
-  }
-
-  const branchCheck = await execGitAsyncWithRaw(mainReal, ['check-ref-format', '--branch', fullBranch], 1000);
-  if (!branchCheck.ok || !branchCheck.stdout.trim()) {
-    return { ok: false, error: 'invalid_branch_name' };
-  }
-
-  const targetBase = String(baseBranch || mainEntry.branch || 'main').trim();
-  if (!targetBase || targetBase.startsWith('-')) {
-    return { ok: false, error: 'invalid_base_branch' };
-  }
-  const baseCheck = await execGitAsyncWithRaw(mainReal, ['check-ref-format', '--branch', targetBase], 1000);
-  if (!baseCheck.ok || !baseCheck.stdout.trim()) {
-    return { ok: false, error: 'invalid_base_branch' };
-  }
-
-  const wtParent = path.join(path.dirname(mainReal), `${path.basename(mainReal)}-wt`);
-  const wtParentLstat = fs.lstatSync(wtParent, { throwIfNoEntry: false });
-  if (wtParentLstat && wtParentLstat.isSymbolicLink()) {
-    return { ok: false, error: 'unsafe_worktree_parent' };
-  }
-  fs.mkdirSync(wtParent, { recursive: true });
-  const wtParentReal = getRealPathPreserveCase(wtParent);
-  if (
-    CASE_INSENSITIVE_FS
-      ? wtParentReal.toLowerCase() !== wtParent.toLowerCase()
-      : wtParentReal !== wtParent
-  ) {
-    return { ok: false, error: 'unsafe_worktree_parent' };
-  }
-
-  const dest = path.join(wtParentReal, wtSlug);
-  const existingLstat = fs.lstatSync(dest, { throwIfNoEntry: false });
-  if (existingLstat) {
-    return { ok: false, error: 'worktree_path_exists' };
-  }
-
-  const addRes = await execGitWithStatusAsync(mainReal, ['worktree', 'add', '-b', fullBranch, '--', dest, targetBase], 8000);
-  if (!addRes.ok) {
-    return { ok: false, error: 'git_worktree_add_failed', detail: addRes.stderr.trim() || 'git worktree add failed' };
-  }
-
-  const destReal = getRealPathPreserveCase(dest);
-  await ensureNodeModulesExcludedAsync(mainReal);
-  const srcNodeModules = path.join(mainReal, 'node_modules');
-  const destNodeModules = path.join(destReal, 'node_modules');
-  if (fs.existsSync(srcNodeModules) && !fs.lstatSync(destNodeModules, { throwIfNoEntry: false })) {
-    try {
-      fs.symlinkSync(srcNodeModules, destNodeModules);
-    } catch {}
-  }
+  const created = await createRepoWorktreeCore(mainEntry, {
+    type,
+    slug,
+    branch,
+    baseBranch,
+    allowGenericBranch,
+  });
+  if (!created.ok) return created;
 
   invalidateWorktreeListCache(mainReal);
-  invalidateOverviewGitCache(destReal);
+  invalidateOverviewGitCache(created.worktreePath);
 
   if (SAFE_CID_RE.test(String(cid || '').trim())) {
-    await setConversationWorktreeBindingAsync(mainReal, cid, destReal, { convWtDir });
+    await setConversationWorktreeBindingAsync(mainReal, cid, created.worktreePath, { convWtDir });
   }
 
-  return {
-    ok: true,
-    worktreePath: destReal,
-    branch: fullBranch,
-    baseBranch: targetBase,
-    mainDirPath: mainReal,
-  };
+  return created;
 }
 
 export async function removeRepoWorktreeAsync(
@@ -704,49 +521,17 @@ export async function removeRepoWorktreeAsync(
     return { ok: false, error: 'unregistered_project_dir' };
   }
 
-  const rawTarget = String(worktreePath || '').trim();
-  if (!rawTarget) return { ok: false, error: 'missing_worktree_path' };
-
   const listRes = await listRepoWorktreesAsync(absProj, { force: true, convWtDir });
   const mainEntry = listRes.worktrees.find((w) => w.isMain) || null;
   if (!mainEntry) return { ok: false, error: 'not_git_repo' };
   const mainReal = getRealPathPreserveCase(mainEntry.realPath);
 
-  const targetNorm = normalizeRealPath(rawTarget);
-  const entry = listRes.worktrees.find(
-    (w) => normalizeRealPath(w.realPath) === targetNorm || normalizeRealPath(w.path) === targetNorm
-  );
-  if (!entry) return { ok: false, error: 'worktree_not_found' };
-  if (entry.isMain) return { ok: false, error: 'cannot_remove_main_worktree' };
-  if (entry.locked) return { ok: false, error: 'worktree_locked' };
-  if (entry.prunable) return { ok: false, error: 'worktree_prunable' };
-
-  if (!forceActive && Array.isArray(entry.boundCids)) {
-    const now = Date.now();
-    const activeBound = entry.boundCids.some((b) => b.updatedAt > 0 && now - b.updatedAt <= ACTIVE_CID_TTL_MS);
-    if (activeBound) {
-      return { ok: false, error: 'worktree_active_in_conversation' };
-    }
-  }
-
-  // Ensure /node_modules is excluded before plain `git worktree remove` (no --force)
-  await ensureNodeModulesExcludedAsync(mainReal);
-
-  const rmRes = await execGitWithStatusAsync(mainReal, ['worktree', 'remove', '--', entry.realPath], 8000);
-  if (!rmRes.ok) {
-    return { ok: false, error: 'git_worktree_remove_failed', detail: rmRes.stderr.trim() || 'worktree may be dirty' };
-  }
-
-  let branchDeleted = false;
-  let branchWarning = '';
-  if (deleteBranch && entry.branch && entry.branch !== 'main' && entry.branch !== 'master') {
-    const brRes = await execGitWithStatusAsync(mainReal, ['branch', '-d', '--', entry.branch], 4000);
-    if (brRes.ok) {
-      branchDeleted = true;
-    } else {
-      branchWarning = brRes.stderr.trim() || 'branch not fully merged';
-    }
-  }
+  const removed = await removeRepoWorktreeCore(mainEntry, listRes.worktrees, {
+    worktreePath,
+    deleteBranch,
+    forceActive,
+  });
+  if (!removed.ok) return removed;
 
   // Clean up any manual pins pointing to the removed worktree
   try {
@@ -756,7 +541,7 @@ export async function removeRepoWorktreeAsync(
       let changed = false;
       const nextPins = { ...pinsDoc.pins };
       for (const [cidKey, pin] of Object.entries(nextPins)) {
-        if (pin && pin.worktreePath && normalizeRealPath(pin.worktreePath) === normalizeRealPath(entry.realPath)) {
+        if (pin && pin.worktreePath && normalizeRealPath(pin.worktreePath) === normalizeRealPath(removed.removedPath)) {
           delete nextPins[cidKey];
           changed = true;
         }
@@ -768,15 +553,9 @@ export async function removeRepoWorktreeAsync(
   } catch {}
 
   invalidateWorktreeListCache(mainReal);
-  invalidateOverviewGitCache(entry.realPath);
+  invalidateOverviewGitCache(removed.removedPath);
 
-  return {
-    ok: true,
-    removedPath: entry.realPath,
-    branch: entry.branch,
-    branchDeleted,
-    ...(branchWarning ? { branchWarning } : {}),
-  };
+  return removed;
 }
 
 export async function collectAuthorizedWorktreeRootsAsync(extraProjectDir = '', opts = {}) {

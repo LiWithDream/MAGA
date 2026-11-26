@@ -457,11 +457,56 @@ export function createWorktreeUiController(ctx) {
         </form>`
       : '';
 
+    const wfPolicy =
+      pState.pdWorkflowPolicyByProj?.[project.dirPath] ||
+      wsStatus?.workflowPolicy ||
+      null;
+    const curMode = wfPolicy?.mode || 'observe';
+    const localGuard = Boolean(wfPolicy?.localGuardrailActive);
+
+    const policyControlHtml = localGuard
+      ? `<span class="ag-pd-wt-policy-lock" title="${escapeHtml(L('由仓库 .agents/hooks.json 接管强制保护', 'Enforced by repository .agents/hooks.json'))}">${escapeHtml(L('工作树 · 仓库护栏', 'Worktree · Repo Guard'))}</span>`
+      : `<div class="ag-pd-wt-policy-seg" role="radiogroup" aria-label="${escapeHtml(L('Git 工作流保护级别', 'Git Workflow tier'))}">
+          ${[
+            ['observe', L('观察', 'Observe')],
+            ['protect-main', L('护主干', 'Protect Main')],
+            ['worktree-only', L('工作树', 'Worktree')],
+          ]
+            .map(
+              ([m, lbl]) =>
+                `<button type="button" class="ag-pd-wt-policy-btn" role="radio" data-ag-pd-wf-mode="${m}" aria-checked="${curMode === m ? 'true' : 'false'}"${busy ? ' disabled' : ''}>${escapeHtml(lbl)}</button>`
+            )
+            .join('')}
+        </div>`;
+
+    const policyBarHtml = `<div class="ag-pd-wt-policy-row" data-ag-pd-wf-policy="true">
+      <span class="ag-pd-wt-policy-lbl">${escapeHtml(L('护栏策略', 'Guard'))}</span>
+      ${policyControlHtml}
+    </div>`;
+
+    const showNudge =
+      !localGuard &&
+      curMode === 'observe' &&
+      worktrees.length >= 2 &&
+      !pState.pdWtNudgeDismissedByProj?.[project.dirPath];
+    const nudgeHtml = showNudge
+      ? `<div class="ag-pd-wt-nudge" data-ag-pd-wf-nudge="true">
+          <span class="ag-pd-wt-nudge-txt">${escapeHtml(L('检测到多个并行 Worktree，建议开启护主干防误改', 'Multiple worktrees detected — protect main from accidental edits?'))}</span>
+          <div class="ag-pd-wt-nudge-acts">
+            <button type="button" class="ag-pd-wt-nudge-btn" data-ag-pd-wf-mode="protect-main">${escapeHtml(L('护主干', 'Protect Main'))}</button>
+            <button type="button" class="ag-pd-wt-nudge-btn is-strong" data-ag-pd-wf-mode="worktree-only">${escapeHtml(L('工作树隔离', 'Worktree-Only'))}</button>
+            <button type="button" class="ag-pd-wt-nudge-close" data-ag-pd-wf-nudge-dismiss="true" aria-label="${escapeHtml(L('忽略提示', 'Dismiss'))}">×</button>
+          </div>
+        </div>`
+      : '';
+
     return `<div class="ag-pd-wt-wrap" data-ag-pd-wt-wrap="true">
       <div class="ag-pd-wt-bar">
         ${chipsHtml}
         <button type="button" class="ag-pd-wt-add" data-ag-pd-wt-create-toggle="true" title="${escapeHtml(L('新建隔离 worktree', 'New isolated worktree'))}">+ Worktree</button>
       </div>
+      ${policyBarHtml}
+      ${nudgeHtml}
       ${createFormHtml}
     </div>`;
   }
@@ -561,6 +606,56 @@ export function createWorktreeUiController(ctx) {
         e.preventDefault();
         e.stopPropagation();
         pState.pdWtConfirmRemovePath = '';
+        pHooks.renderProjectsView?.();
+      });
+    });
+
+    el.querySelectorAll('[data-ag-pd-wf-mode]').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const mode = btn.getAttribute('data-ag-pd-wf-mode') || '';
+        if (!mode || pState.pdWtBusyKey || typeof window.__agProjectCall !== 'function') return;
+        pState.pdWtBusyKey = project.dirPath;
+        pHooks.renderProjectsView?.();
+        Promise.resolve(
+          window.__agProjectCall('setGitWorkflowPolicy', { dirPath: project.dirPath, mode }, 5000)
+        )
+          .then((res) => {
+            pState.pdWtBusyKey = '';
+            if (rtState.disposed) return;
+            if (!res || !res.ok) {
+              showProjectsFloatingNotice(res?.error || L('切换工作流策略失败', 'Failed to update workflow mode'));
+              pHooks.renderProjectsView?.();
+              return;
+            }
+            pState.pdWorkflowPolicyByProj[project.dirPath] = {
+              mode,
+              source: 'project',
+              localGuardrailActive: false,
+            };
+            const modeLbl =
+              mode === 'worktree-only'
+                ? L('工作树隔离', 'Worktree-Only')
+                : mode === 'protect-main'
+                  ? L('护主干', 'Protect Main')
+                  : L('观察', 'Observe');
+            showProjectsFloatingNotice(L(`Git 护栏：${modeLbl}`, `Git guard: ${modeLbl}`));
+            onRefreshStatus?.('', true);
+            pHooks.renderProjectsView?.();
+          })
+          .catch(() => {
+            pState.pdWtBusyKey = '';
+            pHooks.renderProjectsView?.();
+          });
+      });
+    });
+
+    el.querySelectorAll('[data-ag-pd-wf-nudge-dismiss]').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        pState.pdWtNudgeDismissedByProj[project.dirPath] = true;
         pHooks.renderProjectsView?.();
       });
     });

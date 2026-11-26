@@ -121,6 +121,9 @@ export function createProjectWorkspaceUi(ctx) {
             data: { ok: true, mainDirPath: res.mainDirPath || dirPath, worktrees: res.worktrees },
           };
         }
+        if (res.workflowPolicy && typeof res.workflowPolicy === 'object') {
+          pState.pdWorkflowPolicyByProj[dirPath] = res.workflowPolicy;
+        }
         if (rtState.projectsViewOpen && pState.activeProjectId) {
           const active = (pHooks.collectNativeProjects?.() || []).find((p) => p.id === pState.activeProjectId);
           if (active && active.dirPath === dirPath && (force || JSON.stringify(res) !== prevSig)) {

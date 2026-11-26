@@ -150,7 +150,7 @@ test('PreToolUse file edits are blocked in primary checkout (even on feat branch
     for (const localPath of [
       path.join(repo, 'AGENTS.md'),
       path.join(repo, 'docs', 'DEVELOPMENT_HISTORY.md'),
-      path.join(repo, '.agents', 'hooks.json'),
+      path.join(repo, '.agents', 'skills', 'demo', 'SKILL.md'),
     ]) {
       assert.deepEqual(
         evaluateHookPayload({
@@ -161,6 +161,19 @@ test('PreToolUse file edits are blocked in primary checkout (even on feat branch
         { decision: 'allow' },
         `expected allow for local-only path: ${localPath}`
       );
+    }
+
+    // Anti-tamper rule (Option A): .agents/hooks.json and .agents/hooks/** are DENIED in enforced repos
+    for (const tamperedHookPath of [
+      path.join(repo, '.agents', 'hooks.json'),
+      path.join(repo, '.agents', 'hooks', 'guard-main-branch.mjs'),
+    ]) {
+      const tamperRes = evaluateHookPayload({
+        hookEventName: 'PreToolUse',
+        cwd: repo,
+        toolCall: { name: 'edit_file', args: { Path: tamperedHookPath } },
+      });
+      assert.equal(tamperRes.decision, 'deny', `expected deny for hook tamper path: ${tamperedHookPath}`);
     }
 
     // 3. Allowed inside sibling worktree on feat/wt even when cwd is main

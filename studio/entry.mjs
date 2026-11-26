@@ -77,6 +77,7 @@ import { motionThemes } from '../vendor/agy-capsule/motion_themes.mjs';
     studioPrefs,
     motionThemes,
     openSubagent: subagentFooter.openSubagent,
+    isSubagentOpen: subagentFooter.isSubagentOpen,
   });
   const autoCompact = createAutoCompactRuntime({ studioPrefs });
   const scrollbarClamp = createScrollbarClampRuntime();

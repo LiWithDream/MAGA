@@ -34,7 +34,7 @@ function normalizeReviewerModel(raw, fallback = 'opus') {
   return fallback === 'carbon' ? 'carbon' : 'opus';
 }
 
-export function createOpusGatePillRuntime({ studioPrefs, motionThemes, openSubagent } = {}) {
+export function createOpusGatePillRuntime({ studioPrefs, motionThemes, openSubagent, isSubagentOpen } = {}) {
   const PILL_ID = 'agy-opus-gate-pill';
   const MENU_ID = 'agy-opus-gate-menu';
   const DISMISS_STORAGE_KEY = 'agy_studio_opus_gate_dismissed_v1';
@@ -57,6 +57,24 @@ export function createOpusGatePillRuntime({ studioPrefs, motionThemes, openSubag
   let fxFlow = 0;
   let fxLastTs = 0;
   let fxCanvas = null;
+  let fxTickFn = null;
+
+  function isLightTheme() {
+    if (typeof document !== 'object' || !document.documentElement) return false;
+    const root = document.documentElement;
+    if (root.getAttribute('data-ag-theme-mode') === 'dark') return false;
+    if (root.classList.contains('dark')) return false;
+    if (document.body?.classList?.contains('dark')) return false;
+    return true;
+  }
+
+  function fmtCompactTok(n) {
+    const v = Number(n || 0);
+    if (!Number.isFinite(v) || v <= 0) return '';
+    if (v >= 1e6) return `${(v / 1e6).toFixed(v >= 10e6 ? 0 : 1).replace(/\.0$/, '')}M`;
+    if (v >= 1e3) return `${(v / 1e3).toFixed(1)}k`;
+    return String(Math.round(v));
+  }
 
   const isEnabled = () => (studioPrefs?.get?.()?.opusGateMode || 'semi') !== 'off';
   const getDefaultReviewerModel = () => normalizeReviewerModel(studioPrefs?.get?.()?.opusGateModel, 'opus');
@@ -224,6 +242,7 @@ export function createOpusGatePillRuntime({ studioPrefs, motionThemes, openSubag
     fxActiveModel = '';
     fxLastTs = 0;
     fxCanvas = null;
+    fxTickFn = null;
   }
 
   function findActiveReviewChild(cid = getActiveRouteCid()) {
@@ -239,7 +258,13 @@ export function createOpusGatePillRuntime({ studioPrefs, motionThemes, openSubag
       let model = getDefaultReviewerModel();
       if (/carbon|gemini/i.test(hint)) model = 'carbon';
       else if (/opus|claude/i.test(hint)) model = 'opus';
-      return { id: ch.id, label: rawName, model };
+      return {
+        id: ch.id,
+        label: rawName,
+        model,
+        calls: Number(ch.calls || 0),
+        outTok: Number(ch.outTok || 0),
+      };
     }
     return null;
   }
@@ -273,10 +298,11 @@ export function createOpusGatePillRuntime({ studioPrefs, motionThemes, openSubag
 
     const prefs = studioPrefs?.get?.() || {};
     const pal = model === 'carbon' ? mt.GEMINI_PALETTES?.carbon : mt.CLAUDE_PALETTES?.opus;
+    const isLight = isLightTheme();
     if (model === 'carbon' && typeof mt.paintGeminiSlider === 'function') {
-      mt.paintGeminiSlider(ctx, pal, prefs.geminiTheme || 'physical', w, h, fxFlow, fxClock, 0.78, { isLight: false });
+      mt.paintGeminiSlider(ctx, pal, prefs.geminiTheme || 'physical', w, h, fxFlow, fxClock, 0.78, { isLight });
     } else if (typeof mt.paintClaudeSlider === 'function') {
-      mt.paintClaudeSlider(ctx, pal, prefs.claudeTheme || 'matrix', w, h, fxFlow, fxClock, 0.76, { isLight: false });
+      mt.paintClaudeSlider(ctx, pal, prefs.claudeTheme || 'matrix', w, h, fxFlow, fxClock, 0.76, { isLight });
     }
     return { mt, pal, prefs };
   }
@@ -289,7 +315,7 @@ export function createOpusGatePillRuntime({ studioPrefs, motionThemes, openSubag
     const mediaReduced = Boolean(typeof window === 'object' && window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches);
     const staticOnly = motionLevel === 'off' || effortMotion === 'off' || mediaReduced;
 
-    if (fxCanvas === canvas && fxActiveModel === model && (fxRaf || staticOnly)) {
+    if (fxCanvas === canvas && fxActiveModel === model && (fxRaf || fxTickFn || staticOnly)) {
       if (staticOnly) paintFxFrame(canvas, model);
       return;
     }
@@ -305,6 +331,11 @@ export function createOpusGatePillRuntime({ studioPrefs, motionThemes, openSubag
     const tickFx = (ts) => {
       if (disposed || fxCanvas !== canvas || !canvas.isConnected) {
         stopFxLoop();
+        return;
+      }
+      if (typeof document === 'object' && document.hidden) {
+        fxRaf = 0;
+        fxLastTs = 0;
         return;
       }
       const curPrefs = studioPrefs?.get?.() || {};
@@ -324,7 +355,12 @@ export function createOpusGatePillRuntime({ studioPrefs, motionThemes, openSubag
       paintFxFrame(canvas, fxActiveModel);
       fxRaf = requestAnimationFrame(tickFx);
     };
-    fxRaf = requestAnimationFrame(tickFx);
+    fxTickFn = tickFx;
+    if (typeof document === 'object' && document.hidden) {
+      fxRaf = 0;
+    } else {
+      fxRaf = requestAnimationFrame(tickFx);
+    }
   }
 
   function removePill() {
@@ -585,8 +621,22 @@ export function createOpusGatePillRuntime({ studioPrefs, motionThemes, openSubag
   const onDocKey = (e) => {
     if (menuOpen && e.key === 'Escape') closeMenu();
   };
+  const onVisibilityChange = () => {
+    if (disposed || document.hidden) return;
+    if (fxCanvas && fxActiveModel && fxTickFn && !fxRaf && fxCanvas.isConnected && typeof requestAnimationFrame === 'function') {
+      const curPrefs = studioPrefs?.get?.() || {};
+      const curMotion = curPrefs.motionLevel || 'full';
+      const curEffort = curPrefs.effortMotion || 'full';
+      const mediaReduced = Boolean(typeof window === 'object' && window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches);
+      if (curMotion !== 'off' && curEffort !== 'off' && !mediaReduced) {
+        fxLastTs = 0;
+        fxRaf = requestAnimationFrame(fxTickFn);
+      }
+    }
+  };
   document.addEventListener('click', onDocClick, true);
   document.addEventListener('keydown', onDocKey, true);
+  document.addEventListener('visibilitychange', onVisibilityChange);
 
   function fetchStatus(cid, { force = false } = {}) {
     if (!cid || disposed || typeof window.__agProjectCall !== 'function') return;
@@ -631,10 +681,6 @@ export function createOpusGatePillRuntime({ studioPrefs, motionThemes, openSubag
     const running = plan ? plan.running : isComposerRunning();
     const editorEmpty = plan ? plan.editorEmpty : isEditorEmpty(box);
     if (activeReview) {
-      if (!editorEmpty) {
-        removePill();
-        return;
-      }
       closeMenu();
     } else {
       stopFxLoop();
@@ -719,18 +765,35 @@ export function createOpusGatePillRuntime({ studioPrefs, motionThemes, openSubag
         activeReview.model === 'carbon'
           ? L('Carbon 审查中', 'Carbon Reviewing')
           : L('Opus 审查中', 'Opus Reviewing');
-      const tip = L('点击查看审查子代理进度', 'Click to view active reviewer');
-      const sig = `${key}|${langTag}|reviewing|${label}`;
+      const linkedOpen = Boolean(typeof isSubagentOpen === 'function' && isSubagentOpen(activeReview.id));
+      const tipParts = [
+        activeReview.label || (activeReview.model === 'carbon' ? 'review-carbon' : 'review-opus'),
+      ];
+      if (activeReview.calls > 0) {
+        tipParts.push(L(`${activeReview.calls} 次调用`, `${activeReview.calls} calls`));
+      }
+      if (activeReview.outTok > 0) {
+        const tokText = fmtCompactTok(activeReview.outTok);
+        if (tokText) tipParts.push(`${tokText} tok`);
+      }
+      tipParts.push(
+        linkedOpen
+          ? L('点击收起审查侧栏', 'Click to close reviewer panel')
+          : L('点击查看审查子代理进度', 'Click to view active reviewer')
+      );
+      const tip = tipParts.join(' · ');
+      const sig = `${key}|${langTag}|reviewing|${label}|${linkedOpen ? 1 : 0}`;
       if (pill.getAttribute('data-sig') !== sig) {
         setAttr(pill, 'data-sig', sig);
         setAttr(pill, 'data-reviewing', '1');
         setAttr(pill, 'data-reviewer-model', activeReview.model);
         setAttr(pill, 'data-quota-blocked', '0');
+        setAttr(pill, 'data-linked-open', linkedOpen ? '1' : '0');
         const lblEl = pill.querySelector('.agy-opus-label');
         if (lblEl) setLeafText(lblEl, label);
-        const goBtn = pill.querySelector('.agy-opus-go');
-        if (goBtn && goBtn.title !== tip) goBtn.title = tip;
       }
+      const goBtn = pill.querySelector('.agy-opus-go');
+      if (goBtn && goBtn.title !== tip) goBtn.title = tip;
       startFxLoop(pill.querySelector('.agy-opus-fx'), activeReview.model);
       return;
     }
@@ -747,6 +810,7 @@ export function createOpusGatePillRuntime({ studioPrefs, motionThemes, openSubag
       setAttr(pill, 'data-reviewing', '0');
       setAttr(pill, 'data-reviewer-model', defaultModel);
       setAttr(pill, 'data-quota-blocked', live.quotaBlocked ? '1' : '0');
+      setAttr(pill, 'data-linked-open', '0');
       const lblEl = pill.querySelector('.agy-opus-label');
       if (lblEl) setLeafText(lblEl, label);
       const goBtn = pill.querySelector('.agy-opus-go');
@@ -834,6 +898,7 @@ export function createOpusGatePillRuntime({ studioPrefs, motionThemes, openSubag
     fallbackTimers.clear();
     document.removeEventListener('click', onDocClick, true);
     document.removeEventListener('keydown', onDocKey, true);
+    document.removeEventListener('visibilitychange', onVisibilityChange);
     removePill();
     if (menuEl) {
       try { menuEl.remove(); } catch {}

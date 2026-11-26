@@ -434,12 +434,18 @@ export function createSubagentFooterRuntime({ motionThemes, shortenModelName, sh
     handoff.openOrToggleSubagentSidePanel(id, { label, allowToggleClose: true });
   }
 
+  function isSubagentOpen(id) {
+    if (!id || disposed) return false;
+    return Boolean(isAuxPanelOpen() && getActiveSubagentTabId() === id);
+  }
+
   return {
     topics: ['composer', 'subagent', 'metrics', 'route', 'overview', 'prefs'],
     read,
     write,
     sync,
     openSubagent,
+    isSubagentOpen,
     dispose,
   };
 }

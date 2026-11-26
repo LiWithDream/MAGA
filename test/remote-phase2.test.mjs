@@ -697,6 +697,7 @@ test('Phase 2 static invariants: 7 gateway files, <2000 lines, Zero-XSS across a
     path.join(REPO, 'user', 'src', 'modules', 'remote-tap.mjs'),
     path.join(GW_DIR, 'ws-server.mjs'),
     path.join(PWA_DIR, 'src', 'studio-panel.mjs'),
+    path.join(PWA_DIR, 'src', 'overview-panel.mjs'),
     path.join(PWA_DIR, 'src', 'app.mjs'),
     path.join(PWA_DIR, 'src', 'ws-client.mjs'),
   ];
@@ -810,6 +811,94 @@ test('Phase 2 PWA shell regressions: Markdown Zero-XSS & stale IDLE stream suppr
       needTurboConfirm: false,
     });
     assert.equal(resumeContainer.textContent.includes('null'), false, 'Resume banner must not contain literal "null"');
+  } finally {
+    if (prevDoc) Object.defineProperty(globalThis, 'document', prevDoc);
+    else delete globalThis.document;
+    dom.window.close();
+  }
+});
+
+test('Phase 2 Dual-Form UI regressions: layout mode, Overview panel, code copy & step data-role', async () => {
+  const { JSDOM } = await import('jsdom');
+  const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://127.0.0.1/' });
+  const prevDoc = Object.getOwnPropertyDescriptor(globalThis, 'document');
+  globalThis.document = dom.window.document;
+
+  try {
+    const helpersMod = await import(pathToFileURL(path.join(PWA_DIR, 'src', 'ui-helpers.mjs')).href);
+    const overviewMod = await import(pathToFileURL(path.join(PWA_DIR, 'src', 'overview-panel.mjs')).href);
+    const timelineMod = await import(pathToFileURL(path.join(PWA_DIR, 'src', 'timeline-view.mjs')).href);
+
+    // 1. resolveLayoutMode & formatResetCountdown
+    assert.equal(helpersMod.resolveLayoutMode('auto', 1280), 'desktop');
+    assert.equal(helpersMod.resolveLayoutMode('auto', 390), 'mobile');
+    assert.equal(helpersMod.resolveLayoutMode('desktop', 390), 'desktop');
+    assert.equal(helpersMod.resolveLayoutMode('mobile', 1440), 'mobile');
+    assert.equal(helpersMod.formatResetCountdown(2700), '45m');
+    assert.equal(helpersMod.formatResetCountdown(12000), '3h 20m');
+    assert.equal(helpersMod.formatResetCountdown(0), '');
+
+    // 2. renderOverviewPanel
+    const ovRoot = dom.window.document.createElement('aside');
+    let filteredPid = '';
+    overviewMod.renderOverviewPanel(ovRoot, {
+      overview: {
+        quota: {
+          tierName: 'Ultra',
+          claude: { fiveHourRemainingPct: 92, weeklyRemainingPct: 79, fiveHourResetSec: 3600, weeklyResetSec: 172800 },
+          gemini: { fiveHourRemainingPct: 80, weeklyRemainingPct: 90, fiveHourResetSec: 1800, weeklyResetSec: 86400 },
+        },
+        todayUsage: {
+          date: '2026-11-26',
+          requests: 120,
+          totalTokens: 1_500_000,
+          uncached: 150_000,
+          cacheRead: 850_000,
+          output: 500_000,
+        },
+        projects: [
+          { id: 'proj-maga', name: 'MAGA', shortPath: '~/Developer/MAGA', worktrees: [{ branch: 'main', isMain: true }] },
+        ],
+        worktreeByCid: {
+          'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1': { branch: 'feat/remote-dual-ui', repoName: 'MAGA', projectId: 'proj-maga' },
+        },
+        activeCascade: {
+          cascadeId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1',
+          opusGate: { proposal: { id: 'p-1' } },
+          autoCompact: { pending: null },
+        },
+      },
+      selectedConvo: { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1', title: 'Dual UI Test', status: 'IDLE', stepCount: 12 },
+      snapshot: { cascadeId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1', status: 'IDLE', source: 'cdp', steps: [{ idx: 1 }] },
+      selectedProjectId: '',
+      onSelectProject: (pid) => {
+        filteredPid = pid;
+      },
+    });
+    assert.equal(ovRoot.querySelectorAll('.rc-meter-fill').length, 4);
+    assert.match(ovRoot.textContent, /1\.5M tok/);
+    assert.match(ovRoot.textContent, /缓存 85%/);
+    assert.match(ovRoot.textContent, /feat\/remote-dual-ui/);
+    assert.equal(ovRoot.textContent.includes('null'), false, 'Overview panel must never emit literal "null"');
+    const projBtn = Array.from(ovRoot.querySelectorAll('button')).find((b) => b.textContent === '筛选');
+    assert.ok(projBtn, 'expected project filter button in Overview panel');
+    projBtn.click();
+    assert.equal(filteredPid, 'proj-maga');
+
+    // 3. Fenced code block wrapper with copy button + untouched pre.rc-pre textContent
+    const codeMd = timelineMod.renderSafeMarkdown('```ts\nconst answer = 42;\n```');
+    assert.ok(codeMd.querySelector('.rc-code-block'));
+    assert.equal(codeMd.querySelector('.rc-code-head .rc-code-lang')?.textContent, 'ts');
+    assert.ok(codeMd.querySelector('.rc-code-head .rc-code-copy'));
+    assert.equal(codeMd.querySelector('pre.rc-pre')?.textContent, 'const answer = 42;');
+
+    // 4. renderStepCard data-role attribute
+    const userCard = timelineMod.renderStepCard({ idx: 1, type: 'USER_INPUT', status: 'DONE', text: 'Hi' });
+    const botCard = timelineMod.renderStepCard({ idx: 2, type: 'PLANNER_RESPONSE', status: 'DONE', text: 'Hello' });
+    const toolCard = timelineMod.renderStepCard({ idx: 3, type: 'GENERIC', status: 'DONE', toolCalls: [] });
+    assert.equal(userCard.getAttribute('data-role'), 'user');
+    assert.equal(botCard.getAttribute('data-role'), 'assistant');
+    assert.equal(toolCard.getAttribute('data-role'), 'tool');
   } finally {
     if (prevDoc) Object.defineProperty(globalThis, 'document', prevDoc);
     else delete globalThis.document;

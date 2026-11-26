@@ -8,18 +8,19 @@ import {
   loadDeviceIdentity,
   saveDeviceIdentity,
 } from './crypto-store.mjs';
+import { renderOverviewPanel } from './overview-panel.mjs';
 import { createPairViewController } from './pair-view.mjs';
 import {
   renderOpusGateBanner,
-  renderProjectsDrawer,
   renderResumeBanner,
-  renderStudioStrip,
 } from './studio-panel.mjs';
 import { renderDetailTimeline as renderTimelineView } from './timeline-view.mjs';
 import {
+  DESKTOP_BREAKPOINT_PX,
   UUID_RE,
   clearNode,
   collectPendingApprovals,
+  copyTextWithFeedback,
   el,
   filterConversations,
   formatPresetBadge,
@@ -29,8 +30,44 @@ import {
   normalizeRunStatus,
   normalizeWsStatus,
   requiresTurboAck,
+  resolveLayoutMode,
 } from './ui-helpers.mjs';
 import { createIdempotencyKey, createRemoteWsClient } from './ws-client.mjs';
+
+const STORAGE_KEYS = {
+  layoutPref: 'agy_remote_layout_mode',
+  sidebarCollapsed: 'agy_remote_sidebar_collapsed',
+  overviewCollapsed: 'agy_remote_overview_collapsed',
+  sidebarGroupBy: 'agy_remote_sidebar_group',
+};
+
+function readStoredPref(key, fallback) {
+  try {
+    if (typeof window === 'undefined' || !window.localStorage) return fallback;
+    const val = window.localStorage.getItem(key);
+    return val === null ? fallback : val;
+  } catch {
+    return fallback;
+  }
+}
+
+function writeStoredPref(key, value) {
+  try {
+    if (typeof window === 'undefined' || !window.localStorage) return;
+    window.localStorage.setItem(key, String(value));
+  } catch {}
+}
+
+function defaultOverviewCollapsed() {
+  if (typeof window === 'undefined') return false;
+  return window.innerWidth < 1180;
+}
+
+const storedLayoutPref = readStoredPref(STORAGE_KEYS.layoutPref, 'auto');
+const initialLayoutPref =
+  storedLayoutPref === 'desktop' || storedLayoutPref === 'mobile' ? storedLayoutPref : 'auto';
+const storedGroupBy = readStoredPref(STORAGE_KEYS.sidebarGroupBy, 'recent');
+const storedOverviewCol = readStoredPref(STORAGE_KEYS.overviewCollapsed, '');
 
 const state = {
   identity: null,
@@ -57,6 +94,14 @@ const state = {
   snapshotLoading: false,
   snapshotError: '',
   mobileView: 'list', // list | detail
+  mobileTab: 'chats', // chats | approvals | overview
+  layoutPref: initialLayoutPref, // auto | desktop | mobile
+  sidebarCollapsed: readStoredPref(STORAGE_KEYS.sidebarCollapsed, 'false') === 'true',
+  overviewCollapsed:
+    storedOverviewCol === 'true' || storedOverviewCol === 'false'
+      ? storedOverviewCol === 'true'
+      : defaultOverviewCollapsed(),
+  sidebarGroupBy: storedGroupBy === 'project' ? 'project' : 'recent',
   draftText: '',
   draftIdempotencyKey: createIdempotencyKey(),
   turboWriteConfirmed: false,
@@ -82,7 +127,76 @@ let snapshotRefreshTimer = null;
 let studioOverviewSeq = 0;
 let cancelConfirmTimer = null;
 let workspaceRefs = null;
+let globalListenersBound = false;
 const rootEl = document.getElementById('app');
+
+function getResolvedLayoutMode() {
+  const w = typeof window !== 'undefined' ? window.innerWidth : DESKTOP_BREAKPOINT_PX;
+  return resolveLayoutMode(state.layoutPref, w);
+}
+
+function layoutButtonLabel(pref) {
+  if (pref === 'desktop') return '视图: 桌面';
+  if (pref === 'mobile') return '视图: 移动';
+  return '视图: 自动';
+}
+
+function applyLayoutAttrs() {
+  if (!rootEl) return;
+  const resolvedMode = getResolvedLayoutMode();
+  rootEl.setAttribute('data-layout-mode', resolvedMode);
+  rootEl.setAttribute('data-mobile-view', state.mobileView);
+  rootEl.setAttribute('data-mobile-tab', state.mobileTab);
+  rootEl.setAttribute('data-sidebar-collapsed', state.sidebarCollapsed ? 'true' : 'false');
+  rootEl.setAttribute('data-overview-collapsed', state.overviewCollapsed ? 'true' : 'false');
+
+  if (workspaceRefs && rootEl.contains(workspaceRefs.topbar)) {
+    workspaceRefs.layoutModeBtn.textContent = layoutButtonLabel(state.layoutPref);
+    workspaceRefs.sidebarToggleBtn.setAttribute('aria-pressed', state.sidebarCollapsed ? 'false' : 'true');
+    workspaceRefs.overviewToggleBtn.setAttribute('aria-pressed', state.overviewCollapsed ? 'false' : 'true');
+    workspaceRefs.navChatsBtn.setAttribute('aria-pressed', state.mobileTab === 'chats' ? 'true' : 'false');
+    workspaceRefs.navApprovalsBtn.setAttribute('aria-pressed', state.mobileTab === 'approvals' ? 'true' : 'false');
+    workspaceRefs.navOverviewBtn.setAttribute('aria-pressed', state.mobileTab === 'overview' ? 'true' : 'false');
+  }
+}
+
+function ensureGlobalUiListeners() {
+  if (globalListenersBound || typeof window === 'undefined') return;
+  globalListenersBound = true;
+  let resizeRaf = 0;
+  window.addEventListener('resize', () => {
+    if (resizeRaf) return;
+    resizeRaf = window.requestAnimationFrame(() => {
+      resizeRaf = 0;
+      applyLayoutAttrs();
+    });
+  });
+  window.addEventListener('keydown', (ev) => {
+    if (!(ev.metaKey || ev.ctrlKey) || ev.altKey) return;
+    if (!state.identity || !workspaceRefs || !rootEl?.contains(workspaceRefs.topbar)) return;
+    const key = String(ev.key || '').toLowerCase();
+    if (key === 'k') {
+      ev.preventDefault();
+      if (getResolvedLayoutMode() === 'desktop' && state.sidebarCollapsed) {
+        state.sidebarCollapsed = false;
+        writeStoredPref(STORAGE_KEYS.sidebarCollapsed, 'false');
+        applyLayoutAttrs();
+      } else if (getResolvedLayoutMode() === 'mobile') {
+        state.mobileTab = 'chats';
+        state.mobileView = 'list';
+        applyLayoutAttrs();
+        renderSidebarList();
+      }
+      workspaceRefs.searchInput?.focus();
+    } else if (key === 'b' && !ev.shiftKey) {
+      if (getResolvedLayoutMode() !== 'desktop') return;
+      ev.preventDefault();
+      state.sidebarCollapsed = !state.sidebarCollapsed;
+      writeStoredPref(STORAGE_KEYS.sidebarCollapsed, state.sidebarCollapsed ? 'true' : 'false');
+      applyLayoutAttrs();
+    }
+  });
+}
 
 function updateGlobalPreset(nextPreset) {
   if (nextPreset === undefined) return;
@@ -116,8 +230,47 @@ function ensureWorkspaceShell() {
   const brandDot = el('span', { className: 'rc-brand-dot' });
   const wsPill = el('span', { className: 'rc-pill' });
   const hostPill = el('span', { className: 'rc-pill' });
-  const presetPill = el('span', { className: 'rc-pill' });
-  const devicePill = el('span', { className: 'rc-pill' });
+  const presetPill = el('span', { className: 'rc-pill rc-desktop-only' });
+  const devicePill = el('span', { className: 'rc-pill rc-desktop-only' });
+
+  const sidebarToggleBtn = el('button', {
+    type: 'button',
+    className: 'rc-btn is-sm is-ghost rc-desktop-only',
+    title: '折叠或展开会话栏 (Cmd/Ctrl+B)',
+    text: '☰',
+    onClick: () => {
+      state.sidebarCollapsed = !state.sidebarCollapsed;
+      writeStoredPref(STORAGE_KEYS.sidebarCollapsed, state.sidebarCollapsed ? 'true' : 'false');
+      applyLayoutAttrs();
+    },
+  });
+
+  const layoutModeBtn = el('button', {
+    type: 'button',
+    className: 'rc-btn is-sm',
+    title: '切换桌面 / 移动视图适配模式',
+    text: layoutButtonLabel(state.layoutPref),
+    onClick: () => {
+      const order = ['auto', 'desktop', 'mobile'];
+      const next = order[(order.indexOf(state.layoutPref) + 1) % order.length];
+      state.layoutPref = next;
+      writeStoredPref(STORAGE_KEYS.layoutPref, next);
+      applyLayoutAttrs();
+      renderSidebarList();
+    },
+  });
+
+  const overviewToggleBtn = el('button', {
+    type: 'button',
+    className: 'rc-btn is-sm rc-desktop-only',
+    title: '折叠或展开右侧 Overview 面板',
+    text: '概览',
+    onClick: () => {
+      state.overviewCollapsed = !state.overviewCollapsed;
+      writeStoredPref(STORAGE_KEYS.overviewCollapsed, state.overviewCollapsed ? 'true' : 'false');
+      applyLayoutAttrs();
+    },
+  });
 
   const refreshBtn = el('button', {
     type: 'button',
@@ -141,6 +294,8 @@ function ensureWorkspaceShell() {
       state.snapshots.clear();
       state.streams.clear();
       state.selectedId = null;
+      state.mobileView = 'list';
+      state.mobileTab = 'chats';
       state.turboAcknowledged = false;
       state.turboWriteConfirmed = false;
       state.draftIdempotencyKey = createIdempotencyKey();
@@ -162,13 +317,14 @@ function ensureWorkspaceShell() {
     el(
       'div',
       { className: 'rc-topbar-left' },
+      sidebarToggleBtn,
       brandDot,
-      el('span', { className: 'rc-topbar-title', text: 'AGY Studio Remote' }),
+      el('span', { className: 'rc-topbar-title', text: 'AGY Studio' }),
       wsPill,
       hostPill,
       presetPill
     ),
-    el('div', { className: 'rc-topbar-right' }, devicePill, refreshBtn, unpairBtn)
+    el('div', { className: 'rc-topbar-right' }, devicePill, layoutModeBtn, refreshBtn, overviewToggleBtn, unpairBtn)
   );
 
   const noticeBar = el('div', { className: 'rc-notice-bar rc-hidden' });
@@ -178,7 +334,7 @@ function ensureWorkspaceShell() {
   const searchInput = el('input', {
     className: 'rc-search',
     type: 'search',
-    placeholder: '搜索会话标题 / ID…',
+    placeholder: '搜索会话 (⌘K) / ID…',
     value: state.searchQuery,
     onInput: (ev) => {
       state.searchQuery = ev.target.value;
@@ -187,12 +343,15 @@ function ensureWorkspaceShell() {
   });
 
   const filterRow = el('div', { className: 'rc-filter-row' });
+  const groupRow = el('div', { className: 'rc-group-row' });
   const sidebarList = el('div', { className: 'rc-scroll-list' });
+  const sidebarProjects = el('div', { className: 'rc-sidebar-projects rc-hidden' });
   const sidebar = el(
     'aside',
     { className: 'rc-sidebar' },
-    el('div', { className: 'rc-sidebar-head' }, searchInput, filterRow),
-    sidebarList
+    el('div', { className: 'rc-sidebar-head' }, searchInput, filterRow, groupRow),
+    sidebarList,
+    sidebarProjects
   );
 
   const detailTitle = el('h2', { className: 'rc-detail-title', text: '请选择一个会话' });
@@ -203,7 +362,7 @@ function ensureWorkspaceShell() {
     text: '← 列表',
     onClick: () => {
       state.mobileView = 'list';
-      rootEl.setAttribute('data-mobile-view', 'list');
+      applyLayoutAttrs();
     },
   });
 
@@ -301,7 +460,7 @@ function ensureWorkspaceShell() {
         text: '← 返回列表',
         onClick: () => {
           state.mobileView = 'list';
-          rootEl.setAttribute('data-mobile-view', 'list');
+          applyLayoutAttrs();
         },
       }),
       el('button', {
@@ -316,15 +475,24 @@ function ensureWorkspaceShell() {
     el('div', { className: 'rc-dock-group' }, compactBtn)
   );
 
-  const bottomDock = el(
-    'footer',
-    { className: 'rc-bottom-dock is-composer' },
-    resumeBanner,
-    opusBanner,
-    actionBanner,
+  const composerCard = el(
+    'div',
+    { className: 'rc-composer-card' },
     turboWriteLabel,
     composerRow,
     auxDockRow
+  );
+  const bottomDock = el(
+    'footer',
+    { className: 'rc-bottom-dock is-composer' },
+    el(
+      'div',
+      { className: 'rc-composer-shell' },
+      resumeBanner,
+      opusBanner,
+      actionBanner,
+      composerCard
+    )
   );
 
   const detail = el(
@@ -336,11 +504,56 @@ function ensureWorkspaceShell() {
     bottomDock
   );
 
-  const main = el('main', { className: 'rc-main' }, sidebar, detail);
-  rootEl.append(topbar, noticeBar, studioStrip, projectsDrawer, main);
+  const overviewPane = el('aside', { className: 'rc-overview' });
+
+  const switchMobileTab = (tab) => {
+    state.mobileTab = tab;
+    state.mobileView = 'list';
+    applyLayoutAttrs();
+    renderSidebarList();
+    if (tab === 'overview') {
+      renderStudioPanels();
+    }
+  };
+  const navChatsBtn = el('button', {
+    type: 'button',
+    className: 'rc-mobile-nav-btn',
+    text: '会话',
+    onClick: () => switchMobileTab('chats'),
+  });
+  const navApprovalsBadge = el('span', { className: 'rc-nav-badge rc-hidden', text: '0' });
+  const navApprovalsBtn = el(
+    'button',
+    {
+      type: 'button',
+      className: 'rc-mobile-nav-btn',
+      onClick: () => switchMobileTab('approvals'),
+    },
+    el('span', { text: '待审批' }),
+    navApprovalsBadge
+  );
+  const navOverviewBtn = el('button', {
+    type: 'button',
+    className: 'rc-mobile-nav-btn',
+    text: '概览',
+    onClick: () => switchMobileTab('overview'),
+  });
+  const mobileNav = el(
+    'nav',
+    { className: 'rc-mobile-nav', 'aria-label': '移动端主导航' },
+    navChatsBtn,
+    navApprovalsBtn,
+    navOverviewBtn
+  );
+
+  const main = el('main', { className: 'rc-main' }, sidebar, detail, overviewPane);
+  rootEl.append(topbar, noticeBar, studioStrip, projectsDrawer, main, mobileNav);
 
   workspaceRefs = {
     topbar,
+    sidebarToggleBtn,
+    layoutModeBtn,
+    overviewToggleBtn,
     brandDot,
     wsPill,
     hostPill,
@@ -362,12 +575,22 @@ function ensureWorkspaceShell() {
     sendBtn,
     cancelBtn,
     compactBtn,
+    searchInput,
     filterRow,
+    groupRow,
     sidebarList,
+    sidebarProjects,
     detailTitle,
     detailSub,
     timeline,
+    overviewPane,
+    mobileNav,
+    navChatsBtn,
+    navApprovalsBtn,
+    navApprovalsBadge,
+    navOverviewBtn,
   };
+  applyLayoutAttrs();
   return workspaceRefs;
 }
 
@@ -407,31 +630,69 @@ function getEffectiveResumeState(cid) {
   return rs;
 }
 
+function renderSidebarProjectsBar() {
+  const refs = ensureWorkspaceShell();
+  clearNode(refs.sidebarProjects);
+  const projects = Array.isArray(state.studioOverview?.projects) ? state.studioOverview.projects : [];
+  if (projects.length === 0) {
+    refs.sidebarProjects.classList.add('rc-hidden');
+    return;
+  }
+  refs.sidebarProjects.classList.remove('rc-hidden');
+  refs.sidebarProjects.appendChild(
+    el('button', {
+      type: 'button',
+      className: 'rc-chip',
+      'aria-pressed': !state.selectedProjectId ? 'true' : 'false',
+      text: '全部项目',
+      onClick: () => {
+        state.selectedProjectId = '';
+        renderStudioPanels();
+        renderSidebarList();
+      },
+    })
+  );
+  for (const proj of projects) {
+    const active = state.selectedProjectId === proj.id;
+    refs.sidebarProjects.appendChild(
+      el('button', {
+        type: 'button',
+        className: 'rc-chip',
+        'aria-pressed': active ? 'true' : 'false',
+        text: proj.name || 'Project',
+        onClick: () => {
+          state.selectedProjectId = active ? '' : proj.id;
+          renderStudioPanels();
+          renderSidebarList();
+        },
+      })
+    );
+  }
+}
+
 function renderStudioPanels() {
   const refs = ensureWorkspaceShell();
-  renderStudioStrip(refs.studioStrip, {
+  const selectedConvo =
+    state.selectedId ? state.conversations.find((c) => c.id === state.selectedId) || null : null;
+  const snapshot = state.selectedId ? state.snapshots.get(state.selectedId) || null : null;
+  renderOverviewPanel(refs.overviewPane, {
     overview: state.studioOverview,
-    open: state.studioDrawerOpen,
-    selectedProjectId: state.selectedProjectId,
-    onToggleProjects: () => {
-      state.studioDrawerOpen = !state.studioDrawerOpen;
-      renderStudioPanels();
-    },
-  });
-  renderProjectsDrawer(refs.projectsDrawer, {
-    overview: state.studioOverview,
-    open: state.studioDrawerOpen,
+    selectedConvo,
+    snapshot,
+    wsStatus: state.wsStatus,
+    hostAttached: state.hostAttached,
+    globalPreset: state.globalPreset,
+    deviceName: state.identity?.deviceName || '',
+    role: state.identity?.role || 'observe',
     selectedProjectId: state.selectedProjectId,
     onSelectProject: (nextPid) => {
       state.selectedProjectId = nextPid || '';
       renderStudioPanels();
       renderSidebarList();
     },
-    onClose: () => {
-      state.studioDrawerOpen = false;
-      renderStudioPanels();
-    },
+    onCopyId: (cid, btn) => copyTextWithFeedback(btn, cid, { idleText: '复制 ID', doneText: '已复制' }),
   });
+  renderSidebarProjectsBar();
 }
 
 function syncComposerControls() {
@@ -441,6 +702,7 @@ function syncComposerControls() {
   const hasSelection = Boolean(state.selectedId);
   const needTurboConfirm = requiresTurboAck(state.globalPreset);
 
+  refs.roleBanner.setAttribute('data-writable', writable ? 'true' : 'false');
   if (writable) {
     refs.roleBannerText.textContent = '受控远程操控模式：支持远程发送消息、停止当前任务与仅本次 (Allow Once) / 拒绝审批。';
     refs.roleBannerPill.setAttribute('data-tone', 'ok');
@@ -767,7 +1029,7 @@ async function handleDismissOpus(prop) {
 
 function renderTopStatus() {
   const refs = ensureWorkspaceShell();
-  rootEl.setAttribute('data-mobile-view', state.mobileView);
+  applyLayoutAttrs();
 
   const wsInfo = normalizeWsStatus(state.wsStatus, state.wsDetail);
   refs.brandDot.setAttribute('data-state', state.wsStatus);
@@ -830,11 +1092,19 @@ function renderTopStatus() {
 function renderFilterChips() {
   const refs = ensureWorkspaceShell();
   clearNode(refs.filterRow);
+  clearNode(refs.groupRow);
 
   const pendingCount = collectPendingApprovals(state).length;
   const runningCount = state.conversations.filter(
     (c) => (state.includeSubagents || !c.parentConversationId) && isRunningStatus(c.status)
   ).length;
+
+  refs.navApprovalsBadge.textContent = String(pendingCount);
+  if (pendingCount > 0) {
+    refs.navApprovalsBadge.classList.remove('rc-hidden');
+  } else {
+    refs.navApprovalsBadge.classList.add('rc-hidden');
+  }
 
   const filters = [
     { id: 'all', label: `全部 (${state.conversations.filter((c) => state.includeSubagents || !c.parentConversationId).length})` },
@@ -874,6 +1144,78 @@ function renderFilterChips() {
       },
     })
   );
+
+  refs.groupRow.appendChild(el('span', { className: 'rc-group-label', text: '排列' }));
+  for (const grp of [
+    { id: 'recent', label: '时间流' },
+    { id: 'project', label: '按项目' },
+  ]) {
+    refs.groupRow.appendChild(
+      el('button', {
+        type: 'button',
+        className: 'rc-chip is-compact',
+        'aria-pressed': state.sidebarGroupBy === grp.id ? 'true' : 'false',
+        text: grp.label,
+        onClick: () => {
+          state.sidebarGroupBy = grp.id;
+          writeStoredPref(STORAGE_KEYS.sidebarGroupBy, grp.id);
+          renderFilterChips();
+          renderSidebarList();
+        },
+      })
+    );
+  }
+}
+
+function buildConversationRow(c) {
+  const waitCount = getEffectiveWaitingCount(state, c);
+  const statusInfo = normalizeRunStatus(c.status);
+  const isSelected = state.selectedId === c.id;
+  const wtMeta = state.studioOverview?.worktreeByCid?.[c.id] || null;
+  return el(
+    'button',
+    {
+      type: 'button',
+      className: 'rc-convo-item',
+      'data-selected': isSelected ? 'true' : 'false',
+      'data-waiting': waitCount > 0 ? 'true' : 'false',
+      onClick: () => selectConversation(c.id),
+    },
+    el(
+      'div',
+      { className: 'rc-convo-top' },
+      el('span', { className: 'rc-convo-dot', 'data-tone': waitCount > 0 ? 'warn' : statusInfo.tone }),
+      el('span', { className: 'rc-convo-title', text: c.title || c.summary || c.id.slice(0, 8) }),
+      waitCount > 0
+        ? el('span', { className: 'rc-pill rc-convo-status', 'data-tone': 'warn', text: `待审批 ${waitCount}` })
+        : el('span', { className: 'rc-pill rc-convo-status', 'data-tone': statusInfo.tone, text: statusInfo.label }),
+      c.lastModifiedTime
+        ? el('span', { className: 'rc-convo-time', text: formatRelativeTime(c.lastModifiedTime) })
+        : null
+    ),
+    el(
+      'div',
+      { className: 'rc-convo-meta' },
+      c.parentConversationId ? el('span', { className: 'rc-pill', text: 'Subagent' }) : null,
+      wtMeta?.branch ? el('span', { className: 'rc-pill', 'data-tone': 'info', text: `⎇ ${wtMeta.branch}` }) : null,
+      el('span', { text: `${c.stepCount ?? 0} steps` }),
+      c.lastModifiedTime
+        ? el('span', { className: 'rc-convo-meta-time', text: `· ${formatRelativeTime(c.lastModifiedTime)}` })
+        : null
+    )
+  );
+}
+
+function resolveConversationProjectName(c) {
+  const wtMeta = state.studioOverview?.worktreeByCid?.[c.id] || null;
+  if (wtMeta?.repoName) return wtMeta.repoName;
+  const projects = Array.isArray(state.studioOverview?.projects) ? state.studioOverview.projects : [];
+  const pid = String(c.projectId || wtMeta?.projectId || '');
+  if (pid) {
+    const match = projects.find((p) => p.id === pid);
+    if (match?.name) return match.name;
+  }
+  return '独立会话';
 }
 
 function renderSidebarList() {
@@ -881,6 +1223,8 @@ function renderSidebarList() {
   clearNode(refs.sidebarList);
 
   const pendingApprovals = collectPendingApprovals(state);
+  const mobileApprovalsOnly = getResolvedLayoutMode() === 'mobile' && state.mobileTab === 'approvals';
+
   if (pendingApprovals.length > 0) {
     refs.sidebarList.appendChild(
       el('div', { className: 'rc-sec-label', text: `待审批队列 (${pendingApprovals.length})` })
@@ -908,52 +1252,51 @@ function renderSidebarList() {
         )
       );
     }
+  } else if (mobileApprovalsOnly) {
+    refs.sidebarList.appendChild(
+      el('div', { className: 'rc-empty', text: '当前没有等待审批的桌面端操作。' })
+    );
+    return;
+  }
+
+  if (mobileApprovalsOnly) {
+    return;
   }
 
   const list = filterConversations(state);
-  refs.sidebarList.appendChild(
-    el('div', { className: 'rc-sec-label', text: `会话列表 (${list.length})` })
-  );
-
   if (list.length === 0) {
+    refs.sidebarList.appendChild(
+      el('div', { className: 'rc-sec-label', text: '会话列表 (0)' })
+    );
     refs.sidebarList.appendChild(
       el('div', { className: 'rc-empty', text: '当前筛选条件下没有会话' })
     );
     return;
   }
 
+  if (state.sidebarGroupBy === 'project') {
+    const groups = new Map();
+    for (const c of list) {
+      const label = resolveConversationProjectName(c);
+      if (!groups.has(label)) groups.set(label, []);
+      groups.get(label).push(c);
+    }
+    for (const [projLabel, items] of groups.entries()) {
+      refs.sidebarList.appendChild(
+        el('div', { className: 'rc-sec-label', text: `${projLabel} (${items.length})` })
+      );
+      for (const c of items) {
+        refs.sidebarList.appendChild(buildConversationRow(c));
+      }
+    }
+    return;
+  }
+
+  refs.sidebarList.appendChild(
+    el('div', { className: 'rc-sec-label', text: `会话列表 (${list.length})` })
+  );
   for (const c of list) {
-    const waitCount = getEffectiveWaitingCount(state, c);
-    const statusInfo = normalizeRunStatus(c.status);
-    const isSelected = state.selectedId === c.id;
-    const wtMeta = state.studioOverview?.worktreeByCid?.[c.id] || null;
-    const itemBtn = el(
-      'button',
-      {
-        type: 'button',
-        className: 'rc-convo-item',
-        'data-selected': isSelected ? 'true' : 'false',
-        'data-waiting': waitCount > 0 ? 'true' : 'false',
-        onClick: () => selectConversation(c.id),
-      },
-      el(
-        'div',
-        { className: 'rc-convo-top' },
-        el('span', { className: 'rc-convo-title', text: c.title || c.summary || c.id.slice(0, 8) }),
-        waitCount > 0
-          ? el('span', { className: 'rc-pill', 'data-tone': 'warn', text: `待审批 ${waitCount}` })
-          : el('span', { className: 'rc-pill', 'data-tone': statusInfo.tone, text: statusInfo.label })
-      ),
-      el(
-        'div',
-        { className: 'rc-convo-meta' },
-        c.parentConversationId ? el('span', { className: 'rc-pill', text: 'Subagent' }) : null,
-        wtMeta?.branch ? el('span', { className: 'rc-pill', 'data-tone': 'info', text: `⎇ ${wtMeta.branch}` }) : null,
-        el('span', { text: `${c.stepCount ?? 0} steps` }),
-        c.lastModifiedTime ? el('span', { text: `· ${formatRelativeTime(c.lastModifiedTime)}` }) : null
-      )
-    );
-    refs.sidebarList.appendChild(itemBtn);
+    refs.sidebarList.appendChild(buildConversationRow(c));
   }
 }
 
@@ -988,7 +1331,7 @@ function applyConvoListResult(result) {
   if (result.globalPreset !== undefined) updateGlobalPreset(result.globalPreset);
   if (Array.isArray(result.conversations)) {
     state.conversations = result.conversations;
-    if (!state.selectedId && result.conversations.length > 0 && window.innerWidth >= 840) {
+    if (!state.selectedId && result.conversations.length > 0 && getResolvedLayoutMode() === 'desktop') {
       const firstTop = result.conversations.find((c) => !c.parentConversationId) || result.conversations[0];
       if (firstTop && UUID_RE.test(firstTop.id)) {
         selectConversation(firstTop.id);
@@ -1056,6 +1399,7 @@ async function fetchAndRenderSnapshot(cascadeId) {
     if (state.selectedId === cascadeId) {
       state.snapshotLoading = false;
       renderDetailTimeline();
+      renderStudioPanels();
     }
   }
 }
@@ -1296,6 +1640,7 @@ function handleTapDelta(delta) {
 }
 
 function startWorkspaceSession() {
+  ensureGlobalUiListeners();
   if (wsClient) {
     wsClient.dispose();
     wsClient = null;
@@ -1335,6 +1680,7 @@ function startWorkspaceSession() {
       if (state.selectedId === cid) {
         state.snapshotLoading = false;
         renderDetailTimeline();
+        renderStudioPanels();
         syncComposerControls();
       }
     },

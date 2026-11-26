@@ -4,8 +4,7 @@
 
 # AGY Studio
 
-**把 Antigravity 用成一支工程团队。**  
-每场对话[独立 Worktree 多项目并行](#parallel-engineering)，关键节点[一键请 Opus 交叉复核](#cross-model-review)，[Token、配额与上下文尽在掌握](#tokens-and-context)，[长任务与多子代理免看护交付](#long-runs)。
+<h3>把 Antigravity 用成一支工程团队。</h3>
 
 [English](./README.md) · **简体中文**
 
@@ -18,9 +17,30 @@
 
 10 秒安装：复制一段话发给 Antigravity 即可 → **[快速开始](#快速开始)**
 
-[前后对比](#原生-antigravity-vs-agy-studio) · [核心能力](#核心能力) · [快速开始](#快速开始) · [安全与流畅](#safe-fast) · [兼容性](#兼容性)
-
-<br />
+<table>
+  <tr>
+    <td align="center" width="216" valign="top">
+      <a href="#parallel-engineering"><img src="./docs/images/icons/pillar-parallel.png" width="36" height="36" alt="" /></a><br />
+      <a href="#parallel-engineering"><b>多项目并行开发</b></a><br />
+      <sub>独立 Worktree · 改动随手引用</sub>
+    </td>
+    <td align="center" width="216" valign="top">
+      <a href="#cross-model-review"><img src="./docs/images/icons/pillar-review.png" width="36" height="36" alt="" /></a><br />
+      <a href="#cross-model-review"><b>Opus 交叉复核</b></a><br />
+      <sub>关键节点一键或自动把关</sub>
+    </td>
+    <td align="center" width="216" valign="top">
+      <a href="#tokens-and-context"><img src="./docs/images/icons/pillar-quota.png" width="36" height="36" alt="" /></a><br />
+      <a href="#tokens-and-context"><b>配额与上下文</b></a><br />
+      <sub>双池余量 · 智能防上下文退化</sub>
+    </td>
+    <td align="center" width="216" valign="top">
+      <a href="#long-runs"><img src="./docs/images/icons/pillar-autopilot.png" width="36" height="36" alt="" /></a><br />
+      <a href="#long-runs"><b>长任务免看护</b></a><br />
+      <sub>子代理分屏 · 中断静默续跑</sub>
+    </td>
+  </tr>
+</table>
 
 <img src="./docs/images/demo-cockpit.webp" alt="AGY Studio 项目墙切换、Git 未提交改动抽屉与 @file 一键引用、分项目 Token 图表及实时设置台演示" width="100%" />
 

@@ -4,8 +4,7 @@
 
 # AGY Studio
 
-**Run Antigravity like an engineering team.**  
-Give every conversation its own [Git worktree](#parallel-engineering), bring in [Claude Opus for a second opinion](#cross-model-review) at the moments that matter, keep every project's [tokens, quota, and context under control](#tokens-and-context), and run [long tasks without babysitting](#long-runs).
+<h3>Run Antigravity like an engineering team.</h3>
 
 **English** · [简体中文](./README.zh-CN.md)
 
@@ -17,9 +16,30 @@ Give every conversation its own [Git worktree](#parallel-engineering), bring in 
 
 Install in 10 seconds: paste one prompt into Antigravity → **[Quick Start](#quick-start)**
 
-[What's Different](#native-antigravity-vs-agy-studio) · [Core Capabilities](#core-capabilities) · [Quick Start](#quick-start) · [Safe & Fast](#safe-fast) · [Compatibility](#compatibility)
-
-<br />
+<table>
+  <tr>
+    <td align="center" width="216" valign="top">
+      <a href="#parallel-engineering"><img src="./docs/images/icons/pillar-parallel.png" width="36" height="36" alt="" /></a><br />
+      <a href="#parallel-engineering"><b>Parallel Projects</b></a><br />
+      <sub>Isolated worktrees &amp; live diffs</sub>
+    </td>
+    <td align="center" width="216" valign="top">
+      <a href="#cross-model-review"><img src="./docs/images/icons/pillar-review.png" width="36" height="36" alt="" /></a><br />
+      <a href="#cross-model-review"><b>Opus Review Gate</b></a><br />
+      <sub>One-click or automatic checks</sub>
+    </td>
+    <td align="center" width="216" valign="top">
+      <a href="#tokens-and-context"><img src="./docs/images/icons/pillar-quota.png" width="36" height="36" alt="" /></a><br />
+      <a href="#tokens-and-context"><b>Quota &amp; Context</b></a><br />
+      <sub>Dual-pool spend &amp; auto-compact</sub>
+    </td>
+    <td align="center" width="216" valign="top">
+      <a href="#long-runs"><img src="./docs/images/icons/pillar-autopilot.png" width="36" height="36" alt="" /></a><br />
+      <a href="#long-runs"><b>Hands-Free Runs</b></a><br />
+      <sub>Subagent split &amp; silent resume</sub>
+    </td>
+  </tr>
+</table>
 
 <img src="./docs/images/demo-cockpit.webp" alt="AGY Studio multi-project workspace, Git diff drawers with @file insertion, per-project token analytics, and live Settings Studio" width="100%" />
 

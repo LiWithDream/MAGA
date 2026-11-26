@@ -123,6 +123,7 @@ const state = {
   resumeState: null,
   modelCatalog: null,
   modelPopoverOpen: false,
+  contextPopoverOpen: false,
   showHiddenModels: false,
   modelSelectBusy: false,
   streamStartedAt: 0,
@@ -247,8 +248,9 @@ function ensureGlobalUiListeners() {
     });
   });
   window.addEventListener('keydown', (ev) => {
-    if (ev.key === 'Escape' && (state.modelPopoverOpen || state.moreMenuOpen)) {
+    if (ev.key === 'Escape' && (state.modelPopoverOpen || state.contextPopoverOpen || state.moreMenuOpen)) {
       state.modelPopoverOpen = false;
+      state.contextPopoverOpen = false;
       state.moreMenuOpen = false;
       renderMoreMenu();
       syncComposerControls();
@@ -289,11 +291,12 @@ function ensureGlobalUiListeners() {
           renderMoreMenu();
         }
       }
-      if (!state.modelPopoverOpen || !workspaceRefs?.composerCard) return;
+      if ((!state.modelPopoverOpen && !state.contextPopoverOpen) || !workspaceRefs?.composerCard) return;
       if (path.includes(workspaceRefs.composerCard) || workspaceRefs.composerCard.contains(ev.target)) {
         return;
       }
       state.modelPopoverOpen = false;
+      state.contextPopoverOpen = false;
       syncComposerControls();
     });
   }
@@ -348,6 +351,7 @@ async function handleUnpairDevice() {
   state.resumeState = null;
   state.modelCatalog = null;
   state.modelPopoverOpen = false;
+  state.contextPopoverOpen = false;
   state.showHiddenModels = false;
   state.modelSelectBusy = false;
   state.streamStartedAt = 0;
@@ -459,7 +463,11 @@ function ensureWorkspaceShell() {
   const toggleMoreMenu = (ev) => {
     ev?.stopPropagation?.();
     state.moreMenuOpen = !state.moreMenuOpen;
-    if (state.moreMenuOpen) state.modelPopoverOpen = false;
+    if (state.moreMenuOpen && (state.modelPopoverOpen || state.contextPopoverOpen)) {
+      state.modelPopoverOpen = false;
+      state.contextPopoverOpen = false;
+      syncComposerControls();
+    }
     renderMoreMenu();
   };
 
@@ -704,12 +712,14 @@ function ensureWorkspaceShell() {
   const composerRow = el('div', { className: 'rc-composer-row' }, draftInput, sendBtn, cancelBtn);
   const mediaStrip = el('div', { className: 'rc-media-strip rc-hidden' });
   const modelPopover = el('div', { className: 'rc-model-popover rc-hidden' });
+  const contextPopover = el('div', { className: 'rc-ctx-popover rc-hidden' });
   const composerFooter = el('div', { className: 'rc-composer-footer' });
 
   const composerCard = el(
     'div',
     { className: 'rc-composer-card' },
     modelPopover,
+    contextPopover,
     mediaStrip,
     turboWriteLabel,
     composerRow,
@@ -805,6 +815,7 @@ function ensureWorkspaceShell() {
     actionBanner,
     composerCard,
     modelPopover,
+    contextPopover,
     mediaStrip,
     mediaFileInput,
     composerFooter,
@@ -1110,6 +1121,7 @@ function syncComposerControls() {
     catalog: state.modelCatalog,
     studioPrefs: state.studioOverview?.studioPrefs || state.modelCatalog?.studioPrefs || null,
     modelPopoverOpen: state.modelPopoverOpen,
+    contextPopoverOpen: state.contextPopoverOpen,
     showHiddenModels: state.showHiddenModels,
     modelBusy: state.modelSelectBusy,
     metrics: activeMetrics,
@@ -1125,9 +1137,18 @@ function syncComposerControls() {
     mediaCount: state.draftMedia.length,
     onToggleModelPopover: () => {
       state.modelPopoverOpen = !state.modelPopoverOpen;
+      if (state.modelPopoverOpen) state.contextPopoverOpen = false;
       if (!state.modelPopoverOpen) state.showHiddenModels = false;
       if (state.modelPopoverOpen && (!state.modelCatalog || !state.modelCatalog.families?.length)) {
         refreshModels(state.selectedId);
+      }
+      syncComposerControls();
+    },
+    onToggleContextPopover: () => {
+      state.contextPopoverOpen = !state.contextPopoverOpen;
+      if (state.contextPopoverOpen) {
+        state.modelPopoverOpen = false;
+        state.showHiddenModels = false;
       }
       syncComposerControls();
     },
@@ -1139,6 +1160,10 @@ function syncComposerControls() {
     onCloseModelPopover: () => {
       state.modelPopoverOpen = false;
       state.showHiddenModels = false;
+      syncComposerControls();
+    },
+    onCloseContextPopover: () => {
+      state.contextPopoverOpen = false;
       syncComposerControls();
     },
     onCompact: handleCompactConvo,
@@ -1367,6 +1392,7 @@ async function handleResumeConvo(rs) {
 async function handleCompactConvo() {
   if (!wsClient || !state.selectedId || !canSteer() || state.compactBusy) return;
   const targetCid = state.selectedId;
+  state.contextPopoverOpen = false;
   state.compactBusy = true;
   state.actionError = '';
   state.actionNotice = '';
@@ -1648,6 +1674,7 @@ async function selectConversation(cascadeId) {
     state.turboWriteConfirmed = false;
     state.resumeState = null;
     state.modelPopoverOpen = false;
+    state.contextPopoverOpen = false;
     state.streamStartedAt = 0;
     clearStreamTickTimer();
     state.actionError = '';

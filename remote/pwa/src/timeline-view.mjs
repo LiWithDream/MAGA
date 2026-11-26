@@ -392,19 +392,14 @@ export function renderStepCard(step, { hideThinkingProse = false, compact = fals
     ...(compact ? { 'data-compact': 'true' } : {}),
   });
 
-  const hideHeader =
-    compact &&
-    ((roleAttr === 'assistant' && isDoneStep) || (roleAttr === 'user' && isDoneStep && !step.createdAt));
+  const useCompactChatBubble = compact && (roleAttr === 'user' || roleAttr === 'assistant');
 
-  if (!hideHeader) {
-    const showRoleText = compact && (roleAttr === 'user' || roleAttr === 'assistant')
-      ? ''
-      : `${roleLabel} #${step.idx ?? '?'}`;
+  if (!useCompactChatBubble) {
     card.appendChild(
       el(
         'div',
         { className: 'rc-step-head' },
-        showRoleText ? el('span', { className: 'rc-step-role', text: showRoleText }) : el('span', { className: 'rc-step-role-spacer' }),
+        el('span', { className: 'rc-step-role', text: `${roleLabel} #${step.idx ?? '?'}` }),
         el(
           'div',
           { className: 'rc-dock-group' },
@@ -469,6 +464,23 @@ export function renderStepCard(step, { hideThinkingProse = false, compact = fals
   if (step.error) {
     const errText = typeof step.error === 'string' ? step.error : JSON.stringify(step.error, null, 2);
     card.appendChild(el('pre', { className: 'rc-pre', text: errText }));
+  }
+
+  if (useCompactChatBubble && (step.createdAt || !isDoneStep)) {
+    card.appendChild(
+      el(
+        'div',
+        { className: 'rc-step-foot' },
+        !isDoneStep
+          ? el('span', {
+              className: 'rc-pill rc-step-status-pill',
+              'data-tone': statusInfo.tone,
+              text: statusInfo.label,
+            })
+          : null,
+        step.createdAt ? el('span', { className: 'rc-step-time', text: formatTime(step.createdAt) }) : null
+      )
+    );
   }
 
   return card;

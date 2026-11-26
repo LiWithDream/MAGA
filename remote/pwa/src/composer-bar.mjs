@@ -571,12 +571,130 @@ function renderModelPopoverPanel(
   appendNodes(container, ...children);
 }
 
+function renderContextPopoverPanel(
+  container,
+  {
+    open = false,
+    metrics = null,
+    canWrite = false,
+    online = false,
+    compactBusy = false,
+    compactSupported = true,
+    onCompact = null,
+    onClose = null,
+  } = {}
+) {
+  if (!container) return;
+  clearNode(container);
+  if (!open) {
+    container.classList.add('rc-hidden');
+    return;
+  }
+  container.classList.remove('rc-hidden');
+
+  const hasMetrics = Boolean(metrics && metrics.ctxLimit > 0);
+  const ctxPct = hasMetrics ? Math.max(0, Math.min(100, Math.round(Number(metrics.ctxPct || 0)))) : 0;
+  const tone = !hasMetrics ? 'neutral' : ctxPct >= 90 ? 'crit' : ctxPct >= 75 ? 'warn' : 'ok';
+
+  const head = el(
+    'div',
+    { className: 'rc-model-pop-head' },
+    el('strong', { text: '上下文窗口' }),
+    el('button', {
+      type: 'button',
+      className: 'rc-btn is-sm is-ghost',
+      text: '关闭',
+      onClick: (ev) => {
+        ev?.stopPropagation?.();
+        onClose?.();
+      },
+    })
+  );
+
+  const fillEl = el('div', { className: 'rc-ctx-meter-fill', 'data-tone': tone });
+  if (fillEl.style) {
+    fillEl.style.width = `${hasMetrics ? ctxPct : 0}%`;
+  }
+
+  const summary = el(
+    'div',
+    { className: 'rc-ctx-pop-summary' },
+    el(
+      'div',
+      { className: 'rc-ctx-pop-top' },
+      el('span', { className: 'rc-ctx-pop-pct', 'data-tone': tone, text: hasMetrics ? `${ctxPct}%` : '--%' }),
+      el('span', { className: 'rc-ctx-pop-ratio', text: hasMetrics ? String(metrics.ctxRatioStr || '') : '暂无上下文计量数据' })
+    ),
+    el('div', { className: 'rc-meter-track' }, fillEl)
+  );
+
+  const kvRows = [];
+  if (hasMetrics) {
+    kvRows.push(
+      el(
+        'div',
+        { className: 'rc-ctx-pop-kv' },
+        el('span', { className: 'rc-ctx-pop-k', text: '本轮缓存命中' }),
+        el('span', { className: 'rc-ctx-pop-v', text: `${Number(metrics.lastCacheRate || 0).toFixed(1)}%` })
+      ),
+      el(
+        'div',
+        { className: 'rc-ctx-pop-kv' },
+        el('span', { className: 'rc-ctx-pop-k', text: '会话平均缓存' }),
+        el('span', { className: 'rc-ctx-pop-v', text: `${Number(metrics.sessionCacheRate || 0).toFixed(1)}%` })
+      )
+    );
+    if (Number(metrics.turns || 0) > 0 || Number(metrics.calls || 0) > 0) {
+      kvRows.push(
+        el(
+          'div',
+          { className: 'rc-ctx-pop-kv' },
+          el('span', { className: 'rc-ctx-pop-k', text: '累计调用' }),
+          el('span', { className: 'rc-ctx-pop-v', text: `${metrics.turns || 0} 轮 · ${metrics.calls || 0} 次` })
+        )
+      );
+    }
+  }
+
+  let actionsSection = null;
+  if (canWrite) {
+    const compactDisabled = !online || compactBusy || compactSupported === false;
+    let hintText = '整理历史上下文以释放窗口空间';
+    if (!online) hintText = '宿主离线，暂无法触发上下文压缩';
+    else if (compactSupported === false) hintText = '当前宿主版本暂不支持远程触发 /compact';
+    actionsSection = el(
+      'div',
+      { className: 'rc-ctx-pop-actions' },
+      el('div', { className: 'rc-ctx-pop-hint', text: hintText }),
+      el('button', {
+        type: 'button',
+        className: 'rc-btn is-sm rc-ctx-compact-btn',
+        disabled: compactDisabled,
+        text: compactBusy ? '正在压缩上下文…' : '压缩上下文 (/compact)',
+        onClick: (ev) => {
+          ev?.stopPropagation?.();
+          onCompact?.();
+        },
+      })
+    );
+  }
+
+  appendNodes(
+    container,
+    head,
+    summary,
+    kvRows.length > 0 ? el('div', { className: 'rc-ctx-pop-meta' }, ...kvRows) : null,
+    actionsSection
+  );
+}
+
 export function renderComposerFooterBar(
   refs,
   {
     catalog = null,
     studioPrefs = null,
     modelPopoverOpen = false,
+    contextPopoverOpen = false,
     showHiddenModels = false,
     modelBusy = false,
     metrics = null,
@@ -591,9 +709,11 @@ export function renderComposerFooterBar(
     compactSupported = true,
     mediaCount = 0,
     onToggleModelPopover = null,
+    onToggleContextPopover = null,
     onToggleShowHiddenModels = null,
     onSelectModelOption = null,
     onCloseModelPopover = null,
+    onCloseContextPopover = null,
     onCompact = null,
     onPickImages = null,
     onScrollBottom = null,
@@ -617,6 +737,18 @@ export function renderComposerFooterBar(
       onSelectModelOption,
       onToggleShowHiddenModels,
       onClose: onCloseModelPopover,
+    });
+  }
+  if (refs.contextPopover) {
+    renderContextPopoverPanel(refs.contextPopover, {
+      open: contextPopoverOpen && hasSelection,
+      metrics,
+      canWrite,
+      online,
+      compactBusy,
+      compactSupported,
+      onCompact,
+      onClose: onCloseContextPopover,
     });
   }
 
@@ -724,35 +856,34 @@ export function renderComposerFooterBar(
   }
   leftCluster.appendChild(capsuleBtn);
 
-  // 3. Context Occupancy Ring + /compact
+  // 3. Context Occupancy Ring (clicking opens secondary popover with usage details & /compact)
   if (hasSelection) {
     const hasMetrics = Boolean(metrics && metrics.ctxLimit > 0);
     const ctxPct = hasMetrics ? Math.round(Number(metrics.ctxPct || 0)) : 0;
     const tone = ctxPct >= 90 ? 'crit' : ctxPct >= 75 ? 'warn' : 'ok';
     const ctxTitle = hasMetrics
-      ? `上下文 ${metrics.ctxRatioStr || ''} (${ctxPct}%) · 本轮缓存 ${Number(metrics.lastCacheRate || 0).toFixed(1)}%`
-      : '暂无上下文计量数据';
+      ? `上下文 ${metrics.ctxRatioStr || ''} (${ctxPct}%) · 本轮缓存 ${Number(metrics.lastCacheRate || 0).toFixed(1)}%（点击查看详情与 /compact）`
+      : '查看上下文窗口与 /compact';
 
     leftCluster.appendChild(
       el(
-        'span',
-        { className: 'rc-footer-pill rc-ctx-pill', 'data-tone': hasMetrics ? tone : 'neutral', title: ctxTitle },
+        'button',
+        {
+          type: 'button',
+          className: 'rc-footer-pill rc-ctx-pill',
+          'data-tone': hasMetrics ? tone : 'neutral',
+          'aria-expanded': contextPopoverOpen ? 'true' : 'false',
+          title: ctxTitle,
+          onClick: (ev) => {
+            ev?.stopPropagation?.();
+            onToggleContextPopover?.();
+          },
+        },
         createSvgContextRing(ctxPct, hasMetrics ? tone : 'neutral'),
-        el('span', { text: hasMetrics ? `${ctxPct}%` : '--%' })
+        el('span', { text: compactBusy ? '压缩中…' : hasMetrics ? `${ctxPct}%` : '--%' }),
+        createChevronDownSvg()
       )
     );
-
-    if (canWrite) {
-      leftCluster.appendChild(
-        el('button', {
-          type: 'button',
-          className: 'rc-footer-pill',
-          disabled: !online || compactBusy || compactSupported === false,
-          text: compactBusy ? '压缩中…' : '/compact',
-          onClick: () => onCompact?.(),
-        })
-      );
-    }
   }
 
   // 4. Live Speed / TTFT micro-pill

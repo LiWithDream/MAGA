@@ -1237,9 +1237,12 @@ test('Phase 2 Composer Footer V2: models.list/select, convo.send image attachmen
 
     const refs = {
       modelPopover: doc.createElement('div'),
+      contextPopover: doc.createElement('div'),
       composerFooter: doc.createElement('div'),
     };
     let selectedPayload = null;
+    let ctxToggleCount = 0;
+    let compactTriggered = 0;
     composerBarMod.renderComposerFooterBar(refs, {
       catalog: {
         selected: { baseName: 'Gemini 4 Carbon', effort: 'High', displayEffort: 'High', value: 101 },
@@ -1256,6 +1259,7 @@ test('Phase 2 Composer Footer V2: models.list/select, convo.send image attachmen
         ],
       },
       modelPopoverOpen: true,
+      contextPopoverOpen: false,
       metrics: { ctxPct: 78, ctxRatioStr: '200k / 256k', ctxLimit: 256000, displayTps: 88.2, useStream: true, ttft: 1.2, lastCacheRate: 90, sessionCacheRate: 88, turns: 2, calls: 4 },
       isStreaming: false,
       canWrite: true,
@@ -1263,14 +1267,77 @@ test('Phase 2 Composer Footer V2: models.list/select, convo.send image attachmen
       hasSelection: true,
       mediaCount: 1,
       onSelectModelOption: (p) => { selectedPayload = p; },
+      onToggleContextPopover: () => { ctxToggleCount += 1; },
+      onCompact: () => { compactTriggered += 1; },
     });
     assert.equal(refs.composerFooter.textContent.includes('null'), false);
     assert.equal(refs.modelPopover.textContent.includes('null'), false);
+    assert.equal(refs.composerFooter.textContent.includes('/compact'), false, '/compact must be tucked inside context popover to prevent mobile misclicks');
     assert.match(refs.composerFooter.textContent, /\+ 图片 \(1\/4\)/);
     assert.match(refs.composerFooter.textContent, /Gemini 4 Carbon/);
     assert.match(refs.composerFooter.textContent, /78%/);
     assert.match(refs.composerFooter.textContent, /88 tok\/s · TTFT 1\.2s/);
     assert.equal(refs.composerFooter.querySelector('.rc-ctx-ring')?.getAttribute('data-tone'), 'warn');
+    assert.equal(refs.contextPopover.classList.contains('rc-hidden'), true);
+    const ctxPillBtn = refs.composerFooter.querySelector('button.rc-ctx-pill');
+    assert.ok(ctxPillBtn, 'context ring pill must be an interactive button');
+    ctxPillBtn.click();
+    assert.equal(ctxToggleCount, 1);
+
+    // Open secondary context popover -> shows usage details & /compact button
+    composerBarMod.renderComposerFooterBar(refs, {
+      catalog: null,
+      modelPopoverOpen: false,
+      contextPopoverOpen: true,
+      metrics: { ctxPct: 78, ctxRatioStr: '200k / 256k', ctxLimit: 256000, lastCacheRate: 90, sessionCacheRate: 88, turns: 2, calls: 4 },
+      canWrite: true,
+      online: true,
+      hasSelection: true,
+      onCompact: () => { compactTriggered += 1; },
+    });
+    assert.equal(refs.contextPopover.classList.contains('rc-hidden'), false);
+    assert.match(refs.contextPopover.textContent, /200k \/ 256k/);
+    assert.match(refs.contextPopover.textContent, /90\.0%/);
+    const compactBtn = refs.contextPopover.querySelector('.rc-ctx-compact-btn');
+    assert.ok(compactBtn, '/compact button must live inside context popover');
+    compactBtn.click();
+    assert.equal(compactTriggered, 1);
+
+    // Read-only mode can still view context popover stats without /compact write button
+    composerBarMod.renderComposerFooterBar(refs, {
+      catalog: null,
+      contextPopoverOpen: true,
+      metrics: { ctxPct: 42, ctxRatioStr: '108k / 256k', ctxLimit: 256000, lastCacheRate: 85, sessionCacheRate: 80, turns: 1, calls: 2 },
+      canWrite: false,
+      online: true,
+      hasSelection: true,
+    });
+    assert.equal(refs.contextPopover.classList.contains('rc-hidden'), false);
+    assert.equal(refs.contextPopover.querySelector('.rc-ctx-compact-btn'), null, 'observe role must not see /compact write button');
+
+    // Re-render model popover open to verify effort click still works
+    composerBarMod.renderComposerFooterBar(refs, {
+      catalog: {
+        selected: { baseName: 'Gemini 4 Carbon', effort: 'High', displayEffort: 'High', value: 101 },
+        families: [
+          {
+            baseName: 'Gemini 4 Carbon',
+            group: 'primary',
+            isOrchestrator: false,
+            variants: [
+              { effort: 'High', displayEffort: 'High', label: 'Gemini 4 Carbon (High)', value: 101 },
+              { effort: 'Medium', displayEffort: 'Medium', label: 'Gemini 4 Carbon (Medium)', value: 102 },
+            ],
+          },
+        ],
+      },
+      modelPopoverOpen: true,
+      contextPopoverOpen: false,
+      canWrite: true,
+      online: true,
+      hasSelection: true,
+      onSelectModelOption: (p) => { selectedPayload = p; },
+    });
     const medBtn = Array.from(refs.modelPopover.querySelectorAll('.rc-effort-btn')).find((b) => b.textContent === 'Medium');
     assert.ok(medBtn);
     medBtn.click();

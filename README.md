@@ -1,9 +1,11 @@
 <div align="center">
 
+<img src="./docs/images/icons/hero-emblem.png" alt="AGY Studio" width="68" height="68" />
+
 # AGY Studio
 
 **Run Antigravity like an engineering team.**  
-Give every conversation its own Git worktree, bring in Claude Opus for a second opinion at the moments that matter, and keep every project's tokens, quota, and context under control.
+Give every conversation its own [Git worktree](#parallel-engineering), bring in [Claude Opus for a second opinion](#cross-model-review) at the moments that matter, keep every project's [tokens, quota, and context under control](#tokens-and-context), and run [long tasks without babysitting](#long-runs).
 
 **English** · [简体中文](./README.zh-CN.md)
 
@@ -15,7 +17,7 @@ Give every conversation its own Git worktree, bring in Claude Opus for a second 
 
 Install in 10 seconds: paste one prompt into Antigravity → **[Quick Start](#quick-start)**
 
-[What's Different](#native-antigravity-vs-agy-studio) · [Core Capabilities](#core-capabilities) · [Quick Start](#quick-start) · [Safe & Fast](#safe--fast-by-design) · [Compatibility](#compatibility)
+[What's Different](#native-antigravity-vs-agy-studio) · [Core Capabilities](#core-capabilities) · [Quick Start](#quick-start) · [Safe & Fast](#safe-fast) · [Compatibility](#compatibility)
 
 <br />
 
@@ -44,7 +46,9 @@ Antigravity Desktop 2.0 is built around **one agent in one chat**. Once you jugg
 
 ## Core Capabilities
 
-### 1. Parallel Multi-Project Engineering
+<a id="parallel-engineering"></a>
+
+### <img src="./docs/images/icons/pillar-parallel.png" width="24" height="24" align="absmiddle" alt="" /> &nbsp;1. Parallel Multi-Project Engineering
 
 **Run multiple repos and agent tasks side by side — without branch collisions or context switching.**
 
@@ -68,9 +72,13 @@ Antigravity Desktop 2.0 is built around **one agent in one chat**. Once you jugg
 
 ---
 
-### 2. Cross-Model Review Gate (Opus Gate)
+<a id="cross-model-review"></a>
+
+### <img src="./docs/images/icons/pillar-review.png" width="24" height="24" align="absmiddle" alt="" /> &nbsp;2. Cross-Model Review Gate (Opus Gate)
 
 **Let fast models build at full speed — bring in Claude Opus as an independent reviewer at the moments where mistakes are expensive.**
+
+<img src="./docs/images/opus-gate.png" alt="AGY Studio Opus Review Gate dock pill and dual-path review popover with live Claude quota headroom" width="100%" />
 
 | Checkpoint | When It Fires | What Opus Checks |
 | :--- | :--- | :--- |
@@ -84,7 +92,9 @@ Antigravity Desktop 2.0 is built around **one agent in one chat**. Once you jugg
 
 ---
 
-### 3. Tokens, Quota & Context Under Control
+<a id="tokens-and-context"></a>
+
+### <img src="./docs/images/icons/pillar-quota.png" width="24" height="24" align="absmiddle" alt="" /> &nbsp;3. Tokens, Quota & Context Under Control
 
 **See exactly where every token goes and keep long sessions sharp — before you hit a lockout or context degradation.**
 
@@ -104,7 +114,9 @@ Antigravity Desktop 2.0 is built around **one agent in one chat**. Once you jugg
 
 ---
 
-### 4. Long Runs Without Babysitting
+<a id="long-runs"></a>
+
+### <img src="./docs/images/icons/pillar-autopilot.png" width="24" height="24" align="absmiddle" alt="" /> &nbsp;4. Long Runs Without Babysitting
 
 **Kick off complex multi-agent runs and stay in flow — without babysitting subagent drawers, dropped streams, or verbose tool noise.**
 
@@ -139,7 +151,7 @@ Paste this prompt directly into Antigravity or Claude Code:
 Clone https://github.com/LiWithDream/agy-studio.git to ~/Developer/agy-studio, read docs/INSTALL_AGENT.md, run bash ./install.sh, and verify with node studio/cli.mjs doctor. Do not touch /Applications/Antigravity.app or delete existing chats.
 ```
 
-> **Safe by design**: Never modifies `/Applications/Antigravity.app`, keeps all data local, and reverts cleanly at any time with `bash ./uninstall.sh` → [See how it works](#safe--fast-by-design).
+> **Safe by design**: Never modifies `/Applications/Antigravity.app`, keeps all data local, and reverts cleanly at any time with `bash ./uninstall.sh` → [See how it works](#safe-fast).
 
 <details>
 <summary><b>Alternative install methods (Prebuilt tarball / From source / Uninstall &amp; Diagnostics)</b></summary>
@@ -174,7 +186,9 @@ Pass `--no-rules` if you prefer not to sync the optional `fast-io` rules into `~
 
 ---
 
-## Craft & Ergonomics
+<a id="craft-ergonomics"></a>
+
+## <img src="./docs/images/icons/section-craft.png" width="24" height="24" align="absmiddle" alt="" /> &nbsp;Craft & Ergonomics
 
 Small daily friction adds up when you live inside Antigravity all day — every piece is modular and toggleable:
 
@@ -196,7 +210,9 @@ Small daily friction adds up when you live inside Antigravity all day — every 
 
 ---
 
-## Safe & Fast by Design
+<a id="safe-fast"></a>
+
+## <img src="./docs/images/icons/section-shield.png" width="24" height="24" align="absmiddle" alt="" /> &nbsp;Safe & Fast by Design
 
 **Will this break Antigravity updates, slow down streaming, or send my data anywhere?** No.
 

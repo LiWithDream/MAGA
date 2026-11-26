@@ -1,9 +1,11 @@
 <div align="center">
 
+<img src="./docs/images/icons/hero-emblem.png" alt="AGY Studio" width="68" height="68" />
+
 # AGY Studio
 
 **把 Antigravity 用成一支工程团队。**  
-每场对话独立 Worktree，多项目并行互不踩踏，关键节点一键请 Opus 交叉复核，每个项目的 Token、配额与上下文尽在掌握。
+每场对话[独立 Worktree 多项目并行](#parallel-engineering)，关键节点[一键请 Opus 交叉复核](#cross-model-review)，[Token、配额与上下文尽在掌握](#tokens-and-context)，[长任务与多子代理免看护交付](#long-runs)。
 
 [English](./README.md) · **简体中文**
 
@@ -11,12 +13,12 @@
 [![Latest Release](https://img.shields.io/github/v/release/LiWithDream/agy-studio?style=flat-square&color=4285F4)](https://github.com/LiWithDream/agy-studio/releases)
 [![macOS](https://img.shields.io/badge/macOS-Apple%20Silicon%20%2F%20Intel-1f2328?style=flat-square&logo=apple&logoColor=white)](#局限与平台支持)
 [![Antigravity](https://img.shields.io/badge/Antigravity-Desktop%202.0-4285F4?style=flat-square)](#核心能力)
-[![内置中文界面](https://img.shields.io/badge/界面语言-内置简体中文-10B981?style=flat-square)](#细节打磨与高度可定制)
+[![内置中文界面](https://img.shields.io/badge/界面语言-内置简体中文-10B981?style=flat-square)](#craft-ergonomics)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue?style=flat-square)](./LICENSE)
 
 10 秒安装：复制一段话发给 Antigravity 即可 → **[快速开始](#快速开始)**
 
-[前后对比](#原生-antigravity-vs-agy-studio) · [核心能力](#核心能力) · [快速开始](#快速开始) · [安全与流畅](#安全与流畅设计) · [兼容性](#兼容性)
+[前后对比](#原生-antigravity-vs-agy-studio) · [核心能力](#核心能力) · [快速开始](#快速开始) · [安全与流畅](#safe-fast) · [兼容性](#兼容性)
 
 <br />
 
@@ -45,7 +47,9 @@
 
 ## 核心能力
 
-### 1. 多项目并行开发，互不踩踏
+<a id="parallel-engineering"></a>
+
+### <img src="./docs/images/icons/pillar-parallel.png" width="24" height="24" align="absmiddle" alt="" /> &nbsp;1. 多项目并行开发，互不踩踏
 
 **同时推进多个仓库与多条需求线，分支隔离、改动透明、上下文秒级接续。**
 
@@ -69,9 +73,13 @@
 
 ---
 
-### 2. 关键节点跨模型把关（Opus Review Gate）
+<a id="cross-model-review"></a>
+
+### <img src="./docs/images/icons/pillar-review.png" width="24" height="24" align="absmiddle" alt="" /> &nbsp;2. 关键节点跨模型把关（Opus Review Gate）
 
 **让高速模型全速写代码，在最容易踩坑的 4 个节点请 Claude Opus 独立复核。**
+
+<img src="./docs/images/opus-gate.png" alt="AGY Studio 底栏 Opus 把关胶囊与双路径复核弹层及实时 Claude 配额显示" width="100%" />
 
 | 触发节点 | 适用时机 | Opus 重点把关什么 |
 | :--- | :--- | :--- |
@@ -85,7 +93,9 @@
 
 ---
 
-### 3. Token、配额与上下文，尽在掌握
+<a id="tokens-and-context"></a>
+
+### <img src="./docs/images/icons/pillar-quota.png" width="24" height="24" align="absmiddle" alt="" /> &nbsp;3. Token、配额与上下文，尽在掌握
 
 **告别“跑着跑着突然限流或失忆”，把每一分额度与上下文窗口用明白。**
 
@@ -105,7 +115,9 @@
 
 ---
 
-### 4. 长任务免看护，高信号交付
+<a id="long-runs"></a>
+
+### <img src="./docs/images/icons/pillar-autopilot.png" width="24" height="24" align="absmiddle" alt="" /> &nbsp;4. 长任务免看护，高信号交付
 
 **派发复杂多步任务后安心保持心流，不被子代理抽屉、偶发断流和冗长过程打断。**
 
@@ -140,7 +152,7 @@
 帮我把 https://github.com/LiWithDream/agy-studio.git 克隆到 ~/Developer/agy-studio，先阅读 docs/INSTALL_AGENT.md，再执行 bash ./install.sh 并运行 node studio/cli.mjs doctor 验证状态。不要修改 /Applications/Antigravity.app，也不要删除现有对话和配置。
 ```
 
-> **安全无侵入**：不修改 `/Applications/Antigravity.app`，所有数据留在本地，随时执行 `bash ./uninstall.sh` 即可无痕还原 → [了解安全与性能设计](#安全与流畅设计)。
+> **安全无侵入**：不修改 `/Applications/Antigravity.app`，所有数据留在本地，随时执行 `bash ./uninstall.sh` 即可无痕还原 → [了解安全与性能设计](#safe-fast)。
 
 <details>
 <summary><b>其他安装方式（预编译 Release 压缩包 / 源码安装 / 诊断与卸载）</b></summary>
@@ -175,7 +187,9 @@ bash ./install.sh
 
 ---
 
-## 细节打磨与高度可定制
+<a id="craft-ergonomics"></a>
+
+## <img src="./docs/images/icons/section-craft.png" width="24" height="24" align="absmiddle" alt="" /> &nbsp;细节打磨与高度可定制
 
 每天高强度泡在 Antigravity 里，顺手的细节同样重要——所有模块均可按需开关：
 
@@ -197,7 +211,9 @@ bash ./install.sh
 
 ---
 
-## 安全与流畅设计
+<a id="safe-fast"></a>
+
+## <img src="./docs/images/icons/section-shield.png" width="24" height="24" align="absmiddle" alt="" /> &nbsp;安全与流畅设计
 
 **会不会破坏客户端更新、拖慢流式输出，或者上传我的数据？** 不会。
 

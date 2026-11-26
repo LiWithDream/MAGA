@@ -226,6 +226,17 @@ export function renderStepCard(step) {
     );
   }
 
+  if (step.mediaCount > 0) {
+    const namesHint = Array.isArray(step.mediaNames) && step.mediaNames.length > 0 ? step.mediaNames.join(', ') : '';
+    card.appendChild(
+      el('div', {
+        className: 'rc-step-media-badge',
+        ...(namesHint ? { title: namesHint } : {}),
+        text: `🖼 附带 ${step.mediaCount} 张图片`,
+      })
+    );
+  }
+
   if (step.text) {
     card.appendChild(renderSafeMarkdown(String(step.text)));
   }

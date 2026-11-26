@@ -1,0 +1,501 @@
+/**
+ * AGY Studio Remote PWA — Conversation Bottom Bar V2 (Model/Effort Capsule, SVG Context Ring,
+ * Live Speed Pill, Auto-Growing Composer & Client-Side Image Attachment Compression).
+ * Strict invariant: NEVER use unsafe HTML injection APIs; build DOM with createElement / createElementNS + textContent only.
+ */
+import { appendNodes, clearNode, el } from './ui-helpers.mjs';
+
+const SVG_NS = 'http://www.w3.org/2000/svg';
+const RING_RADIUS = 7;
+const RING_CIRC = 2 * Math.PI * RING_RADIUS;
+const MAX_IMAGE_DIM = 1600;
+const MAX_B64_CHARS = 600_000;
+const SAFE_DATA_IMAGE_RE = /^data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$/i;
+const ALLOWED_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+
+function readFileAsDataUrl(fileOrBlob) {
+  return new Promise((resolve, reject) => {
+    if (typeof FileReader !== 'function') {
+      reject(new Error('file_reader_unavailable'));
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(new Error('file_read_failed'));
+    reader.readAsDataURL(fileOrBlob);
+  });
+}
+
+function parseDataUrlParts(dataUrl) {
+  const m = /^data:([^;,]+);base64,([A-Za-z0-9+/=]+)$/i.exec(String(dataUrl || '').trim());
+  if (!m) return null;
+  return { mimeType: m[1].toLowerCase(), dataBase64: m[2] };
+}
+
+function encodeCanvasDataUrl(canvas, mime, quality) {
+  try {
+    return canvas.toDataURL(mime, quality);
+  } catch {
+    return '';
+  }
+}
+
+export async function compressImageFile(file) {
+  if (!file || typeof file !== 'object') {
+    throw new Error('invalid_image_file');
+  }
+  const rawType = String(file.type || 'image/png').toLowerCase();
+  const safeName = String(file.name || 'pasted-image.png').slice(0, 128);
+  const canCanvas =
+    typeof createImageBitmap === 'function' &&
+    typeof document !== 'undefined' &&
+    typeof document.createElement === 'function';
+
+  // Keep small animated GIFs intact if possible; otherwise compress via Canvas
+  if (!canCanvas || (rawType === 'image/gif' && Number(file.size || 0) <= 380_000)) {
+    const rawUrl = await readFileAsDataUrl(file);
+    const parsed = parseDataUrlParts(rawUrl);
+    if (!parsed || !ALLOWED_MIME_TYPES.has(parsed.mimeType)) {
+      throw new Error('unsupported_image_type');
+    }
+    if (parsed.dataBase64.length > MAX_B64_CHARS) {
+      throw new Error('image_too_large');
+    }
+    return {
+      id: `img-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+      name: safeName,
+      mimeType: parsed.mimeType,
+      dataBase64: parsed.dataBase64,
+      previewUrl: `data:${parsed.mimeType};base64,${parsed.dataBase64}`,
+      sizeBytes: Math.floor((parsed.dataBase64.length * 3) / 4),
+    };
+  }
+
+  const bitmap = await createImageBitmap(file);
+  try {
+    const origW = Math.max(1, bitmap.width || 1);
+    const origH = Math.max(1, bitmap.height || 1);
+    const baseScale = Math.min(1, MAX_IMAGE_DIM / Math.max(origW, origH));
+
+    let chosenUrl = '';
+    for (const dimFactor of [1, 0.78, 0.58]) {
+      const w = Math.max(1, Math.round(origW * baseScale * dimFactor));
+      const h = Math.max(1, Math.round(origH * baseScale * dimFactor));
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      const ctx2d = canvas.getContext('2d');
+      if (!ctx2d) throw new Error('canvas_unavailable');
+      ctx2d.drawImage(bitmap, 0, 0, w, h);
+
+      for (const mime of ['image/webp', 'image/jpeg']) {
+        for (const q of [0.82, 0.68, 0.52]) {
+          const candidate = encodeCanvasDataUrl(canvas, mime, q);
+          const parsed = parseDataUrlParts(candidate);
+          if (parsed && ALLOWED_MIME_TYPES.has(parsed.mimeType) && parsed.dataBase64.length <= MAX_B64_CHARS) {
+            chosenUrl = candidate;
+            break;
+          }
+        }
+        if (chosenUrl) break;
+      }
+      if (chosenUrl) break;
+    }
+
+    const finalParts = parseDataUrlParts(chosenUrl);
+    if (!finalParts || finalParts.dataBase64.length > MAX_B64_CHARS) {
+      throw new Error('image_too_large');
+    }
+    return {
+      id: `img-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+      name: safeName,
+      mimeType: finalParts.mimeType,
+      dataBase64: finalParts.dataBase64,
+      previewUrl: `data:${finalParts.mimeType};base64,${finalParts.dataBase64}`,
+      sizeBytes: Math.floor((finalParts.dataBase64.length * 3) / 4),
+    };
+  } finally {
+    bitmap.close?.();
+  }
+}
+
+export function autoResizeTextarea(textarea) {
+  if (!textarea || !textarea.style) return;
+  const val = String(textarea.value || '');
+  if (!val) {
+    textarea.style.height = '42px';
+    return;
+  }
+  textarea.style.height = 'auto';
+  const scHeight = Number(textarea.scrollHeight || 0);
+  if (scHeight > 0) {
+    const nextH = Math.min(180, Math.max(42, scHeight));
+    textarea.style.height = `${nextH}px`;
+  }
+}
+
+export function createSvgContextRing(pct, tone = 'ok') {
+  const clamped = Math.max(0, Math.min(100, Number(pct) || 0));
+  const offset = RING_CIRC * (1 - clamped / 100);
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.setAttribute('class', 'rc-ctx-ring');
+  svg.setAttribute('data-tone', tone);
+  svg.setAttribute('width', '16');
+  svg.setAttribute('height', '16');
+  svg.setAttribute('viewBox', '0 0 20 20');
+  svg.setAttribute('aria-hidden', 'true');
+
+  const track = document.createElementNS(SVG_NS, 'circle');
+  track.setAttribute('cx', '10');
+  track.setAttribute('cy', '10');
+  track.setAttribute('r', String(RING_RADIUS));
+  track.setAttribute('fill', 'none');
+  track.setAttribute('stroke', 'currentColor');
+  track.setAttribute('stroke-opacity', '0.2');
+  track.setAttribute('stroke-width', '2.5');
+
+  const fill = document.createElementNS(SVG_NS, 'circle');
+  fill.setAttribute('cx', '10');
+  fill.setAttribute('cy', '10');
+  fill.setAttribute('r', String(RING_RADIUS));
+  fill.setAttribute('fill', 'none');
+  fill.setAttribute('stroke', 'currentColor');
+  fill.setAttribute('stroke-width', '2.5');
+  fill.setAttribute('stroke-linecap', 'round');
+  fill.setAttribute('stroke-dasharray', RING_CIRC.toFixed(2));
+  fill.setAttribute('stroke-dashoffset', offset.toFixed(2));
+  fill.setAttribute('transform', 'rotate(-90 10 10)');
+
+  svg.appendChild(track);
+  svg.appendChild(fill);
+  return svg;
+}
+
+export function renderMediaPreviewStrip(container, mediaList = [], { disabled = false, onRemove = null } = {}) {
+  if (!container) return;
+  clearNode(container);
+  const items = Array.isArray(mediaList) ? mediaList : [];
+  if (items.length === 0) {
+    container.classList.add('rc-hidden');
+    return;
+  }
+  container.classList.remove('rc-hidden');
+
+  for (const item of items) {
+    if (!item || !SAFE_DATA_IMAGE_RE.test(String(item.previewUrl || ''))) continue;
+    const kb = Math.max(1, Math.round(Number(item.sizeBytes || (item.dataBase64?.length || 0) * 0.75) / 1024));
+    container.appendChild(
+      el(
+        'div',
+        { className: 'rc-media-chip' },
+        el('img', {
+          className: 'rc-media-thumb',
+          src: item.previewUrl,
+          alt: String(item.name || 'image'),
+        }),
+        el(
+          'div',
+          { className: 'rc-media-meta' },
+          el('span', { className: 'rc-media-name', text: String(item.name || '图片') }),
+          el('span', { className: 'rc-media-size', text: `${kb} KB` })
+        ),
+        el('button', {
+          type: 'button',
+          className: 'rc-media-rm',
+          disabled,
+          'aria-label': `移除 ${item.name || '图片'}`,
+          text: '×',
+          onClick: () => onRemove?.(item.id),
+        })
+      )
+    );
+  }
+}
+
+function findCurrentFamilyInCatalog(catalog, selected) {
+  const families = Array.isArray(catalog?.families) ? catalog.families : [];
+  if (families.length === 0) return null;
+  if (selected) {
+    const byVal = families.find((f) =>
+      f.variants.some(
+        (v) =>
+          v.value === selected.value &&
+          (!selected.isOrchestrator || !selected.plannerValue || v.plannerValue === selected.plannerValue)
+      )
+    );
+    if (byVal) return byVal;
+    const byName = families.find((f) => f.baseName === selected.baseName);
+    if (byName) return byName;
+  }
+  return families[0];
+}
+
+function renderModelPopoverPanel(
+  container,
+  { open = false, catalog = null, selected = null, modelBusy = false, onSelectModelOption = null, onClose = null } = {}
+) {
+  if (!container) return;
+  clearNode(container);
+  const families = Array.isArray(catalog?.families) ? catalog.families : [];
+  if (!open || families.length === 0) {
+    container.classList.add('rc-hidden');
+    return;
+  }
+  container.classList.remove('rc-hidden');
+
+  const activeFam = findCurrentFamilyInCatalog(catalog, selected);
+  const children = [
+    el(
+      'div',
+      { className: 'rc-model-pop-head' },
+      el('strong', { text: '切换模型与思考深度' }),
+      el('button', {
+        type: 'button',
+        className: 'rc-btn is-sm is-ghost',
+        text: '关闭',
+        onClick: () => onClose?.(),
+      })
+    ),
+  ];
+
+  // Segmented Effort Bar for active family when multiple tiers exist
+  const effortVariants = Array.isArray(activeFam?.variants) ? activeFam.variants.filter((v) => v.effort) : [];
+  if (effortVariants.length > 1) {
+    const seg = el('div', { className: 'rc-effort-seg' });
+    for (const v of effortVariants) {
+      const isActiveVar = Boolean(
+        selected &&
+          v.value === selected.value &&
+          (!activeFam.isOrchestrator || !selected.plannerValue || v.plannerValue === selected.plannerValue)
+      );
+      seg.appendChild(
+        el('button', {
+          type: 'button',
+          className: 'rc-effort-btn',
+          'aria-pressed': isActiveVar ? 'true' : 'false',
+          disabled: modelBusy,
+          text: v.displayEffort || v.effort,
+          onClick: () =>
+            onSelectModelOption?.({
+              model: v.value,
+              plannerModel: v.plannerValue ?? null,
+              customLabel: v.customLabel || '',
+            }),
+        })
+      );
+    }
+    children.push(
+      el('div', { className: 'rc-model-pop-section' }, el('div', { className: 'rc-model-sec-title', text: '思考深度 (Effort)' }), seg)
+    );
+  }
+
+  const groupMeta = [
+    { id: 'primary', label: '主力模型' },
+    { id: 'orch', label: '编排器 (Orchestrator)' },
+    { id: 'other', label: '其他模型' },
+  ];
+
+  const listWrap = el('div', { className: 'rc-model-fam-list' });
+  for (const gm of groupMeta) {
+    const groupFams = families.filter((f) => f.group === gm.id);
+    if (groupFams.length === 0) continue;
+    listWrap.appendChild(el('div', { className: 'rc-model-sec-title', text: gm.label }));
+    for (const fam of groupFams) {
+      const isFamActive = activeFam && fam.baseName === activeFam.baseName;
+      const desiredEff = selected?.effort || '';
+      const targetVar =
+        (desiredEff && fam.variants.find((v) => v.effort === desiredEff)) ||
+        fam.variants.find((v) => v.effort === 'High') ||
+        fam.variants.find((v) => v.effort === 'Medium') ||
+        fam.variants[0];
+      const badgeText = isFamActive && selected?.displayEffort
+        ? selected.displayEffort
+        : targetVar?.displayEffort || '';
+
+      listWrap.appendChild(
+        el(
+          'button',
+          {
+            type: 'button',
+            className: 'rc-model-fam-btn',
+            'data-selected': isFamActive ? 'true' : 'false',
+            disabled: modelBusy,
+            onClick: () => {
+              if (!targetVar) return;
+              onSelectModelOption?.({
+                model: targetVar.value,
+                plannerModel: targetVar.plannerValue ?? null,
+                customLabel: targetVar.customLabel || '',
+              });
+            },
+          },
+          el('span', { className: 'rc-model-fam-name', text: fam.baseName }),
+          badgeText ? el('span', { className: 'rc-pill', 'data-tone': isFamActive ? 'info' : 'neutral', text: badgeText }) : null
+        )
+      );
+    }
+  }
+  children.push(listWrap);
+  appendNodes(container, ...children);
+}
+
+export function renderComposerFooterBar(
+  refs,
+  {
+    catalog = null,
+    modelPopoverOpen = false,
+    modelBusy = false,
+    metrics = null,
+    isStreaming = false,
+    streamElapsedSec = 0,
+    streamChars = 0,
+    canWrite = false,
+    online = false,
+    hasSelection = false,
+    sendBusy = false,
+    compactBusy = false,
+    compactSupported = true,
+    mediaCount = 0,
+    onToggleModelPopover = null,
+    onSelectModelOption = null,
+    onCloseModelPopover = null,
+    onCompact = null,
+    onPickImages = null,
+    onScrollBottom = null,
+  } = {}
+) {
+  const footer = refs?.composerFooter;
+  if (!footer) return;
+  clearNode(footer);
+
+  const selected = catalog?.selected || null;
+  if (refs.modelPopover) {
+    renderModelPopoverPanel(refs.modelPopover, {
+      open: modelPopoverOpen && canWrite && online,
+      catalog,
+      selected,
+      modelBusy,
+      onSelectModelOption,
+      onClose: onCloseModelPopover,
+    });
+  }
+
+  const leftCluster = el('div', { className: 'rc-footer-left' });
+  const rightCluster = el('div', { className: 'rc-footer-right' });
+
+  // 1. Attach image button (+ 图片)
+  if (canWrite && hasSelection) {
+    leftCluster.appendChild(
+      el('button', {
+        type: 'button',
+        className: 'rc-footer-pill rc-attach-btn',
+        disabled: !online || sendBusy || mediaCount >= 4,
+        title: '上传图片或直接 Ctrl/Cmd+V 粘贴截图（最多 4 张）',
+        text: mediaCount > 0 ? `+ 图片 (${mediaCount}/4)` : '+ 图片',
+        onClick: () => onPickImages?.(),
+      })
+    );
+  }
+
+  // 2. Model & Effort capsule
+  const hasModels = Boolean(catalog && Array.isArray(catalog.families) && catalog.families.length > 0);
+  const modelLabel = modelBusy
+    ? '切换中…'
+    : selected?.baseName || (hasModels ? '选择模型' : '默认模型');
+  const effortLabel = !modelBusy && selected?.displayEffort ? selected.displayEffort : '';
+  const modelDisabled = !canWrite || !online || !hasModels || modelBusy;
+
+  leftCluster.appendChild(
+    el(
+      'button',
+      {
+        type: 'button',
+        className: 'rc-footer-pill rc-model-capsule',
+        'aria-expanded': modelPopoverOpen ? 'true' : 'false',
+        disabled: modelDisabled,
+        title: canWrite ? '切换当前模型与思考深度' : '只读模式 (observe) 下仅展示当前模型',
+        onClick: () => onToggleModelPopover?.(),
+      },
+      el('span', { className: 'rc-model-capsule-name', text: modelLabel }),
+      effortLabel ? el('span', { className: 'rc-model-effort-tag', text: effortLabel }) : null,
+      el('span', { className: 'rc-model-caret', text: '▾' })
+    )
+  );
+
+  // 3. Context Occupancy Ring + /compact
+  if (hasSelection) {
+    const hasMetrics = Boolean(metrics && metrics.ctxLimit > 0);
+    const ctxPct = hasMetrics ? Math.round(Number(metrics.ctxPct || 0)) : 0;
+    const tone = ctxPct >= 90 ? 'crit' : ctxPct >= 75 ? 'warn' : 'ok';
+    const ctxTitle = hasMetrics
+      ? `上下文 ${metrics.ctxRatioStr || ''} (${ctxPct}%) · 本轮缓存 ${Number(metrics.lastCacheRate || 0).toFixed(1)}%`
+      : '暂无上下文计量数据';
+
+    leftCluster.appendChild(
+      el(
+        'span',
+        { className: 'rc-footer-pill rc-ctx-pill', 'data-tone': hasMetrics ? tone : 'neutral', title: ctxTitle },
+        createSvgContextRing(ctxPct, hasMetrics ? tone : 'neutral'),
+        el('span', { text: hasMetrics ? `${ctxPct}%` : '--%' })
+      )
+    );
+
+    if (canWrite) {
+      leftCluster.appendChild(
+        el('button', {
+          type: 'button',
+          className: 'rc-footer-pill',
+          disabled: !online || compactBusy || compactSupported === false,
+          text: compactBusy ? '压缩中…' : '/compact',
+          onClick: () => onCompact?.(),
+        })
+      );
+    }
+  }
+
+  // 4. Live Speed / TTFT micro-pill
+  if (isStreaming) {
+    const secs = Math.max(0, Math.floor(Number(streamElapsedSec || 0)));
+    const streamLabel = streamChars > 0 ? `生成中 ${secs}s · ${streamChars}字` : `生成中 ${secs}s`;
+    leftCluster.appendChild(
+      el(
+        'span',
+        { className: 'rc-footer-pill rc-metrics-pill is-streaming' },
+        el('span', { className: 'rc-pulse' }),
+        el('span', { text: streamLabel })
+      )
+    );
+  } else if (metrics && (Number(metrics.displayTps) > 0 || Number(metrics.ttft) > 0)) {
+    const tpsText = Number(metrics.displayTps) > 0 ? `${Math.round(Number(metrics.displayTps))} tok/s` : '';
+    const durLabel = metrics.useStream ? 'TTFT' : 'Hold';
+    const durText = Number(metrics.ttft) > 0 ? `${durLabel} ${Number(metrics.ttft).toFixed(1)}s` : '';
+    const textParts = [tpsText, durText].filter(Boolean).join(' · ');
+    if (textParts) {
+      const mTitle = `累计 ${metrics.turns || 0} 轮 / ${metrics.calls || 0} 次调用 · 会话缓存 ${Number(metrics.sessionCacheRate || 0).toFixed(1)}%`;
+      leftCluster.appendChild(
+        el('span', { className: 'rc-footer-pill rc-metrics-pill', title: mTitle, text: textParts })
+      );
+    }
+  }
+
+  rightCluster.appendChild(
+    el('button', {
+      type: 'button',
+      className: 'rc-btn is-sm rc-mobile-only',
+      text: '← 列表',
+      onClick: () => onScrollBottom?.('back'),
+    })
+  );
+  if (hasSelection) {
+    rightCluster.appendChild(
+      el('button', {
+        type: 'button',
+        className: 'rc-btn is-sm',
+        text: '回到底部',
+        onClick: () => onScrollBottom?.('bottom'),
+      })
+    );
+  }
+
+  appendNodes(footer, leftCluster, rightCluster);
+}

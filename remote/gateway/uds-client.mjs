@@ -6,7 +6,7 @@ import net from 'node:net';
 import { resolveSockPath } from './config.mjs';
 
 const DEFAULT_MAX_LINE_BYTES = 8 * 1024 * 1024; // 8MB line guard
-const WRITE_METHODS = new Set(['convo.send', 'convo.approve', 'convo.cancel', 'convo.resume', 'convo.compact', 'opus.dismiss']);
+const WRITE_METHODS = new Set(['convo.send', 'convo.approve', 'convo.cancel', 'convo.resume', 'convo.compact', 'opus.dismiss', 'models.select']);
 
 export function createUdsClient({
   sockPath = resolveSockPath(),

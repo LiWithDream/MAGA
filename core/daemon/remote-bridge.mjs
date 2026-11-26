@@ -44,9 +44,14 @@ export {
 };
 
 const MAX_ACTIVE_STREAMS = 3;
-const MAX_UDS_LINE_BYTES = 1024 * 1024;
-const WRITE_UDS_METHODS = new Set(['convo.send', 'convo.approve', 'convo.cancel', 'convo.resume', 'convo.compact', 'opus.dismiss']);
-const TAP_INVOKE_METHODS = new Set(['convo.owns', 'convo.send', 'convo.approve', 'convo.cancel', 'convo.compact']);
+const MAX_UDS_LINE_BYTES = 4 * 1024 * 1024;
+const MAX_MEDIA_ITEMS = 4;
+const MAX_MEDIA_B64_ITEM = 620_000;
+const MAX_MEDIA_B64_TOTAL = 1_400_000;
+const ALLOWED_MEDIA_MIMES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+const BASE64_RE = /^[A-Za-z0-9+/=]+$/;
+const WRITE_UDS_METHODS = new Set(['convo.send', 'convo.approve', 'convo.cancel', 'convo.resume', 'convo.compact', 'opus.dismiss', 'models.select']);
+const TAP_INVOKE_METHODS = new Set(['convo.owns', 'convo.send', 'convo.approve', 'convo.cancel', 'convo.compact', 'models.list', 'models.select']);
 
 let bridgeState = null;
 
@@ -212,6 +217,8 @@ export async function probeRemoteCapabilities() {
       cancel: false,
       approval: false,
       compact: false,
+      modelSelect: false,
+      imageAttachments: false,
       resume: true,
       diskRead: Boolean(DatabaseSync)
     },
@@ -243,6 +250,8 @@ export async function probeRemoteCapabilities() {
       cancel: Boolean(tapCap.capabilities?.cancel),
       approval: Boolean(tapCap.capabilities?.approval),
       compact: Boolean(tapCap.capabilities?.compact),
+      modelSelect: Boolean(tapCap.capabilities?.modelSelect),
+      imageAttachments: Boolean(tapCap.capabilities?.imageAttachments),
       resume: true,
       diskRead: Boolean(DatabaseSync)
     },
@@ -530,6 +539,38 @@ async function releaseClientWatches(client) {
   }
 }
 
+function validateRemoteMediaList(rawMedia) {
+  if (rawMedia === undefined || rawMedia === null) return [];
+  if (!Array.isArray(rawMedia)) {
+    throw Object.assign(new Error('invalid_media'), { code: 'invalid_media' });
+  }
+  if (rawMedia.length > MAX_MEDIA_ITEMS) {
+    throw Object.assign(new Error('too_many_media_items'), { code: 'too_many_media_items' });
+  }
+  let totalLen = 0;
+  const out = [];
+  for (const item of rawMedia) {
+    if (!item || typeof item !== 'object') {
+      throw Object.assign(new Error('invalid_media_item'), { code: 'invalid_media_item' });
+    }
+    const mimeType = typeof item.mimeType === 'string' ? item.mimeType.trim().toLowerCase() : '';
+    if (!ALLOWED_MEDIA_MIMES.has(mimeType)) {
+      throw Object.assign(new Error('unsupported_media_mime'), { code: 'unsupported_media_mime' });
+    }
+    const dataBase64 = typeof item.dataBase64 === 'string' ? item.dataBase64.trim() : '';
+    if (!dataBase64 || dataBase64.length > MAX_MEDIA_B64_ITEM || !BASE64_RE.test(dataBase64)) {
+      throw Object.assign(new Error('invalid_media_data'), { code: 'invalid_media_data' });
+    }
+    totalLen += dataBase64.length;
+    if (totalLen > MAX_MEDIA_B64_TOTAL) {
+      throw Object.assign(new Error('media_payload_too_large'), { code: 'media_payload_too_large' });
+    }
+    const name = typeof item.name === 'string' && item.name.trim() ? item.name.trim().slice(0, 128) : 'remote-image.png';
+    out.push({ name, mimeType, dataBase64 });
+  }
+  return out;
+}
+
 async function handleConvoSend(params = {}) {
   const cascadeId = typeof params?.cascadeId === 'string' ? params.cascadeId.trim() : '';
   if (!UUID_RE.test(cascadeId)) {
@@ -539,7 +580,8 @@ async function handleConvoSend(params = {}) {
     throw Object.assign(new Error('invalid_text'), { code: 'invalid_text' });
   }
   const text = params.text;
-  if (!text.trim() || text.length > MAX_FIELD_CHARS) {
+  const media = validateRemoteMediaList(params?.media);
+  if ((!text.trim() && media.length === 0) || text.length > MAX_FIELD_CHARS) {
     throw Object.assign(new Error('invalid_text_length'), { code: 'invalid_text_length' });
   }
 
@@ -557,8 +599,13 @@ async function handleConvoSend(params = {}) {
       const r = await invokeTapOnHost(
         host,
         'convo.send',
-        { cascadeId, text, turboWriteConfirmed: Boolean(params.turboWriteConfirmed) },
-        10000
+        {
+          cascadeId,
+          text,
+          ...(media.length ? { media } : {}),
+          turboWriteConfirmed: Boolean(params.turboWriteConfirmed),
+        },
+        media.length ? 18_000 : 10_000
       );
       if (!r.ok || !r.value?.ok) {
         const errCode = r.value?.error || r.error || 'send_failed';
@@ -747,7 +794,69 @@ async function handleConvoCompact(params = {}) {
 }
 
 async function handleStudioOverview(params = {}) {
-  return collectStudioOverview(params, bridgeState?.studioOpts);
+  return collectStudioOverview(params, {
+    ...(bridgeState?.studioOpts || {}),
+    ...(bridgeState?.conversationsDir ? { conversationsDir: bridgeState.conversationsDir } : {}),
+  });
+}
+
+async function handleModelsList(params = {}) {
+  const rawCid = typeof params?.cascadeId === 'string' ? params.cascadeId.trim() : '';
+  if (rawCid && !UUID_RE.test(rawCid)) {
+    throw Object.assign(new Error('invalid_cascade_id'), { code: 'invalid_cascade_id' });
+  }
+  const host = rawCid ? await resolveHostForCascade(rawCid) : await resolvePrimaryHostEntry();
+  if (!host) {
+    throw Object.assign(new Error('host_not_attached'), { code: 'host_not_attached' });
+  }
+  const r = await invokeTapOnHost(host, 'models.list', rawCid ? { cascadeId: rawCid } : {}, 5000);
+  if (!r.ok || !r.value?.ok) {
+    const errCode = r.value?.error || r.error || 'models_list_failed';
+    throw Object.assign(new Error(errCode), { code: errCode });
+  }
+  return r.value;
+}
+
+async function handleModelsSelect(params = {}) {
+  const rawCid = typeof params?.cascadeId === 'string' ? params.cascadeId.trim() : '';
+  if (rawCid && !UUID_RE.test(rawCid)) {
+    throw Object.assign(new Error('invalid_cascade_id'), { code: 'invalid_cascade_id' });
+  }
+  const model = params?.model;
+  const validModel =
+    (typeof model === 'number' && Number.isFinite(model)) ||
+    (typeof model === 'string' && model.trim().length > 0 && model.trim().length <= 128);
+  if (!validModel) {
+    throw Object.assign(new Error('invalid_model'), { code: 'invalid_model' });
+  }
+  const customLabel = typeof params?.customLabel === 'string' ? params.customLabel.trim().slice(0, 128) : '';
+  const plannerModel = params?.plannerModel;
+  const invokeSelect = async () => {
+    const host = rawCid ? await resolveHostForCascade(rawCid) : await resolvePrimaryHostEntry();
+    if (!host) {
+      throw Object.assign(new Error('host_not_attached'), { code: 'host_not_attached' });
+    }
+    const r = await invokeTapOnHost(
+      host,
+      'models.select',
+      {
+        ...(rawCid ? { cascadeId: rawCid } : {}),
+        model,
+        ...(plannerModel !== undefined && plannerModel !== null && plannerModel !== '' ? { plannerModel } : {}),
+        ...(customLabel ? { customLabel } : {}),
+      },
+      8000
+    );
+    if (!r.ok || !r.value?.ok) {
+      const errCode = r.value?.error || r.error || 'model_select_failed';
+      throw Object.assign(new Error(errCode), { code: errCode });
+    }
+    return r.value;
+  };
+  if (rawCid) {
+    return withCascadeWriteLock(rawCid, 'remote:model_select', invokeSelect);
+  }
+  return invokeSelect();
 }
 
 async function handleOpusDismiss(params = {}) {
@@ -811,6 +920,12 @@ async function dispatchUdsRpc(client, req) {
       reply(true, res, null);
     } else if (method === 'studio.overview') {
       const res = await handleStudioOverview(params);
+      reply(true, res, null);
+    } else if (method === 'models.list') {
+      const res = await handleModelsList(params);
+      reply(true, res, null);
+    } else if (method === 'models.select') {
+      const res = await handleModelsSelect(params);
       reply(true, res, null);
     } else if (method === 'opus.dismiss') {
       const res = await handleOpusDismiss(params);

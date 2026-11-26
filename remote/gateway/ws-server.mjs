@@ -11,7 +11,13 @@ import path from 'node:path';
 import { ensureRemoteDir, getRemotePaths, readDevices, readJsonSafe, writeJsonAtomic } from './config.mjs';
 
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
-const MAX_FRAME_BYTES = 128 * 1024;
+const PRE_AUTH_MAX_FRAME_BYTES = 32 * 1024;
+const MAX_FRAME_BYTES = 2 * 1024 * 1024;
+const MAX_MEDIA_ITEMS = 4;
+const MAX_MEDIA_B64_ITEM = 620_000;
+const MAX_MEDIA_B64_TOTAL = 1_400_000;
+const ALLOWED_MEDIA_MIMES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+const BASE64_RE = /^[A-Za-z0-9+/=]+$/;
 const MAX_RING_SIZE = 512;
 const MAX_WELCOME_BUFFER_SIZE = 512;
 const DEFAULT_MAX_WRITE_BUFFER_BYTES = 1024 * 1024; // 1MB backpressure cap
@@ -26,8 +32,8 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const IDEMPOTENCY_KEY_RE = /^[a-zA-Z0-9._:-]{8,128}$/;
 const WAITING_HASH_RE = /^[0-9a-f]{16}$/i;
 const PROPOSAL_ID_RE = /^[A-Za-z0-9._:-]{4,128}$/;
-const READ_METHODS = new Set(['convo.list', 'convo.snapshot', 'convo.watch', 'convo.resumeState', 'studio.overview']);
-const WRITE_METHODS = new Set(['convo.send', 'convo.approve', 'convo.cancel', 'convo.resume', 'convo.compact', 'opus.dismiss']);
+const READ_METHODS = new Set(['convo.list', 'convo.snapshot', 'convo.watch', 'convo.resumeState', 'studio.overview', 'models.list']);
+const WRITE_METHODS = new Set(['convo.send', 'convo.approve', 'convo.cancel', 'convo.resume', 'convo.compact', 'opus.dismiss', 'models.select']);
 const ROLE_RANK = Object.freeze({ observe: 0, steer: 1, admin: 2 });
 
 function isSafeNonTurboPreset(preset) {
@@ -452,9 +458,37 @@ export function createWsServer({
     }
   }
 
+  function validateGatewayMedia(rawMedia) {
+    if (rawMedia === undefined || rawMedia === null) return { ok: true, media: [], hashes: [] };
+    if (!Array.isArray(rawMedia)) return { ok: false, error: 'invalid_media' };
+    if (rawMedia.length > MAX_MEDIA_ITEMS) return { ok: false, error: 'too_many_media_items' };
+    let totalLen = 0;
+    const media = [];
+    const hashes = [];
+    for (const item of rawMedia) {
+      if (!item || typeof item !== 'object') return { ok: false, error: 'invalid_media_item' };
+      const mimeType = typeof item.mimeType === 'string' ? item.mimeType.trim().toLowerCase() : '';
+      if (!ALLOWED_MEDIA_MIMES.has(mimeType)) return { ok: false, error: 'unsupported_media_mime' };
+      const dataBase64 = typeof item.dataBase64 === 'string' ? item.dataBase64.trim() : '';
+      if (!dataBase64 || dataBase64.length > MAX_MEDIA_B64_ITEM || !BASE64_RE.test(dataBase64)) {
+        return { ok: false, error: 'invalid_media_data' };
+      }
+      totalLen += dataBase64.length;
+      if (totalLen > MAX_MEDIA_B64_TOTAL) return { ok: false, error: 'media_payload_too_large' };
+      const name = typeof item.name === 'string' && item.name.trim() ? item.name.trim().slice(0, 128) : 'remote-image.png';
+      media.push({ name, mimeType, dataBase64 });
+      hashes.push(sha256Hex(`${mimeType}:${name}:${dataBase64}`));
+    }
+    return { ok: true, media, hashes };
+  }
+
   function validateAndBuildWriteSpec(method, params) {
     const cascadeId = typeof params.cascadeId === 'string' ? params.cascadeId.trim() : '';
-    if (!UUID_RE.test(cascadeId)) {
+    if (method === 'models.select') {
+      if (cascadeId && !UUID_RE.test(cascadeId)) {
+        return { ok: false, error: 'invalid_cascade_id' };
+      }
+    } else if (!UUID_RE.test(cascadeId)) {
       return { ok: false, error: 'invalid_cascade_id' };
     }
     const rawKey = typeof params.idempotencyKey === 'string' ? params.idempotencyKey.trim() : '';
@@ -463,7 +497,8 @@ export function createWsServer({
       method === 'convo.approve' ||
       method === 'convo.resume' ||
       method === 'convo.compact' ||
-      method === 'opus.dismiss'
+      method === 'opus.dismiss' ||
+      method === 'models.select'
     ) {
       if (!rawKey || !IDEMPOTENCY_KEY_RE.test(rawKey)) {
         return { ok: false, error: 'invalid_idempotency_key' };
@@ -475,23 +510,62 @@ export function createWsServer({
     if (method === 'convo.send') {
       if (typeof params.text !== 'string') return { ok: false, error: 'invalid_text' };
       const text = params.text;
-      if (!text.trim() || text.length > MAX_WRITE_TEXT_CHARS) {
+      const mediaCheck = validateGatewayMedia(params.media);
+      if (!mediaCheck.ok) return { ok: false, error: mediaCheck.error };
+      if ((!text.trim() && mediaCheck.media.length === 0) || text.length > MAX_WRITE_TEXT_CHARS) {
         return { ok: false, error: 'invalid_text_length' };
       }
       return {
         ok: true,
         cascadeId,
         idempotencyKey: rawKey,
-        payloadHash: sha256Hex(JSON.stringify(['convo.send', cascadeId, text])),
+        payloadHash: sha256Hex(JSON.stringify(['convo.send', cascadeId, text, mediaCheck.hashes])),
         rpcParams: {
           cascadeId,
           text,
+          ...(mediaCheck.media.length ? { media: mediaCheck.media } : {}),
           turboWriteConfirmed: Boolean(params.turboWriteConfirmed),
         },
         auditMeta: {
           cascadeId,
           textSha256: sha256Hex(text),
           textLen: text.length,
+          mediaCount: mediaCheck.media.length,
+        },
+      };
+    }
+
+    if (method === 'models.select') {
+      const model = params.model;
+      const validModel =
+        (typeof model === 'number' && Number.isFinite(model)) ||
+        (typeof model === 'string' && model.trim().length > 0 && model.trim().length <= 128);
+      if (!validModel) return { ok: false, error: 'invalid_model' };
+
+      const hasPlanner =
+        params.plannerModel !== undefined && params.plannerModel !== null && params.plannerModel !== '';
+      const plannerModel = hasPlanner ? params.plannerModel : null;
+      if (hasPlanner) {
+        const validPlanner =
+          (typeof plannerModel === 'number' && Number.isFinite(plannerModel)) ||
+          (typeof plannerModel === 'string' && plannerModel.trim().length > 0 && plannerModel.trim().length <= 128);
+        if (!validPlanner) return { ok: false, error: 'invalid_planner_model' };
+      }
+      const customLabel = typeof params.customLabel === 'string' ? params.customLabel.trim().slice(0, 128) : '';
+      return {
+        ok: true,
+        cascadeId,
+        idempotencyKey: rawKey,
+        payloadHash: sha256Hex(JSON.stringify(['models.select', cascadeId, model, plannerModel, customLabel])),
+        rpcParams: {
+          ...(cascadeId ? { cascadeId } : {}),
+          model,
+          ...(hasPlanner ? { plannerModel } : {}),
+          ...(customLabel ? { customLabel } : {}),
+        },
+        auditMeta: {
+          ...(cascadeId ? { cascadeId } : {}),
+          model: String(model),
         },
       };
     }
@@ -705,9 +779,11 @@ export function createWsServer({
             ? 20_000
             : method === 'convo.approve'
               ? 18_000
-              : method === 'opus.dismiss'
-                ? 10_000
-                : 15_000;
+              : method === 'models.select'
+                ? 12_000
+                : method === 'opus.dismiss'
+                  ? 10_000
+                  : 15_000;
         const result = await udsClient.request(method, spec.rpcParams, { timeoutMs, write: true });
         audit?.append('remote_write', {
           deviceId,
@@ -918,6 +994,27 @@ export function createWsServer({
           'studio.overview',
           rawCid ? { cascadeId: rawCid } : {},
           { timeoutMs: 8500 }
+        );
+        if (!client.closed) client.sendJson({ type: 'res', reqId, ok: true, result });
+      } catch (err) {
+        if (!client.closed) {
+          client.sendJson({ type: 'res', reqId, ok: false, error: err?.code || err?.message || 'uds_error' });
+        }
+      }
+      return;
+    }
+
+    if (method === 'models.list') {
+      const rawCid = typeof params.cascadeId === 'string' ? params.cascadeId.trim() : '';
+      if (rawCid && !UUID_RE.test(rawCid)) {
+        client.sendJson({ type: 'res', reqId, ok: false, error: 'invalid_cascade_id' });
+        return;
+      }
+      try {
+        const result = await udsClient.request(
+          'models.list',
+          rawCid ? { cascadeId: rawCid } : {},
+          { timeoutMs: 6500 }
         );
         if (!client.closed) client.sendJson({ type: 'res', reqId, ok: true, result });
       } catch (err) {
@@ -1169,6 +1266,9 @@ export function createWsServer({
     }
 
     function consumeFrames() {
+      const effectiveMaxFrameBytes = client.authenticated
+        ? maxFrameBytes
+        : Math.min(maxFrameBytes, PRE_AUTH_MAX_FRAME_BYTES);
       while (rxBuf.length >= 2 && !client.closed) {
         const b0 = rxBuf[0];
         const b1 = rxBuf[1];
@@ -1191,7 +1291,7 @@ export function createWsServer({
         } else if (payloadLen === 127) {
           if (rxBuf.length < offset + 8) return;
           const bigLen = rxBuf.readBigUInt64BE(offset);
-          if (bigLen > BigInt(maxFrameBytes)) {
+          if (bigLen > BigInt(effectiveMaxFrameBytes)) {
             client.close(1009, 'frame_too_large');
             return;
           }
@@ -1199,7 +1299,7 @@ export function createWsServer({
           offset += 8;
         }
 
-        if (payloadLen > maxFrameBytes) {
+        if (payloadLen > effectiveMaxFrameBytes) {
           client.close(1009, 'frame_too_large');
           return;
         }
@@ -1260,7 +1360,7 @@ export function createWsServer({
             return;
           }
           fragBytes += unmasked.length;
-          if (fragBytes > maxFrameBytes) {
+          if (fragBytes > effectiveMaxFrameBytes) {
             fragChunks = null;
             client.close(1009, 'message_too_large');
             return;

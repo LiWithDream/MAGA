@@ -85,6 +85,83 @@ export function appendNodes(parent, ...items) {
   return parent;
 }
 
+export function mergeSummariesDelta(prevList, data) {
+  if (Array.isArray(data?.conversations)) {
+    return data.conversations;
+  }
+  const next = new Map((Array.isArray(prevList) ? prevList : []).map((c) => [c.id, c]));
+  if (Array.isArray(data?.changed)) {
+    for (const item of data.changed) {
+      if (item && item.id) {
+        const prevItem = next.get(item.id) || {};
+        const merged = { ...prevItem, ...item };
+        if ('waitingSteps' in item && !('waitingSubagents' in item)) {
+          merged.waitingSubagents = Array.isArray(prevItem.waitingSubagents) ? prevItem.waitingSubagents : [];
+        }
+        next.set(item.id, merged);
+      }
+    }
+  }
+  if (Array.isArray(data?.removed)) {
+    for (const rmId of data.removed) {
+      next.delete(rmId);
+    }
+  }
+  if (data?.summaries && typeof data.summaries === 'object') {
+    for (const [cid, patch] of Object.entries(data.summaries)) {
+      if (patch === null) next.delete(cid);
+      else next.set(cid, { ...(next.get(cid) || { id: cid }), ...patch, id: cid });
+    }
+  }
+  if (data?.byParent && typeof data.byParent === 'object') {
+    const changedIds = new Set(Array.isArray(data.changed) ? data.changed.map((x) => x?.id).filter(Boolean) : []);
+    const removedIds = new Set(Array.isArray(data.removed) ? data.removed : []);
+    for (const [pid, conv] of next.entries()) {
+      if (!conv) continue;
+      const prevSubMap = new Map(
+        (Array.isArray(conv.waitingSubagents) ? conv.waitingSubagents : [])
+          .filter((s) => s && s.id && !removedIds.has(s.id))
+          .map((s) => [s.id, s])
+      );
+      const queue = Array.isArray(data.byParent[pid]) ? [...data.byParent[pid]] : [];
+      if (queue.length === 0) {
+        if (!changedIds.has(pid) || !Array.isArray(conv.waitingSubagents)) {
+          conv.waitingSubagents = [];
+        }
+        continue;
+      }
+      const seen = new Set([pid]);
+      const wSubs = [];
+      while (queue.length > 0) {
+        const childId = queue.shift();
+        if (!childId || seen.has(childId)) continue;
+        seen.add(childId);
+        const child = next.get(childId);
+        if (child) {
+          if (Array.isArray(child.waitingSteps) && child.waitingSteps.length > 0) {
+            wSubs.push({
+              id: child.id,
+              title: child.title || child.summary || child.id,
+              waitingSteps: child.waitingSteps,
+            });
+          }
+        } else if (prevSubMap.has(childId)) {
+          const prevSub = prevSubMap.get(childId);
+          if (Array.isArray(prevSub.waitingSteps) && prevSub.waitingSteps.length > 0) {
+            wSubs.push(prevSub);
+          }
+        }
+        const grand = data.byParent[childId];
+        if (Array.isArray(grand)) {
+          for (const g of grand) queue.push(g);
+        }
+      }
+      conv.waitingSubagents = wSubs;
+    }
+  }
+  return Array.from(next.values());
+}
+
 export function clearNode(node) {
   while (node.firstChild) {
     node.removeChild(node.firstChild);

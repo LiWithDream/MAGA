@@ -3,6 +3,12 @@
  * Strict invariant: NEVER use unsafe HTML injection APIs; build DOM with createElement + textContent only.
  */
 import {
+  autoResizeTextarea,
+  compressImageFile,
+  renderComposerFooterBar,
+  renderMediaPreviewStrip,
+} from './composer-bar.mjs';
+import {
   clearDeviceIdentity,
   defaultDeviceName,
   loadDeviceIdentity,
@@ -27,6 +33,7 @@ import {
   formatRelativeTime,
   getEffectiveWaitingCount,
   isRunningStatus,
+  mergeSummariesDelta,
   normalizeRunStatus,
   normalizeWsStatus,
   requiresTurboAck,
@@ -103,6 +110,7 @@ const state = {
       : defaultOverviewCollapsed(),
   sidebarGroupBy: storedGroupBy === 'project' ? 'project' : 'recent',
   draftText: '',
+  draftMedia: [],
   draftIdempotencyKey: createIdempotencyKey(),
   turboWriteConfirmed: false,
   pendingApproveKeys: new Map(),
@@ -112,6 +120,10 @@ const state = {
   studioDrawerOpen: false,
   selectedProjectId: '',
   resumeState: null,
+  modelCatalog: null,
+  modelPopoverOpen: false,
+  modelSelectBusy: false,
+  streamStartedAt: 0,
   sendBusy: false,
   cancelBusy: false,
   resumeBusy: false,
@@ -125,11 +137,38 @@ const state = {
 let wsClient = null;
 let snapshotRefreshTimer = null;
 let studioOverviewSeq = 0;
+let modelReqSeq = 0;
 let studioOverviewRetryTimer = null;
+let streamTickTimer = null;
 let cancelConfirmTimer = null;
 let workspaceRefs = null;
 let globalListenersBound = false;
 const rootEl = document.getElementById('app');
+
+function clearStreamTickTimer() {
+  if (streamTickTimer) {
+    clearInterval(streamTickTimer);
+    streamTickTimer = null;
+  }
+}
+
+function syncStreamTimer(isStreaming) {
+  if (isStreaming) {
+    if (!state.streamStartedAt) state.streamStartedAt = Date.now();
+    if (!streamTickTimer) {
+      streamTickTimer = setInterval(() => {
+        if (!state.identity || !workspaceRefs) {
+          clearStreamTickTimer();
+          return;
+        }
+        syncComposerControls();
+      }, 1000);
+    }
+  } else {
+    state.streamStartedAt = 0;
+    clearStreamTickTimer();
+  }
+}
 
 function clearStudioOverviewRetry() {
   if (studioOverviewRetryTimer) {
@@ -180,6 +219,11 @@ function ensureGlobalUiListeners() {
     });
   });
   window.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape' && state.modelPopoverOpen) {
+      state.modelPopoverOpen = false;
+      syncComposerControls();
+      return;
+    }
     if (!(ev.metaKey || ev.ctrlKey) || ev.altKey) return;
     if (!state.identity || !workspaceRefs || !rootEl?.contains(workspaceRefs.topbar)) return;
     const key = String(ev.key || '').toLowerCase();
@@ -204,6 +248,15 @@ function ensureGlobalUiListeners() {
       applyLayoutAttrs();
     }
   });
+  if (typeof document !== 'undefined') {
+    document.addEventListener('click', (ev) => {
+      if (!state.modelPopoverOpen || !workspaceRefs?.composerCard) return;
+      if (!workspaceRefs.composerCard.contains(ev.target)) {
+        state.modelPopoverOpen = false;
+        syncComposerControls();
+      }
+    });
+  }
 }
 
 function updateGlobalPreset(nextPreset) {
@@ -306,6 +359,7 @@ function ensureWorkspaceShell() {
       state.mobileTab = 'chats';
       state.turboAcknowledged = false;
       state.turboWriteConfirmed = false;
+      state.draftMedia = [];
       state.draftIdempotencyKey = createIdempotencyKey();
       state.pendingApproveKeys.clear();
       state.pendingResumeKeys.clear();
@@ -313,6 +367,11 @@ function ensureWorkspaceShell() {
       state.studioDrawerOpen = false;
       state.selectedProjectId = '';
       state.resumeState = null;
+      state.modelCatalog = null;
+      state.modelPopoverOpen = false;
+      state.modelSelectBusy = false;
+      state.streamStartedAt = 0;
+      clearStreamTickTimer();
       clearStudioOverviewRetry();
       resetCancelConfirm();
       workspaceRefs = null;
@@ -421,13 +480,14 @@ function ensureWorkspaceShell() {
 
   const draftInput = el('textarea', {
     className: 'rc-composer-input',
-    rows: '2',
-    placeholder: '输入指令继续当前会话（Ctrl/Cmd + Enter 发送）…',
+    rows: '1',
+    placeholder: '输入指令继续当前会话（Ctrl/Cmd + Enter 发送，可 Ctrl/Cmd+V 粘贴截图）…',
     value: state.draftText,
     onInput: (ev) => {
       state.draftText = ev.target.value;
       state.draftIdempotencyKey = createIdempotencyKey();
       state.actionError = '';
+      autoResizeTextarea(ev.target);
       syncComposerControls();
     },
   });
@@ -436,6 +496,33 @@ function ensureWorkspaceShell() {
       ev.preventDefault();
       handleSendDraft();
     }
+  });
+  draftInput.addEventListener('paste', (ev) => {
+    const items = ev.clipboardData?.items;
+    if (!items || !items.length) return;
+    const files = [];
+    for (const item of items) {
+      if (item.kind === 'file' && String(item.type || '').startsWith('image/')) {
+        const f = item.getAsFile?.();
+        if (f) files.push(f);
+      }
+    }
+    if (files.length > 0) {
+      ev.preventDefault();
+      attachImageFiles(files);
+    }
+  });
+
+  const mediaFileInput = el('input', {
+    type: 'file',
+    accept: 'image/png,image/jpeg,image/webp,image/gif',
+    multiple: 'true',
+    className: 'rc-hidden',
+    onChange: (ev) => {
+      const files = ev.target?.files ? Array.from(ev.target.files) : [];
+      if (files.length > 0) attachImageFiles(files);
+      if (ev.target) ev.target.value = '';
+    },
   });
 
   const sendBtn = el('button', {
@@ -451,45 +538,19 @@ function ensureWorkspaceShell() {
     onClick: () => handleCancelConvo(),
   });
   const composerRow = el('div', { className: 'rc-composer-row' }, draftInput, sendBtn, cancelBtn);
-  const compactBtn = el('button', {
-    type: 'button',
-    className: 'rc-btn is-sm rc-hidden',
-    text: '/compact',
-    onClick: () => handleCompactConvo(),
-  });
-  const auxDockRow = el(
-    'div',
-    { className: 'rc-dock-aux' },
-    el(
-      'div',
-      { className: 'rc-dock-group' },
-      el('button', {
-        type: 'button',
-        className: 'rc-btn is-sm rc-mobile-only',
-        text: '← 返回列表',
-        onClick: () => {
-          state.mobileView = 'list';
-          applyLayoutAttrs();
-        },
-      }),
-      el('button', {
-        type: 'button',
-        className: 'rc-btn is-sm',
-        text: '回到底部',
-        onClick: () => {
-          timeline.scrollTop = timeline.scrollHeight;
-        },
-      })
-    ),
-    el('div', { className: 'rc-dock-group' }, compactBtn)
-  );
+  const mediaStrip = el('div', { className: 'rc-media-strip rc-hidden' });
+  const modelPopover = el('div', { className: 'rc-model-popover rc-hidden' });
+  const composerFooter = el('div', { className: 'rc-composer-footer' });
 
   const composerCard = el(
     'div',
     { className: 'rc-composer-card' },
+    modelPopover,
+    mediaStrip,
     turboWriteLabel,
     composerRow,
-    auxDockRow
+    composerFooter,
+    mediaFileInput
   );
   const bottomDock = el(
     'footer',
@@ -578,13 +639,16 @@ function ensureWorkspaceShell() {
     opusBanner,
     actionBanner,
     composerCard,
+    modelPopover,
+    mediaStrip,
+    mediaFileInput,
+    composerFooter,
     turboWriteLabel,
     turboWriteCheckbox,
     composerRow,
     draftInput,
     sendBtn,
     cancelBtn,
-    compactBtn,
     searchInput,
     filterRow,
     groupRow,
@@ -624,7 +688,74 @@ function formatWriteError(err) {
   if (code === 'compact_requires_active_pane') return '请先在桌面端激活对应会话窗口，或使用发送框触发压缩';
   if (code === 'compact_rejected_or_busy') return '当前无法执行上下文压缩（可能正在运行、已压缩或输入框仍有草稿）';
   if (code === 'compact_unavailable') return '当前宿主版本暂不支持远程触发 /compact';
+  if (code === 'model_not_found' || code === 'invalid_model') return '未找到目标模型选项，已保持当前模型';
+  if (code === 'unsupported_media_mime') return '仅支持 PNG / JPEG / WebP / GIF 格式图片';
+  if (code === 'media_payload_too_large' || code === 'image_too_large') return '图片附件体积过大，请减少张数或换小尺寸截图';
+  if (code === 'too_many_media_items') return '单次最多附带 4 张图片';
   return code;
+}
+
+async function attachImageFiles(files) {
+  if (!canSteer()) return;
+  const list = Array.isArray(files) ? files : [];
+  for (const file of list) {
+    if (state.draftMedia.length >= 4) {
+      state.actionError = '单次最多附带 4 张图片';
+      break;
+    }
+    try {
+      const processed = await compressImageFile(file);
+      state.draftMedia = state.draftMedia.concat(processed);
+      state.draftIdempotencyKey = createIdempotencyKey();
+      state.actionError = '';
+    } catch (err) {
+      state.actionError = formatWriteError(err);
+    }
+  }
+  syncComposerControls();
+}
+
+function refreshModels(cascadeId = state.selectedId) {
+  if (!wsClient) return;
+  const seq = ++modelReqSeq;
+  const reqCid = cascadeId || '';
+  wsClient
+    .fetchModels(reqCid)
+    .then((res) => {
+      if (!res?.ok || !wsClient || seq !== modelReqSeq) return;
+      if (reqCid && state.selectedId !== reqCid) return;
+      state.modelCatalog = res;
+      if (state.identity) syncComposerControls();
+    })
+    .catch(() => {});
+}
+
+async function handleSelectModelOption(opt) {
+  if (!wsClient || !canSteer() || state.modelSelectBusy || !opt) return;
+  state.modelSelectBusy = true;
+  state.modelPopoverOpen = false;
+  state.actionError = '';
+  state.actionNotice = '';
+  syncComposerControls();
+  try {
+    const res = await wsClient.selectModel({
+      cascadeId: state.selectedId || '',
+      model: opt.model,
+      plannerModel: opt.plannerModel ?? null,
+      customLabel: opt.customLabel || '',
+    });
+    if (res?.catalog) {
+      state.modelCatalog = res.catalog;
+    } else if (res?.selected && state.modelCatalog) {
+      state.modelCatalog = { ...state.modelCatalog, selected: res.selected };
+    }
+    state.actionNotice = res?.selected?.label ? `已切换为 ${res.selected.label}` : '模型已切换';
+  } catch (err) {
+    state.actionError = formatWriteError(err);
+  } finally {
+    state.modelSelectBusy = false;
+    syncComposerControls();
+  }
 }
 
 function getEffectiveResumeState(cid) {
@@ -756,26 +887,28 @@ function syncComposerControls() {
     onDismiss: handleDismissOpus,
   });
 
-  if (writable && hasSelection) {
-    refs.compactBtn.classList.remove('rc-hidden');
-  } else {
-    refs.compactBtn.classList.add('rc-hidden');
-  }
-  refs.compactBtn.textContent = state.compactBusy ? '压缩中…' : '/compact';
-  refs.compactBtn.disabled =
-    !writable || !online || !hasSelection || state.compactBusy || state.capabilities?.compact === false;
+  renderMediaPreviewStrip(refs.mediaStrip, state.draftMedia, {
+    disabled: state.sendBusy,
+    onRemove: (imgId) => {
+      state.draftMedia = state.draftMedia.filter((m) => m.id !== imgId);
+      state.draftIdempotencyKey = createIdempotencyKey();
+      syncComposerControls();
+    },
+  });
 
   if (refs.draftInput.value !== state.draftText) {
     refs.draftInput.value = state.draftText;
   }
+  autoResizeTextarea(refs.draftInput);
   refs.draftInput.disabled = !writable || !online || !hasSelection || state.sendBusy;
   refs.sendBtn.textContent = state.sendBusy ? '发送中…' : '发送';
+  const hasDraftPayload = Boolean(state.draftText.trim()) || state.draftMedia.length > 0;
   refs.sendBtn.disabled =
     !writable ||
     !online ||
     !hasSelection ||
     state.sendBusy ||
-    !state.draftText.trim() ||
+    !hasDraftPayload ||
     (needTurboConfirm && !state.turboWriteConfirmed);
   if (state.cancelBusy) {
     refs.cancelBtn.textContent = '停止中…';
@@ -785,6 +918,61 @@ function syncComposerControls() {
     refs.cancelBtn.textContent = '停止';
   }
   refs.cancelBtn.disabled = !writable || !online || !hasSelection || state.cancelBusy;
+
+  const activeConvo = hasSelection ? state.conversations.find((c) => c.id === state.selectedId) || null : null;
+  const activeSnap = hasSelection ? state.snapshots.get(state.selectedId) || null : null;
+  const streamEntry = hasSelection ? state.streams.get(state.selectedId) || null : null;
+  const streamText = typeof streamEntry === 'string' ? streamEntry : streamEntry?.text ?? '';
+  const isStreaming = Boolean(
+    hasSelection &&
+      (isRunningStatus(activeSnap?.status ?? activeConvo?.status) ||
+        (typeof streamEntry === 'object' && streamEntry && isRunningStatus(streamEntry.status)))
+  );
+  syncStreamTimer(isStreaming);
+  const streamElapsedSec = state.streamStartedAt ? Math.floor((Date.now() - state.streamStartedAt) / 1000) : 0;
+  const activeMetrics =
+    hasSelection && state.studioOverview?.activeCascade?.cascadeId === state.selectedId
+      ? state.studioOverview.activeCascade.metrics || null
+      : null;
+
+  renderComposerFooterBar(refs, {
+    catalog: state.modelCatalog,
+    modelPopoverOpen: state.modelPopoverOpen,
+    modelBusy: state.modelSelectBusy,
+    metrics: activeMetrics,
+    isStreaming,
+    streamElapsedSec,
+    streamChars: streamText.length,
+    canWrite: writable,
+    online,
+    hasSelection,
+    sendBusy: state.sendBusy,
+    compactBusy: state.compactBusy,
+    compactSupported: state.capabilities?.compact !== false,
+    mediaCount: state.draftMedia.length,
+    onToggleModelPopover: () => {
+      state.modelPopoverOpen = !state.modelPopoverOpen;
+      if (state.modelPopoverOpen && (!state.modelCatalog || !state.modelCatalog.families?.length)) {
+        refreshModels(state.selectedId);
+      }
+      syncComposerControls();
+    },
+    onSelectModelOption: handleSelectModelOption,
+    onCloseModelPopover: () => {
+      state.modelPopoverOpen = false;
+      syncComposerControls();
+    },
+    onCompact: handleCompactConvo,
+    onPickImages: () => refs.mediaFileInput?.click(),
+    onScrollBottom: (act) => {
+      if (act === 'back') {
+        state.mobileView = 'list';
+        applyLayoutAttrs();
+      } else {
+        refs.timeline.scrollTop = refs.timeline.scrollHeight;
+      }
+    },
+  });
 
   if (state.actionError) {
     refs.actionBanner.classList.remove('rc-hidden');
@@ -802,7 +990,7 @@ function syncComposerControls() {
 
 async function handleSendDraft() {
   if (!wsClient || !state.selectedId || !canSteer() || state.sendBusy) return;
-  if (!state.draftText.trim()) return;
+  if (!state.draftText.trim() && state.draftMedia.length === 0) return;
   const turboAckShown = requiresTurboAck(state.globalPreset);
   const confirmed = Boolean(turboAckShown && state.turboWriteConfirmed);
   if (turboAckShown && !confirmed) {
@@ -813,6 +1001,7 @@ async function handleSendDraft() {
   }
   const targetCid = state.selectedId;
   const textSnapshot = state.draftText;
+  const mediaSnapshot = state.draftMedia.slice();
   const keySnapshot = state.draftIdempotencyKey;
   state.sendBusy = true;
   state.actionError = '';
@@ -822,13 +1011,17 @@ async function handleSendDraft() {
     await wsClient.sendMessage(targetCid, textSnapshot, {
       idempotencyKey: keySnapshot,
       turboWriteConfirmed: confirmed,
+      media: mediaSnapshot,
     });
     if (state.selectedId === targetCid) {
       if (state.draftText === textSnapshot) {
         state.draftText = '';
       }
+      if (state.draftMedia.length === mediaSnapshot.length) {
+        state.draftMedia = [];
+      }
       state.draftIdempotencyKey = createIdempotencyKey();
-      state.actionNotice = '指令已发送至桌面端';
+      state.actionNotice = mediaSnapshot.length > 0 ? '指令与图片已发送至桌面端' : '指令已发送至桌面端';
     }
     fetchAndRenderSnapshot(targetCid);
   } catch (err) {
@@ -1448,8 +1641,12 @@ async function selectConversation(cascadeId) {
   if (!cascadeId || !UUID_RE.test(cascadeId)) return;
   if (state.selectedId !== cascadeId) {
     state.draftIdempotencyKey = createIdempotencyKey();
+    state.draftMedia = [];
     state.turboWriteConfirmed = false;
     state.resumeState = null;
+    state.modelPopoverOpen = false;
+    state.streamStartedAt = 0;
+    clearStreamTickTimer();
     state.actionError = '';
     state.actionNotice = '';
     resetCancelConfirm();
@@ -1462,6 +1659,7 @@ async function selectConversation(cascadeId) {
 
   if (!wsClient) return;
   refreshStudioOverview(cascadeId);
+  refreshModels(cascadeId);
   wsClient
     .fetchResumeState(cascadeId)
     .then((rs) => {
@@ -1492,6 +1690,7 @@ function refreshAllData() {
   if (!wsClient) return;
   wsClient.refreshList(state.includeSubagents).then(applyConvoListResult).catch(() => {});
   refreshStudioOverview(state.selectedId);
+  refreshModels(state.selectedId);
   if (state.selectedId) {
     fetchAndRenderSnapshot(state.selectedId);
   }
@@ -1518,81 +1717,7 @@ function handleTapDelta(delta) {
   if (kind === 'summaries') {
     if (data.globalPreset !== undefined) updateGlobalPreset(data.globalPreset);
     if (data.source) state.source = data.source;
-    if (Array.isArray(data.conversations)) {
-      state.conversations = data.conversations;
-    } else {
-      const next = new Map(state.conversations.map((c) => [c.id, c]));
-      if (Array.isArray(data.changed)) {
-        for (const item of data.changed) {
-          if (item && item.id) {
-            const prevItem = next.get(item.id) || {};
-            const merged = { ...prevItem, ...item };
-            if ('waitingSteps' in item && !('waitingSubagents' in item)) {
-              merged.waitingSubagents = Array.isArray(prevItem.waitingSubagents) ? prevItem.waitingSubagents : [];
-            }
-            next.set(item.id, merged);
-          }
-        }
-      }
-      if (Array.isArray(data.removed)) {
-        for (const rmId of data.removed) {
-          next.delete(rmId);
-        }
-      }
-      if (data.summaries && typeof data.summaries === 'object') {
-        for (const [cid, patch] of Object.entries(data.summaries)) {
-          if (patch === null) next.delete(cid);
-          else next.set(cid, { ...(next.get(cid) || { id: cid }), ...patch, id: cid });
-        }
-      }
-      if (data.byParent && typeof data.byParent === 'object') {
-        const changedIds = new Set(Array.isArray(data.changed) ? data.changed.map((x) => x?.id).filter(Boolean) : []);
-        const removedIds = new Set(Array.isArray(data.removed) ? data.removed : []);
-        for (const [pid, conv] of next.entries()) {
-          if (!conv) continue;
-          const prevSubMap = new Map(
-            (Array.isArray(conv.waitingSubagents) ? conv.waitingSubagents : [])
-              .filter((s) => s && s.id && !removedIds.has(s.id))
-              .map((s) => [s.id, s])
-          );
-          const queue = Array.isArray(data.byParent[pid]) ? [...data.byParent[pid]] : [];
-          if (queue.length === 0) {
-            if (!changedIds.has(pid) || !Array.isArray(conv.waitingSubagents)) {
-              conv.waitingSubagents = [];
-            }
-            continue;
-          }
-          const seen = new Set([pid]);
-          const wSubs = [];
-          while (queue.length > 0) {
-            const childId = queue.shift();
-            if (!childId || seen.has(childId)) continue;
-            seen.add(childId);
-            const child = next.get(childId);
-            if (child) {
-              if (Array.isArray(child.waitingSteps) && child.waitingSteps.length > 0) {
-                wSubs.push({
-                  id: child.id,
-                  title: child.title || child.summary || child.id,
-                  waitingSteps: child.waitingSteps,
-                });
-              }
-            } else if (prevSubMap.has(childId)) {
-              const prevSub = prevSubMap.get(childId);
-              if (Array.isArray(prevSub.waitingSteps) && prevSub.waitingSteps.length > 0) {
-                wSubs.push(prevSub);
-              }
-            }
-            const grand = data.byParent[childId];
-            if (Array.isArray(grand)) {
-              for (const g of grand) queue.push(g);
-            }
-          }
-          conv.waitingSubagents = wSubs;
-        }
-      }
-      state.conversations = Array.from(next.values());
-    }
+    state.conversations = mergeSummariesDelta(state.conversations, data);
     renderTopStatus();
     renderFilterChips();
     renderSidebarList();
@@ -1704,6 +1829,7 @@ function startWorkspaceSession() {
         wsClient.refreshList(state.includeSubagents).then(applyConvoListResult).catch(() => {});
       }
       refreshStudioOverview(state.selectedId);
+      refreshModels(state.selectedId);
       renderTopStatus();
     },
     onDelta: handleTapDelta,

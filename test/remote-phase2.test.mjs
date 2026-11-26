@@ -54,10 +54,17 @@ async function signHello(privateKey, { nonce, deviceId, lastSeq = 0, lastEpoch =
 function makeMaskedClientFrame(opcode, payloadBuf = Buffer.alloc(0)) {
   const mask = crypto.randomBytes(4);
   const len = payloadBuf.length;
-  const header =
-    len < 126
-      ? Buffer.from([0x80 | opcode, 0x80 | len])
-      : Buffer.from([0x80 | opcode, 0x80 | 126, (len >>> 8) & 0xff, len & 0xff]);
+  let header;
+  if (len < 126) {
+    header = Buffer.from([0x80 | opcode, 0x80 | len]);
+  } else if (len <= 0xffff) {
+    header = Buffer.from([0x80 | opcode, 0x80 | 126, (len >>> 8) & 0xff, len & 0xff]);
+  } else {
+    header = Buffer.allocUnsafe(10);
+    header[0] = 0x80 | opcode;
+    header[1] = 0x80 | 127;
+    header.writeBigUInt64BE(BigInt(len), 2);
+  }
   const masked = Buffer.allocUnsafe(len);
   for (let i = 0; i < len; i += 1) masked[i] = payloadBuf[i] ^ mask[i % 4];
   return Buffer.concat([header, mask, masked]);
@@ -698,6 +705,7 @@ test('Phase 2 static invariants: 7 gateway files, <2000 lines, Zero-XSS across a
     path.join(GW_DIR, 'ws-server.mjs'),
     path.join(PWA_DIR, 'src', 'studio-panel.mjs'),
     path.join(PWA_DIR, 'src', 'overview-panel.mjs'),
+    path.join(PWA_DIR, 'src', 'composer-bar.mjs'),
     path.join(PWA_DIR, 'src', 'app.mjs'),
     path.join(PWA_DIR, 'src', 'ws-client.mjs'),
   ];
@@ -913,5 +921,363 @@ test('Phase 2 Dual-Form UI regressions: layout mode, Overview panel, code copy &
     if (prevDoc) Object.defineProperty(globalThis, 'document', prevDoc);
     else delete globalThis.document;
     dom.window.close();
+  }
+});
+
+test('Phase 2 Composer Footer V2: models.list/select, convo.send image attachments, overview metrics & composer-bar DOM', async () => {
+  lockMod.resetCascadeWriteLocksForTest();
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'maga-rem-footerv2-'));
+  const remoteDir = path.join(tmpRoot, 'remote');
+  const stateDir = path.join(tmpRoot, 'state');
+  const convDir = path.join(tmpRoot, 'conversations');
+  const sockPath = path.join(tmpRoot, 'bridge.sock');
+  const bootToken = 'footer-v2-boot-token-0123456789abc';
+  const bridgeMod = await import(pathToFileURL(path.join(REPO, 'core', 'daemon', 'remote-bridge.mjs')).href);
+  const { attachedTargets } = await import(pathToFileURL(path.join(REPO, 'core', 'daemon', 'env.mjs')).href);
+  const { createRemoteTapModule } = await import(pathToFileURL(path.join(REPO, 'user', 'src', 'modules', 'remote-tap.mjs')).href);
+  const prevTargets = Array.from(attachedTargets.entries());
+  const openSockets = [];
+  let gw = null;
+
+  const { JSDOM } = await import('jsdom');
+  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
+    url: 'https://127.0.0.1:60000/c/11111111-1111-4111-8111-111111111111',
+  });
+  const keys = ['window', 'document'];
+  const prevGlobals = new Map(keys.map((k) => [k, Object.getOwnPropertyDescriptor(globalThis, k)]));
+  let tap = null;
+
+  try {
+    const cid = '11111111-1111-4111-8111-111111111111';
+    writeInterruptedConvDb(convDir, cid, { lastIdx: 2, stepType: 15, status: 3 });
+
+    // 1. studio-bridge attaches sanitized metrics on activeCascade
+    const ovWithMetrics = await studioBridgeMod.collectStudioOverview(
+      { cascadeId: cid },
+      {
+        authorizedDirs: [],
+        nativeProjectsDir: path.join(tmpRoot, 'no-projects'),
+        convWtDir: path.join(tmpRoot, 'no-wt'),
+        quotaOpts: { quotaStateFile: path.join(stateDir, 'quota-state.json') },
+        opusOpts: { proposalsDir: path.join(stateDir, 'opus'), quotaStateFile: path.join(stateDir, 'quota-state.json') },
+        compactOpts: { requestsDir: path.join(stateDir, 'compact') },
+        listRepoWorktreesAsync: async () => ({ ok: true, worktrees: [] }),
+        collectUsageStatsAsync: async () => ({ ok: true, days: [] }),
+        parseConversationMetrics: (targetCid) => ({
+          cascadeId: targetCid,
+          hasData: true,
+          metrics: {
+            ctxPct: 64,
+            ctxRatioStr: '164k / 256k',
+            ctx: 164000,
+            ctxLimit: 256000,
+            ctxLimitStr: '256k',
+            ctxClass: 'ag-ctx-ok',
+            displayTps: 92.4,
+            useStream: true,
+            ttft: 1.3,
+            totDur: 2.9,
+            outTok: 268,
+            lastCacheRate: 91.2,
+            sessionCacheRate: 87.5,
+          },
+          stats: { turns: 4, calls: 9 },
+        }),
+      }
+    );
+    assert.equal(ovWithMetrics.activeCascade.metrics.ctxPct, 64);
+    assert.equal(ovWithMetrics.activeCascade.metrics.ctxRatioStr, '164k / 256k');
+    assert.equal(ovWithMetrics.activeCascade.metrics.turns, 4);
+
+    // 2. End-to-End models.list, models.select & convo.send with image attachments
+    globalThis.window = dom.window;
+    globalThis.document = dom.window.document;
+
+    let modelSelectionState = {
+      default: { model: 101 },
+      byConversation: {},
+      orchestratorByConversation: {},
+    };
+    const dispatched = [];
+    const sentMessages = [];
+    const mockStore = {
+      subscribe: () => () => {},
+      dispatch: (act) => {
+        dispatched.push(act);
+        if (act?.type === 'modelSelection/modelPicked') {
+          const targetCid = act.payload?.cascadeId || act.payload?.conversationId || '';
+          const entry = {
+            model: act.payload.model,
+            ...(act.payload.customLabel ? { customLabel: act.payload.customLabel } : {}),
+          };
+          if (targetCid) {
+            modelSelectionState = {
+              ...modelSelectionState,
+              byConversation: { ...modelSelectionState.byConversation, [targetCid]: entry },
+            };
+          } else {
+            modelSelectionState = { ...modelSelectionState, default: entry };
+          }
+        }
+      },
+      getState: () => ({
+        userStatus: {
+          permissionSettings: { globalPreset: 2 }, // REVIEW (no TURBO ack needed)
+          cascadeModelConfigData: {
+            clientModelConfigs: [
+              { label: 'Gemini 4 Carbon (High)', modelId: 'gemini-4-carbon', modelOrAlias: { choice: { value: 101 } } },
+              { label: 'Gemini 4 Carbon (Medium)', modelId: 'gemini-4-carbon', modelOrAlias: { choice: { value: 102 } } },
+              { label: 'Claude Opus 5.5 (High)', modelId: 'claude-opus-5-5', modelOrAlias: { choice: { value: 201 } } },
+              { label: 'Disabled Model (High)', modelId: 'disabled-m', disabled: true, modelOrAlias: { choice: { value: 999 } } },
+            ],
+          },
+        },
+        modelSelection: modelSelectionState,
+        trajectorySummaries: {
+          summaries: { [cid]: { summary: 'Footer V2 Chat', status: 1, waitingSteps: [] } },
+        },
+      }),
+    };
+    const mockLsClient = {
+      sendUserCascadeMessage: async (arg) => sentMessages.push(arg),
+      handleCascadeUserInteraction: async () => {},
+      cancelCascadeInvocation: async () => {},
+      createAgentStateProviderForConvo: () => ({ getState: () => null, onDidChange: () => ({ dispose: () => {} }), dispose: () => {} }),
+      getCascadeTrajectory: async () => ({ trajectory: { steps: [] } }),
+    };
+    dom.window.document.getElementById('root').__reactContainer$fv2 = {
+      memoizedProps: { store: mockStore, lsClient: mockLsClient },
+      child: null,
+      sibling: null,
+    };
+
+    tap = createRemoteTapModule({ state: { disposed: false } });
+    const caps = dom.window.__agRemoteTap.getCapabilities().capabilities;
+    assert.equal(caps.modelSelect, true);
+    assert.equal(caps.imageAttachments, true);
+
+    attachedTargets.clear();
+    attachedTargets.set('fv2-host', {
+      id: 'fv2-host',
+      type: 'page',
+      hostConfirmed: true,
+      trustedContextId: 1,
+      ws: { readyState: 1 },
+      async send(method, params) {
+        if (method === 'Runtime.evaluate') {
+          const val = await dom.window.eval(String(params.expression || 'null'));
+          return { result: { result: { value: val } } };
+        }
+        return {};
+      },
+    });
+
+    await bridgeMod.initRemoteBridge({
+      env: {
+        ANTI_CLAUDE_STATE_DIR: stateDir,
+        MAGA_REMOTE_STATE_DIR: remoteDir,
+        MAGA_REMOTE_SOCK_PATH: sockPath,
+        MAGA_REMOTE_UDS_TOKEN: bootToken,
+        MAGA_REMOTE_CONV_DIR: convDir,
+      },
+      gatewayScript: path.join(tmpRoot, 'missing-gw.mjs'),
+    });
+
+    gw = await serverMod.createGatewayServer({
+      remoteDir,
+      sockPath,
+      port: 0,
+      writePid: false,
+      udsWriteToken: bootToken,
+    });
+
+    const enrollAndConnect = async (role, name) => {
+      configMod.writePairing(
+        { code: `FV2_${name}`, expiresAt: Date.now() + 60_000, role, gatewayFingerprint: gw.gatewayFingerprint },
+        { remoteDir }
+      );
+      const kp = await crypto.webcrypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign', 'verify']);
+      const publicKeyJwk = await crypto.webcrypto.subtle.exportKey('jwk', kp.publicKey);
+      const pr = await (
+        await fetch(`http://127.0.0.1:${gw.port}/api/pair/complete`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ code: `FV2_${name}`, deviceName: name, publicKeyJwk, turboAcknowledged: true }),
+        })
+      ).json();
+      const ch = await (await fetch(`http://127.0.0.1:${gw.port}/api/auth/challenge`)).json();
+      const sig = await signHello(kp.privateKey, { nonce: ch.nonce, deviceId: pr.deviceId, lastSeq: 0, lastEpoch: '' });
+      const ws = await rawWsUpgrade(gw.port);
+      openSockets.push(ws.socket);
+      const reader = readServerFrames(ws.socket, ws.head);
+      ws.socket.write(
+        makeMaskedClientFrame(0x1, Buffer.from(JSON.stringify({
+          type: 'hello', protocol: 'maga-remote/1', deviceId: pr.deviceId, nonce: ch.nonce, signature: sig, lastSeq: 0, lastEpoch: '',
+        })))
+      );
+      const welcome = JSON.parse((await reader.nextFrame()).payload.toString('utf8'));
+      assert.equal(welcome.type, 'welcome');
+      return { ws, reader };
+    };
+
+    const callRpc = async (c, reqId, method, params) => {
+      c.ws.socket.write(makeMaskedClientFrame(0x1, Buffer.from(JSON.stringify({ type: 'req', reqId, method, params }))));
+      return JSON.parse((await c.reader.nextFrame()).payload.toString('utf8'));
+    };
+
+    const cObs = await enrollAndConnect('observe', 'ObsFV2');
+    const cSteer = await enrollAndConnect('steer', 'SteerFV2');
+
+    // Pre-auth frame cap (32KB) closes oversized unauthenticated frames
+    const rawUnauth = await rawWsUpgrade(gw.port);
+    rawUnauth.socket.on('error', () => {});
+    openSockets.push(rawUnauth.socket);
+    const unauthReader = readServerFrames(rawUnauth.socket, rawUnauth.head);
+    rawUnauth.socket.write(makeMaskedClientFrame(0x1, Buffer.alloc(40 * 1024, 0x41)));
+    const closeFrame = await unauthReader.nextFrame();
+    assert.equal(closeFrame.opcode, 0x8);
+
+    // Observe can read models.list, disabled models excluded, blocked from models.select
+    const mObs = await callRpc(cObs, 'm-1', 'models.list', { cascadeId: cid });
+    assert.equal(mObs.ok, true);
+    assert.equal(mObs.result.selected.value, 101);
+    assert.equal(mObs.result.families.some((f) => /Disabled Model/.test(f.baseName)), false);
+    const mSelObs = await callRpc(cObs, 'm-2', 'models.select', {
+      cascadeId: cid, model: 102, idempotencyKey: 'k-obs-mod-1',
+    });
+    assert.equal(mSelObs.ok, false);
+    assert.equal(mSelObs.error, 'forbidden_role_observe');
+
+    // Steer can select model & persist into Redux modelSelection
+    const mSelOk = await callRpc(cSteer, 'm-3', 'models.select', {
+      cascadeId: cid, model: 102, idempotencyKey: 'k-st-mod-1',
+    });
+    assert.equal(mSelOk.ok, true);
+    assert.equal(mSelOk.result.selected.value, 102);
+    assert.equal(dispatched.some((a) => a.type === 'modelSelection/modelPicked' && a.payload?.model === 102), true);
+    const mListAfter = await callRpc(cSteer, 'm-4', 'models.list', { cascadeId: cid });
+    assert.equal(mListAfter.result.selected.value, 102);
+
+    const mSelMissing = await callRpc(cSteer, 'm-5', 'models.select', {
+      cascadeId: cid, model: 999999, idempotencyKey: 'k-st-mod-bad',
+    });
+    assert.equal(mSelMissing.ok, false);
+    assert.equal(mSelMissing.error, 'model_not_found');
+
+    // convo.send with image-only attachment (1x1 PNG)
+    const pngB64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+    const imgSendRes = await callRpc(cSteer, 'img-1', 'convo.send', {
+      cascadeId: cid,
+      text: '',
+      media: [{ name: 'shot.png', mimeType: 'image/png', dataBase64: pngB64 }],
+      idempotencyKey: 'k-st-img-1',
+    });
+    assert.equal(imgSendRes.ok, true);
+    assert.equal(sentMessages.length, 1);
+    assert.equal(sentMessages[0].items.length, 0);
+    assert.equal(sentMessages[0].media.length, 1);
+    assert.equal(sentMessages[0].media[0].$typeName, 'exa.codeium_common_pb.Media');
+    assert.equal(sentMessages[0].media[0].payload.case, 'inlineData');
+    assert.ok(sentMessages[0].media[0].payload.value instanceof Uint8Array);
+    assert.ok(sentMessages[0].media[0].payload.value.length > 0);
+
+    // Reject disallowed MIME & oversized base64
+    const badMimeRes = await callRpc(cSteer, 'img-2', 'convo.send', {
+      cascadeId: cid,
+      text: 'bad svg',
+      media: [{ name: 'bad.svg', mimeType: 'image/svg+xml', dataBase64: pngB64 }],
+      idempotencyKey: 'k-st-img-badmime',
+    });
+    assert.equal(badMimeRes.ok, false);
+    assert.equal(badMimeRes.error, 'unsupported_media_mime');
+
+    const bigImgRes = await callRpc(cSteer, 'img-3', 'convo.send', {
+      cascadeId: cid,
+      text: 'too big',
+      media: [{ name: 'big.png', mimeType: 'image/png', dataBase64: 'A'.repeat(625_000) }],
+      idempotencyKey: 'k-st-img-big',
+    });
+    assert.equal(bigImgRes.ok, false);
+    assert.equal(bigImgRes.error, 'invalid_media_data');
+
+    // 3. composer-bar.mjs pure-DOM & Media Preview Strip XSS-safe tests
+    const composerBarMod = await import(pathToFileURL(path.join(PWA_DIR, 'src', 'composer-bar.mjs')).href);
+    const doc = dom.window.document;
+    const stripEl = doc.createElement('div');
+    composerBarMod.renderMediaPreviewStrip(stripEl, [
+      { id: '1', name: 'ok.png', sizeBytes: 4096, previewUrl: `data:image/png;base64,${pngB64}` },
+      { id: '2', name: 'evil.png', sizeBytes: 100, previewUrl: 'javascript:alert(1)' },
+    ]);
+    assert.equal(stripEl.querySelectorAll('.rc-media-chip').length, 1, 'unsafe previewUrl must be filtered');
+
+    const refs = {
+      modelPopover: doc.createElement('div'),
+      composerFooter: doc.createElement('div'),
+    };
+    let selectedPayload = null;
+    composerBarMod.renderComposerFooterBar(refs, {
+      catalog: {
+        selected: { baseName: 'Gemini 4 Carbon', effort: 'High', displayEffort: 'High', value: 101 },
+        families: [
+          {
+            baseName: 'Gemini 4 Carbon',
+            group: 'primary',
+            isOrchestrator: false,
+            variants: [
+              { effort: 'High', displayEffort: 'High', label: 'Gemini 4 Carbon (High)', value: 101 },
+              { effort: 'Medium', displayEffort: 'Medium', label: 'Gemini 4 Carbon (Medium)', value: 102 },
+            ],
+          },
+        ],
+      },
+      modelPopoverOpen: true,
+      metrics: { ctxPct: 78, ctxRatioStr: '200k / 256k', ctxLimit: 256000, displayTps: 88.2, useStream: true, ttft: 1.2, lastCacheRate: 90, sessionCacheRate: 88, turns: 2, calls: 4 },
+      isStreaming: false,
+      canWrite: true,
+      online: true,
+      hasSelection: true,
+      mediaCount: 1,
+      onSelectModelOption: (p) => { selectedPayload = p; },
+    });
+    assert.equal(refs.composerFooter.textContent.includes('null'), false);
+    assert.equal(refs.modelPopover.textContent.includes('null'), false);
+    assert.match(refs.composerFooter.textContent, /\+ 图片 \(1\/4\)/);
+    assert.match(refs.composerFooter.textContent, /Gemini 4 Carbon/);
+    assert.match(refs.composerFooter.textContent, /78%/);
+    assert.match(refs.composerFooter.textContent, /88 tok\/s · TTFT 1\.2s/);
+    assert.equal(refs.composerFooter.querySelector('.rc-ctx-ring')?.getAttribute('data-tone'), 'warn');
+    const medBtn = Array.from(refs.modelPopover.querySelectorAll('.rc-effort-btn')).find((b) => b.textContent === 'Medium');
+    assert.ok(medBtn);
+    medBtn.click();
+    assert.equal(selectedPayload?.model, 102);
+
+    // Streaming metrics micro-pill
+    composerBarMod.renderComposerFooterBar(refs, {
+      catalog: null,
+      modelPopoverOpen: false,
+      isStreaming: true,
+      streamElapsedSec: 4,
+      streamChars: 320,
+      canWrite: true,
+      online: true,
+      hasSelection: true,
+    });
+    assert.match(refs.composerFooter.textContent, /生成中 4s · 320字/);
+  } finally {
+    for (const s of openSockets) {
+      try { s.destroy(); } catch {}
+    }
+    await gw?.close().catch(() => {});
+    tap?.dispose();
+    dom.window.close();
+    for (const [k, desc] of prevGlobals.entries()) {
+      if (desc) Object.defineProperty(globalThis, k, desc);
+      else delete globalThis[k];
+    }
+    attachedTargets.clear();
+    for (const [k, v] of prevTargets) attachedTargets.set(k, v);
+    await bridgeMod.shutdownRemoteBridge().catch(() => {});
+    lockMod.resetCascadeWriteLocksForTest();
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
   }
 });

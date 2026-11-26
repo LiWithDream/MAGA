@@ -30,6 +30,7 @@ import { isOpusGatePluginInstalled, syncOpusGatePlugin } from './daemon/opus-gat
 import {
   isAutoCompactPluginInstalled,
   syncAutoCompactPlugin,
+  verifyInstalledHookNodeRuntime,
   verifyLiveScheduleStepDecoder,
 } from './daemon/auto-compact-service.mjs';
 import { QUOTA_STATE_FILE } from '../core/daemon/env.mjs';
@@ -192,6 +193,7 @@ async function runDoctor() {
     opusGatePluginInstalled: isOpusGatePluginInstalled(),
     opusGateQuotaStatePresent: existsSync(QUOTA_STATE_FILE),
     autoCompactPluginInstalled: isAutoCompactPluginInstalled(),
+    autoCompactHookNode: verifyInstalledHookNodeRuntime(),
     autoCompactDecoder: verifyLiveScheduleStepDecoder(),
     proxyDiagnostics: collectProxyDiagnostics(),
     usageSummary: {
@@ -255,7 +257,10 @@ try {
   } else if (cmd === 'deploy') {
     const res = await deployStudio({ allowNonMain: allowNonMainDeploy });
     await applyDefaultOrchestratorModelPreference();
-    const compactPluginRes = syncAutoCompactPlugin();
+    const compactPluginRes =
+      res?.ok && !allowNonMainDeploy && !res?.deployedFrom?.preview
+        ? syncAutoCompactPlugin()
+        : { ok: true, skipped: true, reason: 'preview_deploy' };
     console.log(JSON.stringify({ ...res, autoCompactPlugin: compactPluginRes }, null, 2));
   } else if (cmd === 'sync-rules') {
     const rulesRes = syncFastIoRules();

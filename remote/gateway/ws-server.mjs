@@ -8,7 +8,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { ensureRemoteDir, getRemotePaths, readDevices } from './config.mjs';
+import { ensureRemoteDir, getRemotePaths, readDevices, readJsonSafe, writeJsonAtomic } from './config.mjs';
 
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 const MAX_FRAME_BYTES = 128 * 1024;
@@ -17,8 +17,25 @@ const MAX_WELCOME_BUFFER_SIZE = 512;
 const DEFAULT_MAX_WRITE_BUFFER_BYTES = 1024 * 1024; // 1MB backpressure cap
 const DEFAULT_PING_INTERVAL_MS = 25_000;
 const DEFAULT_REVOCATION_CHECK_MS = 2000;
+const DEFAULT_MAX_WRITES_PER_MINUTE = 20;
+const DEFAULT_MAX_CONCURRENT_WRITES = 4;
+const DEFAULT_IDEMPOTENCY_TTL_MS = 10 * 60 * 1000;
+const MAX_IDEMPOTENCY_ENTRIES = 2048;
+const MAX_WRITE_TEXT_CHARS = 16384;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const WEEK1_READONLY_METHODS = new Set(['convo.list', 'convo.snapshot', 'convo.watch']);
+const IDEMPOTENCY_KEY_RE = /^[a-zA-Z0-9._:-]{8,128}$/;
+const WAITING_HASH_RE = /^[0-9a-f]{16}$/i;
+const READ_METHODS = new Set(['convo.list', 'convo.snapshot', 'convo.watch']);
+const WRITE_METHODS = new Set(['convo.send', 'convo.approve', 'convo.cancel']);
+const ROLE_RANK = Object.freeze({ observe: 0, steer: 1, admin: 2 });
+
+function isTurboPreset(preset) {
+  return preset === null || preset === undefined || Number(preset) === 3 || !Number.isFinite(Number(preset));
+}
+
+function sha256Hex(text) {
+  return crypto.createHash('sha256').update(String(text || ''), 'utf8').digest('hex');
+}
 
 function encodeWsFrame(opcode, payloadBuf = Buffer.alloc(0)) {
   const len = payloadBuf.length;
@@ -79,19 +96,64 @@ export function createWsServer({
   maxWriteBufferBytes = DEFAULT_MAX_WRITE_BUFFER_BYTES,
   maxFrameBytes = MAX_FRAME_BYTES,
   maxRingSize = MAX_RING_SIZE,
+  maxWritesPerMinute = DEFAULT_MAX_WRITES_PER_MINUTE,
+  maxConcurrentWrites = DEFAULT_MAX_CONCURRENT_WRITES,
+  idempotencyTtlMs = DEFAULT_IDEMPOTENCY_TTL_MS,
+  now = Date.now,
   getActivePort = () => null,
 } = {}) {
   const epoch = crypto.randomBytes(8).toString('hex');
   const paths = getRemotePaths(remoteDir);
+  const writeIdempotencyFile = path.join(paths.remoteDir, 'write-idempotency.json');
   let seq = 0;
   const ring = [];
   const authenticatedClients = new Set();
   const allConnections = new Set();
   const watchRefCounts = new Map();
+  const inFlightWritesByDevice = new Map();
+  const writeTimestampsByDevice = new Map();
+  const idempotencyInFlight = new Map();
+  const idempotencyCache = new Map();
   let tapActive = false;
   let tapDeactivateTimer = null;
   let closed = false;
   let lastDevicesSig = '';
+
+  function pruneIdempotencyCache() {
+    const ts = now();
+    for (const [k, entry] of idempotencyCache.entries()) {
+      if (!entry || typeof entry !== 'object' || ts >= Number(entry.expiresAt || 0)) {
+        idempotencyCache.delete(k);
+      }
+    }
+    while (idempotencyCache.size > MAX_IDEMPOTENCY_ENTRIES) {
+      const oldest = idempotencyCache.keys().next().value;
+      if (oldest === undefined) break;
+      idempotencyCache.delete(oldest);
+    }
+  }
+
+  function loadIdempotencyCache() {
+    const saved = readJsonSafe(writeIdempotencyFile, null);
+    const entries = saved && typeof saved === 'object' && saved.entries && typeof saved.entries === 'object' ? saved.entries : null;
+    if (!entries) return;
+    const ts = now();
+    for (const [k, entry] of Object.entries(entries)) {
+      if (entry && typeof entry === 'object' && ts < Number(entry.expiresAt || 0)) {
+        idempotencyCache.set(k, entry);
+      }
+    }
+    pruneIdempotencyCache();
+  }
+
+  function persistIdempotencyCache() {
+    pruneIdempotencyCache();
+    try {
+      writeJsonAtomic(writeIdempotencyFile, { entries: Object.fromEntries(idempotencyCache.entries()) }, { mode: 0o600, dirMode: 0o700 });
+    } catch {}
+  }
+
+  loadIdempotencyCache();
 
   function clearTapDeactivateTimer() {
     if (tapDeactivateTimer) {
@@ -138,6 +200,50 @@ export function createWsServer({
     }
   }
 
+  function checkClientActiveAndRole(client, liveDevice) {
+    const did = client.device?.deviceId;
+    if (!did || !liveDevice) {
+      audit?.append('device_revoked_kicked', { deviceId: did, clientKey: client.clientKey });
+      client.sendJson({ type: 'error', error: 'device_revoked' });
+      client.close(4001, 'device_revoked');
+      return null;
+    }
+    const prevRole = String(client.device?.role || 'observe');
+    const nextRole = String(liveDevice.role || 'observe');
+    const prevRank = ROLE_RANK[prevRole] ?? 0;
+    const nextRank = ROLE_RANK[nextRole] ?? 0;
+    if (nextRank < prevRank) {
+      audit?.append('device_role_demoted_kicked', {
+        deviceId: did,
+        fromRole: prevRole,
+        toRole: nextRole,
+        clientKey: client.clientKey,
+      });
+      client.sendJson({ type: 'error', error: 'device_role_demoted' });
+      client.close(4003, 'device_role_demoted');
+      return null;
+    }
+    client.device.role = nextRole;
+    return liveDevice;
+  }
+
+  function verifyClientDeviceLive(client) {
+    const did = client.device?.deviceId;
+    if (!did) return checkClientActiveAndRole(client, null);
+    let live = null;
+    if (typeof auth.getActiveDevice === 'function') {
+      live = auth.getActiveDevice(did);
+    } else if (typeof auth.isDeviceActive === 'function') {
+      if (auth.isDeviceActive(did)) {
+        const devs = readDevices({ remoteDir: paths.remoteDir });
+        live = devs.find((d) => d.deviceId === did && !d.revokedAt) || client.device;
+      }
+    } else {
+      live = client.device;
+    }
+    return checkClientActiveAndRole(client, live);
+  }
+
   function kickRevokedClients(forceRead = false) {
     if (closed || authenticatedClients.size === 0) return;
     try {
@@ -150,14 +256,10 @@ export function createWsServer({
     }
 
     const devices = readDevices({ remoteDir: paths.remoteDir });
-    const activeIds = new Set(devices.filter((d) => !d.revokedAt).map((d) => d.deviceId));
+    const activeById = new Map(devices.filter((d) => !d.revokedAt).map((d) => [d.deviceId, d]));
     for (const client of Array.from(authenticatedClients)) {
       const did = client.device?.deviceId;
-      if (!did || !activeIds.has(did)) {
-        audit?.append('device_revoked_kicked', { deviceId: did, clientKey: client.clientKey });
-        client.sendJson({ type: 'error', error: 'device_revoked' });
-        client.close(4001, 'device_revoked');
-      }
+      checkClientActiveAndRole(client, did ? activeById.get(did) || null : null);
     }
   }
 
@@ -287,6 +389,7 @@ export function createWsServer({
       type: 'welcome',
       epoch,
       seq: seq0,
+      deviceRole: client.device?.role || 'observe',
       gatewayFingerprint: auth.gatewayFingerprint,
       health,
       conversations,
@@ -300,6 +403,245 @@ export function createWsServer({
       if (frame.kind === 'stream' || (typeof frame.seq === 'number' && frame.seq > seq0)) {
         client.sendJson(frame);
       }
+    }
+  }
+
+  function checkAndRecordWriteRate(deviceId) {
+    const ts = now();
+    const cutoff = ts - 60_000;
+    const prev = (writeTimestampsByDevice.get(deviceId) || []).filter((t) => t > cutoff);
+    if (prev.length >= maxWritesPerMinute) {
+      writeTimestampsByDevice.set(deviceId, prev);
+      return false;
+    }
+    prev.push(ts);
+    writeTimestampsByDevice.set(deviceId, prev);
+    return true;
+  }
+
+  function validateAndBuildWriteSpec(method, params) {
+    const cascadeId = typeof params.cascadeId === 'string' ? params.cascadeId.trim() : '';
+    if (!UUID_RE.test(cascadeId)) {
+      return { ok: false, error: 'invalid_cascade_id' };
+    }
+    const rawKey = typeof params.idempotencyKey === 'string' ? params.idempotencyKey.trim() : '';
+    if (method === 'convo.send' || method === 'convo.approve') {
+      if (!rawKey || !IDEMPOTENCY_KEY_RE.test(rawKey)) {
+        return { ok: false, error: 'invalid_idempotency_key' };
+      }
+    } else if (rawKey && !IDEMPOTENCY_KEY_RE.test(rawKey)) {
+      return { ok: false, error: 'invalid_idempotency_key' };
+    }
+
+    if (method === 'convo.send') {
+      if (typeof params.text !== 'string') return { ok: false, error: 'invalid_text' };
+      const text = params.text;
+      if (!text.trim() || text.length > MAX_WRITE_TEXT_CHARS) {
+        return { ok: false, error: 'invalid_text_length' };
+      }
+      return {
+        ok: true,
+        cascadeId,
+        idempotencyKey: rawKey,
+        rpcParams: {
+          cascadeId,
+          text,
+          turboWriteConfirmed: Boolean(params.turboWriteConfirmed),
+        },
+        auditMeta: {
+          cascadeId,
+          textSha256: sha256Hex(text),
+          textLen: text.length,
+        },
+      };
+    }
+
+    if (method === 'convo.approve') {
+      const decision = params.decision;
+      if (decision !== 'allow_once' && decision !== 'deny') {
+        return { ok: false, error: 'invalid_decision' };
+      }
+      const stepIndex = params.stepIndex;
+      if (!Number.isInteger(stepIndex) || stepIndex < 0) {
+        return { ok: false, error: 'invalid_step_index' };
+      }
+      const waitingStepHash = typeof params.waitingStepHash === 'string' ? params.waitingStepHash.trim().toLowerCase() : '';
+      if (!WAITING_HASH_RE.test(waitingStepHash)) {
+        return { ok: false, error: 'invalid_waiting_step_hash' };
+      }
+      return {
+        ok: true,
+        cascadeId,
+        idempotencyKey: rawKey,
+        rpcParams: { cascadeId, stepIndex, waitingStepHash, decision },
+        auditMeta: { cascadeId, stepIndex, waitingStepHash, decision },
+      };
+    }
+
+    return {
+      ok: true,
+      cascadeId,
+      idempotencyKey: rawKey,
+      rpcParams: { cascadeId, killBackgroundTasks: Boolean(params.killBackgroundTasks) },
+      auditMeta: { cascadeId, killBackgroundTasks: Boolean(params.killBackgroundTasks) },
+    };
+  }
+
+  async function handleWriteRpc(client, reqId, method, params, liveDevice) {
+    const deviceId = liveDevice.deviceId;
+    const role = String(liveDevice.role || 'observe');
+    if ((ROLE_RANK[role] ?? 0) < ROLE_RANK.steer) {
+      audit?.append('ws_write_forbidden_role', {
+        deviceId,
+        role,
+        method,
+        clientKey: client.clientKey,
+      });
+      if (!client.closed) {
+        client.sendJson({ type: 'res', reqId, ok: false, error: 'forbidden_role_observe' });
+      }
+      return;
+    }
+
+    const spec = validateAndBuildWriteSpec(method, params);
+    if (!spec.ok) {
+      if (!client.closed) {
+        client.sendJson({ type: 'res', reqId, ok: false, error: spec.error });
+      }
+      return;
+    }
+
+    const cacheKey = spec.idempotencyKey ? `${deviceId}:${method}:${spec.idempotencyKey}` : '';
+    if (cacheKey) {
+      pruneIdempotencyCache();
+      const cached = idempotencyCache.get(cacheKey);
+      if (cached && now() < Number(cached.expiresAt || 0)) {
+        if (!client.closed) {
+          client.sendJson({
+            type: 'res',
+            reqId,
+            ok: Boolean(cached.ok),
+            ...(cached.ok ? { result: cached.result } : { error: cached.error }),
+            replayed: true,
+          });
+        }
+        return;
+      }
+      const existingFlight = idempotencyInFlight.get(cacheKey);
+      if (existingFlight) {
+        const outcome = await existingFlight;
+        if (!client.closed) {
+          client.sendJson({
+            type: 'res',
+            reqId,
+            ok: Boolean(outcome.ok),
+            ...(outcome.ok ? { result: outcome.result } : { error: outcome.error }),
+            replayed: true,
+          });
+        }
+        return;
+      }
+    }
+
+    const currentInFlight = inFlightWritesByDevice.get(deviceId) || 0;
+    if (currentInFlight >= maxConcurrentWrites) {
+      if (!client.closed) {
+        client.sendJson({ type: 'res', reqId, ok: false, error: 'too_many_concurrent_writes' });
+      }
+      return;
+    }
+
+    if (!checkAndRecordWriteRate(deviceId)) {
+      audit?.append('ws_write_rate_limited', { deviceId, method, clientKey: client.clientKey });
+      if (!client.closed) {
+        client.sendJson({ type: 'res', reqId, ok: false, error: 'write_rate_limited' });
+      }
+      return;
+    }
+
+    if (method === 'convo.send') {
+      const health = await udsClient.request('bridge.health', {}, { timeoutMs: 2000 }).catch(() => null);
+      if (!health || isTurboPreset(health.globalPreset)) {
+        if (spec.rpcParams.turboWriteConfirmed !== true) {
+          audit?.append('ws_send_rejected_turbo', {
+            deviceId,
+            cascadeId: spec.cascadeId,
+            globalPreset: health?.globalPreset ?? null,
+          });
+          if (!client.closed) {
+            client.sendJson({ type: 'res', reqId, ok: false, error: 'turbo_write_confirmation_required' });
+          }
+          return;
+        }
+      }
+    }
+
+    inFlightWritesByDevice.set(deviceId, currentInFlight + 1);
+    const execPromise = (async () => {
+      try {
+        const timeoutMs = method === 'convo.cancel' ? 10_000 : 15_000;
+        const result = await udsClient.request(method, spec.rpcParams, { timeoutMs, write: true });
+        audit?.append('remote_write', {
+          deviceId,
+          role,
+          method,
+          ...spec.auditMeta,
+          ok: true,
+        });
+        const outcome = { ok: true, result };
+        if (cacheKey) {
+          idempotencyCache.set(cacheKey, {
+            ...outcome,
+            createdAt: now(),
+            expiresAt: now() + idempotencyTtlMs,
+          });
+          persistIdempotencyCache();
+        }
+        return outcome;
+      } catch (err) {
+        const errCode = String(err?.code || err?.message || 'uds_error');
+        audit?.append('remote_write', {
+          deviceId,
+          role,
+          method,
+          ...spec.auditMeta,
+          ok: false,
+          error: errCode,
+        });
+        const outcome = { ok: false, error: errCode };
+        const deterministicFailure =
+          errCode === 'waiting_step_mismatch' ||
+          errCode === 'unsupported_interaction_case' ||
+          errCode === 'conversation_not_found';
+        if (cacheKey && deterministicFailure) {
+          idempotencyCache.set(cacheKey, {
+            ...outcome,
+            createdAt: now(),
+            expiresAt: now() + idempotencyTtlMs,
+          });
+          persistIdempotencyCache();
+        }
+        return outcome;
+      }
+    })().finally(() => {
+      const cur = inFlightWritesByDevice.get(deviceId) || 1;
+      if (cur <= 1) inFlightWritesByDevice.delete(deviceId);
+      else inFlightWritesByDevice.set(deviceId, cur - 1);
+      if (cacheKey) idempotencyInFlight.delete(cacheKey);
+    });
+
+    if (cacheKey) {
+      idempotencyInFlight.set(cacheKey, execPromise);
+    }
+
+    const outcome = await execPromise;
+    if (!client.closed) {
+      client.sendJson({
+        type: 'res',
+        reqId,
+        ok: Boolean(outcome.ok),
+        ...(outcome.ok ? { result: outcome.result } : { error: outcome.error }),
+      });
     }
   }
 
@@ -320,11 +662,9 @@ export function createWsServer({
       return;
     }
 
-    // Re-check device revocation before processing any RPC request
-    if (typeof auth.isDeviceActive === 'function' && !auth.isDeviceActive(client.device?.deviceId)) {
-      audit?.append('device_revoked_kicked', { deviceId: client.device?.deviceId, clientKey: client.clientKey });
-      client.sendJson({ type: 'error', error: 'device_revoked' });
-      client.close(4001, 'device_revoked');
+    // Re-check both revocation and live role demotion before processing any RPC request
+    const liveDevice = verifyClientDeviceLive(client);
+    if (!liveDevice) {
       return;
     }
 
@@ -342,7 +682,12 @@ export function createWsServer({
     const method = typeof msg.method === 'string' ? msg.method.trim() : '';
     const params = msg.params && typeof msg.params === 'object' && !Array.isArray(msg.params) ? msg.params : {};
 
-    if (!WEEK1_READONLY_METHODS.has(method)) {
+    if (WRITE_METHODS.has(method)) {
+      await handleWriteRpc(client, reqId, method, params, liveDevice);
+      return;
+    }
+
+    if (!READ_METHODS.has(method)) {
       audit?.append('ws_forbidden_method', {
         deviceId: client.device?.deviceId,
         method,
@@ -352,7 +697,7 @@ export function createWsServer({
         type: 'res',
         reqId,
         ok: false,
-        error: 'forbidden_in_week1_readonly',
+        error: 'method_not_supported',
       });
       return;
     }
@@ -593,6 +938,29 @@ export function createWsServer({
 
     let processing = Promise.resolve();
     function enqueueTextFrame(text) {
+      if (client.authenticated) {
+        let parsed = null;
+        try {
+          parsed = JSON.parse(text);
+        } catch {
+          parsed = null;
+        }
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          if (parsed.type === 'ping') {
+            client.sendJson({ type: 'pong', ts: parsed.ts ?? Date.now() });
+            return;
+          }
+          if (parsed.type === 'pong') {
+            client.awaitingPong = false;
+            client.missedPongs = 0;
+            return;
+          }
+          if (parsed.type === 'req' && WRITE_METHODS.has(String(parsed.method || '').trim())) {
+            handleAuthenticatedMessage(client, parsed).catch(() => {});
+            return;
+          }
+        }
+      }
       processing = processing.then(() => onTextFrame(text)).catch(() => {});
     }
 

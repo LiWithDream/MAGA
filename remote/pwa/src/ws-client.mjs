@@ -11,6 +11,13 @@ const STALE_TIMEOUT_MS = 50_000;
 const BASE_BACKOFF_MS = 800;
 const MAX_BACKOFF_MS = 15_000;
 
+export function createIdempotencyKey() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `k-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+}
+
 export async function fetchGatewayHealth() {
   const res = await fetch('/api/health', {
     method: 'GET',
@@ -320,12 +327,18 @@ export function createRemoteWsClient(identity, handlers = {}) {
 
     if (msg.type === 'error') {
       const code = String(msg.error || msg.code || '');
-      if (/revoked|unknown_device|fingerprint/i.test(code)) {
+      if (/revoked|unknown_device|fingerprint|demoted/i.test(code)) {
         disposed = true;
         clearTimers();
-        emitStatus('revoked', code === 'device_revoked' ? '设备已被吊销' : msg.message || code);
+        const label =
+          code === 'device_role_demoted'
+            ? '设备权限已降级，请重新配对或刷新权限'
+            : code === 'device_revoked'
+              ? '设备已被吊销'
+              : msg.message || code;
+        emitStatus('revoked', label);
         try {
-          ws?.close(4001, code);
+          ws?.close(code === 'device_role_demoted' ? 4003 : 4001, code);
         } catch {}
         return;
       }
@@ -434,9 +447,11 @@ export function createRemoteWsClient(identity, handlers = {}) {
       ) {
         disposed = true;
         const msg =
-          reason === 'device_revoked' || ev.code === 4001
-            ? '设备已被吊销，请重新配对'
-            : reason || '设备已吊销或网关身份已变更';
+          ev.code === 4003 || reason === 'device_role_demoted'
+            ? '设备权限已降级，请重新配对或刷新权限'
+            : reason === 'device_revoked' || ev.code === 4001
+              ? '设备已被吊销，请重新配对'
+              : reason || '设备已吊销或网关身份已变更';
         emitStatus('revoked', msg);
         return;
       }
@@ -498,6 +513,63 @@ export function createRemoteWsClient(identity, handlers = {}) {
     return request('convo.snapshot', { cascadeId });
   }
 
+  function sendMessage(cascadeId, text, { idempotencyKey = createIdempotencyKey(), turboWriteConfirmed = false } = {}) {
+    if (!cascadeId || !UUID_RE.test(cascadeId)) {
+      return Promise.reject(new Error('invalid_cascade_id'));
+    }
+    if (typeof text !== 'string' || !text.trim()) {
+      return Promise.reject(new Error('empty_message'));
+    }
+    return request(
+      'convo.send',
+      {
+        cascadeId,
+        text,
+        idempotencyKey,
+        turboWriteConfirmed: Boolean(turboWriteConfirmed),
+      },
+      16_000
+    );
+  }
+
+  function approveWaitingStep(
+    cascadeId,
+    { stepIndex, waitingStepHash, decision, idempotencyKey = createIdempotencyKey() } = {}
+  ) {
+    if (!cascadeId || !UUID_RE.test(cascadeId)) {
+      return Promise.reject(new Error('invalid_cascade_id'));
+    }
+    if (decision !== 'allow_once' && decision !== 'deny') {
+      return Promise.reject(new Error('invalid_decision'));
+    }
+    return request(
+      'convo.approve',
+      {
+        cascadeId,
+        stepIndex,
+        waitingStepHash,
+        decision,
+        idempotencyKey,
+      },
+      16_000
+    );
+  }
+
+  function cancelConversation(cascadeId, { killBackgroundTasks = false, idempotencyKey = createIdempotencyKey() } = {}) {
+    if (!cascadeId || !UUID_RE.test(cascadeId)) {
+      return Promise.reject(new Error('invalid_cascade_id'));
+    }
+    return request(
+      'convo.cancel',
+      {
+        cascadeId,
+        killBackgroundTasks: Boolean(killBackgroundTasks),
+        idempotencyKey,
+      },
+      12_000
+    );
+  }
+
   function dispose() {
     disposed = true;
     clearTimers();
@@ -535,6 +607,9 @@ export function createRemoteWsClient(identity, handlers = {}) {
     watchConversation,
     refreshList,
     fetchSnapshot,
+    sendMessage,
+    approveWaitingStep,
+    cancelConversation,
     reconnectNow: () => {
       if (!disposed) {
         attempt = 0;

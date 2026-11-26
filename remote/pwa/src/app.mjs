@@ -6,6 +6,7 @@ import {
   clearDeviceIdentity,
   defaultDeviceName,
   loadDeviceIdentity,
+  saveDeviceIdentity,
 } from './crypto-store.mjs';
 import { createPairViewController } from './pair-view.mjs';
 import { renderDetailTimeline as renderTimelineView } from './timeline-view.mjs';
@@ -21,8 +22,9 @@ import {
   isRunningStatus,
   normalizeRunStatus,
   normalizeWsStatus,
+  requiresTurboAck,
 } from './ui-helpers.mjs';
-import { createRemoteWsClient } from './ws-client.mjs';
+import { createIdempotencyKey, createRemoteWsClient } from './ws-client.mjs';
 
 const state = {
   identity: null,
@@ -49,6 +51,14 @@ const state = {
   snapshotLoading: false,
   snapshotError: '',
   mobileView: 'list', // list | detail
+  draftText: '',
+  draftIdempotencyKey: createIdempotencyKey(),
+  turboWriteConfirmed: false,
+  sendBusy: false,
+  cancelBusy: false,
+  approvingHash: '',
+  actionError: '',
+  actionNotice: '',
 };
 
 let wsClient = null;
@@ -170,20 +180,65 @@ function ensureWorkspaceShell() {
     )
   );
 
-  const readonlyBanner = el(
-    'div',
-    { className: 'rc-readonly-banner' },
-    el('span', {
-      text: 'Week 1 只读观察模式：可实时追踪消息、思考与待审批状态；续写、停止与审批操作将在 Week 2 开放。',
-    }),
-    el('span', { className: 'rc-pill', 'data-tone': 'info', text: 'READ-ONLY' })
-  );
+  const roleBanner = el('div', { className: 'rc-readonly-banner' });
+  const roleBannerText = el('span', { text: '' });
+  const roleBannerPill = el('span', { className: 'rc-pill', 'data-tone': 'info', text: 'OBSERVE' });
+  roleBanner.append(roleBannerText, roleBannerPill);
 
   const timeline = el('div', { className: 'rc-timeline' });
 
-  const bottomDock = el(
-    'footer',
-    { className: 'rc-bottom-dock' },
+  const actionBanner = el('div', { className: 'rc-action-banner rc-hidden' });
+  const turboWriteCheckbox = el('input', {
+    id: 'rc-turbo-write-ack',
+    type: 'checkbox',
+    checked: state.turboWriteConfirmed,
+    onChange: (ev) => {
+      state.turboWriteConfirmed = Boolean(ev.target.checked);
+      syncComposerControls();
+    },
+  });
+  const turboWriteLabel = el(
+    'label',
+    { className: 'rc-turbo-inline rc-hidden', for: 'rc-turbo-write-ack' },
+    turboWriteCheckbox,
+    el('span', { text: 'TURBO / 未知权限高危确认：我确认远程发送将自动执行本机操作' })
+  );
+
+  const draftInput = el('textarea', {
+    className: 'rc-composer-input',
+    rows: '2',
+    placeholder: '输入指令继续当前会话（Ctrl/Cmd + Enter 发送）…',
+    value: state.draftText,
+    onInput: (ev) => {
+      state.draftText = ev.target.value;
+      state.draftIdempotencyKey = createIdempotencyKey();
+      state.actionError = '';
+      syncComposerControls();
+    },
+  });
+  draftInput.addEventListener('keydown', (ev) => {
+    if ((ev.metaKey || ev.ctrlKey) && ev.key === 'Enter') {
+      ev.preventDefault();
+      handleSendDraft();
+    }
+  });
+
+  const sendBtn = el('button', {
+    type: 'button',
+    className: 'rc-btn is-sm is-primary',
+    text: '发送',
+    onClick: () => handleSendDraft(),
+  });
+  const cancelBtn = el('button', {
+    type: 'button',
+    className: 'rc-btn is-sm is-danger',
+    text: '停止',
+    onClick: () => handleCancelConvo(),
+  });
+  const composerRow = el('div', { className: 'rc-composer-row' }, draftInput, sendBtn, cancelBtn);
+  const auxDockRow = el(
+    'div',
+    { className: 'rc-dock-aux' },
     el(
       'div',
       { className: 'rc-dock-group' },
@@ -204,32 +259,23 @@ function ensureWorkspaceShell() {
           timeline.scrollTop = timeline.scrollHeight;
         },
       })
-    ),
-    el(
-      'div',
-      { className: 'rc-dock-group' },
-      el('button', {
-        type: 'button',
-        className: 'rc-btn is-sm',
-        disabled: true,
-        title: '写操作将在 Week 2 开放',
-        text: '续写 (Week 2)',
-      }),
-      el('button', {
-        type: 'button',
-        className: 'rc-btn is-sm',
-        disabled: true,
-        title: '取消操作将在 Week 2 开放',
-        text: '停止 (Week 2)',
-      })
     )
+  );
+
+  const bottomDock = el(
+    'footer',
+    { className: 'rc-bottom-dock is-composer' },
+    actionBanner,
+    turboWriteLabel,
+    composerRow,
+    auxDockRow
   );
 
   const detail = el(
     'section',
     { className: 'rc-detail' },
     detailHead,
-    readonlyBanner,
+    roleBanner,
     timeline,
     bottomDock
   );
@@ -244,6 +290,16 @@ function ensureWorkspaceShell() {
     presetPill,
     devicePill,
     noticeBar,
+    roleBanner,
+    roleBannerText,
+    roleBannerPill,
+    actionBanner,
+    turboWriteLabel,
+    turboWriteCheckbox,
+    composerRow,
+    draftInput,
+    sendBtn,
+    cancelBtn,
     filterRow,
     sidebarList,
     detailTitle,
@@ -251,6 +307,156 @@ function ensureWorkspaceShell() {
     timeline,
   };
   return workspaceRefs;
+}
+
+function canSteer() {
+  const role = state.identity?.role || 'observe';
+  return role === 'steer' || role === 'admin';
+}
+
+function formatWriteError(err) {
+  const code = String(err?.code || err?.message || '操作失败');
+  if (code === 'forbidden_role_observe') return '当前设备为只读角色 (observe)，无法执行远程写操作';
+  if (code === 'host_not_attached') return 'Antigravity 桌面宿主未连接，无法执行写操作';
+  if (code === 'turbo_write_confirmation_required') return '本机处于 TURBO 或未知权限模式，请先勾选高危确认框后再发送';
+  if (code === 'waiting_step_mismatch') return '目标审批步骤已变化或已失效，已自动刷新最新状态';
+  if (code === 'write_rate_limited') return '写操作过于频繁，请稍后再试';
+  if (code === 'too_many_concurrent_writes') return '并发写请求过多，请等待当前操作完成';
+  return code;
+}
+
+function syncComposerControls() {
+  const refs = ensureWorkspaceShell();
+  const writable = canSteer();
+  const online = Boolean(state.hostAttached && state.wsStatus === 'connected');
+  const hasSelection = Boolean(state.selectedId);
+  const needTurboConfirm = requiresTurboAck(state.globalPreset);
+
+  if (writable) {
+    refs.roleBannerText.textContent = '受控远程操控模式：支持远程发送消息、停止当前任务与仅本次 (Allow Once) / 拒绝审批。';
+    refs.roleBannerPill.setAttribute('data-tone', 'ok');
+    refs.roleBannerPill.textContent = String(state.identity?.role || 'steer').toUpperCase();
+    refs.composerRow.classList.remove('rc-hidden');
+  } else {
+    refs.roleBannerText.textContent = '只读观察模式 (observe)：如需远程发送、停止或审批，请在 Mac 端以 --role steer 重新配对。';
+    refs.roleBannerPill.setAttribute('data-tone', 'info');
+    refs.roleBannerPill.textContent = 'READ-ONLY';
+    refs.composerRow.classList.add('rc-hidden');
+  }
+
+  if (writable && needTurboConfirm) {
+    refs.turboWriteLabel.classList.remove('rc-hidden');
+    refs.turboWriteCheckbox.checked = state.turboWriteConfirmed;
+    refs.turboWriteCheckbox.disabled = state.sendBusy;
+  } else {
+    refs.turboWriteLabel.classList.add('rc-hidden');
+  }
+
+  if (refs.draftInput.value !== state.draftText) {
+    refs.draftInput.value = state.draftText;
+  }
+  refs.draftInput.disabled = !writable || !online || !hasSelection || state.sendBusy;
+  refs.sendBtn.textContent = state.sendBusy ? '发送中…' : '发送';
+  refs.sendBtn.disabled =
+    !writable ||
+    !online ||
+    !hasSelection ||
+    state.sendBusy ||
+    !state.draftText.trim() ||
+    (needTurboConfirm && !state.turboWriteConfirmed);
+  refs.cancelBtn.textContent = state.cancelBusy ? '停止中…' : '停止';
+  refs.cancelBtn.disabled = !writable || !online || !hasSelection || state.cancelBusy;
+
+  if (state.actionError) {
+    refs.actionBanner.classList.remove('rc-hidden');
+    refs.actionBanner.setAttribute('data-tone', 'danger');
+    refs.actionBanner.textContent = state.actionError;
+  } else if (state.actionNotice) {
+    refs.actionBanner.classList.remove('rc-hidden');
+    refs.actionBanner.setAttribute('data-tone', 'ok');
+    refs.actionBanner.textContent = state.actionNotice;
+  } else {
+    refs.actionBanner.classList.add('rc-hidden');
+    refs.actionBanner.textContent = '';
+  }
+}
+
+async function handleSendDraft() {
+  if (!wsClient || !state.selectedId || !canSteer() || state.sendBusy) return;
+  if (!state.draftText.trim()) return;
+  if (requiresTurboAck(state.globalPreset) && !state.turboWriteConfirmed) {
+    state.actionError = '请先勾选 TURBO / 未知权限高危确认框';
+    state.actionNotice = '';
+    syncComposerControls();
+    return;
+  }
+  const targetCid = state.selectedId;
+  state.sendBusy = true;
+  state.actionError = '';
+  state.actionNotice = '';
+  syncComposerControls();
+  try {
+    await wsClient.sendMessage(targetCid, state.draftText, {
+      idempotencyKey: state.draftIdempotencyKey,
+      turboWriteConfirmed: state.turboWriteConfirmed,
+    });
+    state.draftText = '';
+    state.draftIdempotencyKey = createIdempotencyKey();
+    state.actionNotice = '指令已发送至桌面端';
+    fetchAndRenderSnapshot(targetCid);
+  } catch (err) {
+    state.actionError = formatWriteError(err);
+  } finally {
+    state.sendBusy = false;
+    syncComposerControls();
+  }
+}
+
+async function handleApproveStep(w, decision) {
+  if (!wsClient || !state.selectedId || !canSteer() || state.approvingHash) return;
+  const targetCid = state.selectedId;
+  state.approvingHash = String(w?.waitingStepHash || '');
+  state.actionError = '';
+  state.actionNotice = '';
+  renderDetailTimeline();
+  syncComposerControls();
+  try {
+    await wsClient.approveWaitingStep(targetCid, {
+      stepIndex: w.stepIndex,
+      waitingStepHash: w.waitingStepHash,
+      decision,
+    });
+    state.actionNotice = decision === 'allow_once' ? '已允许本次执行 (Allow Once)' : '已拒绝该操作 (Deny)';
+    refreshAllData();
+  } catch (err) {
+    state.actionError = formatWriteError(err);
+    if (err?.code === 'waiting_step_mismatch') {
+      refreshAllData();
+    }
+  } finally {
+    state.approvingHash = '';
+    renderDetailTimeline();
+    syncComposerControls();
+  }
+}
+
+async function handleCancelConvo() {
+  if (!wsClient || !state.selectedId || !canSteer() || state.cancelBusy) return;
+  const targetCid = state.selectedId;
+  state.cancelBusy = true;
+  state.actionError = '';
+  state.actionNotice = '';
+  syncComposerControls();
+  try {
+    await wsClient.cancelConversation(targetCid, { killBackgroundTasks: false });
+    state.actionNotice = '已发送停止指令';
+    refreshAllData();
+  } catch (err) {
+    state.actionError = formatWriteError(err);
+  } finally {
+    state.cancelBusy = false;
+    syncComposerControls();
+  }
 }
 
 function renderTopStatus() {
@@ -304,6 +510,7 @@ function renderTopStatus() {
   } else {
     refs.noticeBar.classList.add('rc-hidden');
   }
+  syncComposerControls();
 }
 
 function renderFilterChips() {
@@ -439,6 +646,7 @@ function renderDetailTimeline() {
     state,
     refs: ensureWorkspaceShell(),
     onSelectConversation: selectConversation,
+    onApprove: handleApproveStep,
   });
 }
 
@@ -734,6 +942,10 @@ function startWorkspaceSession() {
       if (state.identity) renderTopStatus();
     },
     onWelcome: (msg) => {
+      if (msg.deviceRole && state.identity && state.identity.role !== msg.deviceRole) {
+        state.identity.role = msg.deviceRole;
+        saveDeviceIdentity(state.identity).catch(() => {});
+      }
       if (msg.health) {
         state.hostAttached = Boolean(msg.health.hostAttached);
         state.globalPreset = msg.health.globalPreset ?? state.globalPreset;

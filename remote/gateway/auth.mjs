@@ -360,11 +360,16 @@ export function createAuthManager({
     return { ok: true, device, lastSeq: seqVal, lastEpoch: epochVal };
   }
 
-  function isDeviceActive(deviceId) {
-    if (!deviceId || typeof deviceId !== 'string') return false;
+  function getActiveDevice(deviceId) {
+    if (!deviceId || typeof deviceId !== 'string') return null;
     const devices = readDevices({ remoteDir });
     const device = devices.find((d) => d.deviceId === deviceId);
-    return Boolean(device && !device.revokedAt);
+    if (!device || device.revokedAt) return null;
+    return device;
+  }
+
+  function isDeviceActive(deviceId) {
+    return Boolean(getActiveDevice(deviceId));
   }
 
   function signGatewayPayload(text) {
@@ -383,6 +388,7 @@ export function createAuthManager({
     completePairing,
     verifyHello,
     checkLockout,
+    getActiveDevice,
     isDeviceActive,
     signGatewayPayload,
   };

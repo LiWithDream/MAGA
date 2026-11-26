@@ -798,6 +798,80 @@ input {
   gap: 8px;
 }
 
+.rc-bottom-dock.is-composer {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 7px;
+}
+
+.rc-composer-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.rc-composer-input {
+  flex: 1 1 auto;
+  min-height: 44px;
+  max-height: 140px;
+  resize: vertical;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--rc-border);
+  background: var(--rc-bg);
+  color: var(--rc-fg);
+  font: inherit;
+  font-size: 13.5px;
+  line-height: 1.45;
+}
+
+.rc-composer-input:focus {
+  outline: 2px solid var(--rc-accent);
+  outline-offset: -1px;
+}
+
+.rc-dock-aux {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.rc-waiting-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.rc-turbo-inline {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  color: var(--rc-amber);
+  cursor: pointer;
+}
+
+.rc-action-banner {
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  border: 1px solid var(--rc-border);
+}
+
+.rc-action-banner[data-tone="danger"] {
+  background: var(--rc-red-soft);
+  color: var(--rc-red);
+  border-color: var(--rc-red);
+}
+
+.rc-action-banner[data-tone="ok"] {
+  background: var(--rc-blue-soft);
+  color: var(--rc-fg);
+}
+
 .rc-dock-group {
   display: flex;
   align-items: center;

@@ -10,6 +10,7 @@ export function createRemoteTapModule(rt) {
   const MAX_STREAMS = 3;
   const MAX_STEPS_SNAPSHOT = 200;
   const MAX_FIELD_CHARS = 16384;
+  const INVOKE_METHODS = new Set(['convo.owns', 'convo.send', 'convo.approve', 'convo.cancel']);
 
   let active = false;
   let rpcToken = '';
@@ -888,6 +889,178 @@ export function createRemoteTapModule(rt) {
     };
   }
 
+  async function computeWaitingStepHashAsync(cascadeId, step) {
+    const stepIndex = Number(step?.stepIndex ?? 0);
+    const trajectoryId = String(step?.trajectoryId || '');
+    const interactionCase = String(step?.interactionCase || '');
+    const toolName = String(step?.toolName || '');
+    const commandLine = String(step?.commandLine || '');
+    const raw = `${cascadeId}|${trajectoryId}|${stepIndex}|${interactionCase}|${toolName}|${commandLine}`;
+    const subtle =
+      (typeof globalThis !== 'undefined' && globalThis.crypto?.subtle) ||
+      (typeof window !== 'undefined' && window.crypto?.subtle) ||
+      null;
+    if (!subtle || typeof TextEncoder === 'undefined') return '';
+    const buf = await subtle.digest('SHA-256', new TextEncoder().encode(raw));
+    return Array.from(new Uint8Array(buf), (b) => b.toString(16).padStart(2, '0'))
+      .join('')
+      .slice(0, 16);
+  }
+
+  function isTurboLikePreset(preset) {
+    return preset === null || preset === undefined || Number(preset) === 3 || !Number.isFinite(Number(preset));
+  }
+
+  function checkOwnsConversation(payload) {
+    const cid = typeof payload?.cascadeId === 'string' ? payload.cascadeId.trim() : '';
+    if (!UUID_RE.test(cid)) return { ok: false, error: 'invalid_cascade_id' };
+    const { store } = locateHandles();
+    const st = store ? safeCall(() => store.getState()) : null;
+    const owned = Boolean(st?.trajectorySummaries?.summaries?.[cid]);
+    const active = Boolean(
+      typeof window !== 'undefined' &&
+        typeof window.location?.pathname === 'string' &&
+        window.location.pathname.includes(cid)
+    );
+    return { ok: true, owned, active };
+  }
+
+  async function sendMessage(payload) {
+    const cid = typeof payload?.cascadeId === 'string' ? payload.cascadeId.trim() : '';
+    if (!UUID_RE.test(cid)) return { ok: false, error: 'invalid_cascade_id' };
+    if (typeof payload?.text !== 'string') return { ok: false, error: 'invalid_text' };
+    const text = payload.text;
+    if (!text.trim() || text.length > MAX_FIELD_CHARS) return { ok: false, error: 'invalid_text_length' };
+
+    let { store, lsClient, prefStore } = locateHandles();
+    if (!lsClient) {
+      ({ store, lsClient, prefStore } = locateHandles(true));
+    }
+    if (!lsClient || typeof lsClient.sendUserCascadeMessage !== 'function') {
+      return { ok: false, error: 'send_not_supported' };
+    }
+
+    const st = store ? safeCall(() => store.getState()) : null;
+    const { globalPreset } = readPresetInfo(st, prefStore);
+    if (isTurboLikePreset(globalPreset) && payload?.turboWriteConfirmed !== true) {
+      return { ok: false, error: 'turbo_write_confirmation_required', globalPreset: globalPreset ?? null };
+    }
+
+    try {
+      await lsClient.sendUserCascadeMessage({
+        cascadeId: cid,
+        items: [{ chunk: { case: 'text', value: text } }],
+      });
+      return { ok: true, cascadeId: cid, globalPreset: globalPreset ?? null };
+    } catch (err) {
+      return { ok: false, error: String(err?.message || err || 'send_failed') };
+    }
+  }
+
+  async function approveInteraction(payload) {
+    const cid = typeof payload?.cascadeId === 'string' ? payload.cascadeId.trim() : '';
+    if (!UUID_RE.test(cid)) return { ok: false, error: 'invalid_cascade_id' };
+    const decision = payload?.decision;
+    if (decision !== 'allow_once' && decision !== 'deny') return { ok: false, error: 'invalid_decision' };
+    const stepIndex = payload?.stepIndex;
+    if (!Number.isInteger(stepIndex) || stepIndex < 0) return { ok: false, error: 'invalid_step_index' };
+    const expectedHash = typeof payload?.waitingStepHash === 'string' ? payload.waitingStepHash.trim().toLowerCase() : '';
+    if (!/^[0-9a-f]{16}$/.test(expectedHash)) return { ok: false, error: 'invalid_waiting_step_hash' };
+
+    let { store, lsClient } = locateHandles();
+    if (!store || !lsClient) {
+      ({ store, lsClient } = locateHandles(true));
+    }
+    if (!store || typeof store.getState !== 'function') return { ok: false, error: 'store_unavailable' };
+    if (!lsClient || typeof lsClient.handleCascadeUserInteraction !== 'function') {
+      return { ok: false, error: 'approval_not_supported' };
+    }
+
+    const st = safeCall(() => store.getState());
+    const sum = st?.trajectorySummaries?.summaries?.[cid] || null;
+    if (!sum) return { ok: false, error: 'conversation_not_found' };
+
+    const waiting = normalizeWaitingSteps(cid, sum.waitingSteps);
+    let matched = null;
+    for (const w of waiting) {
+      if (w.stepIndex !== stepIndex) continue;
+      const liveHash = await computeWaitingStepHashAsync(cid, w);
+      if (liveHash && liveHash === expectedHash) {
+        matched = w;
+        break;
+      }
+    }
+    if (!matched) {
+      return { ok: false, error: 'waiting_step_mismatch' };
+    }
+    if (matched.interactionCase && matched.interactionCase !== 'permission') {
+      return {
+        ok: false,
+        error: 'unsupported_interaction_case',
+        interactionCase: matched.interactionCase,
+      };
+    }
+
+    try {
+      await lsClient.handleCascadeUserInteraction(cid, {
+        trajectoryId: matched.trajectoryId || '',
+        stepIndex: matched.stepIndex,
+        interaction: {
+          case: 'permission',
+          value: {
+            allow: decision === 'allow_once',
+            scope: 1,
+          },
+        },
+      });
+      return {
+        ok: true,
+        cascadeId: cid,
+        stepIndex: matched.stepIndex,
+        waitingStepHash: expectedHash,
+        decision,
+      };
+    } catch (err) {
+      return { ok: false, error: String(err?.message || err || 'approve_failed') };
+    }
+  }
+
+  async function cancelConversation(payload) {
+    const cid = typeof payload?.cascadeId === 'string' ? payload.cascadeId.trim() : '';
+    if (!UUID_RE.test(cid)) return { ok: false, error: 'invalid_cascade_id' };
+    let { lsClient } = locateHandles();
+    if (!lsClient) {
+      ({ lsClient } = locateHandles(true));
+    }
+    if (!lsClient || typeof lsClient.cancelCascadeInvocation !== 'function') {
+      return { ok: false, error: 'cancel_not_supported' };
+    }
+    try {
+      await lsClient.cancelCascadeInvocation({
+        cascadeId: cid,
+        killBackgroundTasks: Boolean(payload?.killBackgroundTasks),
+      });
+      return { ok: true, cascadeId: cid };
+    } catch (err) {
+      return { ok: false, error: String(err?.message || err || 'cancel_failed') };
+    }
+  }
+
+  async function invoke(method, payload) {
+    if (rtState.disposed) return { ok: false, error: 'disposed' };
+    if (typeof method !== 'string' || !INVOKE_METHODS.has(method)) {
+      return { ok: false, error: 'disallowed_invoke_method' };
+    }
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      return { ok: false, error: 'invalid_invoke_payload' };
+    }
+    if (method === 'convo.owns') return checkOwnsConversation(payload);
+    if (method === 'convo.send') return sendMessage(payload);
+    if (method === 'convo.approve') return approveInteraction(payload);
+    if (method === 'convo.cancel') return cancelConversation(payload);
+    return { ok: false, error: 'disallowed_invoke_method' };
+  }
+
   const api = {
     enable,
     disable,
@@ -896,6 +1069,7 @@ export function createRemoteTapModule(rt) {
     getCapabilities,
     listSummaries,
     getSnapshot,
+    invoke,
   };
 
   if (typeof window !== 'undefined') {

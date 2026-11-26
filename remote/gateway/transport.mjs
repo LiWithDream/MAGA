@@ -442,6 +442,12 @@ export function createTransportGuard({
     if (edge?.user && edge.user !== 'loopback') {
       return `${edge.method}:${edge.user}`;
     }
+    if (config?.transport === 'tailscale-serve') {
+      const rawLogin = getHeaderSingle(req?.headers, 'tailscale-user-login');
+      if (rawLogin && !/[\s,]/.test(rawLogin)) {
+        return `tailscale-serve:${rawLogin.toLowerCase()}`;
+      }
+    }
     const cfIp = getHeaderSingle(req?.headers, 'cf-connecting-ip');
     if (cfIp) return `ip:${cfIp}`;
     const rawAddr = req?.socket?.remoteAddress || '127.0.0.1';

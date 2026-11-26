@@ -128,7 +128,8 @@ export function reconcileGatewayProcess(state) {
       env: {
         ...process.env,
         MAGA_REMOTE_STATE_DIR: state.paths.remoteDir,
-        MAGA_REMOTE_SOCK_PATH: state.paths.sockPath
+        MAGA_REMOTE_SOCK_PATH: state.paths.sockPath,
+        ...(state.udsWriteToken ? { MAGA_REMOTE_UDS_TOKEN: state.udsWriteToken } : {})
       },
       stdio: ['ignore', 'inherit', 'inherit', 'ipc']
     });

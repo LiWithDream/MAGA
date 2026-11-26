@@ -6,6 +6,7 @@ import net from 'node:net';
 import { resolveSockPath } from './config.mjs';
 
 const DEFAULT_MAX_LINE_BYTES = 8 * 1024 * 1024; // 8MB line guard
+const WRITE_METHODS = new Set(['convo.send', 'convo.approve', 'convo.cancel']);
 
 export function createUdsClient({
   sockPath = resolveSockPath(),
@@ -14,6 +15,7 @@ export function createUdsClient({
   initialReconnectMs = 250,
   maxReconnectMs = 5000,
   maxLineBytes = DEFAULT_MAX_LINE_BYTES,
+  udsWriteToken = process.env.MAGA_REMOTE_UDS_TOKEN || '',
   autoConnect = true,
 } = {}) {
   let socket = null;
@@ -222,7 +224,13 @@ export function createUdsClient({
 
     const timeoutMs = Number.isFinite(opts.timeoutMs) && opts.timeoutMs > 0 ? opts.timeoutMs : requestTimeoutMs;
     const id = String(nextId++);
-    const payload = `${JSON.stringify({ id, method, params })}\n`;
+    const isWrite = opts.write === true || WRITE_METHODS.has(method);
+    const token = isWrite ? (opts.udsToken !== undefined ? opts.udsToken : udsWriteToken) : '';
+    const frame = { id, method, params };
+    if (isWrite && token) {
+      frame.udsToken = token;
+    }
+    const payload = `${JSON.stringify(frame)}\n`;
 
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {

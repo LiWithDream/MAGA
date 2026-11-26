@@ -99,14 +99,18 @@ export async function createGatewayServer(options = {}) {
     port: portOverride = undefined,
     host: hostOverride = undefined,
     udsClient: injectedUdsClient = null,
+    udsWriteToken = undefined,
     jwks = null,
     jwksFetcher = null,
-    requireWsOrigin = false,
+    requireWsOrigin = undefined,
     helloTimeoutMs = 5000,
     tapDeactivateDelayMs = 30_000,
     pingIntervalMs = 25_000,
     revocationCheckMs = 2000,
     maxWriteBufferBytes = 1024 * 1024,
+    maxWritesPerMinute = undefined,
+    maxConcurrentWrites = undefined,
+    idempotencyTtlMs = undefined,
     now = Date.now,
     writePid = true,
   } = options;
@@ -127,6 +131,7 @@ export async function createGatewayServer(options = {}) {
     injectedUdsClient ||
     createUdsClient({
       sockPath: paths.sockPath,
+      udsWriteToken: udsWriteToken !== undefined ? udsWriteToken : process.env.MAGA_REMOTE_UDS_TOKEN || '',
       autoConnect: true,
     });
 
@@ -146,12 +151,13 @@ export async function createGatewayServer(options = {}) {
   });
 
   let boundPort = config.port;
+  const effectiveRequireWsOrigin = requireWsOrigin !== undefined ? Boolean(requireWsOrigin) : config.transport !== 'loopback';
   const transportGuard = createTransportGuard({
     config,
     boundPort,
     jwks,
     jwksFetcher,
-    requireWsOrigin,
+    requireWsOrigin: effectiveRequireWsOrigin,
     now,
   });
 
@@ -166,6 +172,10 @@ export async function createGatewayServer(options = {}) {
     pingIntervalMs,
     revocationCheckMs,
     maxWriteBufferBytes,
+    ...(maxWritesPerMinute !== undefined ? { maxWritesPerMinute } : {}),
+    ...(maxConcurrentWrites !== undefined ? { maxConcurrentWrites } : {}),
+    ...(idempotencyTtlMs !== undefined ? { idempotencyTtlMs } : {}),
+    now,
     getActivePort: () => boundPort,
   });
 

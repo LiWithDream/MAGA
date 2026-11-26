@@ -97,10 +97,58 @@ export function renderStepCard(step) {
   return card;
 }
 
-export function renderWaitingCards(waitingSteps) {
+export function renderWaitingCards(
+  waitingSteps,
+  { canWrite = false, hostAttached = false, busyHash = '', onApprove = null } = {}
+) {
   if (!Array.isArray(waitingSteps) || waitingSteps.length === 0) return [];
-  return waitingSteps.map((w) =>
-    el(
+  return waitingSteps.map((w) => {
+    const hash = String(w.waitingStepHash || '');
+    const isBusy = Boolean(busyHash && hash && busyHash === hash);
+    const isPermission = !w.interactionCase || w.interactionCase === 'permission';
+
+    let footerEl;
+    if (!canWrite) {
+      footerEl = el('div', {
+        className: 'rc-convo-meta',
+        text: `只读观察模式 (observe)：请在 Mac 桌面端点击 Allow Once / Deny，或以 --role steer 重新配对${hash ? ` · hash:${hash.slice(0, 8)}` : ''}`,
+      });
+    } else if (!isPermission) {
+      footerEl = el('div', {
+        className: 'rc-convo-meta',
+        text: `该交互类型 (${w.interactionCase}) 暂请在桌面端完成${hash ? ` · hash:${hash.slice(0, 8)}` : ''}`,
+      });
+    } else if (!hostAttached) {
+      footerEl = el(
+        'div',
+        { className: 'rc-waiting-actions' },
+        el('button', { type: 'button', className: 'rc-btn is-sm is-primary', disabled: true, text: '仅本次允许 (Allow Once)' }),
+        el('button', { type: 'button', className: 'rc-btn is-sm is-danger', disabled: true, text: '拒绝 (Deny)' }),
+        el('span', { className: 'rc-convo-meta', text: '宿主离线，无法提交审批' })
+      );
+    } else {
+      footerEl = el(
+        'div',
+        { className: 'rc-waiting-actions' },
+        el('button', {
+          type: 'button',
+          className: 'rc-btn is-sm is-primary',
+          disabled: isBusy || !hash,
+          text: isBusy ? '提交中…' : '仅本次允许 (Allow Once)',
+          onClick: () => onApprove?.(w, 'allow_once'),
+        }),
+        el('button', {
+          type: 'button',
+          className: 'rc-btn is-sm is-danger',
+          disabled: isBusy || !hash,
+          text: '拒绝 (Deny)',
+          onClick: () => onApprove?.(w, 'deny'),
+        }),
+        hash ? el('span', { className: 'rc-mono', text: `hash:${hash.slice(0, 8)}` }) : null
+      );
+    }
+
+    return el(
       'div',
       { className: 'rc-waiting-card' },
       el(
@@ -115,15 +163,17 @@ export function renderWaitingCards(waitingSteps) {
       ),
       w.commandLine ? el('pre', { className: 'rc-pre', text: String(w.commandLine) }) : null,
       w.action ? el('div', { className: 'rc-mono', text: `动作: ${w.action}` }) : null,
-      el('div', {
-        className: 'rc-convo-meta',
-        text: `Week 1 只读态：请在 Mac 桌面端点击 Allow Once / Deny（远程审批将于 Week 2 开放）${w.waitingStepHash ? ` · hash:${String(w.waitingStepHash).slice(0, 8)}` : ''}`,
-      })
-    )
-  );
+      footerEl
+    );
+  });
 }
 
-export function renderDetailTimeline({ state, refs, onSelectConversation }) {
+export function renderDetailTimeline({
+  state,
+  refs,
+  onSelectConversation,
+  onApprove = null,
+}) {
   const cid = state.selectedId;
   const convo = findConversationMeta(state, cid);
   const snap = cid ? state.snapshots.get(cid) : null;
@@ -168,8 +218,15 @@ export function renderDetailTimeline({ state, refs, onSelectConversation }) {
     return;
   }
 
+  const role = state.identity?.role || 'observe';
+  const canWrite = role === 'steer' || role === 'admin';
   const waiting = snap?.waitingSteps?.length ? snap.waitingSteps : convo?.waitingSteps || [];
-  for (const card of renderWaitingCards(waiting)) {
+  for (const card of renderWaitingCards(waiting, {
+    canWrite,
+    hostAttached: Boolean(state.hostAttached && state.wsStatus === 'connected'),
+    busyHash: state.approvingHash || '',
+    onApprove,
+  })) {
     refs.timeline.appendChild(card);
   }
 

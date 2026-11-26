@@ -201,6 +201,13 @@ export function validateAndNormalizeConfig(raw = {}, overrides = {}) {
     cfAccessAud = String(merged.cfAccessAud || '').trim();
   }
 
+  const hasExplicitLocalPair =
+    Object.prototype.hasOwnProperty.call(ov, 'allowLocalPairingWithoutEdge') ||
+    Object.prototype.hasOwnProperty.call(src, 'allowLocalPairingWithoutEdge');
+  const allowLocalPairingWithoutEdge = hasExplicitLocalPair
+    ? merged.allowLocalPairingWithoutEdge !== false
+    : transport === 'loopback';
+
   return {
     enabled: Boolean(merged.enabled),
     port,
@@ -211,7 +218,7 @@ export function validateAndNormalizeConfig(raw = {}, overrides = {}) {
     cfAccessTeamDomain,
     cfAccessAud,
     tailscaleAllowedUsers,
-    allowLocalPairingWithoutEdge: merged.allowLocalPairingWithoutEdge !== false,
+    allowLocalPairingWithoutEdge,
   };
 }
 

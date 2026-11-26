@@ -1,6 +1,7 @@
 /**
  * AGY Studio Remote Control — Daemon-side Bridge Facade, Host Tap & UDS NDJSON RPC Server
  */
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
@@ -8,6 +9,7 @@ import { DatabaseSync, REPO_ROOT, UUID_RE, attachedTargets, runtimeState } from 
 import { isPathInsideDir } from './projects.mjs';
 import {
   DEFAULT_REMOTE_CONFIG,
+  MAX_FIELD_CHARS,
   applySnapshotByteBudget,
   computeWaitingStepHash,
   ensureRemoteDir,
@@ -35,6 +37,8 @@ export {
 
 const MAX_ACTIVE_STREAMS = 3;
 const MAX_UDS_LINE_BYTES = 1024 * 1024;
+const WRITE_UDS_METHODS = new Set(['convo.send', 'convo.approve', 'convo.cancel']);
+const TAP_INVOKE_METHODS = new Set(['convo.owns', 'convo.send', 'convo.approve', 'convo.cancel']);
 
 let bridgeState = null;
 
@@ -122,6 +126,56 @@ async function evalOnHost(entry, expression, timeoutMs = 4500) {
   } catch (err) {
     return { ok: false, error: String(err?.message || err) };
   }
+}
+
+function serializeEvalJson(val) {
+  return JSON.stringify(val).replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
+}
+
+async function invokeTapOnHost(entry, method, payload, timeoutMs = 8000) {
+  if (!TAP_INVOKE_METHODS.has(method)) {
+    return { ok: false, error: 'disallowed_invoke_method' };
+  }
+  const expr = `window.__agRemoteTap && typeof window.__agRemoteTap.invoke === 'function' ? window.__agRemoteTap.invoke(${serializeEvalJson(method)}, ${serializeEvalJson(payload)}) : { ok: false, error: "tap_invoke_unavailable" }`;
+  return evalOnHost(entry, expr, timeoutMs);
+}
+
+async function resolveHostForCascade(cascadeId) {
+  const hosts = getConfirmedHostEntries();
+  if (hosts.length === 0) {
+    throw Object.assign(new Error('host_not_attached'), { code: 'host_not_attached' });
+  }
+  if (hosts.length === 1) return hosts[0];
+  const checks = await Promise.all(
+    hosts.map(async (entry) => {
+      const ownRes = await invokeTapOnHost(entry, 'convo.owns', { cascadeId }, 2500);
+      if (!entry._remoteCap) {
+        const capRes = await evalOnHost(entry, 'window.__agRemoteTap ? window.__agRemoteTap.getCapabilities() : null', 2000);
+        if (capRes.ok && capRes.value && typeof capRes.value === 'object') {
+          entry._remoteCap = capRes.value;
+          entry._remoteCapScore = scoreHostCapabilities(capRes.value);
+        }
+      }
+      const owned = Boolean(ownRes.ok && ownRes.value?.ok && ownRes.value.owned);
+      const active = Boolean(ownRes.ok && ownRes.value?.ok && ownRes.value.active);
+      const ownRank = owned ? (active ? 3 : 2) : 0;
+      const capScore = typeof entry._remoteCapScore === 'number' ? entry._remoteCapScore : -1;
+      return { entry, ownRank, capScore };
+    })
+  );
+  checks.sort((a, b) => (b.ownRank !== a.ownRank ? b.ownRank - a.ownRank : b.capScore - a.capScore));
+  return checks[0].entry;
+}
+
+function isTurboPreset(preset) {
+  return preset === null || preset === undefined || Number(preset) === 3 || !Number.isFinite(Number(preset));
+}
+
+function verifyUdsWriteToken(provided, expected) {
+  if (typeof provided !== 'string' || typeof expected !== 'string' || !expected) return false;
+  const a = Buffer.from(provided, 'utf8');
+  const b = Buffer.from(expected, 'utf8');
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
 export async function probeRemoteCapabilities() {
@@ -439,6 +493,90 @@ async function releaseClientWatches(client) {
   }
 }
 
+async function handleConvoSend(params = {}) {
+  const cascadeId = typeof params?.cascadeId === 'string' ? params.cascadeId.trim() : '';
+  if (!UUID_RE.test(cascadeId)) {
+    throw Object.assign(new Error('invalid_cascade_id'), { code: 'invalid_cascade_id' });
+  }
+  if (typeof params?.text !== 'string') {
+    throw Object.assign(new Error('invalid_text'), { code: 'invalid_text' });
+  }
+  const text = params.text;
+  if (!text.trim() || text.length > MAX_FIELD_CHARS) {
+    throw Object.assign(new Error('invalid_text_length'), { code: 'invalid_text_length' });
+  }
+
+  const host = await resolveHostForCascade(cascadeId);
+  const capRes = await evalOnHost(host, 'window.__agRemoteTap ? window.__agRemoteTap.getCapabilities() : null', 2500);
+  const preset = capRes.ok && capRes.value && typeof capRes.value === 'object' ? capRes.value.globalPreset : null;
+  if (isTurboPreset(preset) && params.turboWriteConfirmed !== true) {
+    throw Object.assign(new Error('turbo_write_confirmation_required'), { code: 'turbo_write_confirmation_required' });
+  }
+
+  const r = await invokeTapOnHost(
+    host,
+    'convo.send',
+    { cascadeId, text, turboWriteConfirmed: Boolean(params.turboWriteConfirmed) },
+    12000
+  );
+  if (!r.ok || !r.value?.ok) {
+    const errCode = r.value?.error || r.error || 'send_failed';
+    throw Object.assign(new Error(errCode), { code: errCode });
+  }
+  return r.value;
+}
+
+async function handleConvoApprove(params = {}) {
+  const cascadeId = typeof params?.cascadeId === 'string' ? params.cascadeId.trim() : '';
+  if (!UUID_RE.test(cascadeId)) {
+    throw Object.assign(new Error('invalid_cascade_id'), { code: 'invalid_cascade_id' });
+  }
+  const decision = params?.decision;
+  if (decision !== 'allow_once' && decision !== 'deny') {
+    throw Object.assign(new Error('invalid_decision'), { code: 'invalid_decision' });
+  }
+  const stepIndex = params?.stepIndex;
+  if (!Number.isInteger(stepIndex) || stepIndex < 0) {
+    throw Object.assign(new Error('invalid_step_index'), { code: 'invalid_step_index' });
+  }
+  const waitingStepHash = typeof params?.waitingStepHash === 'string' ? params.waitingStepHash.trim().toLowerCase() : '';
+  if (!/^[0-9a-f]{16}$/.test(waitingStepHash)) {
+    throw Object.assign(new Error('invalid_waiting_step_hash'), { code: 'invalid_waiting_step_hash' });
+  }
+
+  const host = await resolveHostForCascade(cascadeId);
+  const r = await invokeTapOnHost(
+    host,
+    'convo.approve',
+    { cascadeId, stepIndex, waitingStepHash, decision },
+    12000
+  );
+  if (!r.ok || !r.value?.ok) {
+    const errCode = r.value?.error || r.error || 'approve_failed';
+    throw Object.assign(new Error(errCode), { code: errCode });
+  }
+  return r.value;
+}
+
+async function handleConvoCancel(params = {}) {
+  const cascadeId = typeof params?.cascadeId === 'string' ? params.cascadeId.trim() : '';
+  if (!UUID_RE.test(cascadeId)) {
+    throw Object.assign(new Error('invalid_cascade_id'), { code: 'invalid_cascade_id' });
+  }
+  const host = await resolveHostForCascade(cascadeId);
+  const r = await invokeTapOnHost(
+    host,
+    'convo.cancel',
+    { cascadeId, killBackgroundTasks: Boolean(params?.killBackgroundTasks) },
+    10000
+  );
+  if (!r.ok || !r.value?.ok) {
+    const errCode = r.value?.error || r.error || 'cancel_failed';
+    throw Object.assign(new Error(errCode), { code: errCode });
+  }
+  return r.value;
+}
+
 async function dispatchUdsRpc(client, req) {
   const id = req?.id;
   const method = req?.method;
@@ -452,6 +590,11 @@ async function dispatchUdsRpc(client, req) {
 
   if (typeof method !== 'string' || !method) {
     reply(false, null, 'invalid_request');
+    return;
+  }
+
+  if (WRITE_UDS_METHODS.has(method) && !verifyUdsWriteToken(req?.udsToken, bridgeState?.udsWriteToken)) {
+    reply(false, null, 'uds_unauthorized');
     return;
   }
 
@@ -470,6 +613,15 @@ async function dispatchUdsRpc(client, req) {
       reply(true, res, null);
     } else if (method === 'convo.watch') {
       const res = await handleConvoWatch(client, params);
+      reply(true, res, null);
+    } else if (method === 'convo.send') {
+      const res = await handleConvoSend(params);
+      reply(true, res, null);
+    } else if (method === 'convo.approve') {
+      const res = await handleConvoApprove(params);
+      reply(true, res, null);
+    } else if (method === 'convo.cancel') {
+      const res = await handleConvoCancel(params);
       reply(true, res, null);
     } else {
       reply(false, null, 'method_not_supported');
@@ -632,6 +784,10 @@ export async function initRemoteBridge({ env = process.env, gatewayScript } = {}
   bridgeState = {
     paths,
     gatewayScript: gatewayScript || path.join(REPO_ROOT, 'remote', 'gateway', 'server.mjs'),
+    udsWriteToken:
+      typeof env.MAGA_REMOTE_UDS_TOKEN === 'string' && env.MAGA_REMOTE_UDS_TOKEN.trim()
+        ? env.MAGA_REMOTE_UDS_TOKEN.trim()
+        : crypto.randomBytes(32).toString('hex'),
     udsServer,
     clients: new Map(),
     watchedStreams: new Map(),

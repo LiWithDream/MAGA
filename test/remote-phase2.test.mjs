@@ -1654,3 +1654,219 @@ test('Remote stability & cache busting: versioned PWA assets, no-store headers, 
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   }
 });
+
+test('Remote Desktop Parity: synced studioPrefs, elemental model capsule/picker filtering & streamlined timeline', async () => {
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'maga-rem-parity-'));
+  const studioPrefsFile = path.join(tmpRoot, 'studio-prefs.json');
+  fs.writeFileSync(
+    studioPrefsFile,
+    JSON.stringify({
+      customizeModelList: true,
+      hiddenModels: ['Gemini 4 Argon', 'GPT-OSS 120B (Medium)'],
+      defaultTierByFamily: {
+        'Gemini 4 Carbon': 'high',
+        'Gemini 4 Neon': 'high',
+        'Gemini 4 Hydrogen': 'xhigh',
+      },
+      showModelDots: true,
+      hideDefaultEffort: true,
+      showEffortBar: true,
+      hideThinkingProse: true,
+    }),
+    'utf8'
+  );
+
+  const studioBridgeMod = await import(pathToFileURL(path.join(REPO, 'core', 'daemon', 'remote', 'studio-bridge.mjs')).href);
+  const composerBarMod = await import(pathToFileURL(path.join(PWA_DIR, 'src', 'composer-bar.mjs')).href);
+  const timelineMod = await import(pathToFileURL(path.join(PWA_DIR, 'src', 'timeline-view.mjs')).href);
+  const { JSDOM } = await import('jsdom');
+  const dom = new JSDOM('<!doctype html><html><body></body></html>');
+  const prevDoc = Object.getOwnPropertyDescriptor(globalThis, 'document');
+
+  try {
+    // 1. Daemon readRemoteStudioPrefs exposes sanitized desktop prefs
+    const prefs = studioBridgeMod.readRemoteStudioPrefs({ studioPrefsFile });
+    assert.equal(prefs.customizeModelList, true);
+    assert.deepEqual(prefs.hiddenModels, ['Gemini 4 Argon', 'GPT-OSS 120B (Medium)']);
+    assert.equal(prefs.defaultTierByFamily['Gemini 4 Hydrogen'], 'xhigh');
+    assert.equal(prefs.hideDefaultEffort, true);
+    assert.equal(prefs.hideThinkingProse, true);
+
+    Object.defineProperty(globalThis, 'document', { value: dom.window.document, configurable: true, writable: true });
+    const doc = dom.window.document;
+
+    // 2. Desktop-parity model capsule & popover
+    const refs = {
+      modelPopover: doc.createElement('div'),
+      composerFooter: doc.createElement('div'),
+    };
+    const catalog = {
+      selected: {
+        baseName: 'Orchestrator · Gemini 4 Neon',
+        effort: 'High',
+        displayEffort: 'High',
+        value: 201,
+        isOrchestrator: true,
+        plannerValue: 10,
+        plannerLabel: 'Gemini 4 Neon (High)',
+      },
+      families: [
+        {
+          baseName: 'Gemini 4 Carbon',
+          group: 'primary',
+          isOrchestrator: false,
+          variants: [
+            { effort: 'High', displayEffort: 'High', label: 'Gemini 4 Carbon (High)', value: 101 },
+            { effort: 'Medium', displayEffort: 'Medium', label: 'Gemini 4 Carbon (Medium)', value: 102 },
+          ],
+        },
+        {
+          baseName: 'Gemini 4 Argon',
+          group: 'primary',
+          isOrchestrator: false,
+          variants: [{ effort: 'High', displayEffort: 'High', label: 'Gemini 4 Argon (High)', value: 103 }],
+        },
+        {
+          baseName: 'Gemini 4 Hydrogen',
+          group: 'primary',
+          isOrchestrator: false,
+          variants: [
+            { effort: 'High', displayEffort: 'High', label: 'Gemini 4 Hydrogen (High)', value: 104 },
+            { effort: 'Extra High', displayEffort: 'Extra High', label: 'Gemini 4 Hydrogen (Extra High)', value: 105 },
+          ],
+        },
+        {
+          baseName: 'GPT-OSS 120B',
+          group: 'other',
+          isOrchestrator: false,
+          variants: [{ effort: 'Medium', displayEffort: 'Medium', label: 'GPT-OSS 120B (Medium)', value: 106 }],
+        },
+        {
+          baseName: 'Orchestrator · Gemini 4 Neon',
+          group: 'orch',
+          isOrchestrator: true,
+          variants: [
+            { effort: 'Low', displayEffort: 'Low', label: 'Gemini 4 Neon (Low)', value: 201, plannerValue: 9 },
+            { effort: 'High', displayEffort: 'High', label: 'Gemini 4 Neon (High)', value: 201, plannerValue: 10 },
+          ],
+        },
+      ],
+    };
+
+    let picked = null;
+    let toggledHidden = false;
+    composerBarMod.renderComposerFooterBar(refs, {
+      catalog,
+      studioPrefs: prefs,
+      modelPopoverOpen: true,
+      showHiddenModels: false,
+      canWrite: true,
+      online: true,
+      hasSelection: true,
+      onSelectModelOption: (p) => { picked = p; },
+      onToggleShowHiddenModels: () => { toggledHidden = true; },
+    });
+
+    const capsule = refs.composerFooter.querySelector('.rc-model-capsule');
+    assert.ok(capsule);
+    assert.equal(capsule.getAttribute('data-is-orch'), '1');
+    assert.equal(capsule.style.getPropertyValue('--rc-model-accent'), '#e14d67', 'Orchestrator Neon must resolve Neon accent');
+    assert.ok(capsule.querySelector('.rc-model-orch-icon'), 'Orchestrator capsule must render prism SVG');
+    assert.equal(capsule.querySelector('.rc-model-name-short')?.textContent, '路由');
+    // hideDefaultEffort=true hides default High on Neon while keeping planner short name
+    assert.equal(capsule.querySelector('.rc-effort-short')?.textContent, 'Neon');
+
+    // Hidden models (Argon + GPT-OSS 120B) must be filtered out by default, with reveal toggle present
+    const famButtons = Array.from(refs.modelPopover.querySelectorAll('.rc-model-fam-btn'));
+    const famTexts = famButtons.map((b) => b.querySelector('.rc-model-fam-name')?.textContent);
+    assert.equal(famTexts.includes('Gemini 4 Argon'), false, 'hidden Argon must be omitted');
+    assert.equal(famTexts.includes('GPT-OSS 120B'), false, 'hidden GPT-OSS 120B (Medium) must match baseName');
+    assert.ok(famTexts.includes('Gemini 4 Hydrogen'));
+    const revealBtn = refs.modelPopover.querySelector('.rc-model-hidden-toggle');
+    assert.ok(revealBtn && revealBtn.textContent.includes('(2)'));
+    revealBtn.click();
+    assert.equal(toggledHidden, true);
+
+    // Clicking Hydrogen must pick defaultTierByFamily xhigh (value 105) instead of High (104)
+    const hydroBtn = famButtons.find((b) => b.querySelector('.rc-model-fam-name')?.textContent === 'Gemini 4 Hydrogen');
+    assert.ok(hydroBtn);
+    hydroBtn.click();
+    assert.equal(picked?.model, 105, 'clicking family must honor desktop defaultTierByFamily (xhigh)');
+
+    // Regular model at default tier with hideDefaultEffort=true omits effort tag and shows colored dot
+    composerBarMod.renderComposerFooterBar(refs, {
+      catalog: { ...catalog, selected: { baseName: 'Gemini 4 Carbon', effort: 'High', displayEffort: 'High', value: 101 } },
+      studioPrefs: prefs,
+      modelPopoverOpen: false,
+      canWrite: true,
+      online: true,
+      hasSelection: true,
+    });
+    const carbonCap = refs.composerFooter.querySelector('.rc-model-capsule');
+    assert.equal(carbonCap.style.getPropertyValue('--rc-model-accent'), '#c78c3c');
+    assert.ok(carbonCap.querySelector('.rc-model-dot'));
+    assert.equal(carbonCap.querySelector('.rc-model-effort-tag'), null, 'default effort tag must hide when hideDefaultEffort=true');
+
+    // 3. Streamlined output timeline: TOOL_CALL role, SYSTEM_MESSAGE suppression, activity grouping, hideThinkingProse & checkpoint
+    const toolCallCard = timelineMod.renderStepCard({ idx: 5, type: 'TOOL_CALL', status: 'DONE', text: 'ls -la', toolCalls: [] });
+    assert.equal(toolCallCard.getAttribute('data-role'), 'tool');
+
+    const cid = '22222222-2222-4222-8222-222222222222';
+    const tlRefs = {
+      detailTitle: doc.createElement('div'),
+      detailSub: doc.createElement('div'),
+      timeline: doc.createElement('div'),
+    };
+    const tlState = {
+      selectedId: cid,
+      identity: { role: 'steer' },
+      hostAttached: true,
+      wsStatus: 'connected',
+      conversations: [{ id: cid, title: 'Parity Chat', status: 'IDLE', waitingSteps: [] }],
+      snapshots: new Map([
+        [
+          cid,
+          {
+            cascadeId: cid,
+            status: 'IDLE',
+            steps: [
+              { idx: 1, type: 'USER_INPUT', status: 'DONE', text: '优化一下远程页面' },
+              { idx: 2, type: 'PLANNER_RESPONSE', status: 'DONE', text: '', thinking: 'Hidden reasoning', toolCalls: [] },
+              { idx: 3, type: 'GENERIC', status: 'DONE', toolCalls: [{ name: 'viewFile', args: '{"Path":"/a/b.mjs"}' }] },
+              { idx: 4, type: 'SYSTEM_MESSAGE', status: 'DONE', text: 'Reminder: work efficiently. In this turn...' },
+              { idx: 5, type: 'TOOL_CALL', status: 'DONE', text: 'npm test', toolCalls: [{ name: 'runCommand', args: '{"CommandLine":"npm test"}' }] },
+              { idx: 6, type: 'CHECKPOINT', status: 'DONE', text: '' },
+              { idx: 7, type: 'PLANNER_RESPONSE', status: 'DONE', text: '已经全部优化完成。', thinking: 'Final internal thought' },
+            ],
+            waitingSteps: [],
+          },
+        ],
+      ]),
+      streams: new Map(),
+      studioOverview: { studioPrefs: prefs },
+      modelCatalog: null,
+      snapshotLoading: false,
+      snapshotError: '',
+      approvingHash: '',
+    };
+
+    timelineMod.renderDetailTimeline({ state: tlState, refs: tlRefs, onSelectConversation: () => {}, onApprove: () => {} });
+    assert.equal(tlRefs.timeline.textContent.includes('Reminder: work efficiently'), false, 'internal SYSTEM_MESSAGE must be suppressed');
+    assert.equal(tlRefs.timeline.textContent.includes('Final internal thought'), false, 'hideThinkingProse=true must hide thinking prose');
+    const groups = tlRefs.timeline.querySelectorAll('.rc-activity-group');
+    assert.equal(groups.length, 1, 'consecutive tools bridged by skipped SYSTEM_MESSAGE must collapse into 1 group');
+    assert.match(groups[0].querySelector('.rc-activity-summary')?.textContent || '', /已执行 2 项操作 · 读取、命令/);
+    assert.ok(tlRefs.timeline.querySelector('.rc-checkpoint-divider'), 'CHECKPOINT must render compact divider');
+    assert.ok(tlRefs.timeline.textContent.includes('已经全部优化完成。'));
+
+    // With hideThinkingProse=false, thinking disclosure appears
+    tlState.studioOverview = { studioPrefs: { ...prefs, hideThinkingProse: false } };
+    timelineMod.renderDetailTimeline({ state: tlState, refs: tlRefs, onSelectConversation: () => {}, onApprove: () => {} });
+    assert.equal(tlRefs.timeline.textContent.includes('Final internal thought'), true, 'hideThinkingProse=false must expose thinking prose');
+  } finally {
+    dom.window.close();
+    if (prevDoc) Object.defineProperty(globalThis, 'document', prevDoc);
+    else delete globalThis.document;
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});

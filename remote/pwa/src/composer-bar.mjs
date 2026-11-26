@@ -212,6 +212,156 @@ export function renderMediaPreviewStrip(container, mediaList = [], { disabled = 
   }
 }
 
+const MODEL_ACCENT_RULES = [
+  [/\bneon\b/i, '#e14d67'],
+  [/\bargon\b/i, '#7c5ce6'],
+  [/\bhydrogen\b/i, '#38a3c7'],
+  [/\bcarbon\b/i, '#c78c3c'],
+  [/\bflash\b/i, '#eab308'],
+  [/\bopus\b/i, '#e07b53'],
+  [/\bsonnet\b/i, '#d47c5d'],
+  [/\bhaiku\b/i, '#5ea8a0'],
+  [/\bgpt\b|\bcodex\b|\bo[134]\b/i, '#8b5cf6'],
+];
+
+const TIER_SUFFIX_RE = /\s*\((?:off|low|medium|high|extra\s*high|extra|xhigh|max|minimal)(?:\s+thinking)?\)\s*$/i;
+
+export function stripModelTierSuffix(name) {
+  return String(name || '').replace(TIER_SUFFIX_RE, '').trim();
+}
+
+export function extractOrchestratorPlanner(baseName = '', plannerLabel = '') {
+  const raw = String(baseName || '').trim();
+  const arrowMatch = /^orchestrator\s*[·→\-–:]\s*(.+)$/i.exec(raw);
+  if (arrowMatch && arrowMatch[1].trim()) return stripModelTierSuffix(arrowMatch[1]);
+  const parenMatch = /^orchestrator\s*\(([^)]+)\)$/i.exec(raw);
+  if (parenMatch && parenMatch[1].trim()) return stripModelTierSuffix(parenMatch[1]);
+  const pLbl = stripModelTierSuffix(plannerLabel);
+  if (pLbl && !/^orchestrator$/i.test(pLbl)) return pLbl;
+  return '';
+}
+
+export function resolveModelAccent(name) {
+  const raw = String(name || '').trim();
+  const target = /^orchestrator/i.test(raw) ? extractOrchestratorPlanner(raw, '') || raw : raw;
+  for (const [re, color] of MODEL_ACCENT_RULES) {
+    if (re.test(target)) return color;
+  }
+  return '#7c5ce6';
+}
+
+export function shortenModelName(name) {
+  const raw = String(name || '').trim();
+  if (!raw) return '模型';
+  if (/^orchestrator$/i.test(raw)) return '路由';
+  const stripped = raw
+    .replace(/^(?:Google\s+)?Gemini\s+\d+(?:\.\d+)?\s+/i, '')
+    .replace(/^Claude\s+(?:\d+(?:\.\d+)?\s+)?/i, '')
+    .replace(/^OpenAI\s+/i, '')
+    .trim();
+  if (stripped && stripped.length >= 2 && stripped.length < raw.length) return stripped;
+  return raw;
+}
+
+export function shortenEffortBadge(effortText) {
+  const raw = String(effortText || '').trim();
+  if (!raw) return '';
+  return raw
+    .replace(/\bExtra\s+High\b/i, 'XHigh')
+    .replace(/\bExtra\b/i, 'XHigh')
+    .replace(/\bMedium\b/i, 'Med')
+    .replace(/\bMinimal\b/i, 'Min')
+    .trim();
+}
+
+export function normalizeTierKey(raw) {
+  const s = String(raw || '').trim().toLowerCase();
+  if (!s) return '';
+  if (s === 'xhigh' || s === 'extra' || s === 'extra high' || s === 'extra_high') return 'xhigh';
+  if (s === 'high') return 'high';
+  if (s === 'medium' || s === 'med') return 'medium';
+  if (s === 'low') return 'low';
+  if (s === 'max') return 'max';
+  if (s === 'minimal' || s === 'min') return 'minimal';
+  if (s === 'off') return 'off';
+  return s;
+}
+
+function lookupDefaultTierKey(defaultTierByFamily, familyName) {
+  if (!defaultTierByFamily || typeof defaultTierByFamily !== 'object' || !familyName) return '';
+  if (defaultTierByFamily[familyName]) return normalizeTierKey(defaultTierByFamily[familyName]);
+  const want = stripModelTierSuffix(familyName).toLowerCase();
+  for (const [k, v] of Object.entries(defaultTierByFamily)) {
+    if (stripModelTierSuffix(k).toLowerCase() === want && v) {
+      return normalizeTierKey(v);
+    }
+  }
+  return '';
+}
+
+function isFamilyHiddenByPrefs(fam, studioPrefs) {
+  if (!studioPrefs || studioPrefs.customizeModelList !== true) return false;
+  const hidden = Array.isArray(studioPrefs.hiddenModels) ? studioPrefs.hiddenModels : [];
+  if (hidden.length === 0) return false;
+  const famExact = String(fam?.baseName || '').trim().toLowerCase();
+  const famBase = stripModelTierSuffix(fam?.baseName || '').toLowerCase();
+  for (const raw of hidden) {
+    const hExact = String(raw || '').trim().toLowerCase();
+    const hBase = stripModelTierSuffix(raw).toLowerCase();
+    if (!hExact) continue;
+    if (hExact === famExact || (hBase && hBase === famBase)) return true;
+  }
+  return false;
+}
+
+function createOrchestratorPrismSvg() {
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.setAttribute('class', 'rc-model-orch-icon');
+  svg.setAttribute('width', '13');
+  svg.setAttribute('height', '13');
+  svg.setAttribute('viewBox', '0 0 16 16');
+  svg.setAttribute('fill', 'none');
+  svg.setAttribute('aria-hidden', 'true');
+
+  const outer = document.createElementNS(SVG_NS, 'polygon');
+  outer.setAttribute('points', '8,1.5 14,8 8,14.5 2,8');
+  outer.setAttribute('stroke', 'currentColor');
+  outer.setAttribute('stroke-width', '1.4');
+  outer.setAttribute('stroke-linejoin', 'round');
+  outer.setAttribute('fill', 'currentColor');
+  outer.setAttribute('fill-opacity', '0.16');
+
+  const core = document.createElementNS(SVG_NS, 'circle');
+  core.setAttribute('cx', '8');
+  core.setAttribute('cy', '8');
+  core.setAttribute('r', '2.1');
+  core.setAttribute('fill', 'currentColor');
+
+  svg.appendChild(outer);
+  svg.appendChild(core);
+  return svg;
+}
+
+function createChevronDownSvg() {
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.setAttribute('class', 'rc-model-caret-svg');
+  svg.setAttribute('width', '12');
+  svg.setAttribute('height', '12');
+  svg.setAttribute('viewBox', '0 0 16 16');
+  svg.setAttribute('fill', 'none');
+  svg.setAttribute('aria-hidden', 'true');
+
+  const pathEl = document.createElementNS(SVG_NS, 'path');
+  pathEl.setAttribute('d', 'M4.2 6.2L8 10l3.8-3.8');
+  pathEl.setAttribute('stroke', 'currentColor');
+  pathEl.setAttribute('stroke-width', '1.6');
+  pathEl.setAttribute('stroke-linecap', 'round');
+  pathEl.setAttribute('stroke-linejoin', 'round');
+
+  svg.appendChild(pathEl);
+  return svg;
+}
+
 function findCurrentFamilyInCatalog(catalog, selected) {
   const families = Array.isArray(catalog?.families) ? catalog.families : [];
   if (families.length === 0) return null;
@@ -236,9 +386,12 @@ function renderModelPopoverPanel(
     open = false,
     catalog = null,
     selected = null,
+    studioPrefs = null,
+    showHiddenModels = false,
     canWrite = false,
     modelBusy = false,
     onSelectModelOption = null,
+    onToggleShowHiddenModels = null,
     onClose = null,
   } = {}
 ) {
@@ -251,7 +404,20 @@ function renderModelPopoverPanel(
   }
   container.classList.remove('rc-hidden');
 
+  const effectivePrefs = studioPrefs || catalog?.studioPrefs || {};
+  const showDots = effectivePrefs.showModelDots !== false;
+  const showEffortBar = effectivePrefs.showEffortBar !== false;
+  const defaultTiers = effectivePrefs.defaultTierByFamily || {};
+
   const activeFam = findCurrentFamilyInCatalog(catalog, selected);
+  const activePlanner = activeFam?.isOrchestrator
+    ? extractOrchestratorPlanner(activeFam.baseName, selected?.plannerLabel || '')
+    : '';
+  const activeAccent = resolveModelAccent(activePlanner || activeFam?.baseName || selected?.baseName || '');
+  if (container.style?.setProperty) {
+    container.style.setProperty('--rc-model-accent', activeAccent);
+  }
+
   const children = [
     el(
       'div',
@@ -269,9 +435,9 @@ function renderModelPopoverPanel(
     ),
   ];
 
-  // Segmented Effort Bar for active family when multiple tiers exist
+  // Desktop-parity Accent-Tinted Segmented Effort Bar
   const effortVariants = Array.isArray(activeFam?.variants) ? activeFam.variants.filter((v) => v.effort) : [];
-  if (effortVariants.length > 1) {
+  if (showEffortBar && effortVariants.length > 1) {
     const seg = el('div', { className: 'rc-effort-seg' });
     for (const v of effortVariants) {
       const isActiveVar = Boolean(
@@ -308,47 +474,99 @@ function renderModelPopoverPanel(
     { id: 'other', label: '其他模型' },
   ];
 
+  let hiddenCount = 0;
+  const visibleFamilies = families.filter((fam) => {
+    const isFamActive = Boolean(activeFam && fam.baseName === activeFam.baseName);
+    const hidden = isFamilyHiddenByPrefs(fam, effectivePrefs);
+    if (hidden) hiddenCount += 1;
+    return !hidden || showHiddenModels || isFamActive;
+  });
+
   const listWrap = el('div', { className: 'rc-model-fam-list' });
   for (const gm of groupMeta) {
-    const groupFams = families.filter((f) => f.group === gm.id);
+    const groupFams = visibleFamilies.filter((f) => f.group === gm.id);
     if (groupFams.length === 0) continue;
     listWrap.appendChild(el('div', { className: 'rc-model-sec-title', text: gm.label }));
     for (const fam of groupFams) {
-      const isFamActive = activeFam && fam.baseName === activeFam.baseName;
-      const desiredEff = selected?.effort || '';
-      const targetVar =
-        (desiredEff && fam.variants.find((v) => v.effort === desiredEff)) ||
-        fam.variants.find((v) => v.effort === 'High') ||
-        fam.variants.find((v) => v.effort === 'Medium') ||
-        fam.variants[0];
-      const badgeText = isFamActive && selected?.displayEffort
-        ? selected.displayEffort
-        : targetVar?.displayEffort || '';
+      const isFamActive = Boolean(activeFam && fam.baseName === activeFam.baseName);
+      const isOrchFam = Boolean(fam.isOrchestrator || gm.id === 'orch');
+      const famPlanner = isOrchFam ? extractOrchestratorPlanner(fam.baseName, '') : '';
+      const famLookupName = famPlanner || fam.baseName;
+      const famAccent = resolveModelAccent(famLookupName);
+      const prefTierKey = lookupDefaultTierKey(defaultTiers, famLookupName);
+      const desiredEffKey = normalizeTierKey(selected?.effort || selected?.displayEffort || '');
 
-      listWrap.appendChild(
-        el(
-          'button',
-          {
-            type: 'button',
-            className: 'rc-model-fam-btn',
-            'data-selected': isFamActive ? 'true' : 'false',
-            disabled: !canWrite || modelBusy,
-            onClick: (ev) => {
-              ev?.stopPropagation?.();
-              if (!targetVar) return;
-              onSelectModelOption?.({
-                model: targetVar.value,
-                plannerModel: targetVar.plannerValue ?? null,
-                customLabel: targetVar.customLabel || '',
-              });
-            },
+      const targetVar =
+        (prefTierKey &&
+          fam.variants.find((v) => normalizeTierKey(v.effort || v.displayEffort) === prefTierKey)) ||
+        (desiredEffKey &&
+          fam.variants.find((v) => normalizeTierKey(v.effort || v.displayEffort) === desiredEffKey)) ||
+        fam.variants.find((v) => normalizeTierKey(v.effort) === 'high') ||
+        fam.variants.find((v) => normalizeTierKey(v.effort) === 'medium') ||
+        fam.variants[0];
+
+      const rawBadge =
+        isFamActive && selected?.displayEffort ? selected.displayEffort : targetVar?.displayEffort || '';
+      const badgeText = shortenEffortBadge(rawBadge);
+      const displayName = isOrchFam && famPlanner ? famPlanner : fam.baseName;
+
+      const rowBtn = el(
+        'button',
+        {
+          type: 'button',
+          className: 'rc-model-fam-btn',
+          'data-selected': isFamActive ? 'true' : 'false',
+          'data-is-orch': isOrchFam ? '1' : '0',
+          disabled: !canWrite || modelBusy,
+          onClick: (ev) => {
+            ev?.stopPropagation?.();
+            if (!targetVar) return;
+            onSelectModelOption?.({
+              model: targetVar.value,
+              plannerModel: targetVar.plannerValue ?? null,
+              customLabel: targetVar.customLabel || '',
+            });
           },
-          el('span', { className: 'rc-model-fam-name', text: fam.baseName }),
-          badgeText ? el('span', { className: 'rc-pill', 'data-tone': isFamActive ? 'info' : 'neutral', text: badgeText }) : null
-        )
+        },
+        el(
+          'span',
+          { className: 'rc-model-fam-main' },
+          isOrchFam
+            ? createOrchestratorPrismSvg()
+            : showDots
+              ? el('span', { className: 'rc-model-dot', 'aria-hidden': 'true' })
+              : null,
+          el('span', { className: 'rc-model-fam-name', text: displayName })
+        ),
+        badgeText
+          ? el('span', {
+              className: 'rc-model-row-effort',
+              'data-active': isFamActive ? 'true' : 'false',
+              text: badgeText,
+            })
+          : null
       );
+      if (rowBtn.style?.setProperty) {
+        rowBtn.style.setProperty('--rc-row-accent', famAccent);
+      }
+      listWrap.appendChild(rowBtn);
     }
   }
+
+  if (hiddenCount > 0 && typeof onToggleShowHiddenModels === 'function') {
+    listWrap.appendChild(
+      el('button', {
+        type: 'button',
+        className: 'rc-model-hidden-toggle',
+        text: showHiddenModels ? '收起已隐藏模型' : `显示已隐藏模型 (${hiddenCount})`,
+        onClick: (ev) => {
+          ev?.stopPropagation?.();
+          onToggleShowHiddenModels();
+        },
+      })
+    );
+  }
+
   children.push(listWrap);
   appendNodes(container, ...children);
 }
@@ -357,7 +575,9 @@ export function renderComposerFooterBar(
   refs,
   {
     catalog = null,
+    studioPrefs = null,
     modelPopoverOpen = false,
+    showHiddenModels = false,
     modelBusy = false,
     metrics = null,
     isStreaming = false,
@@ -371,6 +591,7 @@ export function renderComposerFooterBar(
     compactSupported = true,
     mediaCount = 0,
     onToggleModelPopover = null,
+    onToggleShowHiddenModels = null,
     onSelectModelOption = null,
     onCloseModelPopover = null,
     onCompact = null,
@@ -383,14 +604,18 @@ export function renderComposerFooterBar(
   clearNode(footer);
 
   const selected = catalog?.selected || null;
+  const effectivePrefs = studioPrefs || catalog?.studioPrefs || {};
   if (refs.modelPopover) {
     renderModelPopoverPanel(refs.modelPopover, {
       open: modelPopoverOpen && online,
       catalog,
       selected,
+      studioPrefs: effectivePrefs,
+      showHiddenModels,
       canWrite,
       modelBusy,
       onSelectModelOption,
+      onToggleShowHiddenModels,
       onClose: onCloseModelPopover,
     });
   }
@@ -398,47 +623,106 @@ export function renderComposerFooterBar(
   const leftCluster = el('div', { className: 'rc-footer-left' });
   const rightCluster = el('div', { className: 'rc-footer-right' });
 
-  // 1. Attach image button (+ 图片)
+  // 1. Attach image button (compact "+" on mobile, full "+ 图片 (N/4)" on desktop)
   if (canWrite && hasSelection) {
+    const attachNodes = [
+      el('span', { className: 'rc-attach-plus', text: '+' }),
+      el('span', { className: 'rc-attach-label', text: ' 图片' }),
+    ];
+    if (mediaCount > 0) {
+      attachNodes.push(el('span', { className: 'rc-attach-count', text: ` (${mediaCount}/4)` }));
+    }
     leftCluster.appendChild(
-      el('button', {
-        type: 'button',
-        className: 'rc-footer-pill rc-attach-btn',
-        disabled: !online || sendBusy || mediaCount >= 4,
-        title: '上传图片或直接 Ctrl/Cmd+V 粘贴截图（最多 4 张）',
-        text: mediaCount > 0 ? `+ 图片 (${mediaCount}/4)` : '+ 图片',
-        onClick: () => onPickImages?.(),
-      })
+      el(
+        'button',
+        {
+          type: 'button',
+          className: 'rc-footer-pill rc-attach-btn',
+          'data-has-media': mediaCount > 0 ? 'true' : 'false',
+          disabled: !online || sendBusy || mediaCount >= 4,
+          title: '上传图片或直接 Ctrl/Cmd+V 粘贴截图（最多 4 张）',
+          onClick: () => onPickImages?.(),
+        },
+        ...attachNodes
+      )
     );
   }
 
-  // 2. Model & Effort capsule
+  // 2. Desktop-parity Model & Effort capsule
   const hasModels = Boolean(catalog && Array.isArray(catalog.families) && catalog.families.length > 0);
-  const modelLabel = modelBusy
-    ? '切换中…'
-    : selected?.baseName || (hasModels ? '选择模型' : '默认模型');
-  const effortLabel = !modelBusy && selected?.displayEffort ? selected.displayEffort : '';
-  const modelDisabled = !online || !hasModels || modelBusy;
+  const rawBaseName = selected?.baseName || (hasModels ? '选择模型' : '默认模型');
+  const isOrch = Boolean(!modelBusy && (selected?.isOrchestrator || /^orchestrator/i.test(rawBaseName)));
+  const plannerBase = isOrch ? extractOrchestratorPlanner(rawBaseName, selected?.plannerLabel || '') : '';
+  const accentSource = plannerBase || rawBaseName;
+  const accent = resolveModelAccent(accentSource);
+  const showDots = effectivePrefs.showModelDots !== false;
 
-  leftCluster.appendChild(
-    el(
-      'button',
-      {
-        type: 'button',
-        className: 'rc-footer-pill rc-model-capsule',
-        'aria-expanded': modelPopoverOpen ? 'true' : 'false',
-        disabled: modelDisabled,
-        title: canWrite ? '切换当前模型与思考深度' : '查看当前可用模型（只读模式，在桌面端升为 steer 后可远程切换）',
-        onClick: (ev) => {
-          ev?.stopPropagation?.();
-          onToggleModelPopover?.();
-        },
+  const modelLabelFull = modelBusy ? '切换中…' : isOrch && plannerBase ? 'Orchestrator' : rawBaseName;
+  const modelLabelShort = modelBusy ? '切换中…' : isOrch ? '路由' : shortenModelName(rawBaseName);
+
+  const effortLabelRaw = !modelBusy && selected?.displayEffort ? selected.displayEffort : '';
+  const effortShort = shortenEffortBadge(effortLabelRaw);
+  const defaultTierKey = lookupDefaultTierKey(effectivePrefs.defaultTierByFamily, accentSource);
+  const currentTierKey = normalizeTierKey(selected?.effort || effortLabelRaw);
+  const isDefaultTier = Boolean(defaultTierKey && currentTierKey && defaultTierKey === currentTierKey);
+  const hideDefaultEff = Boolean(effectivePrefs.hideDefaultEffort && isDefaultTier);
+
+  let effortFullText = '';
+  let effortShortText = '';
+  if (!modelBusy) {
+    if (isOrch && plannerBase) {
+      const pShort = shortenModelName(plannerBase);
+      effortFullText = effortShort && !hideDefaultEff ? `${pShort} · ${effortShort}` : pShort;
+      effortShortText = effortFullText;
+    } else if (effortLabelRaw && !hideDefaultEff) {
+      effortFullText = effortLabelRaw;
+      effortShortText = effortShort;
+    }
+  }
+
+  const modelDisabled = !online || !hasModels || modelBusy;
+  const capsuleBtn = el(
+    'button',
+    {
+      type: 'button',
+      className: 'rc-footer-pill rc-model-capsule',
+      'data-is-orch': isOrch ? '1' : '0',
+      'data-has-effort': effortShortText ? '1' : '0',
+      'aria-expanded': modelPopoverOpen ? 'true' : 'false',
+      disabled: modelDisabled,
+      title: canWrite
+        ? `${rawBaseName}${effortLabelRaw ? ` · ${effortLabelRaw}` : ''}（点击切换模型与思考深度）`
+        : `${rawBaseName}${effortLabelRaw ? ` · ${effortLabelRaw}` : ''}（只读模式）`,
+      onClick: (ev) => {
+        ev?.stopPropagation?.();
+        onToggleModelPopover?.();
       },
-      el('span', { className: 'rc-model-capsule-name', text: modelLabel }),
-      effortLabel ? el('span', { className: 'rc-model-effort-tag', text: effortLabel }) : null,
-      el('span', { className: 'rc-model-caret', text: '▾' })
-    )
+    },
+    isOrch
+      ? createOrchestratorPrismSvg()
+      : showDots
+        ? el('span', { className: 'rc-model-dot', 'aria-hidden': 'true' })
+        : null,
+    el(
+      'span',
+      { className: 'rc-model-capsule-name' },
+      el('span', { className: 'rc-model-name-full', text: modelLabelFull }),
+      el('span', { className: 'rc-model-name-short', 'aria-hidden': 'true', text: modelLabelShort })
+    ),
+    effortShortText
+      ? el(
+          'span',
+          { className: 'rc-model-effort-tag' },
+          el('span', { className: 'rc-effort-full', text: effortFullText }),
+          el('span', { className: 'rc-effort-short', 'aria-hidden': 'true', text: effortShortText })
+        )
+      : null,
+    createChevronDownSvg()
   );
+  if (capsuleBtn.style?.setProperty) {
+    capsuleBtn.style.setProperty('--rc-model-accent', accent);
+  }
+  leftCluster.appendChild(capsuleBtn);
 
   // 3. Context Occupancy Ring + /compact
   if (hasSelection) {

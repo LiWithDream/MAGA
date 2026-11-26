@@ -8,7 +8,8 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { HOME, NATIVE_PROJECTS_DIR, UUID_RE, readJsonOrFallback } from '../env.mjs';
+import { HOME, NATIVE_PROJECTS_DIR, STUDIO_PREFS_FILE, UUID_RE, readJsonOrFallback } from '../env.mjs';
+import { DEFAULT_STUDIO_PREFS, sanitizeStudioPrefs } from '../../../studio/shared/prefs-schema.mjs';
 import { parseConversationMetrics } from '../metrics-db.mjs';
 import {
   extractNativeProjectFolderUris,
@@ -155,6 +156,32 @@ function sanitizeQuotaSnapshot(raw) {
     updatedAt: Number(raw.updatedAt || 0),
     claude: pickPool(raw.claude, true),
     gemini: pickPool(raw.gemini, false),
+  };
+}
+
+export function readRemoteStudioPrefs(opts = {}) {
+  const filePath = opts.studioPrefsFile || STUDIO_PREFS_FILE;
+  const raw = readJsonOrFallback(filePath, null);
+  const p =
+    raw && typeof raw === 'object' && !Array.isArray(raw)
+      ? sanitizeStudioPrefs(raw)
+      : sanitizeStudioPrefs({ ...DEFAULT_STUDIO_PREFS });
+  return {
+    customizeModelList: Boolean(p.customizeModelList),
+    hiddenModels: Array.isArray(p.hiddenModels) ? p.hiddenModels.slice(0, 64) : [],
+    defaultTierByFamily:
+      p.defaultTierByFamily && typeof p.defaultTierByFamily === 'object' ? { ...p.defaultTierByFamily } : {},
+    showModelDots: p.showModelDots !== false,
+    hideModelTags: p.hideModelTags !== false,
+    hideDefaultEffort: Boolean(p.hideDefaultEffort),
+    showEffortBar: p.showEffortBar !== false,
+    effortTheme: p.effortTheme || 'auto',
+    geminiTheme: p.geminiTheme || 'physical',
+    claudeTheme: p.claudeTheme || 'matrix',
+    codexTheme: p.codexTheme || 'nebula',
+    orchestratorMode: p.orchestratorMode || 'dock',
+    orchestratorIcon: p.orchestratorIcon || 'prism',
+    hideThinkingProse: p.hideThinkingProse !== false,
   };
 }
 
@@ -344,6 +371,7 @@ export async function collectStudioOverview(params = {}, opts = {}) {
     worktreeByCid,
     quota,
     todayUsage,
+    studioPrefs: readRemoteStudioPrefs(opts),
     ...(activeCascade ? { activeCascade } : {}),
   };
 }

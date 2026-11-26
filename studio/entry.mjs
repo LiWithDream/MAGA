@@ -9,6 +9,7 @@ import { createCapsulePickerRuntime, shortenEffortBadge, shortenModelName } from
 import { createFooterUnifiedRuntime } from './modules/footer-unified.mjs';
 import { createOverviewUsageRuntime } from './modules/overview-usage.mjs';
 import { createOpusGatePillRuntime } from './modules/opus-gate-pill.mjs';
+import { createAutoCompactRuntime } from './modules/auto-compact.mjs';
 import { createProjectUsageRuntime } from './modules/project-usage.mjs';
 import { createResumeBannerRuntime } from './modules/resume-banner.mjs';
 import { createScrollbarClampRuntime } from './modules/scrollbar-clamp.mjs';
@@ -72,6 +73,7 @@ import { motionThemes } from '../vendor/agy-capsule/motion_themes.mjs';
   const projectUsage = createProjectUsageRuntime({ motionThemes, studioPrefs });
   const resumeBanner = createResumeBannerRuntime({ studioPrefs });
   const opusGatePill = createOpusGatePillRuntime({ studioPrefs });
+  const autoCompact = createAutoCompactRuntime({ studioPrefs });
   const scrollbarClamp = createScrollbarClampRuntime();
   const subagentFooter = createSubagentFooterRuntime({ motionThemes, shortenModelName, shortenEffortBadge, studioPrefs });
   const studioSettings = createStudioSettingsRuntime({
@@ -109,6 +111,7 @@ import { motionThemes } from '../vendor/agy-capsule/motion_themes.mjs';
   kernel.register({ id: 'subagent-footer', ...subagentFooter });
   kernel.register({ id: 'resume-banner', ...resumeBanner });
   kernel.register({ id: 'opus-gate-pill', ...opusGatePill });
+  kernel.register({ id: 'auto-compact', ...autoCompact });
   kernel.register({ id: 'scrollbar-clamp', ...scrollbarClamp });
   kernel.register({
     id: 'capsule-picker',

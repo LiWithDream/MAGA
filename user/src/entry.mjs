@@ -382,6 +382,12 @@ import { createSettingsHostModule } from './modules/settings-host.mjs';
     getOrchestratorPrefModel() {
       return modelApi.getOrchestratorPrefModel();
     },
+    triggerConversationCompact(opts) {
+      return metricsQuota.triggerConversationCompact(opts);
+    },
+    detectCompactStatus(cid) {
+      return metricsQuota.detectCompactStatus(cid);
+    },
   };
 
   if (typeof window !== 'undefined') {

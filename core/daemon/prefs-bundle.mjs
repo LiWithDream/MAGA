@@ -183,6 +183,12 @@ export const DEFAULT_STUDIO_PREFS = Object.freeze({
   opusGateMinQuotaWeeklyPct: 15,
   opusGateMaxAutoPerSession: 2,
   opusGateCheckpoints: { plan: true, risk: true, debug: true, stop: true },
+  // 智能上下文压缩
+  autoCompactMode: 'semi',
+  autoCompactThresholdPct: 50,
+  autoCompactMinWaitSec: 300,
+  autoCompactHighWaterPct: 0,
+  autoCompactTriggers: { longTimer: true, modelRequest: true, highWater: false },
   // 外观与动效
   motionLevel: 'full',
   effortMotion: 'full',
@@ -200,6 +206,7 @@ const STUDIO_ENUMS = {
   overviewUsageDefaultPeriod: new Set(['day', 'week', 'month']),
   opusGateMode: new Set(['off', 'semi', 'auto']),
   opusGatePreferredTier: new Set(['high', 'medium']),
+  autoCompactMode: new Set(['off', 'semi', 'auto']),
   motionLevel: new Set(['full', 'reduced', 'off']),
   effortMotion: new Set(['fast', 'full']),
 };
@@ -211,6 +218,15 @@ function clampInt(val, min, max, fallback) {
   return Math.max(min, Math.min(max, Math.round(n)));
 }
 
+function sanitizeHighWaterPct(val, fallback) {
+  if (val === null || val === undefined || val === '') return fallback;
+  const n = Number(val);
+  if (!Number.isFinite(n)) return fallback;
+  const rounded = Math.round(n);
+  if (rounded <= 0) return 0;
+  return Math.max(65, Math.min(95, rounded));
+}
+
 function sanitizeOpusCheckpoints(raw) {
   const def = DEFAULT_STUDIO_PREFS.opusGateCheckpoints;
   const src = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
@@ -219,6 +235,16 @@ function sanitizeOpusCheckpoints(raw) {
     risk: typeof src.risk === 'boolean' ? src.risk : def.risk,
     debug: typeof src.debug === 'boolean' ? src.debug : def.debug,
     stop: typeof src.stop === 'boolean' ? src.stop : def.stop,
+  };
+}
+
+function sanitizeAutoCompactTriggers(raw) {
+  const def = DEFAULT_STUDIO_PREFS.autoCompactTriggers;
+  const src = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  return {
+    longTimer: typeof src.longTimer === 'boolean' ? src.longTimer : def.longTimer,
+    modelRequest: typeof src.modelRequest === 'boolean' ? src.modelRequest : def.modelRequest,
+    highWater: typeof src.highWater === 'boolean' ? src.highWater : def.highWater,
   };
 }
 
@@ -285,6 +311,11 @@ export function sanitizeStudioPrefs(raw) {
     opusGateMinQuotaWeeklyPct: clampInt(src.opusGateMinQuotaWeeklyPct, 5, 60, DEFAULT_STUDIO_PREFS.opusGateMinQuotaWeeklyPct),
     opusGateMaxAutoPerSession: clampInt(src.opusGateMaxAutoPerSession, 1, 5, DEFAULT_STUDIO_PREFS.opusGateMaxAutoPerSession),
     opusGateCheckpoints: sanitizeOpusCheckpoints(src.opusGateCheckpoints),
+    autoCompactMode: enumOr('autoCompactMode', DEFAULT_STUDIO_PREFS.autoCompactMode),
+    autoCompactThresholdPct: clampInt(src.autoCompactThresholdPct, 25, 85, DEFAULT_STUDIO_PREFS.autoCompactThresholdPct),
+    autoCompactMinWaitSec: clampInt(src.autoCompactMinWaitSec, 60, 3600, DEFAULT_STUDIO_PREFS.autoCompactMinWaitSec),
+    autoCompactHighWaterPct: sanitizeHighWaterPct(src.autoCompactHighWaterPct, DEFAULT_STUDIO_PREFS.autoCompactHighWaterPct),
+    autoCompactTriggers: sanitizeAutoCompactTriggers(src.autoCompactTriggers),
     motionLevel: enumOr('motionLevel', DEFAULT_STUDIO_PREFS.motionLevel),
     effortMotion: enumOr('effortMotion', DEFAULT_STUDIO_PREFS.effortMotion),
   };

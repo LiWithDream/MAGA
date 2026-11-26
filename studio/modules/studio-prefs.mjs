@@ -41,6 +41,11 @@ export function createStudioPrefsRuntime({ initialPrefs, defaultPrefs, effortEff
     opusGateMinQuotaWeeklyPct: 15,
     opusGateMaxAutoPerSession: 2,
     opusGateCheckpoints: { plan: true, risk: true, debug: true, stop: true },
+    autoCompactMode: 'semi',
+    autoCompactThresholdPct: 50,
+    autoCompactMinWaitSec: 300,
+    autoCompactHighWaterPct: 0,
+    autoCompactTriggers: { longTimer: true, modelRequest: true, highWater: false },
     motionLevel: 'full',
     effortMotion: 'full',
   };
@@ -58,6 +63,7 @@ export function createStudioPrefsRuntime({ initialPrefs, defaultPrefs, effortEff
     overviewUsageDefaultPeriod: ['day', 'week', 'month'],
     opusGateMode: ['off', 'semi', 'auto'],
     opusGatePreferredTier: ['high', 'medium'],
+    autoCompactMode: ['off', 'semi', 'auto'],
     motionLevel: ['full', 'reduced', 'off'],
     effortMotion: ['fast', 'full'],
   };
@@ -117,6 +123,15 @@ export function createStudioPrefsRuntime({ initialPrefs, defaultPrefs, effortEff
     return Math.max(min, Math.min(max, Math.round(n)));
   }
 
+  function sanitizeHighWaterPct(val, fallback) {
+    if (val === null || val === undefined || val === '') return fallback;
+    const n = Number(val);
+    if (!Number.isFinite(n)) return fallback;
+    const rounded = Math.round(n);
+    if (rounded <= 0) return 0;
+    return Math.max(65, Math.min(95, rounded));
+  }
+
   function sanitizeOpusCheckpoints(raw) {
     const def = DEFAULTS.opusGateCheckpoints || { plan: true, risk: true, debug: true, stop: true };
     const src = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
@@ -125,6 +140,16 @@ export function createStudioPrefsRuntime({ initialPrefs, defaultPrefs, effortEff
       risk: typeof src.risk === 'boolean' ? src.risk : def.risk !== false,
       debug: typeof src.debug === 'boolean' ? src.debug : def.debug !== false,
       stop: typeof src.stop === 'boolean' ? src.stop : def.stop !== false,
+    };
+  }
+
+  function sanitizeAutoCompactTriggers(raw) {
+    const def = DEFAULTS.autoCompactTriggers || { longTimer: true, modelRequest: true, highWater: false };
+    const src = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+    return {
+      longTimer: typeof src.longTimer === 'boolean' ? src.longTimer : def.longTimer !== false,
+      modelRequest: typeof src.modelRequest === 'boolean' ? src.modelRequest : def.modelRequest !== false,
+      highWater: typeof src.highWater === 'boolean' ? src.highWater : Boolean(def.highWater),
     };
   }
 
@@ -187,6 +212,11 @@ export function createStudioPrefsRuntime({ initialPrefs, defaultPrefs, effortEff
       opusGateMinQuotaWeeklyPct: clampInt(src.opusGateMinQuotaWeeklyPct, 5, 60, DEFAULTS.opusGateMinQuotaWeeklyPct),
       opusGateMaxAutoPerSession: clampInt(src.opusGateMaxAutoPerSession, 1, 5, DEFAULTS.opusGateMaxAutoPerSession),
       opusGateCheckpoints: sanitizeOpusCheckpoints(src.opusGateCheckpoints),
+      autoCompactMode: enumOr('autoCompactMode', DEFAULTS.autoCompactMode),
+      autoCompactThresholdPct: clampInt(src.autoCompactThresholdPct, 25, 85, DEFAULTS.autoCompactThresholdPct),
+      autoCompactMinWaitSec: clampInt(src.autoCompactMinWaitSec, 60, 3600, DEFAULTS.autoCompactMinWaitSec),
+      autoCompactHighWaterPct: sanitizeHighWaterPct(src.autoCompactHighWaterPct, DEFAULTS.autoCompactHighWaterPct),
+      autoCompactTriggers: sanitizeAutoCompactTriggers(src.autoCompactTriggers),
       motionLevel: enumOr('motionLevel', DEFAULTS.motionLevel),
       effortMotion: enumOr('effortMotion', DEFAULTS.effortMotion),
     };

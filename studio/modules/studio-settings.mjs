@@ -30,6 +30,7 @@ import {
   renderL2Stream,
   renderL2Workspace,
   renderL3AiSuggestions,
+  renderL3AutoCompact,
   renderL3HiddenModels,
   renderL3ModelTiers,
   renderL3OpusGate,
@@ -311,6 +312,7 @@ export function createStudioSettingsRuntime({
     else if (cur.view === 'models-hidden') bodyHtml = renderL3HiddenModels(p, catalog, viewCtx);
     else if (cur.view === 'models-opus-gate') bodyHtml = renderL3OpusGate(p, viewCtx);
     else if (cur.view === 'stream') bodyHtml = renderL2Stream(p, base, viewCtx);
+    else if (cur.view === 'stream-auto-compact') bodyHtml = renderL3AutoCompact(p, viewCtx);
     else if (cur.view === 'workspace') bodyHtml = renderL2Workspace(p, base, viewCtx);
     else if (cur.view === 'workspace-ai-suggestions') bodyHtml = renderL3AiSuggestions(state, viewCtx);
     else if (cur.view === 'appearance') bodyHtml = renderL2Appearance(p, base, viewCtx);

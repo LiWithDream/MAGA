@@ -765,6 +765,17 @@ export async function handleProjectRpcRequest(rawPayload, callerEntry = null) {
       return { reqId, result: await handleOpusGateRpc(action, payload) };
     }
     if (
+      action === 'getAutoCompactStatus' ||
+      action === 'claimAutoCompactRequest' ||
+      action === 'commitAutoCompactRequest' ||
+      action === 'releaseAutoCompactRequest' ||
+      action === 'dismissAutoCompactRequest' ||
+      action === 'syncAutoCompactPlugin'
+    ) {
+      const { handleAutoCompactRpc } = await import('../../studio/daemon/auto-compact-service.mjs');
+      return { reqId, result: await handleAutoCompactRpc(action, payload) };
+    }
+    if (
       action === 'getProjectSuggestionsConfig' ||
       action === 'saveProjectSuggestionsConfig' ||
       action === 'testProjectSuggestionsConfig' ||

@@ -274,9 +274,9 @@ export function createOpusGatePillRuntime({ studioPrefs, motionThemes, openSubag
     const prefs = studioPrefs?.get?.() || {};
     const pal = model === 'carbon' ? mt.GEMINI_PALETTES?.carbon : mt.CLAUDE_PALETTES?.opus;
     if (model === 'carbon' && typeof mt.paintGeminiSlider === 'function') {
-      mt.paintGeminiSlider(ctx, pal, prefs.geminiTheme || 'physical', w, h, fxFlow, fxClock, 0.92, { isLight: false });
+      mt.paintGeminiSlider(ctx, pal, prefs.geminiTheme || 'physical', w, h, fxFlow, fxClock, 0.78, { isLight: false });
     } else if (typeof mt.paintClaudeSlider === 'function') {
-      mt.paintClaudeSlider(ctx, pal, prefs.claudeTheme || 'matrix', w, h, fxFlow, fxClock, 0.92, { isLight: false });
+      mt.paintClaudeSlider(ctx, pal, prefs.claudeTheme || 'matrix', w, h, fxFlow, fxClock, 0.76, { isLight: false });
     }
     return { mt, pal, prefs };
   }

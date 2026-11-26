@@ -965,20 +965,16 @@ test('quota popover: refreshes userTier after account switch and preserves speci
   assert.equal(activeTab.textContent.trim(), 'Gemini 4 Argon', 'selects dedicated Argon tab when Gemini 4 Argon is active');
   assert.match(h.window.localStorage.getItem('ag_claude_ux_quota_cache_v1') || '', /Gemini 4 Argon/, 'persists SWR quota snapshot for 0ms next-boot open');
 
-  /* Companion pools (Claude / GPT, Gemini) render directly below active pool and switch tab on click */
-  const otherPools = pop.querySelector('.ag-qp-other-pools');
-  assert.ok(otherPools, 'renders companion model pools inside quota popover without extra tab clicks');
-  assert.match(otherPools.textContent, /Claude \/ GPT/, 'shows Claude / GPT companion pool while Gemini 4 Argon is selected');
-  const claudeJump = otherPools.querySelector('[data-ag-quota-jump]');
-  const claudeJumpTarget = [...pop.querySelectorAll('[data-ag-quota-jump]')].find((el) =>
-    /Claude \/ GPT/i.test(el.textContent || '')
-  );
-  assert.ok(claudeJump && claudeJumpTarget, 'companion pool rows carry data-ag-quota-jump');
-  claudeJumpTarget.click();
+  /* Segmented tabs switch pool directly; redundant review button and companion pools summary are omitted */
+  assert.equal(pop.querySelector('.ag-qp-other-pools'), null, 'omits redundant companion pools block below segmented tabs');
+  assert.equal(pop.querySelector('[data-ag-qp-opus]'), null, 'omits redundant review button in quota popover header');
+  const claudeTab = [...pop.querySelectorAll('.ag-qp-tab')].find((el) => /Claude \/ GPT/i.test(el.textContent || ''));
+  assert.ok(claudeTab, 'segmented tab includes Claude / GPT');
+  claudeTab.click();
   assert.equal(
     pop.querySelector('.ag-qp-tab[data-active="true"]')?.textContent.trim(),
     'Claude / GPT',
-    'clicking companion pool focuses its tab'
+    'clicking segmented tab focuses its pool'
   );
   assert.match(
     ring.title,

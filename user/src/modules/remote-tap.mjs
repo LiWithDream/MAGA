@@ -864,14 +864,6 @@ export function createRemoteTapModule(rt) {
     }
 
     const streamEntry = streams.get(cid);
-    let streamingText = streamEntry?.lastText ? truncateStr(streamEntry.lastText, 64 * 1024) : '';
-    if (!streamingText && steps.length > 0) {
-      const last = steps[steps.length - 1];
-      if (last.type === 'PLANNER_RESPONSE' && last.status === 'RUNNING') {
-        streamingText = last.text;
-      }
-    }
-
     const status = sum
       ? normalizeSummaryStatus(sum)
       : waitingSteps.length > 0
@@ -879,6 +871,15 @@ export function createRemoteTapModule(rt) {
         : traj?.status === 2
           ? 'RUNNING'
           : 'IDLE';
+
+    let streamingText =
+      status === 'RUNNING' && streamEntry?.lastText ? truncateStr(streamEntry.lastText, 64 * 1024) : '';
+    if (!streamingText && steps.length > 0) {
+      const last = steps[steps.length - 1];
+      if (last.type === 'PLANNER_RESPONSE' && last.status === 'RUNNING') {
+        streamingText = last.text;
+      }
+    }
 
     return {
       ok: true,

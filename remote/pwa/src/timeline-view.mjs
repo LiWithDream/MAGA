@@ -7,9 +7,142 @@ import {
   el,
   findConversationMeta,
   formatTime,
+  isRunningStatus,
   normalizeRunStatus,
   normalizeStepStatus,
 } from './ui-helpers.mjs';
+
+function appendInlineMarkdown(parent, line) {
+  const tokenRe = /\[([^\]\n]+)\]\(([^)\s]+)\)|`([^`\n]+)`|\*\*([^*\n]+)\*\*/g;
+  let lastIdx = 0;
+  let match;
+  while ((match = tokenRe.exec(line)) !== null) {
+    if (match.index > lastIdx) {
+      parent.appendChild(document.createTextNode(line.slice(lastIdx, match.index)));
+    }
+    if (match[1] !== undefined && match[2] !== undefined) {
+      const label = match[1];
+      const href = match[2];
+      if (/^https?:\/\//i.test(href)) {
+        parent.appendChild(
+          el('a', {
+            className: 'rc-md-link',
+            href,
+            target: '_blank',
+            rel: 'noopener noreferrer',
+            text: label,
+          })
+        );
+      } else if (/^file:\/\//i.test(href)) {
+        parent.appendChild(el('code', { className: 'rc-md-file', text: label }));
+      } else {
+        parent.appendChild(document.createTextNode(match[0]));
+      }
+    } else if (match[3] !== undefined) {
+      parent.appendChild(el('code', { className: 'rc-md-code', text: match[3] }));
+    } else if (match[4] !== undefined) {
+      parent.appendChild(el('strong', { text: match[4] }));
+    }
+    lastIdx = tokenRe.lastIndex;
+  }
+  if (lastIdx < line.length) {
+    parent.appendChild(document.createTextNode(line.slice(lastIdx)));
+  }
+}
+
+export function renderSafeMarkdown(text) {
+  const root = el('div', { className: 'rc-md' });
+  const src = String(text ?? '').replace(/\r\n?/g, '\n');
+  const lines = src.split('\n');
+  let i = 0;
+  let paraLines = [];
+
+  const flushParagraph = () => {
+    if (paraLines.length === 0) return;
+    const p = el('p', { className: 'rc-md-p' });
+    paraLines.forEach((ln, idx) => {
+      if (idx > 0) p.appendChild(document.createElement('br'));
+      appendInlineMarkdown(p, ln);
+    });
+    root.appendChild(p);
+    paraLines = [];
+  };
+
+  while (i < lines.length) {
+    const line = lines[i];
+    const fenceStart = /^\s*```([^\s`]*)\s*$/.exec(line);
+    if (fenceStart) {
+      flushParagraph();
+      const codeLines = [];
+      i += 1;
+      while (i < lines.length && !/^\s*```\s*$/.test(lines[i])) {
+        codeLines.push(lines[i]);
+        i += 1;
+      }
+      if (i < lines.length) i += 1;
+      root.appendChild(el('pre', { className: 'rc-pre', text: codeLines.join('\n') }));
+      continue;
+    }
+
+    if (!line.trim()) {
+      flushParagraph();
+      i += 1;
+      continue;
+    }
+
+    if (/^\s*(?:---+|\*\*\*+)\s*$/.test(line)) {
+      flushParagraph();
+      root.appendChild(el('hr', { className: 'rc-md-hr' }));
+      i += 1;
+      continue;
+    }
+
+    const hdrMatch = /^\s*(#{1,4})\s+(.+)$/.exec(line);
+    if (hdrMatch) {
+      flushParagraph();
+      const lvl = Math.min(4, hdrMatch[1].length);
+      const h = el('div', { className: 'rc-md-h', 'data-level': String(lvl) });
+      appendInlineMarkdown(h, hdrMatch[2]);
+      root.appendChild(h);
+      i += 1;
+      continue;
+    }
+
+    const quoteMatch = /^\s*>\s?(.*)$/.exec(line);
+    if (quoteMatch) {
+      flushParagraph();
+      const q = el('div', { className: 'rc-md-quote' });
+      appendInlineMarkdown(q, quoteMatch[1]);
+      root.appendChild(q);
+      i += 1;
+      continue;
+    }
+
+    const listMatch = /^(\s*)(?:([-*])|(\d+\.))\s+(.+)$/.exec(line);
+    if (listMatch) {
+      flushParagraph();
+      const depth = Math.min(2, Math.floor((listMatch[1] || '').length / 2));
+      const marker = listMatch[3] || '•';
+      const bodyEl = el('div', { className: 'rc-md-li-body' });
+      appendInlineMarkdown(bodyEl, listMatch[4]);
+      root.appendChild(
+        el(
+          'div',
+          { className: 'rc-md-li', 'data-depth': String(depth) },
+          el('span', { className: 'rc-md-li-marker', text: marker }),
+          bodyEl
+        )
+      );
+      i += 1;
+      continue;
+    }
+
+    paraLines.push(line);
+    i += 1;
+  }
+  flushParagraph();
+  return root;
+}
 
 export function renderStepCard(step) {
   const typeStr = String(step.type || 'STEP');
@@ -52,7 +185,7 @@ export function renderStepCard(step) {
   }
 
   if (step.text) {
-    card.appendChild(el('div', { className: 'rc-step-text', text: String(step.text) }));
+    card.appendChild(renderSafeMarkdown(String(step.text)));
   }
 
   if (Array.isArray(step.toolCalls) && step.toolCalls.length > 0) {
@@ -270,7 +403,20 @@ export function renderDetailTimeline({
     }
   }
 
-  if (streamText || streamThinking) {
+  const streamStatusActive =
+    typeof streamEntry === 'object' && streamEntry ? isRunningStatus(streamEntry.status) : false;
+  const isLiveRunning = isRunningStatus(snap?.status ?? convo?.status) || streamStatusActive;
+  let lastPlannerText = '';
+  for (let i = steps.length - 1; i >= 0; i--) {
+    if (steps[i]?.type === 'PLANNER_RESPONSE' || steps[i]?.type === '15') {
+      lastPlannerText = String(steps[i].text || '').trim();
+      break;
+    }
+  }
+  const duplicatesLastStep =
+    Boolean(streamText) && Boolean(lastPlannerText) && String(streamText).trim() === lastPlannerText;
+
+  if (isLiveRunning && (streamText || streamThinking) && !duplicatesLastStep) {
     refs.timeline.appendChild(
       el(
         'div',
@@ -289,7 +435,7 @@ export function renderDetailTimeline({
               el('div', { className: 'rc-details-body' }, el('pre', { className: 'rc-pre', text: streamThinking }))
             )
           : null,
-        streamText ? el('div', { className: 'rc-step-text', text: String(streamText) }) : null
+        streamText ? renderSafeMarkdown(String(streamText)) : null
       )
     );
   }

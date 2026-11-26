@@ -4994,3 +4994,25 @@ test('syncLiveConfigForStudio preserves valid user cjkFontScale and defaults mis
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('studio/shared/prefs-schema.mjs is the single source of truth across build, daemon & runtime', async () => {
+  const { DEFAULT_STUDIO_PREFS: schemaDefaults } = await import('../studio/shared/prefs-schema.mjs');
+  const { DEFAULT_STUDIO_PREFS: daemonDefaults } = await import('../core/daemon/prefs-bundle.mjs');
+  assert.strictEqual(daemonDefaults, schemaDefaults);
+  assert.equal('language' in schemaDefaults, false, 'dead language key must be removed');
+  assert.equal('settingsLanguage' in schemaDefaults, false, 'dead settingsLanguage key must be removed');
+
+  const rt = createStudioPrefsRuntime({});
+  try {
+    const rtKeys = Object.keys(rt.get()).filter((k) => k !== 'schema' && k !== 'updatedAt').sort();
+    assert.deepEqual(rtKeys, Object.keys(schemaDefaults).sort());
+  } finally {
+    rt.dispose();
+  }
+
+  const bundle = await buildStudioBundle({ allowPrebuilt: false });
+  const match = bundle.jsBlock.match(/const __STUDIO_DEFAULT_PREFS__ = (\{[^\n]+\});/);
+  assert.ok(match, 'buildStudioBundle embeds __STUDIO_DEFAULT_PREFS__');
+  const embedded = JSON.parse(match[1]);
+  assert.deepEqual(Object.keys(embedded).sort(), Object.keys(schemaDefaults).sort());
+});

@@ -11,6 +11,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createPresentation } from '../vendor/agy-capsule/ui.mjs';
 import { buildPickerShadowCss } from './modules/capsule-picker.mjs';
 import { evaluateDeployGuard, writeDeployMeta } from './deploy-meta.mjs';
+import { DEFAULT_STUDIO_PREFS } from './shared/prefs-schema.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -58,44 +59,7 @@ const STYLE_FILES = [
   'studio-settings.css',
 ];
 
-const DEFAULT_PREFS = {
-  language: 'en',
-  settingsLanguage: 'en',
-  modelEffortPicker: true,
-  showEffortBar: true,
-  hideModelTags: true,
-  hideDefaultEffort: true,
-  customizeModelList: false,
-  hiddenModels: [],
-  defaultTierByFamily: { 'Gemini 4 Neon': 'high' },
-  showModelDots: true,
-  effortMotion: 'full',
-  effortTicks: 'highlight',
-  effortTheme: 'auto',
-  geminiTheme: 'physical',
-  claudeTheme: 'matrix',
-  codexTheme: 'nebula',
-  orchestratorMode: 'dock',
-  orchestrator3dStyle: 'helix',
-  orchestratorIcon: 'prism',
-  hideThinkingProse: true,
-  resumeBannerEnabled: true,
-  overviewUsageEnabled: true,
-  overviewUsageDefaultPeriod: 'day',
-  subagentFooterEnabled: true,
-  opusGateMode: 'semi',
-  opusGatePreferredTier: 'high',
-  opusGateMinQuota5hPct: 20,
-  opusGateMinQuotaWeeklyPct: 15,
-  opusGateMaxAutoPerSession: 2,
-  opusGateCheckpoints: { plan: true, risk: true, debug: true, stop: true },
-  autoCompactMode: 'semi',
-  autoCompactThresholdPct: 50,
-  autoCompactMinWaitSec: 300,
-  autoCompactHighWaterPct: 0,
-  autoCompactTriggers: { longTimer: true, modelRequest: true, highWater: false },
-  motionLevel: 'full',
-};
+const DEFAULT_PREFS = DEFAULT_STUDIO_PREFS;
 
 export function stripBlock(content, beginMarker, endMarker) {
   const start = content.indexOf(beginMarker);

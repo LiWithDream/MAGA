@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * Standalone MAGA Git Worktree Lifecycle CLI (`npm run wt:list|wt:new|wt:clean`).
- * Kept separate from studio/cli.mjs to keep merge surfaces clean.
+ * Standalone AGY Studio Git Worktree Lifecycle CLI (`npm run wt:list|wt:new|wt:clean`).
+ * Repo-local companion to the universal global plugin CLI (`studio/plugin/maga-git-workflow/bin/wt.mjs`).
  */
 import path from 'node:path';
 import { REPO_ROOT } from '../core/daemon/env.mjs';

@@ -41,6 +41,7 @@ const PLUGIN_FILES = [
   'rules/AGENTS.md',
   'skills/git-workflow/SKILL.md',
   'hooks/git-guard.mjs',
+  'lib/shell-parser.mjs',
   'lib/worktree-core.mjs',
   'bin/wt.mjs',
 ];
@@ -48,6 +49,7 @@ const REQUIRED_PLUGIN_FILES = [
   'plugin.json',
   'hooks.json',
   'hooks/git-guard.mjs',
+  'lib/shell-parser.mjs',
   'lib/worktree-core.mjs',
   'bin/wt.mjs',
 ];

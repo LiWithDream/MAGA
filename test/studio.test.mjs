@@ -2117,6 +2117,27 @@ test('Stage 5: user/src modular decomposition, zero legacy dead code, and MagaKe
     assert.equal(shimPattern.test(text), false, `Removed Pre-1.0 shim found in ${path.relative(REPO, f)}`);
   }
 
+  // Enforce < 2,000-line ceiling and valid syntax across all studio/ & core/ source modules (excluding generated prebuilt/)
+  const collectRepoModules = (dir) => {
+    const out = [];
+    for (const ent of readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, ent.name);
+      if (ent.isDirectory()) {
+        if (ent.name === 'prebuilt' || ent.name === 'node_modules') continue;
+        out.push(...collectRepoModules(full));
+      } else if (/\.(mjs|js)$/.test(ent.name)) {
+        out.push(full);
+      }
+    }
+    return out;
+  };
+  for (const abs of [...collectRepoModules(path.join(REPO, 'studio')), ...collectRepoModules(path.join(REPO, 'core'))]) {
+    const rel = path.relative(REPO, abs);
+    const lineCount = readFileSync(abs, 'utf8').split('\n').length;
+    assert.ok(lineCount < 2000, `Source module ${rel} must be < 2000 lines (got ${lineCount})`);
+    execFileSync(process.execPath, ['--check', abs], { stdio: 'pipe' });
+  }
+
   const customJsSrc = readFileSync(path.join(REPO, 'user', 'custom.js'), 'utf8');
   const customCssSrc = readFileSync(path.join(REPO, 'user', 'custom.css'), 'utf8');
   assert.equal(customCssSrc.includes(':has('), false, 'user/custom.css must have zero :has() rules');

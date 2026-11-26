@@ -72,10 +72,14 @@ import { motionThemes } from '../vendor/agy-capsule/motion_themes.mjs';
   const usage = createOverviewUsageRuntime({ motionThemes, studioPrefs });
   const projectUsage = createProjectUsageRuntime({ motionThemes, studioPrefs });
   const resumeBanner = createResumeBannerRuntime({ studioPrefs });
-  const opusGatePill = createOpusGatePillRuntime({ studioPrefs });
+  const subagentFooter = createSubagentFooterRuntime({ motionThemes, shortenModelName, shortenEffortBadge, studioPrefs });
+  const opusGatePill = createOpusGatePillRuntime({
+    studioPrefs,
+    motionThemes,
+    openSubagent: subagentFooter.openSubagent,
+  });
   const autoCompact = createAutoCompactRuntime({ studioPrefs });
   const scrollbarClamp = createScrollbarClampRuntime();
-  const subagentFooter = createSubagentFooterRuntime({ motionThemes, shortenModelName, shortenEffortBadge, studioPrefs });
   const studioSettings = createStudioSettingsRuntime({
     studioPrefs,
     mountEffortBar,

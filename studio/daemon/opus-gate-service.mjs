@@ -418,13 +418,42 @@ export async function buildOpusHandoffBrief(payload = {}, opts = {}) {
   if (absDir) {
     const safeRelPaths = safeHighRisk.filter((p) => !path.isAbsolute(p) && !p.startsWith('..'));
     const diffArgs = safeRelPaths.length
-      ? ['diff', '-U3', '--', ...safeRelPaths]
-      : ['diff', '-U3'];
+      ? ['diff', 'HEAD', '-U3', '--', ...safeRelPaths]
+      : ['diff', 'HEAD', '-U3'];
     [statusText, diffStat, diffSnippet] = await Promise.all([
       execGitBriefAsync(absDir, ['status', '--short']),
-      execGitBriefAsync(absDir, ['diff', '--stat']),
+      execGitBriefAsync(absDir, ['diff', 'HEAD', '--stat']),
       execGitBriefAsync(absDir, diffArgs),
     ]);
+    if (!diffSnippet) {
+      const [curBranch, headSha] = await Promise.all([
+        execGitBriefAsync(absDir, ['rev-parse', '--abbrev-ref', 'HEAD']),
+        execGitBriefAsync(absDir, ['rev-parse', '--verify', '--quiet', 'HEAD']),
+      ]);
+      const candidates =
+        curBranch && curBranch !== 'main' && curBranch !== 'master'
+          ? ['main', 'master', '@{upstream}']
+          : ['@{upstream}'];
+      let baseRef = '';
+      for (const cand of candidates) {
+        const sha = await execGitBriefAsync(absDir, ['rev-parse', '--verify', '--quiet', cand]);
+        if (sha && (!headSha || sha !== headSha)) {
+          baseRef = cand;
+          break;
+        }
+      }
+      if (baseRef) {
+        const branchDiffArgs = safeRelPaths.length
+          ? ['diff', '-U3', `${baseRef}...HEAD`, '--', ...safeRelPaths]
+          : ['diff', '-U3', `${baseRef}...HEAD`, '--'];
+        const [branchStat, branchSnippet] = await Promise.all([
+          execGitBriefAsync(absDir, ['diff', '--stat', `${baseRef}...HEAD`, '--']),
+          execGitBriefAsync(absDir, branchDiffArgs),
+        ]);
+        if (!diffStat && branchStat) diffStat = branchStat;
+        if (branchSnippet) diffSnippet = branchSnippet;
+      }
+    }
   }
 
   const scopeLines = [];

@@ -123,6 +123,7 @@ const state = {
   resumeState: null,
   modelCatalog: null,
   modelPopoverOpen: false,
+  showHiddenModels: false,
   modelSelectBusy: false,
   streamStartedAt: 0,
   sendBusy: false,
@@ -347,6 +348,7 @@ async function handleUnpairDevice() {
   state.resumeState = null;
   state.modelCatalog = null;
   state.modelPopoverOpen = false;
+  state.showHiddenModels = false;
   state.modelSelectBusy = false;
   state.streamStartedAt = 0;
   setActionNotice('');
@@ -1106,7 +1108,9 @@ function syncComposerControls() {
 
   renderComposerFooterBar(refs, {
     catalog: state.modelCatalog,
+    studioPrefs: state.studioOverview?.studioPrefs || state.modelCatalog?.studioPrefs || null,
     modelPopoverOpen: state.modelPopoverOpen,
+    showHiddenModels: state.showHiddenModels,
     modelBusy: state.modelSelectBusy,
     metrics: activeMetrics,
     isStreaming,
@@ -1121,14 +1125,20 @@ function syncComposerControls() {
     mediaCount: state.draftMedia.length,
     onToggleModelPopover: () => {
       state.modelPopoverOpen = !state.modelPopoverOpen;
+      if (!state.modelPopoverOpen) state.showHiddenModels = false;
       if (state.modelPopoverOpen && (!state.modelCatalog || !state.modelCatalog.families?.length)) {
         refreshModels(state.selectedId);
       }
       syncComposerControls();
     },
+    onToggleShowHiddenModels: () => {
+      state.showHiddenModels = !state.showHiddenModels;
+      syncComposerControls();
+    },
     onSelectModelOption: handleSelectModelOption,
     onCloseModelPopover: () => {
       state.modelPopoverOpen = false;
+      state.showHiddenModels = false;
       syncComposerControls();
     },
     onCompact: handleCompactConvo,

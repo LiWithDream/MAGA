@@ -30,7 +30,8 @@ import {
   SILENT_RESUME_PROMPT,
   collectStudioOverview,
   getRemoteResumeState,
-  handleRemoteOpusDismiss
+  handleRemoteOpusDismiss,
+  readRemoteStudioPrefs
 } from './remote/studio-bridge.mjs';
 import { collectResumeState } from '../../studio/daemon/resume-detector.mjs';
 
@@ -843,7 +844,10 @@ async function handleModelsList(params = {}) {
     const errCode = r.value?.error || r.error || 'models_list_failed';
     throw Object.assign(new Error(errCode), { code: errCode });
   }
-  return r.value;
+  return {
+    ...r.value,
+    studioPrefs: readRemoteStudioPrefs(bridgeState?.studioOpts),
+  };
 }
 
 async function handleModelsSelect(params = {}) {

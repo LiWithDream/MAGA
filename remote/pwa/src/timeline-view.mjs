@@ -172,7 +172,177 @@ export function renderSafeMarkdown(text) {
   return root;
 }
 
-export function renderStepCard(step) {
+const SILENT_RESUME_SENTINEL = '\u2063\u200B\u2063';
+
+const TOOL_CATEGORY_LABELS = [
+  [/^(?:read_file|view_file|viewFile|view_file_outline|view_code_item|read_resource)$/i, '读取'],
+  [/^(?:edit_file|write_file|write_to_file|replace_file_content|multi_replace_file_content)$/i, '编辑'],
+  [/^(?:run_command|runCommand|command_status|send_command_input|manage_task)$/i, '命令'],
+  [/^(?:grep|grep_search|find_by_name|list_dir|list_resources)$/i, '搜索'],
+  [/^(?:search_web|read_url_content|search_marketplace)$/i, '联网'],
+  [/^(?:update_steps|update_focus)$/i, '进度'],
+  [/^(?:read_board|post_message|swarm|swarm_wait|invoke_subagent|send_message)$/i, '协作'],
+];
+
+function humanizeToolCategory(toolName) {
+  const clean = String(toolName || '').trim();
+  if (!clean) return '操作';
+  for (const [re, label] of TOOL_CATEGORY_LABELS) {
+    if (re.test(clean)) return label;
+  }
+  return clean;
+}
+
+function extractToolPreview(tc, fallbackText = '') {
+  const direct = String(fallbackText || '').trim();
+  if (direct) return direct.split('\n')[0].slice(0, 72);
+  const rawArgs = tc?.args ?? tc?.arguments ?? tc?.argumentsJson ?? '';
+  if (!rawArgs) return '';
+  let parsed = null;
+  if (typeof rawArgs === 'string') {
+    try {
+      parsed = JSON.parse(rawArgs);
+    } catch {
+      return rawArgs.trim().split('\n')[0].slice(0, 72);
+    }
+  } else if (typeof rawArgs === 'object') {
+    parsed = rawArgs;
+  }
+  if (parsed && typeof parsed === 'object') {
+    const candidate =
+      parsed.toolSummary ||
+      parsed.CommandLine ||
+      parsed.commandLine ||
+      parsed.command ||
+      parsed.Path ||
+      parsed.path ||
+      parsed.AbsolutePath ||
+      parsed.TargetFile ||
+      parsed.Query ||
+      parsed.query ||
+      parsed.focus ||
+      '';
+    if (typeof candidate === 'string' && candidate.trim()) {
+      const line = candidate.trim().split('\n')[0];
+      if (line.startsWith('/')) {
+        const parts = line.split('/').filter(Boolean);
+        return parts.length > 2 ? `…/${parts.slice(-2).join('/')}` : line;
+      }
+      return line.slice(0, 72);
+    }
+  }
+  return '';
+}
+
+function isInternalSystemStep(step) {
+  const t = String(step?.type || '');
+  return t === 'SYSTEM_MESSAGE' || t === '101';
+}
+
+function isActivityStep(step) {
+  const t = String(step?.type || '');
+  if (t === 'TOOL_CALL' || t === 'GENERIC' || t === '132') {
+    return !step?.error || (Array.isArray(step?.toolCalls) && step.toolCalls.length > 0);
+  }
+  if (t === 'PLANNER_RESPONSE' || t === '15') {
+    const hasVisibleText = Boolean(String(step?.text || '').trim());
+    return !hasVisibleText && !step?.error;
+  }
+  return false;
+}
+
+function buildToolDetailsRow(tc, fallbackText = '') {
+  const name = tc?.name || tc?.toolName || 'tool';
+  const rawArgs = tc?.args ?? tc?.arguments ?? tc?.argumentsJson ?? '';
+  const argsText =
+    typeof rawArgs === 'string' ? rawArgs : rawArgs ? JSON.stringify(rawArgs, null, 2) : '';
+  const outText =
+    typeof tc?.output === 'string' ? tc.output : tc?.output ? JSON.stringify(tc.output, null, 2) : '';
+  const preview = extractToolPreview(tc, fallbackText);
+
+  const summary = el(
+    'summary',
+    { className: 'rc-tool-row-sum' },
+    el('span', { className: 'rc-tool-row-name', text: name }),
+    preview ? el('span', { className: 'rc-tool-row-preview', text: preview }) : null
+  );
+
+  const bodyNodes = [];
+  if (argsText) bodyNodes.push(el('pre', { className: 'rc-pre', text: argsText }));
+  if (outText) bodyNodes.push(el('pre', { className: 'rc-pre', text: outText }));
+
+  return el(
+    'details',
+    { className: 'rc-tool-row' },
+    summary,
+    bodyNodes.length > 0
+      ? el('div', { className: 'rc-details-body' }, ...bodyNodes)
+      : el('div', { className: 'rc-details-body' }, el('span', { className: 'rc-convo-meta', text: '无更多参数输出' }))
+  );
+}
+
+function renderActivityGroup(stepsBatch, { hideThinkingProse = true } = {}) {
+  const tools = [];
+  const thinkingList = [];
+  for (const step of stepsBatch) {
+    if (!step) continue;
+    const stepTools = Array.isArray(step.toolCalls) ? step.toolCalls : [];
+    if (stepTools.length > 0) {
+      for (const tc of stepTools) {
+        tools.push({ tc, fallbackText: stepTools.length === 1 ? step.text || '' : '' });
+      }
+    } else if ((step.type === 'TOOL_CALL' || step.type === 'GENERIC' || step.type === '132') && step.text) {
+      tools.push({ tc: { name: 'runCommand', args: step.text }, fallbackText: step.text });
+    }
+    if (!hideThinkingProse && step.thinking && String(step.thinking).trim()) {
+      thinkingList.push(String(step.thinking).trim());
+    }
+  }
+
+  if (tools.length === 0 && thinkingList.length === 0) {
+    return null;
+  }
+
+  let summaryText = '';
+  if (tools.length > 0) {
+    const cats = [];
+    const seen = new Set();
+    for (const item of tools) {
+      const cat = humanizeToolCategory(item.tc?.name || item.tc?.toolName);
+      if (!seen.has(cat)) {
+        seen.add(cat);
+        cats.push(cat);
+      }
+    }
+    if (tools.length === 1) {
+      const preview = extractToolPreview(tools[0].tc, tools[0].fallbackText);
+      summaryText = preview ? `已执行 ${cats[0]} · ${preview}` : `已执行 1 项操作 · ${cats[0]}`;
+    } else {
+      const catSummary = cats.slice(0, 3).join('、') + (cats.length > 3 ? ' 等' : '');
+      summaryText = `已执行 ${tools.length} 项操作 · ${catSummary}`;
+    }
+  } else {
+    const totalChars = thinkingList.reduce((acc, s) => acc + s.length, 0);
+    summaryText = `思考过程 (${totalChars} 字)`;
+  }
+
+  const body = el('div', { className: 'rc-activity-body' });
+  for (const t of thinkingList) {
+    body.appendChild(el('pre', { className: 'rc-pre rc-activity-thinking', text: t }));
+  }
+  for (const item of tools) {
+    body.appendChild(buildToolDetailsRow(item.tc, item.fallbackText));
+  }
+
+  return el(
+    'details',
+    { className: 'rc-activity-group' },
+    el('summary', { className: 'rc-activity-summary', text: summaryText }),
+    body
+  );
+}
+
+export function renderStepCard(step, { hideThinkingProse = false, compact = false } = {}) {
   const typeStr = String(step.type || 'STEP');
   const statusInfo = normalizeStepStatus(step.status);
 
@@ -184,51 +354,95 @@ export function renderStepCard(step) {
   } else if (typeStr === 'PLANNER_RESPONSE' || typeStr === '15') {
     roleLabel = '助手';
     roleAttr = 'assistant';
-  } else if (typeStr === 'GENERIC' || typeStr === '132') {
+  } else if (typeStr === 'TOOL_CALL' || typeStr === 'GENERIC' || typeStr === '132') {
     roleLabel = '工具调用';
     roleAttr = 'tool';
   } else if (typeStr === 'ERROR_MESSAGE' || typeStr === '17') {
     roleLabel = '错误';
     roleAttr = 'error';
   } else if (typeStr === 'CHECKPOINT' || typeStr === '23') {
-    roleLabel = '压缩检查点';
-    roleAttr = 'system';
+    roleLabel = '上下文已压缩';
+    roleAttr = 'checkpoint';
   } else if (typeStr === 'SYSTEM_MESSAGE' || typeStr === '101') {
     roleLabel = '系统';
     roleAttr = 'system';
   }
 
-  const isDoneStep = statusInfo.label === 'DONE';
-  const card = el(
-    'article',
-    { className: 'rc-step', 'data-type': typeStr, 'data-role': roleAttr },
-    el(
+  if (roleAttr === 'checkpoint' && compact) {
+    return el(
       'div',
-      { className: 'rc-step-head' },
-      el('span', { className: 'rc-step-role', text: `${roleLabel} #${step.idx ?? '?'}` }),
+      { className: 'rc-checkpoint-divider', 'data-type': typeStr, 'data-role': 'checkpoint' },
+      el('span', { className: 'rc-checkpoint-label', text: '上下文已压缩 (/compact)' })
+    );
+  }
+
+  if (roleAttr === 'user' && compact && String(step.text || '').startsWith(SILENT_RESUME_SENTINEL)) {
+    return el(
+      'div',
+      { className: 'rc-checkpoint-divider', 'data-type': typeStr, 'data-role': 'user' },
+      el('span', { className: 'rc-checkpoint-label', text: '已触发静默续跑' })
+    );
+  }
+
+  const isDoneStep = statusInfo.label === 'DONE';
+  const card = el('article', {
+    className: 'rc-step',
+    'data-type': typeStr,
+    'data-role': roleAttr,
+    ...(compact ? { 'data-compact': 'true' } : {}),
+  });
+
+  const hideHeader =
+    compact &&
+    ((roleAttr === 'assistant' && isDoneStep) || (roleAttr === 'user' && isDoneStep && !step.createdAt));
+
+  if (!hideHeader) {
+    const showRoleText = compact && (roleAttr === 'user' || roleAttr === 'assistant')
+      ? ''
+      : `${roleLabel} #${step.idx ?? '?'}`;
+    card.appendChild(
       el(
         'div',
-        { className: 'rc-dock-group' },
-        step.createdAt ? el('span', { className: 'rc-step-time', text: formatTime(step.createdAt) }) : null,
-        el('span', {
-          className: `rc-pill rc-step-status-pill${isDoneStep ? ' is-done' : ''}`,
-          'data-tone': statusInfo.tone,
-          text: statusInfo.label,
-        })
+        { className: 'rc-step-head' },
+        showRoleText ? el('span', { className: 'rc-step-role', text: showRoleText }) : el('span', { className: 'rc-step-role-spacer' }),
+        el(
+          'div',
+          { className: 'rc-dock-group' },
+          step.createdAt ? el('span', { className: 'rc-step-time', text: formatTime(step.createdAt) }) : null,
+          !isDoneStep || !compact
+            ? el('span', {
+                className: `rc-pill rc-step-status-pill${isDoneStep ? ' is-done' : ''}`,
+                'data-tone': statusInfo.tone,
+                text: statusInfo.label,
+              })
+            : null
+        )
       )
-    )
-  );
+    );
+  }
 
-  if (step.thinking) {
+  if (step.thinking && !hideThinkingProse) {
     const thinkingText = String(step.thinking);
     card.appendChild(
       el(
         'details',
-        { className: 'rc-details' },
-        el('summary', { text: `Thinking 思考过程 (${thinkingText.length} 字符，点击展开)` }),
-        el('div', { className: 'rc-details-body' }, el('pre', { className: 'rc-pre', text: thinkingText }))
+        { className: compact ? 'rc-activity-group' : 'rc-details' },
+        el('summary', {
+          className: compact ? 'rc-activity-summary' : undefined,
+          text: compact ? `思考过程 (${thinkingText.length} 字)` : `Thinking 思考过程 (${thinkingText.length} 字符，点击展开)`,
+        }),
+        el(
+          'div',
+          { className: compact ? 'rc-activity-body' : 'rc-details-body' },
+          el('pre', { className: 'rc-pre', text: thinkingText })
+        )
       )
     );
+  }
+
+  if (compact && roleAttr === 'assistant' && Array.isArray(step.toolCalls) && step.toolCalls.length > 0) {
+    const inlineGroup = renderActivityGroup([{ ...step, thinking: '' }], { hideThinkingProse: true });
+    if (inlineGroup) card.appendChild(inlineGroup);
   }
 
   if (step.mediaCount > 0) {
@@ -246,37 +460,9 @@ export function renderStepCard(step) {
     card.appendChild(renderSafeMarkdown(String(step.text)));
   }
 
-  if (Array.isArray(step.toolCalls) && step.toolCalls.length > 0) {
+  if ((!compact || roleAttr !== 'assistant') && Array.isArray(step.toolCalls) && step.toolCalls.length > 0) {
     for (const tc of step.toolCalls) {
-      const name = tc?.name || tc?.toolName || 'tool';
-      const rawArgs = tc?.args ?? tc?.arguments ?? tc?.argumentsJson ?? '';
-      const argsText =
-        typeof rawArgs === 'string'
-          ? rawArgs
-          : rawArgs
-            ? JSON.stringify(rawArgs, null, 2)
-            : '';
-      const outText =
-        typeof tc?.output === 'string'
-          ? tc.output
-          : tc?.output
-            ? JSON.stringify(tc.output, null, 2)
-            : '';
-      const tcId = tc?.id ?? tc?.callId ?? '';
-
-      card.appendChild(
-        el(
-          'details',
-          { className: 'rc-details' },
-          el('summary', { text: `Tool · ${name}${tcId ? ` (${String(tcId).slice(0, 10)})` : ''}` }),
-          el(
-            'div',
-            { className: 'rc-details-body' },
-            argsText ? el('pre', { className: 'rc-pre', text: argsText }) : null,
-            outText ? el('pre', { className: 'rc-pre', text: outText }) : null
-          )
-        )
-      );
+      card.appendChild(buildToolDetailsRow(tc));
     }
   }
 
@@ -455,13 +641,34 @@ export function renderDetailTimeline({
     );
   }
 
+  const studioPrefs = state.studioOverview?.studioPrefs || state.modelCatalog?.studioPrefs || {};
+  const hideThinkingProse = studioPrefs.hideThinkingProse !== false;
+
   const steps = Array.isArray(snap?.steps) ? snap.steps : [];
   if (steps.length === 0 && !streamText) {
     refs.timeline.appendChild(el('div', { className: 'rc-empty', text: '该会话暂无可显示步骤。' }));
   } else {
+    let activityBatch = [];
+    const flushActivity = () => {
+      if (activityBatch.length === 0) return;
+      const groupEl = renderActivityGroup(activityBatch, { hideThinkingProse });
+      if (groupEl) refs.timeline.appendChild(groupEl);
+      activityBatch = [];
+    };
+
     for (const step of steps) {
-      refs.timeline.appendChild(renderStepCard(step));
+      if (!step) continue;
+      if (isInternalSystemStep(step)) {
+        continue;
+      }
+      if (isActivityStep(step)) {
+        activityBatch.push(step);
+        continue;
+      }
+      flushActivity();
+      refs.timeline.appendChild(renderStepCard(step, { hideThinkingProse, compact: true }));
     }
+    flushActivity();
   }
 
   const streamStatusActive =
@@ -476,8 +683,9 @@ export function renderDetailTimeline({
   }
   const duplicatesLastStep =
     Boolean(streamText) && Boolean(lastPlannerText) && String(streamText).trim() === lastPlannerText;
+  const visibleStreamThinking = hideThinkingProse ? '' : streamThinking;
 
-  if (isLiveRunning && (streamText || streamThinking) && !duplicatesLastStep) {
+  if (isLiveRunning && (streamText || visibleStreamThinking) && !duplicatesLastStep) {
     refs.timeline.appendChild(
       el(
         'div',
@@ -488,12 +696,12 @@ export function renderDetailTimeline({
           el('span', { className: 'rc-pulse' }),
           el('span', { text: '实时生成流' })
         ),
-        streamThinking
+        visibleStreamThinking
           ? el(
               'details',
-              { className: 'rc-details' },
-              el('summary', { text: `实时 Thinking (${streamThinking.length} 字符)` }),
-              el('div', { className: 'rc-details-body' }, el('pre', { className: 'rc-pre', text: streamThinking }))
+              { className: 'rc-activity-group' },
+              el('summary', { className: 'rc-activity-summary', text: `实时思考 (${visibleStreamThinking.length} 字)` }),
+              el('div', { className: 'rc-activity-body' }, el('pre', { className: 'rc-pre', text: visibleStreamThinking }))
             )
           : null,
         streamText ? renderSafeMarkdown(String(streamText)) : null

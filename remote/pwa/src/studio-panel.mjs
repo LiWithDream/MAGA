@@ -207,13 +207,13 @@ export function renderResumeBanner(
     el(
       'div',
       { className: 'rc-studio-card-head' },
-      el('span', { text: `▶ ${formatResumeReason(resumeState.reason)}` }),
-      el('span', { className: 'rc-pill', 'data-tone': 'warn', text: `step #${resumeState.lastIdx}` })
+      el('span', { className: 'rc-resume-title', text: `▶ ${formatResumeReason(resumeState.reason)}` }),
+      el('span', { className: 'rc-pill rc-resume-step-pill', 'data-tone': 'warn', text: `step #${resumeState.lastIdx}` })
     ),
     hint ? el('div', { className: 'rc-convo-meta', text: hint }) : null,
     el(
       'div',
-      { className: 'rc-dock-group' },
+      { className: 'rc-dock-group rc-resume-actions' },
       el('button', {
         type: 'button',
         className: 'rc-btn is-sm is-primary',

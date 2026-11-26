@@ -77,6 +77,19 @@ function syncFastIoRules() {
   return { ok: true, path: AGENTS_MD };
 }
 
+function removeFastIoRules(agentsMdPath = AGENTS_MD) {
+  if (!existsSync(agentsMdPath)) {
+    return { ok: true, removed: false, path: agentsMdPath };
+  }
+  const existing = readFileSync(agentsMdPath, 'utf8');
+  if (!existing.includes(RULE_BEGIN)) {
+    return { ok: true, removed: false, path: agentsMdPath };
+  }
+  const cleaned = stripBlock(existing, RULE_BEGIN, RULE_END).trim();
+  writeFileSync(agentsMdPath, cleaned ? `${cleaned}\n` : '', 'utf8');
+  return { ok: true, removed: true, path: agentsMdPath };
+}
+
 async function applyCollapsedStepsPreference() {
   // Persist verboseConversationSteps: false on disk AND push into live React pref store via CDP
   // so running Antigravity does not overwrite the disk edit on exit.
@@ -296,10 +309,11 @@ try {
     process.exit(report.ok ? 0 : 1);
   } else if (cmd === 'rollback') {
     const rollbackRes = rollbackStudio();
+    const rulesRes = removeFastIoRules();
     const pluginRes = syncOpusGatePlugin({ remove: true });
     const compactPluginRes = syncAutoCompactPlugin({ remove: true });
     const gitWorkflowPluginRes = syncGitWorkflowPlugin({ remove: true });
-    console.log(JSON.stringify({ ...rollbackRes, opusGatePlugin: pluginRes, autoCompactPlugin: compactPluginRes, gitWorkflowPlugin: gitWorkflowPluginRes }, null, 2));
+    console.log(JSON.stringify({ ...rollbackRes, rules: rulesRes, opusGatePlugin: pluginRes, autoCompactPlugin: compactPluginRes, gitWorkflowPlugin: gitWorkflowPluginRes }, null, 2));
   } else {
     console.error(`Unknown command: ${cmd}\nUse: install | deploy | sync-rules | doctor | rollback`);
     process.exit(1);

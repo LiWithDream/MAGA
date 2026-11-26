@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -125,5 +125,51 @@ test('packRelease builds zero-npm-install macOS tarball with valid SHA-256, zero
     rmSync(distOut, { recursive: true, force: true });
     rmSync(unpackDir, { recursive: true, force: true });
     rmSync(path.join(REPO, 'studio', 'prebuilt'), { recursive: true, force: true });
+  }
+});
+
+test('studio/cli.mjs sync-rules and rollback cleanly strip fast-io rules while preserving user AGENTS.md content', () => {
+  const fakeHome = mkdtempSync(path.join(tmpdir(), 'agy-rollback-home-'));
+  try {
+    const env = { ...process.env, HOME: fakeHome };
+    const geminiDir = path.join(fakeHome, '.gemini');
+    const agentsMd = path.join(geminiDir, 'AGENTS.md');
+    mkdirSync(geminiDir, { recursive: true });
+    writeFileSync(agentsMd, '# User Custom Rules\n- Keep my custom workflow.\n', 'utf8');
+
+    const syncOut = JSON.parse(
+      execFileSync(process.execPath, [path.join(REPO, 'studio', 'cli.mjs'), 'sync-rules'], {
+        cwd: REPO,
+        env,
+        encoding: 'utf8',
+      })
+    );
+    assert.equal(syncOut.ok, true);
+    assert.equal(syncOut.opusGatePlugin.pinned, true);
+    assert.equal(syncOut.autoCompactPlugin.pinned, true);
+    assert.equal(syncOut.gitWorkflowPlugin.pinned, true);
+    const afterSync = readFileSync(agentsMd, 'utf8');
+    assert.match(afterSync, /# User Custom Rules/);
+    assert.match(afterSync, /<!-- BEGIN agy-fast-io-pruned -->/);
+
+    const rbOut = JSON.parse(
+      execFileSync(process.execPath, [path.join(REPO, 'studio', 'cli.mjs'), 'rollback'], {
+        cwd: REPO,
+        env,
+        encoding: 'utf8',
+      })
+    );
+    assert.equal(rbOut.ok, true);
+    assert.equal(rbOut.rules.removed, true);
+    assert.equal(rbOut.opusGatePlugin.installed, false);
+    assert.equal(rbOut.autoCompactPlugin.installed, false);
+    assert.equal(rbOut.gitWorkflowPlugin.installed, false);
+
+    const afterRollback = readFileSync(agentsMd, 'utf8');
+    assert.equal(afterRollback.includes('agy-fast-io-pruned'), false, 'rollback must strip fast-io rule block');
+    assert.match(afterRollback, /# User Custom Rules/);
+    assert.match(afterRollback, /Keep my custom workflow\./);
+  } finally {
+    rmSync(fakeHome, { recursive: true, force: true });
   }
 });

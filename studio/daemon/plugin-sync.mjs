@@ -91,10 +91,16 @@ export function extractPluginHookNodeBin(pluginName, hooksObj) {
 export function pruneStalePluginFiles(targetDir, expectedRelFiles) {
   const removed = [];
   if (!fs.existsSync(targetDir)) return removed;
+  try {
+    if (fs.lstatSync(targetDir).isSymbolicLink()) return removed;
+  } catch {
+    return removed;
+  }
   const expectedSet = new Set(expectedRelFiles.map((rel) => rel.split(path.sep).join('/')));
   const walk = (absDir, relPrefix = '') => {
     const entries = fs.readdirSync(absDir, { withFileTypes: true });
     for (const ent of entries) {
+      if (ent.isSymbolicLink()) continue;
       const rel = relPrefix ? `${relPrefix}/${ent.name}` : ent.name;
       const abs = path.join(absDir, ent.name);
       if (ent.isDirectory()) {

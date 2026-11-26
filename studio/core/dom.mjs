@@ -6,6 +6,19 @@
 
 export const OWN_ATTR = 'data-maga-own';
 
+export const OWN_ROW1_PILL_IDS = new Set([
+  'agy-resume-pill',
+  'agy-opus-gate-pill',
+  'agy-auto-compact-pill',
+]);
+
+export const OWN_FOOTER_PILL_IDS = new Set([
+  'ag-claude-ctx-ring',
+  'ag-live-metrics-pill',
+  'agy-main-subagent-pill',
+  ...OWN_ROW1_PILL_IDS,
+]);
+
 export const OWN_HOST_IDS = new Set([
   'agy-capsule-picker-host',
   'agy-main-subagent-pill',

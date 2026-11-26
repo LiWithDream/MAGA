@@ -10,7 +10,7 @@
  * 4. Enhances #ag-live-metrics-pill with permanent child slots (0 innerHTML / 0 childList churn),
  *    live working dot, color-coded tok/s tiers, and progressive compression.
  */
-import { markOwn, setAttr, setLeafText } from '../core/dom.mjs';
+import { OWN_FOOTER_PILL_IDS, OWN_ROW1_PILL_IDS, markOwn, setAttr, setLeafText } from '../core/dom.mjs';
 import { getActiveRouteCid, isComposerRunning, isZhUi } from '../core/env.mjs';
 import { installMetricsBus, renderSpeedSlots } from '../core/metrics-bus.mjs';
 
@@ -134,12 +134,12 @@ export function createFooterUnifiedRuntime({ onTierChange, kernel } = {}) {
     for (const ch of leftGroup.children) {
       if (ch.id === 'agy-capsule-picker-host' || ch.hasAttribute('data-agy-picker-host')) continue;
       if (ch.getAttribute?.('data-agy-model-wrap') === '1') continue;
-      if (ch.id === 'ag-claude-ctx-ring' || ch.id === 'ag-live-metrics-pill' || ch.id === 'agy-resume-pill' || ch.id === 'agy-opus-gate-pill' || ch.id === 'agy-auto-compact-pill') continue;
       if (ch.hasAttribute('data-agy-sub-pill')) continue;
       if (ch.id === 'agy-main-subagent-pill') {
         if (!ch.hidden && ch.style.display !== 'none') return true;
         continue;
       }
+      if (OWN_FOOTER_PILL_IDS.has(ch.id)) continue;
       if (ch.tagName === 'INPUT') continue;
       if (ch === addCtxBtn) continue;
       if (ch.getAttribute?.('data-deck-model-bubble') === 'hidden' || ch.querySelector?.('button[data-deck-model-bubble="hidden"]')) continue;
@@ -189,7 +189,7 @@ export function createFooterUnifiedRuntime({ onTierChange, kernel } = {}) {
     }
 
     for (const ch of leftGroup.children) {
-      if (ch === addCtxBtn || ch.id === 'agy-resume-pill' || ch.id === 'agy-opus-gate-pill' || ch.id === 'agy-auto-compact-pill') continue;
+      if (ch === addCtxBtn || OWN_ROW1_PILL_IDS.has(ch.id)) continue;
       if (ch.tagName === 'INPUT' || ch.hasAttribute('data-agy-picker-host') || ch.getAttribute?.('data-agy-model-wrap') === '1') continue;
       if (ch.getAttribute?.('data-deck-model-bubble') === 'hidden' || ch.querySelector?.('button[data-deck-model-bubble="hidden"]')) continue;
       const r = ch.getBoundingClientRect();
@@ -225,13 +225,12 @@ export function createFooterUnifiedRuntime({ onTierChange, kernel } = {}) {
     const pillSigs = [];
     if (leftGroup) {
       for (const ch of leftGroup.children) {
-        if (ch.hasAttribute('data-agy-sub-pill') || ch.id === 'agy-main-subagent-pill' || ch.id === 'agy-resume-pill' || ch.id === 'agy-opus-gate-pill' || ch.id === 'agy-auto-compact-pill') {
+        if (ch.hasAttribute('data-agy-sub-pill') || ch.id === 'agy-main-subagent-pill' || OWN_ROW1_PILL_IDS.has(ch.id)) {
           pillSigs.push(`${ch.getAttribute('data-agy-sub-pill') || ch.id}:${ch.hidden ? '1' : '0'}:${ch.getAttribute('data-sig') || ''}`);
         } else if (
           ch.id !== 'agy-capsule-picker-host' &&
           !ch.hasAttribute('data-agy-picker-host') &&
-          ch.id !== 'ag-claude-ctx-ring' &&
-          ch.id !== 'ag-live-metrics-pill' &&
+          !OWN_FOOTER_PILL_IDS.has(ch.id) &&
           ch.tagName !== 'INPUT' &&
           ch !== addCtxBtn &&
           ch.getAttribute?.('data-deck-model-bubble') !== 'hidden' &&

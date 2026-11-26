@@ -22,7 +22,7 @@ import { createSubagentFooterRuntime } from '../studio/modules/subagent-footer.m
 import { createUsageHistory } from '../vendor/agy-capsule/usage_history.mjs';
 import { collectResumeState } from '../studio/daemon/resume-detector.mjs';
 import { createStudioPrefsRuntime } from '../studio/modules/studio-prefs.mjs';
-import { OWN_HOST_IDS, OWN_ATTR, setAttr, setLeafText } from '../studio/core/dom.mjs';
+import { OWN_FOOTER_PILL_IDS, OWN_HOST_IDS, OWN_ROW1_PILL_IDS, OWN_ATTR, setAttr, setLeafText } from '../studio/core/dom.mjs';
 import { createDomFlagsFeature } from '../studio/core/dom-flags.mjs';
 import { createMagaKernel } from '../studio/core/kernel.mjs';
 import { renderSpeedSlots } from '../studio/core/metrics-bus.mjs';
@@ -4907,5 +4907,62 @@ test('resume-banner ignores stale A->B->A responses using reqGen token', async (
     assert.ok(env.doc.getElementById('agy-resume-pill'), 'pill mounts from queued forced refetch after reqGen 3');
 
     rt.dispose();
+  });
+});
+
+test('OWN_FOOTER_PILL_IDS stays aligned with CSS exclusions and allows auto-compact + subagent pills to coexist', async () => {
+  const footerCss = readFileSync(FOOTER_CSS_PATH, 'utf8');
+  for (const id of OWN_FOOTER_PILL_IDS) {
+    assert.equal(OWN_HOST_IDS.has(id), true, `OWN_HOST_IDS must include ${id}`);
+    assert.match(
+      footerCss,
+      new RegExp(`:not\\(#${id}\\)`),
+      `footer-capsules.css Order 7 exclusion must exclude #${id}`
+    );
+  }
+  for (const id of OWN_ROW1_PILL_IDS) {
+    assert.equal(OWN_FOOTER_PILL_IDS.has(id), true, `OWN_FOOTER_PILL_IDS must include Row 1 pill ${id}`);
+  }
+
+  const env = makeMockDomEnv({ pathname: '/c/conv-coexist', lang: 'en', width: 640 });
+  await withGlobals(env, () => {
+    const mainBox = env.createEl('div');
+    mainBox.id = 'antigravity.agentSidePanelInputBox';
+    const footer = env.createEl('div');
+    footer.className = 'agy-composer-footer';
+    const leftGroup = env.createEl('div');
+    leftGroup.append(env.createEl('button'));
+    const compactPill = env.createEl('div');
+    compactPill.id = 'agy-auto-compact-pill';
+    leftGroup.append(compactPill);
+    const opusPill = env.createEl('div');
+    opusPill.id = 'agy-opus-gate-pill';
+    leftGroup.append(opusPill);
+    const resumePill = env.createEl('div');
+    resumePill.id = 'agy-resume-pill';
+    leftGroup.append(resumePill);
+    footer.append(leftGroup);
+    mainBox.append(footer);
+    env.doc.body.append(mainBox);
+
+    env.win.__ag_last_metrics = {
+      cascadeId: 'conv-coexist',
+      stats: {
+        children: [{ id: 'sub-1', agentName: 'Researcher', running: true, calls: 2, outTok: 120 }],
+      },
+    };
+
+    const subRt = createSubagentFooterRuntime({
+      motionThemes,
+      shortenModelName,
+      shortenEffortBadge,
+    });
+    try {
+      subRt.sync();
+      const subPill = env.doc.getElementById('agy-main-subagent-pill');
+      assert.ok(subPill, 'subagent pill must remain mounted when auto-compact, opus-gate & resume pills are visible');
+    } finally {
+      subRt.dispose();
+    }
   });
 });

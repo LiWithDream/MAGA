@@ -293,9 +293,8 @@ export async function createGatewayServer(options = {}) {
       res.statusCode = 200;
       res.setHeader('Content-Type', resolved.contentType);
       res.setHeader('Content-Length', resolved.size);
-      if (resolved.relPath === 'sw.js' || resolved.relPath === 'index.html') {
-        res.setHeader('Cache-Control', 'no-cache');
-      }
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+      res.setHeader('Pragma', 'no-cache');
       if (method === 'HEAD') {
         res.end();
         return;

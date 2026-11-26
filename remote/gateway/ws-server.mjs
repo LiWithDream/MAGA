@@ -21,7 +21,7 @@ const BASE64_RE = /^[A-Za-z0-9+/=]+$/;
 const MAX_RING_SIZE = 512;
 const MAX_WELCOME_BUFFER_SIZE = 512;
 const DEFAULT_MAX_WRITE_BUFFER_BYTES = 1024 * 1024; // 1MB backpressure cap
-const DEFAULT_PING_INTERVAL_MS = 25_000;
+const DEFAULT_PING_INTERVAL_MS = 20_000;
 const DEFAULT_REVOCATION_CHECK_MS = 2000;
 const DEFAULT_MAX_WRITES_PER_MINUTE = 20;
 const DEFAULT_MAX_CONCURRENT_WRITES = 4;
@@ -381,10 +381,35 @@ export function createWsServer({
       lastSeq <= seq;
 
     if (canReplay) {
+      const seq0 = seq;
+      client.bufferingWelcome = true;
+      client.welcomeBuffer = [];
       authenticatedClients.add(client);
       activateTapIfNeeded();
-      const items = ring.filter((it) => it.seq > lastSeq);
-      client.sendJson({ type: 'deltas', epoch, seq, items });
+      const items = ring.filter((it) => it.seq > lastSeq && it.seq <= seq0);
+      let health = null;
+      if (udsClient) {
+        try {
+          health = await udsClient.request('bridge.health', {}, { timeoutMs: 2500 });
+        } catch {
+          health = null;
+        }
+      }
+      if (client.closed) {
+        client.bufferingWelcome = false;
+        client.welcomeBuffer = [];
+        return;
+      }
+      client.sendJson({ type: 'deltas', epoch, seq: seq0, items, ...(health ? { health } : {}) });
+      const buffered = client.welcomeBuffer;
+      client.bufferingWelcome = false;
+      client.welcomeBuffer = [];
+      for (const frame of buffered) {
+        if (client.closed) break;
+        if (frame.kind === 'stream' || (typeof frame.seq === 'number' && frame.seq > seq0)) {
+          client.sendJson(frame);
+        }
+      }
       return;
     }
 
@@ -396,8 +421,8 @@ export function createWsServer({
     activateTapIfNeeded();
 
     const [healthRes, listRes] = await Promise.allSettled([
-      udsClient ? udsClient.request('bridge.health', {}, { timeoutMs: 2500 }) : Promise.reject(new Error('no_uds')),
-      udsClient ? udsClient.request('convo.list', {}, { timeoutMs: 2500 }) : Promise.reject(new Error('no_uds')),
+      udsClient ? udsClient.request('bridge.health', {}, { timeoutMs: 5000 }) : Promise.reject(new Error('no_uds')),
+      udsClient ? udsClient.request('convo.list', {}, { timeoutMs: 5000 }) : Promise.reject(new Error('no_uds')),
     ]);
 
     if (client.closed) {
@@ -406,14 +431,22 @@ export function createWsServer({
       return;
     }
 
-    const health =
+    const listPayload = listRes.status === 'fulfilled' && listRes.value ? listRes.value : null;
+    let health =
       healthRes.status === 'fulfilled' && healthRes.value
         ? healthRes.value
         : { ok: false, hostAttached: false, capabilities: {}, globalPreset: null };
-    const conversations =
-      listRes.status === 'fulfilled' && Array.isArray(listRes.value?.conversations)
-        ? listRes.value.conversations
-        : [];
+    if (listPayload?.source === 'cdp' && !health.hostAttached) {
+      health = {
+        ...health,
+        ok: true,
+        hostAttached: true,
+        ...(health.globalPreset == null && listPayload.globalPreset !== undefined
+          ? { globalPreset: listPayload.globalPreset }
+          : {}),
+      };
+    }
+    const conversations = Array.isArray(listPayload?.conversations) ? listPayload.conversations : [];
 
     client.sendJson({
       type: 'welcome',
@@ -881,13 +914,13 @@ export function createWsServer({
     }
 
     if (msg.type === 'ping') {
+      client.markAlive();
       client.sendJson({ type: 'pong', ts: msg.ts ?? Date.now() });
       return;
     }
 
     if (msg.type === 'pong') {
-      client.awaitingPong = false;
-      client.missedPongs = 0;
+      client.markAlive();
       return;
     }
 
@@ -1104,6 +1137,7 @@ export function createWsServer({
       authenticated: false,
       bufferingWelcome: false,
       welcomeBuffer: [],
+      lastRxAt: now(),
       awaitingPong: false,
       missedPongs: 0,
       activeWriteDispatches: 0,
@@ -1111,6 +1145,11 @@ export function createWsServer({
       clientKey,
       watchedCids: new Set(),
       socketDestroyed: () => socket.destroyed,
+      markAlive() {
+        client.lastRxAt = now();
+        client.awaitingPong = false;
+        client.missedPongs = 0;
+      },
       sendJson(obj) {
         if (client.closed || socket.destroyed || !socket.writable) return;
         if (socket.writableLength > maxWriteBufferBytes) {
@@ -1130,13 +1169,16 @@ export function createWsServer({
         if (client.closed || socket.destroyed || !socket.writable) return;
         if (client.awaitingPong) {
           client.missedPongs += 1;
-          if (client.missedPongs >= 2) {
+          if (client.missedPongs >= 3) {
             audit?.append('ws_ping_timeout', { deviceId: client.device?.deviceId, clientKey });
             client.close(4002, 'ping_timeout');
             return;
           }
         }
         client.awaitingPong = true;
+        if (client.authenticated) {
+          client.sendJson({ type: 'ping', ts: now() });
+        }
         try {
           socket.write(encodeWsFrame(0x9, Buffer.from('maga-hb', 'utf8')));
         } catch {}
@@ -1227,6 +1269,7 @@ export function createWsServer({
 
     let processing = Promise.resolve();
     function enqueueTextFrame(text) {
+      client.markAlive();
       if (client.authenticated) {
         let parsed = null;
         try {
@@ -1240,8 +1283,6 @@ export function createWsServer({
             return;
           }
           if (parsed.type === 'pong') {
-            client.awaitingPong = false;
-            client.missedPongs = 0;
             return;
           }
           if (parsed.type === 'req' && WRITE_METHODS.has(String(parsed.method || '').trim())) {
@@ -1329,8 +1370,7 @@ export function createWsServer({
           if (opcode === 0x9) {
             sendPong(unmasked);
           } else if (opcode === 0xA) {
-            client.awaitingPong = false;
-            client.missedPongs = 0;
+            client.markAlive();
           }
           continue;
         }

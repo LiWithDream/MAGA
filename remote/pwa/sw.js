@@ -1,4 +1,5 @@
-const CACHE_NAME = 'maga-remote-shell-v8';
+const CACHE_NAME = 'maga-remote-shell-v9';
+const PRECACHE_PATHS = ['/', '/index.html', '/manifest.webmanifest'];
 const SHELL_PATHS = ['/', '/index.html', '/app.js', '/styles.css', '/manifest.webmanifest'];
 const SHELL_SET = new Set(SHELL_PATHS);
 
@@ -6,7 +7,16 @@ self.addEventListener('install', (event) => {
   event.waitUntil(
     caches
       .open(CACHE_NAME)
-      .then((cache) => cache.addAll(SHELL_PATHS))
+      .then((cache) =>
+        Promise.allSettled(
+          PRECACHE_PATHS.map(async (p) => {
+            const res = await fetch(new Request(p, { cache: 'no-store' }));
+            if (res && res.ok) {
+              await cache.put(p, res);
+            }
+          })
+        )
+      )
       .then(() => self.skipWaiting())
   );
 });
@@ -43,14 +53,16 @@ self.addEventListener('fetch', (event) => {
   event.respondWith(
     (async () => {
       try {
-        const fetchOpts =
+        const signal =
           typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
-            ? { signal: AbortSignal.timeout(4000) }
+            ? AbortSignal.timeout(4000)
             : undefined;
-        const networkRes = await fetch(req, fetchOpts);
+        const networkRes = await fetch(req, {
+          cache: 'no-store',
+          ...(signal ? { signal } : {}),
+        });
         if (networkRes && networkRes.ok && SHELL_SET.has(cachePath)) {
           const cache = await caches.open(CACHE_NAME);
-          // Store under clean path without query params or hash
           await cache.put(cachePath, networkRes.clone());
         }
         return networkRes;

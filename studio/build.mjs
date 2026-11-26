@@ -3,6 +3,7 @@
  * Compiles studio/entry.mjs (ESM) + studio/styles/*.css into bounded blocks inside
  * ~/.gemini/antigravity/anti-claude/user/{custom.js,custom.css,config.json}.
  */
+import { createHash } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
@@ -395,6 +396,13 @@ export async function buildRemotePwa({ outDir = REMOTE_PWA_DIST, allowPrebuilt =
   writeFileSync(jsDest, jsOut, 'utf8');
   writeFileSync(cssDest, cssOut, 'utf8');
 
+  const buildHash = createHash('sha256')
+    .update(jsOut)
+    .update('\0')
+    .update(cssOut)
+    .digest('hex')
+    .slice(0, 8);
+
   const files = {
     'app.js': Buffer.byteLength(jsOut, 'utf8'),
     'styles.css': Buffer.byteLength(cssOut, 'utf8'),
@@ -406,7 +414,20 @@ export async function buildRemotePwa({ outDir = REMOTE_PWA_DIST, allowPrebuilt =
       throw new Error(`Missing remote PWA static asset at ${src}`);
     }
     const dst = path.join(outDir, staticFile);
-    copyFileSync(src, dst);
+    if (staticFile === 'index.html') {
+      const htmlSrc = readFileSync(src, 'utf8')
+        .replace('href="/styles.css"', `href="/styles.css?v=${buildHash}"`)
+        .replace('src="/app.js"', `src="/app.js?v=${buildHash}"`);
+      writeFileSync(dst, htmlSrc, 'utf8');
+    } else if (staticFile === 'sw.js') {
+      const swSrc = readFileSync(src, 'utf8').replace(
+        /const CACHE_NAME = ['"][^'"]+['"];/,
+        `const CACHE_NAME = 'maga-remote-shell-${buildHash}';`
+      );
+      writeFileSync(dst, swSrc, 'utf8');
+    } else {
+      copyFileSync(src, dst);
+    }
     files[staticFile] = readFileSync(dst).byteLength;
   }
 
@@ -414,6 +435,7 @@ export async function buildRemotePwa({ outDir = REMOTE_PWA_DIST, allowPrebuilt =
     ok: true,
     outDir,
     prebuilt: false,
+    buildHash,
     files,
   };
 }

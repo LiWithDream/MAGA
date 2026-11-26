@@ -143,6 +143,7 @@ let studioOverviewRetryTimer = null;
 let streamTickTimer = null;
 let cancelConfirmTimer = null;
 let actionNoticeTimer = null;
+let swReloading = false;
 let workspaceRefs = null;
 let globalListenersBound = false;
 const rootEl = document.getElementById('app');
@@ -227,6 +228,8 @@ function applyLayoutAttrs() {
       resolvedMode === 'mobile'
         ? '输入指令…'
         : '输入指令继续当前会话（Ctrl/Cmd + Enter 发送，可 Ctrl/Cmd+V 粘贴截图）…';
+    workspaceRefs.searchInput.placeholder =
+      resolvedMode === 'mobile' ? '搜索会话 / ID…' : '搜索会话 (⌘K) / ID…';
     renderMoreMenu();
   }
 }
@@ -1799,6 +1802,21 @@ function startWorkspaceSession() {
         renderStudioPanels();
       }
     },
+    onHealth: (health) => {
+      if (!health || typeof health !== 'object') return;
+      const wasAttached = state.hostAttached;
+      if ('hostAttached' in health) state.hostAttached = Boolean(health.hostAttached);
+      if (health.globalPreset !== undefined) updateGlobalPreset(health.globalPreset);
+      if (health.capabilities) state.capabilities = health.capabilities;
+      state.source = state.hostAttached ? 'cdp' : 'disk';
+      if (state.identity) {
+        renderTopStatus();
+        renderStudioPanels();
+        if (!wasAttached && state.hostAttached) {
+          refreshAllData();
+        }
+      }
+    },
     onWelcome: (msg) => {
       if (msg.deviceRole && state.identity && state.identity.role !== msg.deviceRole) {
         state.identity.role = msg.deviceRole;
@@ -1838,7 +1856,20 @@ function startWorkspaceSession() {
 
 async function boot() {
   if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
-    navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch(() => {});
+    const hadController = Boolean(navigator.serviceWorker.controller);
+    if (typeof navigator.serviceWorker.addEventListener === 'function') {
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        if (!hadController || swReloading) return;
+        swReloading = true;
+        try {
+          window.location.reload();
+        } catch {}
+      });
+    }
+    navigator.serviceWorker
+      .register('/sw.js', { scope: '/', updateViaCache: 'none' })
+      .then((reg) => reg?.update?.().catch(() => {}))
+      .catch(() => {});
   }
 
   const rawHash = window.location.hash.startsWith('#') ? window.location.hash.slice(1) : window.location.hash;

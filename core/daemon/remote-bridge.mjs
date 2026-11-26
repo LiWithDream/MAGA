@@ -93,27 +93,39 @@ function pickPrimaryHostEntry() {
   return best;
 }
 
-async function resolvePrimaryHostEntry() {
+async function resolvePrimaryHostEntry({ maxCacheAgeMs = 15_000 } = {}) {
   const hosts = getConfirmedHostEntries();
   if (hosts.length === 0) return null;
+  const nowTs = Date.now();
   if (hosts.length === 1) {
     const only = hosts[0];
+    if (only._remoteCap && only._remoteCapAt && nowTs - only._remoteCapAt < maxCacheAgeMs) {
+      return only;
+    }
     const r = await evalOnHost(only, 'window.__agRemoteTap ? window.__agRemoteTap.getCapabilities() : null', 2500);
     if (r.ok && r.value && typeof r.value === 'object') {
       only._remoteCap = r.value;
+      only._remoteCapAt = Date.now();
       only._remoteCapScore = scoreHostCapabilities(r.value);
     }
     return only;
   }
   const results = await Promise.all(
     hosts.map(async (entry) => {
+      if (entry._remoteCap && entry._remoteCapAt && nowTs - entry._remoteCapAt < maxCacheAgeMs) {
+        return {
+          entry,
+          score: typeof entry._remoteCapScore === 'number' ? entry._remoteCapScore : scoreHostCapabilities(entry._remoteCap),
+        };
+      }
       const r = await evalOnHost(entry, 'window.__agRemoteTap ? window.__agRemoteTap.getCapabilities() : null', 2500);
       const cap = r.ok && r.value && typeof r.value === 'object' ? r.value : null;
       if (cap) {
         entry._remoteCap = cap;
+        entry._remoteCapAt = Date.now();
         entry._remoteCapScore = scoreHostCapabilities(cap);
       }
-      return { entry, score: cap ? scoreHostCapabilities(cap) : -1 };
+      return { entry, score: cap ? entry._remoteCapScore : -1 };
     })
   );
   results.sort((a, b) => b.score - a.score);
@@ -202,7 +214,7 @@ function verifyUdsWriteToken(provided, expected) {
 
 export async function probeRemoteCapabilities() {
   const hosts = getConfirmedHostEntries();
-  const primary = await resolvePrimaryHostEntry();
+  const primary = await resolvePrimaryHostEntry({ maxCacheAgeMs: 4000 });
   const diskPreset = readDiskGlobalPreset();
   const state = bridgeState;
 
@@ -230,13 +242,17 @@ export async function probeRemoteCapabilities() {
 
   if (!primary) return base;
 
-  const capRes = await evalOnHost(primary, 'window.__agRemoteTap ? window.__agRemoteTap.getCapabilities() : null', 2500);
-  const liveCap = capRes.ok && capRes.value && typeof capRes.value === 'object' ? capRes.value : null;
-  if (liveCap) {
-    primary._remoteCap = liveCap;
-    primary._remoteCapScore = scoreHostCapabilities(liveCap);
+  let tapCap = primary._remoteCap || null;
+  if (!tapCap) {
+    const capRes = await evalOnHost(primary, 'window.__agRemoteTap ? window.__agRemoteTap.getCapabilities() : null', 2500);
+    const liveCap = capRes.ok && capRes.value && typeof capRes.value === 'object' ? capRes.value : null;
+    if (liveCap) {
+      primary._remoteCap = liveCap;
+      primary._remoteCapAt = Date.now();
+      primary._remoteCapScore = scoreHostCapabilities(liveCap);
+      tapCap = liveCap;
+    }
   }
-  const tapCap = liveCap || primary._remoteCap || null;
   if (!tapCap || typeof tapCap !== 'object') return base;
 
   return {
@@ -283,6 +299,7 @@ function broadcastTapEvent(kind, data) {
 
 async function applyTapStateToHost(entry, active, skipWatchCid = null) {
   if (!entry?.hostConfirmed || entry.type !== 'page' || !entry.rpcToken) return false;
+  entry._remoteCapAt = 0;
   if (active) {
     const r = await evalOnHost(
       entry,

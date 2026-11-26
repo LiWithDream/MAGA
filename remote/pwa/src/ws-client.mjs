@@ -6,8 +6,9 @@
 import { signChallengePayload } from './crypto-store.mjs';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const PING_INTERVAL_MS = 20_000;
-const STALE_TIMEOUT_MS = 50_000;
+const PING_INTERVAL_MS = 18_000;
+const STALE_TIMEOUT_MS = 65_000;
+const RESUME_PROBE_MS = 3_500;
 const BASE_BACKOFF_MS = 800;
 const MAX_BACKOFF_MS = 15_000;
 
@@ -72,42 +73,15 @@ function normalizeDelta(raw) {
   };
 }
 
-function loadCursor(deviceId) {
-  if (!deviceId || typeof localStorage === 'undefined') return { lastSeq: 0, lastEpoch: '' };
-  try {
-    const raw = localStorage.getItem(`maga_remote_cursor:${deviceId}`);
-    if (!raw) return { lastSeq: 0, lastEpoch: '' };
-    const parsed = JSON.parse(raw);
-    const seqNum = Number(parsed?.lastSeq);
-    const epochStr = typeof parsed?.lastEpoch === 'string' ? parsed.lastEpoch : '';
-    return {
-      lastSeq: Number.isInteger(seqNum) && seqNum >= 0 ? seqNum : 0,
-      lastEpoch: epochStr,
-    };
-  } catch {
-    return { lastSeq: 0, lastEpoch: '' };
-  }
-}
-
-function saveCursor(deviceId, lastSeq, lastEpoch) {
-  if (!deviceId || typeof localStorage === 'undefined') return;
-  try {
-    localStorage.setItem(
-      `maga_remote_cursor:${deviceId}`,
-      JSON.stringify({ lastSeq: Number(lastSeq) || 0, lastEpoch: String(lastEpoch || '') })
-    );
-  } catch {}
-}
-
 export function createRemoteWsClient(identity, handlers = {}) {
-  const initialCursor = loadCursor(identity?.deviceId);
   let ws = null;
   let disposed = false;
   let reconnectTimer = null;
   let pingTimer = null;
+  let resumeProbeTimer = null;
   let attempt = 0;
-  let lastSeq = initialCursor.lastSeq;
-  let lastEpoch = initialCursor.lastEpoch;
+  let lastSeq = 0;
+  let lastEpoch = '';
   let lastActivityAt = 0;
   let connected = false;
   let desiredWatchId = null;
@@ -121,6 +95,13 @@ export function createRemoteWsClient(identity, handlers = {}) {
     } catch {}
   };
 
+  const clearResumeProbeTimer = () => {
+    if (resumeProbeTimer) {
+      clearTimeout(resumeProbeTimer);
+      resumeProbeTimer = null;
+    }
+  };
+
   const clearTimers = () => {
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
@@ -130,6 +111,7 @@ export function createRemoteWsClient(identity, handlers = {}) {
       clearInterval(pingTimer);
       pingTimer = null;
     }
+    clearResumeProbeTimer();
   };
 
   const rejectAllPending = (reason) => {
@@ -220,6 +202,7 @@ export function createRemoteWsClient(identity, handlers = {}) {
 
   const handleMessage = (rawData) => {
     lastActivityAt = Date.now();
+    clearResumeProbeTimer();
     let msg = null;
     try {
       msg = JSON.parse(String(rawData || ''));
@@ -258,7 +241,6 @@ export function createRemoteWsClient(identity, handlers = {}) {
       if (Number.isFinite(Number(msg.seq))) {
         lastSeq = Number(msg.seq);
       }
-      saveCursor(identity?.deviceId, lastSeq, lastEpoch);
       connected = true;
       attempt = 0;
       startHeartbeat();
@@ -275,7 +257,6 @@ export function createRemoteWsClient(identity, handlers = {}) {
       if (msgEpoch && lastEpoch && msgEpoch !== lastEpoch) {
         lastEpoch = msgEpoch;
         lastSeq = Number.isFinite(Number(msg.seq)) ? Number(msg.seq) : 0;
-        saveCursor(identity?.deviceId, lastSeq, lastEpoch);
         if (connected) {
           refreshList(false).catch(() => {});
         }
@@ -284,6 +265,9 @@ export function createRemoteWsClient(identity, handlers = {}) {
         if (Number.isFinite(Number(msg.seq))) {
           lastSeq = Number(msg.seq);
         }
+      }
+      if (msg.health && typeof msg.health === 'object') {
+        handlers.onHealth?.(msg.health);
       }
       if (!connected) {
         connected = true;
@@ -302,7 +286,6 @@ export function createRemoteWsClient(identity, handlers = {}) {
           handlers.onDelta?.(norm);
         }
       }
-      saveCursor(identity?.deviceId, lastSeq, lastEpoch);
       return;
     }
 
@@ -319,7 +302,6 @@ export function createRemoteWsClient(identity, handlers = {}) {
         if (norm.seq !== null && norm.seq > lastSeq && (!msgEpoch || msgEpoch === lastEpoch)) {
           lastSeq = norm.seq;
         }
-        saveCursor(identity?.deviceId, lastSeq, lastEpoch);
         handlers.onDelta?.(norm);
       }
       return;
@@ -433,6 +415,7 @@ export function createRemoteWsClient(identity, handlers = {}) {
         clearInterval(pingTimer);
         pingTimer = null;
       }
+      clearResumeProbeTimer();
       rejectAllPending('connection_closed');
       if (disposed) return;
 
@@ -455,6 +438,11 @@ export function createRemoteWsClient(identity, handlers = {}) {
         emitStatus('revoked', msg);
         return;
       }
+      if (reason === 'resume_probe_timeout') {
+        attempt = 0;
+        scheduleReconnect(200, '网络恢复中');
+        return;
+      }
       scheduleReconnect(null, reason || `连接已断开 (${ev.code || 1006})`);
     });
 
@@ -466,17 +454,33 @@ export function createRemoteWsClient(identity, handlers = {}) {
   const onVisibilityOrOnline = () => {
     if (disposed) return;
     if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
-    if (!ws || ws.readyState === WebSocket.CLOSED) {
+    if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
+      attempt = 0;
       if (reconnectTimer) {
         clearTimeout(reconnectTimer);
         reconnectTimer = null;
       }
       connect();
+      return;
+    }
+    if (ws.readyState === WebSocket.OPEN && connected) {
+      sendJson({ type: 'ping', ts: Date.now() });
+      if (!resumeProbeTimer) {
+        resumeProbeTimer = setTimeout(() => {
+          resumeProbeTimer = null;
+          if (disposed || !ws || ws.readyState !== WebSocket.OPEN) return;
+          try {
+            ws.close(4000, 'resume_probe_timeout');
+          } catch {}
+        }, RESUME_PROBE_MS);
+      }
     }
   };
 
   if (typeof window !== 'undefined') {
     window.addEventListener('online', onVisibilityOrOnline);
+    window.addEventListener('pageshow', onVisibilityOrOnline);
+    window.addEventListener('focus', onVisibilityOrOnline);
   }
   if (typeof document !== 'undefined') {
     document.addEventListener('visibilitychange', onVisibilityOrOnline);
@@ -681,6 +685,8 @@ export function createRemoteWsClient(identity, handlers = {}) {
     rejectAllPending('disposed');
     if (typeof window !== 'undefined') {
       window.removeEventListener('online', onVisibilityOrOnline);
+      window.removeEventListener('pageshow', onVisibilityOrOnline);
+      window.removeEventListener('focus', onVisibilityOrOnline);
     }
     if (typeof document !== 'undefined') {
       document.removeEventListener('visibilitychange', onVisibilityOrOnline);

@@ -2,7 +2,7 @@
  * Native Redux/Fiber store bindings, project CRUD RPCs, context/file deltas & project action menu.
  */
 export function createProjectNativeStore(ctx) {
-  const { FEAT, L, rtState, escapeHtml, setLeafText, pState, ICONS, pHooks, activeReactFiber, invalidateOverviewSnapshotCache, isSidebarVisibleSummary, isSummaryPinned, protoSeconds, findSidebarBindings, scheduleSidebarSync, closeRecentRowMenu } = ctx;
+  const { FEAT, L, FILE_MANAGER_ZH, FILE_MANAGER_EN, rtState, escapeHtml, setLeafText, pState, ICONS, pHooks, activeReactFiber, invalidateOverviewSnapshotCache, isSidebarVisibleSummary, isSummaryPinned, protoSeconds, findSidebarBindings, scheduleSidebarSync, closeRecentRowMenu } = ctx;
   const { SVG_CLAUDE_PROJECTS_ICON, SVG_PROJ_SETTINGS, RECENT_FOLDER_SVG, RECENT_RENAME_SVG, RECENT_ARCHIVE_SVG, RECENT_TRASH_SVG } = ICONS;
   const renderProjectsView = (...args) => pHooks.renderProjectsView?.(...args);
   const closeProjectsModal = (...args) => pHooks.closeProjectsModal?.(...args);
@@ -501,9 +501,7 @@ export function createProjectNativeStore(ctx) {
     const canUpdate = Boolean(!proj.isBuiltin && pm && typeof pm.updateProject === 'function');
     const canDelete = Boolean(!proj.isBuiltin && pm && typeof pm.deleteProject === 'function');
     const canReveal = Boolean(proj.dirPath && typeof window.__agProjectCall === 'function');
-    const revealLabel = /Win/i.test((navigator && navigator.platform) || '')
-      ? L('在资源管理器中显示', 'Show in Explorer')
-      : L('在访达中显示', 'Reveal in Finder');
+    const revealLabel = L(`在${FILE_MANAGER_ZH}中显示`, FILE_MANAGER_EN === 'Explorer' ? 'Show in Explorer' : `Reveal in ${FILE_MANAGER_EN}`);
     const delLabel = st.confirmDelete
       ? L('确认删除？（保留本地文件）', 'Confirm delete? (keeps files)')
       : L('删除项目', 'Delete project');

@@ -16,6 +16,7 @@ import {
   writeAtomicUtf8
 } from './env.mjs';
 import { getActiveConfig, rebuildBundleIfNeeded } from './prefs-bundle.mjs';
+import { startWinCdpBootstrap } from './cdp-bootstrap-win.mjs';
 
 export const PRESERVED_RELAUNCH_ENV_KEYS = Object.freeze([
   'HTTP_PROXY',
@@ -576,4 +577,9 @@ export function startMacCdpBootstrap() {
   recoverInterruptedRelaunch()
     .catch(() => {})
     .finally(() => checkFreshLaunch());
+}
+
+export function startCdpBootstrap() {
+  if (process.platform === 'darwin') return startMacCdpBootstrap();
+  if (process.platform === 'win32') return startWinCdpBootstrap();
 }

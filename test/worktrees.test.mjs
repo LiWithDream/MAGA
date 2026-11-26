@@ -276,7 +276,7 @@ test('worktrees.mjs: security guards, symlinked -wt block, node_modules clean re
 
     // 2. Symlinked `<repo>-wt` parent blocked cleanly (`unsafe_worktree_parent`)
     fs.mkdirSync(outsideTarget, { recursive: true });
-    fs.symlinkSync(outsideTarget, `${symlinkParentRepo}-wt`);
+    fs.symlinkSync(outsideTarget, `${symlinkParentRepo}-wt`, process.platform === 'win32' ? 'junction' : 'dir');
     const symlinkRes = await createRepoWorktreeAsync(symlinkParentRepo, {
       type: 'feat',
       slug: 'sym-test',

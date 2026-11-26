@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const INSTALL = path.join(REPO, 'install.mjs');
@@ -62,6 +62,9 @@ function run(h, args, env = {}) {
     env: {
       ...process.env,
       HOME: h.home,
+      USERPROFILE: h.home,
+      APPDATA: path.join(h.home, 'AppData', 'Roaming'),
+      LOCALAPPDATA: path.join(h.home, 'AppData', 'Local'),
       ANTI_CLAUDE_NO_NETWORK: '1',
       ANTI_CLAUDE_NO_LAUNCHD: '1',
       ANTI_CLAUDE_NO_CDP: '1',
@@ -74,7 +77,7 @@ function run(h, args, env = {}) {
 }
 
 test('statusline formats full telemetry payload and adapts to narrow terminals', async () => {
-  const { formatStatusLine, stripAnsi } = await import(STATUSLINE);
+  const { formatStatusLine, stripAnsi } = await import(pathToFileURL(STATUSLINE).href);
   const payload = {
     model: { display_name: 'Gemini 4 Neon' },
     context_window: { used_percentage: 38, context_window_size: 256000 },

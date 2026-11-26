@@ -1111,8 +1111,10 @@ test('syncOpusGatePlugin pins absolute Node executable, chmods hook, prunes stal
     assert.ok(syncedHooks['maga-opus-gate'].Stop[0].command.includes(process.execPath));
     assert.ok(syncedHooks['maga-opus-gate'].PostToolUse[0].hooks[0].command.includes(process.execPath));
 
-    const hookStat = fs.statSync(path.join(dirs.pluginsDir, 'maga-opus-gate', 'hooks', 'gate-check.mjs'));
-    assert.ok((hookStat.mode & 0o111) !== 0, 'gate-check.mjs must be executable');
+    if (process.platform !== 'win32') {
+      const hookStat = fs.statSync(path.join(dirs.pluginsDir, 'maga-opus-gate', 'hooks', 'gate-check.mjs'));
+      assert.ok((hookStat.mode & 0o111) !== 0, 'gate-check.mjs must be executable');
+    }
 
     const runtimeCheck = verifyOpusGateHookNodeRuntime({ pluginsDir: dirs.pluginsDir });
     assert.equal(runtimeCheck.ok, true);

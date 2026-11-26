@@ -7,6 +7,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { renameWithWinRetry } from '../core/daemon/env.mjs';
 
 const STATE_DIR = path.resolve(
   process.env.ANTI_CLAUDE_STATE_DIR || path.join(os.homedir(), '.gemini', 'antigravity', 'anti-claude')
@@ -69,7 +70,7 @@ export function writeDeployMeta(repoRoot, metaPath = DEPLOY_META_PATH, extra = {
   const tmp = `${metaPath}.tmp-${process.pid}-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
   try {
     fs.writeFileSync(tmp, `${JSON.stringify(provenance, null, 2)}\n`, 'utf8');
-    fs.renameSync(tmp, metaPath);
+    renameWithWinRetry(tmp, metaPath);
   } catch (err) {
     try {
       fs.rmSync(tmp, { force: true });

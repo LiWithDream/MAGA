@@ -31,6 +31,19 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { renameWithWinRetry } from './core/daemon/env.mjs';
+import {
+  buildWinStartupVbs,
+  disableWinCoreDaemon,
+  ensureWinCoreDaemon,
+  getWinAntigravityFingerprint,
+  getWinShortcutPath,
+  getWinStartupVbsPath,
+  inspectWinCoreDaemon,
+  stableWinNodePath,
+} from './core/daemon/win-service.mjs';
+
+export { buildWinStartupVbs };
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -131,10 +144,11 @@ function readProcessCommandLineSync(pid) {
   }
   if (process.platform === 'win32') {
     try {
+      const ps = `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; (Get-CimInstance Win32_Process -Filter "ProcessId=${Number(pid)}").CommandLine`;
       return execFileSync(
         'powershell',
-        ['-NoProfile', '-Command', `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`],
-        { encoding: 'utf8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'] }
+        ['-NoProfile', '-Command', ps],
+        { encoding: 'utf8', timeout: 5000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }
       ).trim();
     } catch {
       return '';
@@ -193,7 +207,7 @@ function writeFileAtomic(p, content) {
         fs.chmodSync(tmp, prevMode);
       } catch {}
     }
-    fs.renameSync(tmp, target);
+    renameWithWinRetry(tmp, target);
   } catch (err) {
     try {
       fs.rmSync(tmp, { force: true });
@@ -352,6 +366,9 @@ function getAntigravityAppFingerprint() {
     } catch {}
     return { version, asarSig, changedAtMs, sig: `${version}|${asarSig}` };
   }
+  if (process.platform === 'win32') {
+    return getWinAntigravityFingerprint({ home: HOME });
+  }
   return { version: 'unknown', asarSig: 'unknown', changedAtMs: 0, sig: process.platform };
 }
 
@@ -422,7 +439,12 @@ function findAgyCliBinary() {
   } catch {}
   const fallbacks =
     process.platform === 'win32'
-      ? [path.join(HOME, '.gemini', 'bin', 'agy.exe'), path.join(HOME, '.local', 'bin', 'agy.exe')]
+      ? [
+          path.join(HOME, '.gemini', 'bin', 'agy.exe'),
+          path.join(HOME, '.gemini', 'bin', 'agy.cmd'),
+          path.join(HOME, '.local', 'bin', 'agy.exe'),
+          path.join(process.env.APPDATA || path.join(HOME, 'AppData', 'Roaming'), 'npm', 'agy.cmd')
+        ]
       : [path.join(HOME, '.gemini', 'bin', 'agy'), path.join(HOME, '.local', 'bin', 'agy'), '/opt/homebrew/bin/agy', '/usr/local/bin/agy'];
   for (const p of fallbacks) {
     if (fs.existsSync(p)) return p;
@@ -437,7 +459,16 @@ function detectAntigravityCli() {
   let version = null;
   if (binary) {
     try {
-      version = execFileSync(binary, ['--version'], { encoding: 'utf8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'] }).trim() || null;
+      const isWinBatch = process.platform === 'win32' && /\.(?:cmd|bat)$/i.test(binary);
+      const execCmd = isWinBatch ? 'cmd.exe' : binary;
+      const execArgs = isWinBatch ? ['/d', '/c', binary, '--version'] : ['--version'];
+      version =
+        execFileSync(execCmd, execArgs, {
+          encoding: 'utf8',
+          timeout: 2000,
+          windowsHide: true,
+          stdio: ['ignore', 'pipe', 'ignore']
+        }).trim() || null;
     } catch {}
   }
   const settings = settingsExists ? readJsonSafe(AGY_CLI_SETTINGS_JSON, null) : null;
@@ -460,6 +491,9 @@ function detectAntigravityCli() {
 
 /** Prefer a version-independent node path so `brew upgrade node` does not break LaunchAgents. */
 export function stableNodePath(execPath = process.execPath) {
+  if (process.platform === 'win32') {
+    return stableWinNodePath(execPath);
+  }
   const candidates = ['/opt/homebrew/bin/node', '/usr/local/bin/node'];
   let realExec = execPath;
   try {
@@ -1357,9 +1391,11 @@ function runLiveTeardownOnce() {
 /* Standalone Core Daemon & Auto-Update Service Management                    */
 /* -------------------------------------------------------------------------- */
 
-function getWinStartupVbsPath() {
-  const appData = process.env.APPDATA || path.join(HOME, 'AppData', 'Roaming');
-  return path.join(appData, 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup', 'Anti-Claude-Daemon.vbs');
+const WIN_STOP_SIGNAL_FILE = path.join(STATE_DIR, 'daemon-stop.signal');
+const WIN_DAEMON_META_FILE = path.join(STATE_DIR, 'win-daemon-meta.json');
+
+function getWinStartupVbsFile() {
+  return getWinStartupVbsPath(HOME, process.env);
 }
 
 function getLinuxSystemdUnitPath() {
@@ -1413,7 +1449,7 @@ function spawnDetachedDaemon(nodePath) {
   }
 }
 
-function ensureCoreDaemon() {
+function ensureCoreDaemon({ createShortcut = true } = {}) {
   if (NO_LAUNCHD) return { ok: true, skipped: 'launchd_disabled' };
   fs.mkdirSync(STATE_DIR, { recursive: true });
   fs.mkdirSync(USER_DIR, { recursive: true });
@@ -1528,13 +1564,21 @@ function ensureCoreDaemon() {
   }
 
   if (process.platform === 'win32') {
-    const vbsPath = getWinStartupVbsPath();
-    const vbs = buildWinStartupVbs(nodePath, CORE_DAEMON_SCRIPT, USER_DIR);
-    try {
-      writeFileAtomic(vbsPath, vbs);
-    } catch {}
-    const pid = spawnDetachedDaemon(nodePath);
-    return { ok: true, startupVbs: vbsPath, pid };
+    return ensureWinCoreDaemon({
+      nodePath,
+      daemonScript: CORE_DAEMON_SCRIPT,
+      userDir: USER_DIR,
+      stateDir: STATE_DIR,
+      pidFile: PID_FILE,
+      stopFile: WIN_STOP_SIGNAL_FILE,
+      metaFile: WIN_DAEMON_META_FILE,
+      vbsPath: getWinStartupVbsFile(),
+      shortcutPath: getWinShortcutPath(HOME, process.env),
+      createShortcut,
+      noLaunchd: NO_LAUNCHD,
+      spawnDetachedFn: spawnDetachedDaemon,
+      isMatchingPidFn: isMatchingDaemonPid,
+    });
   }
 
   const unitPath = getLinuxSystemdUnitPath();
@@ -1551,39 +1595,18 @@ function ensureCoreDaemon() {
   }
 }
 
-export function buildWinStartupVbs(nodePath, daemonScript, userDir) {
-  /* Encode non-ASCII characters via ChrW() so WScript never garbles Unicode usernames without BOM */
-  const vbsExpr = (s) => {
-    const parts = [];
-    let buf = '';
-    const flush = () => {
-      if (buf) {
-        parts.push(`"${buf}"`);
-        buf = '';
-      }
-    };
-    for (const ch of String(s)) {
-      const cp = ch.codePointAt(0);
-      if (ch === '"') buf += '""';
-      else if (cp >= 32 && cp <= 126) buf += ch;
-      else if (cp <= 0xffff) {
-        flush();
-        parts.push(`ChrW(${cp})`);
-      } else {
-        flush();
-        const hi = Math.floor((cp - 0x10000) / 0x400) + 0xd800;
-        const lo = ((cp - 0x10000) % 0x400) + 0xdc00;
-        parts.push(`ChrW(${hi})`, `ChrW(${lo})`);
-      }
-    }
-    flush();
-    return parts.length ? parts.join(' & ') : '""';
-  };
-  const cmdExpr = vbsExpr(`"${nodePath}" "${daemonScript}" --user-dir "${userDir}"`);
-  return `Set sh = CreateObject("WScript.Shell")\r\nsh.Run ${cmdExpr}, 0, False\r\n`;
-}
-
 function disableCoreDaemon() {
+  if (process.platform === 'win32') {
+    return disableWinCoreDaemon({
+      pidFile: PID_FILE,
+      stopFile: WIN_STOP_SIGNAL_FILE,
+      metaFile: WIN_DAEMON_META_FILE,
+      vbsPath: getWinStartupVbsFile(),
+      shortcutPath: getWinShortcutPath(HOME, process.env),
+      noLaunchd: NO_LAUNCHD,
+      isMatchingPidFn: isMatchingDaemonPid,
+    });
+  }
   let stopped = false;
   if (process.platform === 'darwin' && fs.existsSync(DAEMON_PLIST)) {
     if (!NO_LAUNCHD) {
@@ -1594,12 +1617,6 @@ function disableCoreDaemon() {
     }
     fs.rmSync(DAEMON_PLIST, { force: true });
     stopped = true;
-  } else if (process.platform === 'win32') {
-    const vbsPath = getWinStartupVbsPath();
-    if (fs.existsSync(vbsPath)) {
-      fs.rmSync(vbsPath, { force: true });
-      stopped = true;
-    }
   } else {
     const unitPath = getLinuxSystemdUnitPath();
     if (fs.existsSync(unitPath)) {
@@ -1627,6 +1644,14 @@ function disableCoreDaemon() {
 }
 
 function inspectCoreDaemon() {
+  if (process.platform === 'win32') {
+    return inspectWinCoreDaemon({
+      pidFile: PID_FILE,
+      metaFile: WIN_DAEMON_META_FILE,
+      vbsPath: getWinStartupVbsFile(),
+      isMatchingPidFn: isMatchingDaemonPid,
+    });
+  }
   let pidAlive = false;
   let pid = null;
   if (fs.existsSync(PID_FILE)) {
@@ -1652,10 +1677,6 @@ function inspectCoreDaemon() {
       scriptPath,
       scriptExists: Boolean(scriptPath && fs.existsSync(scriptPath))
     };
-  }
-  if (process.platform === 'win32') {
-    const vbsPath = getWinStartupVbsPath();
-    return { installed: fs.existsSync(vbsPath), running: pidAlive, pid, startupVbs: vbsPath };
   }
   const unitPath = getLinuxSystemdUnitPath();
   return { installed: fs.existsSync(unitPath), running: pidAlive, pid, systemdUnit: unitPath };
@@ -2008,13 +2029,15 @@ async function cmdDoctor() {
     warnings.push('legacy theme-patch installation detected: run `install` once to migrate customizations and retire theme-patch');
   }
   if (agent.legacyPlist) warnings.push('legacy claude-ux LaunchAgent detected: run `install` or `auto-update-on` to migrate to com.antigravity.anti-claude.autosync');
+  const fp = getAntigravityAppFingerprint();
   return finalize(
     {
       platform: process.platform,
       node: process.version,
       version: pkgVersion,
       mode,
-      antigravityAppVersion: getAntigravityAppFingerprint().version,
+      antigravityAppVersion: fp.version,
+      ...(fp.exePath ? { antigravityAppExe: fp.exePath } : {}),
       antigravityCli,
       coreEngine: {
         standalone: true,
@@ -2115,7 +2138,7 @@ async function cmdInstall(flags) {
   if (layer.conflicts.length) warnings.push(`local edits kept, new versions saved to ${INCOMING_DIR}: ${layer.conflicts.join(', ')} (use --overwrite-local to replace)`);
   saveState(state);
 
-  const coreDaemon = ensureCoreDaemon();
+  const coreDaemon = ensureCoreDaemon({ createShortcut: !flags.has('--no-shortcut') });
   if (!coreDaemon.ok) warnings.push(`core daemon: ${coreDaemon.reason}`);
   else if (coreDaemon.fallbackDetached) {
     warnings.push(`core daemon fell back to detached process (no launchd KeepAlive): ${coreDaemon.launchctlNote || 'launchctl failed'}`);
@@ -2250,7 +2273,7 @@ async function cmdSyncUpgrade(flags) {
   const layer = installUserLayer(state, { overwriteLocal: flags.has('--overwrite-local') });
   if (layer.conflicts.length) warnings.push(`local edits kept, new versions in ${INCOMING_DIR}: ${layer.conflicts.join(', ')}`);
 
-  const coreDaemon = ensureCoreDaemon();
+  const coreDaemon = ensureCoreDaemon({ createShortcut: !flags.has('--no-shortcut') });
   if (!coreDaemon.ok) warnings.push(`core daemon: ${coreDaemon.reason}`);
   else if (coreDaemon.fallbackDetached) {
     warnings.push(`core daemon fell back to detached process (no launchd KeepAlive): ${coreDaemon.launchctlNote || 'launchctl failed'}`);
@@ -2306,6 +2329,8 @@ async function cmdUninstall() {
   for (const p of [
     STATE_FILE,
     PID_FILE,
+    WIN_STOP_SIGNAL_FILE,
+    WIN_DAEMON_META_FILE,
     PROJECTS_REGISTRY_FILE,
     UI_PREFS_FILE,
     BACKUP_DIR,

@@ -57,6 +57,41 @@ const SHELL_MUTATING_BINS = new Set([
   'sponge',
 ]);
 
+const WIN_MUTATING_BINS = new Set([
+  'del',
+  'erase',
+  'move',
+  'ren',
+  'rename',
+  'copy',
+  'xcopy',
+  'robocopy',
+  'remove-item',
+  'ri',
+  'move-item',
+  'mi',
+  'copy-item',
+  'cpi',
+  'new-item',
+  'ni',
+  'set-content',
+  'sc',
+  'add-content',
+  'ac',
+  'out-file',
+  'clear-content',
+  'clc',
+]);
+
+function basenameForPlatform(token, platform = process.platform) {
+  return platform === 'win32' ? path.win32.basename(String(token || '')) : path.basename(String(token || ''));
+}
+
+function stripWinExeSuffix(name, platform = process.platform) {
+  const s = String(name || '');
+  return platform === 'win32' ? s.replace(/\.(?:exe|cmd|bat|ps1)$/i, '') : s;
+}
+
 const INLINE_SCRIPT_RUNNERS = new Set(['node', 'bun', 'deno', 'python', 'python3', 'ruby', 'perl', 'osascript']);
 const INLINE_WRITE_HINT_RE = /\b(?:write|writeFile|writeFileSync|appendFile|appendFileSync|createWriteStream|unlink|unlinkSync|rm|rmSync|rmdir|rename|renameSync|copyFile|copyFileSync|chmod|chmodSync|truncate|truncateSync|open|mkdir|mkdirSync)\b/i;
 
@@ -69,8 +104,9 @@ export function expandHome(inputPath) {
   return inputPath;
 }
 
-export function splitShellSegmentsWithOps(commandLine) {
+export function splitShellSegmentsWithOps(commandLine, platform = process.platform) {
   if (!commandLine || typeof commandLine !== 'string') return [];
+  const isWin = platform === 'win32';
   const segments = [];
   let buf = '';
   let inSingle = false;
@@ -104,7 +140,12 @@ export function splitShellSegmentsWithOps(commandLine) {
     }
 
     if (inDouble) {
-      if (ch === '\\') {
+      if (!isWin && ch === '\\') {
+        escaped = true;
+        buf += ch;
+        continue;
+      }
+      if (isWin && ch === '`') {
         escaped = true;
         buf += ch;
         continue;
@@ -114,7 +155,12 @@ export function splitShellSegmentsWithOps(commandLine) {
       continue;
     }
 
-    if (ch === '\\') {
+    if (!isWin && ch === '\\') {
+      escaped = true;
+      buf += ch;
+      continue;
+    }
+    if (isWin && ch === '`') {
       escaped = true;
       buf += ch;
       continue;
@@ -160,8 +206,8 @@ export function splitShellSegmentsWithOps(commandLine) {
   return segments;
 }
 
-export function splitShellSegments(commandLine) {
-  return splitShellSegmentsWithOps(commandLine).map((s) => s.text);
+export function splitShellSegments(commandLine, platform = process.platform) {
+  return splitShellSegmentsWithOps(commandLine, platform).map((s) => s.text);
 }
 
 export function stripUnquotedGroupDelimiters(segmentText) {
@@ -205,8 +251,9 @@ function tryExpandDollar(segment, idx, shellVars) {
   return { value: shellVars.get(name), nextIndex: end - 1 };
 }
 
-export function tokenizeSegment(segment, shellVars = null) {
+export function tokenizeSegment(segment, shellVars = null, platform = process.platform) {
   if (!segment || typeof segment !== 'string') return [];
+  const isWin = platform === 'win32';
   const tokens = [];
   let current = '';
   let hasToken = false;
@@ -243,12 +290,22 @@ export function tokenizeSegment(segment, shellVars = null) {
     }
 
     if (inDouble) {
-      if (ch === '\\') {
+      if (!isWin && ch === '\\') {
         const next = segment[i + 1];
         if (next === '"' || next === '\\' || next === '$' || next === '`') {
           escaped = true;
         } else if (next === '\n') {
           i += 1;
+        } else {
+          current += ch;
+          hasToken = true;
+        }
+        continue;
+      }
+      if (isWin && ch === '`') {
+        const next = segment[i + 1];
+        if (next === '"' || next === '`' || next === '$') {
+          escaped = true;
         } else {
           current += ch;
           hasToken = true;
@@ -273,7 +330,12 @@ export function tokenizeSegment(segment, shellVars = null) {
       continue;
     }
 
-    if (ch === '\\') {
+    if (!isWin && ch === '\\') {
+      escaped = true;
+      hasToken = true;
+      continue;
+    }
+    if (isWin && ch === '`') {
       escaped = true;
       hasToken = true;
       continue;
@@ -313,19 +375,20 @@ export function tokenizeSegment(segment, shellVars = null) {
   }
 
   if (escaped) {
-    current += '\\';
+    current += isWin ? '`' : '\\';
     hasToken = true;
   }
   pushToken();
   return tokens;
 }
 
-export function isGitBinary(token) {
+export function isGitBinary(token, platform = process.platform) {
   if (!token) return false;
-  return token === 'git' || path.basename(token) === 'git';
+  const base = stripWinExeSuffix(basenameForPlatform(token, platform), platform);
+  return platform === 'win32' ? base.toLowerCase() === 'git' : base === 'git';
 }
 
-export function parseCommandWrapper(tokens) {
+export function parseCommandWrapper(tokens, platform = process.platform) {
   const env = {};
   let idx = 0;
 
@@ -342,8 +405,9 @@ export function parseCommandWrapper(tokens) {
       continue;
     }
 
-    const base = path.basename(tok);
-    if (base === 'env') {
+    const base = stripWinExeSuffix(basenameForPlatform(tok, platform), platform);
+    const baseLower = platform === 'win32' ? base.toLowerCase() : base;
+    if (baseLower === 'env') {
       idx += 1;
       while (idx < tokens.length && tokens[idx].startsWith('-')) {
         const flag = tokens[idx];
@@ -401,9 +465,37 @@ export function parseCommandWrapper(tokens) {
   return { env, cmdTokens: tokens.slice(idx) };
 }
 
-export function extractInlineShellString(cmdTokens) {
+export function extractInlineShellString(cmdTokens, platform = process.platform) {
   if (!Array.isArray(cmdTokens) || cmdTokens.length < 2) return '';
-  const base = path.basename(cmdTokens[0]);
+  const base = stripWinExeSuffix(basenameForPlatform(cmdTokens[0], platform), platform).toLowerCase();
+  if (base === 'cmd') {
+    for (let i = 1; i < cmdTokens.length; i += 1) {
+      const tok = String(cmdTokens[i] || '').toLowerCase();
+      if (tok === '/c' || tok === '/k') {
+        const rest = cmdTokens.slice(i + 1);
+        return rest.length === 1 ? rest[0] : rest.join(' ');
+      }
+      if (!tok.startsWith('/') && !tok.startsWith('-')) break;
+    }
+    return '';
+  }
+  if (base === 'powershell' || base === 'pwsh') {
+    for (let i = 1; i < cmdTokens.length; i += 1) {
+      const tok = String(cmdTokens[i] || '').toLowerCase();
+      if (tok === '-c' || tok === '-command' || tok === '/c') {
+        const rest = cmdTokens.slice(i + 1);
+        return rest.length === 1 ? rest[0] : rest.join(' ');
+      }
+      if ((tok === '-enc' || tok === '-encodedcommand') && typeof cmdTokens[i + 1] === 'string') {
+        try {
+          return Buffer.from(cmdTokens[i + 1], 'base64').toString('utf16le');
+        } catch {
+          return '';
+        }
+      }
+    }
+    return '';
+  }
   if (base !== 'sh' && base !== 'bash' && base !== 'zsh') return '';
   for (let i = 1; i < cmdTokens.length; i += 1) {
     const tok = cmdTokens[i];
@@ -415,8 +507,14 @@ export function extractInlineShellString(cmdTokens) {
   return '';
 }
 
-export function extractGitInvocationsDetailed(commandLine, initialCwd = process.cwd(), depth = 0) {
-  const segments = splitShellSegmentsWithOps(commandLine);
+export function extractGitInvocationsDetailed(
+  commandLine,
+  initialCwd = process.cwd(),
+  depth = 0,
+  platform = process.platform
+) {
+  const isWin = platform === 'win32';
+  const segments = splitShellSegmentsWithOps(commandLine, platform);
   const invocations = [];
   const shellVars = new Map();
   let currentDir = path.resolve(expandHome(initialCwd) || process.cwd());
@@ -425,7 +523,7 @@ export function extractGitInvocationsDetailed(commandLine, initialCwd = process.
   for (const seg of segments) {
     const inPipeline = seg.sepBefore === '|' || seg.sepAfter === '|';
     const cleanedSegText = stripUnquotedGroupDelimiters(seg.text);
-    const rawTokens = tokenizeSegment(cleanedSegText, shellVars);
+    const rawTokens = tokenizeSegment(cleanedSegText, shellVars, platform);
     if (rawTokens.length === 0) continue;
 
     if (rawTokens[0] === 'export' && rawTokens.length > 1) {
@@ -438,7 +536,7 @@ export function extractGitInvocationsDetailed(commandLine, initialCwd = process.
       continue;
     }
 
-    const { env, cmdTokens } = parseCommandWrapper(rawTokens);
+    const { env, cmdTokens } = parseCommandWrapper(rawTokens, platform);
 
     if (cmdTokens.length === 0) {
       if (!inPipeline) {
@@ -449,10 +547,12 @@ export function extractGitInvocationsDetailed(commandLine, initialCwd = process.
       continue;
     }
 
-    if (cmdTokens[0] === 'cd') {
+    const cmdHeadLower = isWin ? cmdTokens[0].toLowerCase() : cmdTokens[0];
+    if (cmdHeadLower === 'cd' || (isWin && (cmdHeadLower === 'set-location' || cmdHeadLower === 'sl'))) {
       if (inPipeline) continue;
       let argIdx = 1;
       if (cmdTokens[argIdx] === '--') argIdx += 1;
+      if (isWin && String(cmdTokens[argIdx] || '').toLowerCase() === '/d') argIdx += 1;
       const rawTarget = cmdTokens[argIdx];
       let nextDir = currentDir;
       if (!rawTarget) {
@@ -460,7 +560,9 @@ export function extractGitInvocationsDetailed(commandLine, initialCwd = process.
       } else if (rawTarget === '-') {
         nextDir = prevDir;
       } else {
-        nextDir = path.resolve(currentDir, expandHome(rawTarget));
+        nextDir = isWin && /^[A-Za-z]:[\\/]/.test(rawTarget)
+          ? path.win32.normalize(rawTarget)
+          : path.resolve(currentDir, expandHome(rawTarget));
       }
       prevDir = currentDir;
       currentDir = nextDir;
@@ -468,9 +570,9 @@ export function extractGitInvocationsDetailed(commandLine, initialCwd = process.
     }
 
     if (depth === 0) {
-      const inlineShell = extractInlineShellString(cmdTokens);
+      const inlineShell = extractInlineShellString(cmdTokens, platform);
       if (inlineShell) {
-        const nested = extractGitInvocationsDetailed(inlineShell, currentDir, depth + 1);
+        const nested = extractGitInvocationsDetailed(inlineShell, currentDir, depth + 1, platform);
         for (const subInv of nested.invocations) {
           invocations.push({
             ...subInv,
@@ -481,7 +583,7 @@ export function extractGitInvocationsDetailed(commandLine, initialCwd = process.
       }
     }
 
-    if (!isGitBinary(cmdTokens[0])) continue;
+    if (!isGitBinary(cmdTokens[0], platform)) continue;
 
     let targetDir = currentDir;
     let i = 1;
@@ -557,13 +659,14 @@ export function extractGitInvocationsDetailed(commandLine, initialCwd = process.
   return { invocations, finalDir: currentDir };
 }
 
-export function extractGitInvocations(commandLine, initialCwd = process.cwd()) {
-  return extractGitInvocationsDetailed(commandLine, initialCwd).invocations;
+export function extractGitInvocations(commandLine, initialCwd = process.cwd(), platform = process.platform) {
+  return extractGitInvocationsDetailed(commandLine, initialCwd, 0, platform).invocations;
 }
 
-export function extractWriteRedirectTargets(segmentText) {
+export function extractWriteRedirectTargets(segmentText, platform = process.platform) {
   const targets = [];
   if (!segmentText || !segmentText.includes('>')) return targets;
+  const isWin = platform === 'win32';
   let inSingle = false;
   let inDouble = false;
   let escaped = false;
@@ -579,14 +682,20 @@ export function extractWriteRedirectTargets(segmentText) {
       continue;
     }
     if (inDouble) {
-      if (ch === '\\') {
+      if (!isWin && ch === '\\') {
+        escaped = true;
+      } else if (isWin && ch === '`') {
         escaped = true;
       } else if (ch === '"') {
         inDouble = false;
       }
       continue;
     }
-    if (ch === '\\') {
+    if (!isWin && ch === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (isWin && ch === '`') {
       escaped = true;
       continue;
     }
@@ -632,13 +741,19 @@ export function extractWriteRedirectTargets(segmentText) {
         continue;
       }
       if (tDouble) {
-        if (c === '\\') tEsc = true;
+        if (!isWin && c === '\\') tEsc = true;
+        else if (isWin && c === '`') tEsc = true;
         else if (c === '"') tDouble = false;
         else tok += c;
         j += 1;
         continue;
       }
-      if (c === '\\') {
+      if (!isWin && c === '\\') {
+        tEsc = true;
+        j += 1;
+        continue;
+      }
+      if (isWin && c === '`') {
         tEsc = true;
         j += 1;
         continue;
@@ -657,18 +772,20 @@ export function extractWriteRedirectTargets(segmentText) {
       tok += c;
       j += 1;
     }
-    if (tok && tok !== '/dev/null') targets.push(tok);
+    if (tok && tok !== '/dev/null' && (!isWin || tok.toLowerCase() !== 'nul')) targets.push(tok);
     i = Math.max(i, j - 1);
   }
   return targets;
 }
 
-export function getShellSegmentWriteInfo(cmdTokens, rawSegText) {
+export function getShellSegmentWriteInfo(cmdTokens, rawSegText, platform = process.platform) {
   if (!Array.isArray(cmdTokens) || cmdTokens.length === 0) {
     return { mutating: false, inlineScript: false };
   }
-  const bin = path.basename(cmdTokens[0]).toLowerCase();
-  if (SHELL_MUTATING_BINS.has(bin)) return { mutating: true, inlineScript: false };
+  const bin = stripWinExeSuffix(basenameForPlatform(cmdTokens[0], platform), platform).toLowerCase();
+  if (SHELL_MUTATING_BINS.has(bin) || (platform === 'win32' && WIN_MUTATING_BINS.has(bin))) {
+    return { mutating: true, inlineScript: false };
+  }
   if (bin === 'sed') {
     const hasInPlace = cmdTokens.slice(1).some((t) => t === '--in-place' || /^-[a-zA-Z]*i/.test(t));
     return { mutating: hasInPlace, inlineScript: false };
@@ -683,7 +800,7 @@ export function getShellSegmentWriteInfo(cmdTokens, rawSegText) {
       return { mutating: true, inlineScript: true };
     }
   }
-  if (isGitBinary(cmdTokens[0])) {
+  if (isGitBinary(cmdTokens[0], platform)) {
     const mutatingGit = cmdTokens.slice(1).some((t) => t === 'rm' || t === 'mv' || t === 'checkout' || t === 'restore' || t === 'clean');
     if (mutatingGit) return { mutating: true, inlineScript: false };
   }

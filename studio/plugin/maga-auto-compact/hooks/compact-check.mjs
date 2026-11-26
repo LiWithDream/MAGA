@@ -98,7 +98,24 @@ function writeAtomicJson(filePath, obj) {
   const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
   try {
     fs.writeFileSync(tmp, `${JSON.stringify(obj, null, 2)}\n`, 'utf8');
-    fs.renameSync(tmp, filePath);
+    if (process.platform === 'win32') {
+      for (let attempt = 0; attempt < 6; attempt += 1) {
+        try {
+          fs.renameSync(tmp, filePath);
+          break;
+        } catch (err) {
+          const code = err?.code;
+          if ((code !== 'EPERM' && code !== 'EBUSY' && code !== 'EACCES') || attempt === 5) throw err;
+          if (SLEEP_BUF) {
+            try {
+              Atomics.wait(SLEEP_BUF, 0, 0, 20);
+            } catch {}
+          }
+        }
+      }
+    } else {
+      fs.renameSync(tmp, filePath);
+    }
   } catch (err) {
     try {
       fs.rmSync(tmp, { force: true });

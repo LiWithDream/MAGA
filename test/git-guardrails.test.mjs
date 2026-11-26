@@ -490,12 +490,18 @@ test('repository guardrail scripts, permissions, package script, and .gitignore 
   for (const name of ['guard-main-branch.mjs', 'pre-commit', 'pre-push']) {
     const filePath = path.join(GITHOOKS_DIR, name);
     assert.equal(fs.existsSync(filePath), true, `${name} must exist in .githooks/`);
-    assert.notEqual(fs.statSync(filePath).mode & 0o111, 0, `${name} must be executable`);
+    if (process.platform !== 'win32') {
+      assert.notEqual(fs.statSync(filePath).mode & 0o111, 0, `${name} must be executable`);
+    }
   }
 
   const pkg = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf8'));
   assert.equal(typeof pkg.scripts['setup:hooks'], 'string');
-  assert.match(pkg.scripts['setup:hooks'], /core\.hooksPath\s+\.githooks/);
+  assert.match(pkg.scripts['setup:hooks'], /(?:core\.hooksPath\s+\.githooks|studio\/setup-hooks\.mjs)/);
+  if (pkg.scripts['setup:hooks'].includes('setup-hooks.mjs')) {
+    const setupScript = fs.readFileSync(path.join(REPO_ROOT, 'studio', 'setup-hooks.mjs'), 'utf8');
+    assert.match(setupScript, /'core\.hooksPath',\s*'\.githooks'/);
+  }
 
   const gitignore = fs.readFileSync(path.join(REPO_ROOT, '.gitignore'), 'utf8');
   assert.match(gitignore, /^node_modules$/m);
@@ -625,7 +631,13 @@ test('PreToolUse hook expands $VAR/${VAR} safely across standalone assignments, 
         cwd: mainRepo,
         toolCall: { name: 'run_command', args: { CommandLine: `git -C "${wtDir}" status` } },
       }),
-      env: { ...process.env, HOME: fakeHome },
+      env: {
+        ...process.env,
+        HOME: fakeHome,
+        USERPROFILE: fakeHome,
+        APPDATA: path.join(fakeHome, 'AppData', 'Roaming'),
+        LOCALAPPDATA: path.join(fakeHome, 'AppData', 'Local'),
+      },
       encoding: 'utf8',
     });
     assert.deepEqual(JSON.parse(roOut), { decision: 'allow' });
@@ -647,7 +659,13 @@ test('PreToolUse hook expands $VAR/${VAR} safely across standalone assignments, 
           args: { CommandLine: `WT=${wtDir}; cd "$WT" && git status` },
         },
       }),
-      env: { ...process.env, HOME: fakeHome },
+      env: {
+        ...process.env,
+        HOME: fakeHome,
+        USERPROFILE: fakeHome,
+        APPDATA: path.join(fakeHome, 'AppData', 'Roaming'),
+        LOCALAPPDATA: path.join(fakeHome, 'AppData', 'Local'),
+      },
       encoding: 'utf8',
     });
     assert.deepEqual(JSON.parse(subOut), { decision: 'allow' });

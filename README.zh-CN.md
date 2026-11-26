@@ -10,7 +10,7 @@
 
 [![GitHub Stars](https://img.shields.io/github/stars/LiWithDream/agy-studio?style=flat-square&logo=github)](https://github.com/LiWithDream/agy-studio/stargazers)
 [![Latest Release](https://img.shields.io/github/v/release/LiWithDream/agy-studio?style=flat-square&color=4285F4)](https://github.com/LiWithDream/agy-studio/releases)
-[![macOS](https://img.shields.io/badge/macOS-Apple%20Silicon%20%2F%20Intel-1f2328?style=flat-square&logo=apple&logoColor=white)](#局限与平台支持)
+[![macOS & Windows](https://img.shields.io/badge/支持平台-macOS%20%7C%20Windows-1f2328?style=flat-square&logo=apple&logoColor=white)](#局限与平台支持)
 [![Antigravity](https://img.shields.io/badge/Antigravity-Desktop%202.0-4285F4?style=flat-square)](#核心能力)
 [![内置中文界面](https://img.shields.io/badge/界面语言-内置简体中文-10B981?style=flat-square)](#craft-ergonomics)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue?style=flat-square)](./LICENSE)
@@ -162,46 +162,62 @@
 
 ## 快速开始
 
-**环境要求**：macOS（Apple Silicon 或 Intel）· Node.js `>= 22` · Google Antigravity Desktop 2.0
+**环境要求**：macOS（Apple Silicon 或 Intel）或 Windows 10/11（x64 / ARM64）· Node.js `>= 22` · Google Antigravity Desktop 2.0
 
 ### 推荐方式：直接让 Antigravity 或 Claude Code 帮你装
 
 把下面这段话直接发给 Antigravity 或 Claude Code：
 
 ```text
-帮我把 https://github.com/LiWithDream/agy-studio.git 克隆到 ~/Developer/agy-studio，先阅读 docs/INSTALL_AGENT.md，再执行 bash ./install.sh 并运行 node studio/cli.mjs doctor 验证状态。不要修改 /Applications/Antigravity.app，也不要删除现有对话和配置。
+帮我克隆 https://github.com/LiWithDream/agy-studio.git（macOS 放到 ~/Developer/agy-studio，Windows 放到 %LOCALAPPDATA%\agy-studio），先阅读 docs/INSTALL_AGENT.md，再运行对应平台的安装脚本（macOS 用 bash ./install.sh，Windows 用 powershell -ExecutionPolicy Bypass -File .\install.ps1），最后运行 node studio/cli.mjs doctor 验证状态。不要修改客户端二进制，也不要删除现有对话和配置。
 ```
 
-> **安全无侵入**：不修改 `/Applications/Antigravity.app`，所有数据留在本地，随时执行 `bash ./uninstall.sh` 即可无痕还原 → [了解安全与性能设计](#safe-fast)。
+> **安全无侵入**：不修改 macOS `/Applications/Antigravity.app` 或 Windows `Antigravity.exe` / `app.asar`，所有数据留在本地，随时执行 `bash ./uninstall.sh`（macOS）或 `.\uninstall.ps1`（Windows）即可无痕还原 → [了解安全与性能设计](#safe-fast)。
 
 <details>
 <summary><b>其他安装方式（预编译 Release 压缩包 / 源码安装 / 诊断与卸载）</b></summary>
 
 #### 方式二：预编译 Release 压缩包（零 `npm install`）
 
-前往 [Releases](https://github.com/LiWithDream/agy-studio/releases) 下载最新 `agy-studio-v*-macos.tar.gz`，解压后直接安装：
+前往 [Releases](https://github.com/LiWithDream/agy-studio/releases) 下载对应平台的压缩包（macOS：`agy-studio-v*-macos.tar.gz`，Windows：`agy-studio-v*-windows.zip`），解压后直接安装：
 
 ```bash
+# macOS
 tar -xzf agy-studio-v*-macos.tar.gz && cd agy-studio-v*-macos
 bash ./install.sh
+```
+
+```powershell
+# Windows (PowerShell)
+Expand-Archive .\agy-studio-v*-windows.zip -DestinationPath .
+cd .\agy-studio-v*-windows
+powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
 #### 方式三：从源码克隆安装
 
 ```bash
+# macOS
 git clone https://github.com/LiWithDream/agy-studio.git ~/Developer/agy-studio
 cd ~/Developer/agy-studio
 bash ./install.sh
 ```
 
-若不想同步 `fast-io` 执行规则到 `~/.gemini/AGENTS.md`，安装时附加 `--no-rules` 即可。
+```powershell
+# Windows (PowerShell)
+git clone https://github.com/LiWithDream/agy-studio.git "$env:LOCALAPPDATA\agy-studio"
+cd "$env:LOCALAPPDATA\agy-studio"
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+若不想同步 `fast-io` 执行规则到 `~/.gemini/AGENTS.md`，安装时附加 `--no-rules`（Windows 为 `-NoRules`）即可。
 
 #### 日常运维命令
 
 | 命令 | 作用 |
 | :--- | :--- |
-| `node studio/cli.mjs doctor` | 一键检查守护进程、CDP 挂载、插件状态、用量扫描与代理透传诊断 |
-| `bash ./uninstall.sh` | 干净卸载增强层、守护进程与同步规则，保留全部聊天记录与个人设置 |
+| `node studio/cli.mjs doctor` | 一键检查守护进程、CDP 挂载、插件状态、用量扫描与代理诊断 |
+| `bash ./uninstall.sh` / `.\uninstall.ps1` | 干净卸载增强层、守护进程与同步规则，保留全部聊天记录与个人设置 |
 
 </details>
 
@@ -237,18 +253,18 @@ bash ./install.sh
 
 **会不会破坏客户端更新、拖慢流式输出，或者上传我的数据？** 不会。
 
-- **原生应用零修改**：完全通过单个本地 macOS `LaunchAgent` 与 Chrome DevTools Protocol（CDP）运行时挂载，对 `/Applications/Antigravity.app` 改动为 `0 bytes`，官方代码签名与自动更新不受任何影响。
-- **100% 本地运行、一键可逆**：Token 用量通过只读模式（`immutable=1`）解析 Antigravity 本地 SQLite，无任何远程埋点或云端中转（AI 历史建议仅在你主动填入个人 Key 时直连 Google AI Studio）；随时执行 `bash ./uninstall.sh` 即可无痕退回原生状态。
+- **原生应用零修改**：完全通过单个本地后台守护进程（macOS `LaunchAgent` 或 Windows 无黑框计划任务 / 启动项兜底）与 Chrome DevTools Protocol（CDP）运行时挂载，对 `/Applications/Antigravity.app` 与 Windows `Antigravity.exe` / `app.asar` 改动为 `0 bytes`，官方代码签名与自动更新不受任何影响。
+- **100% 本地运行、一键可逆**：Token 用量通过只读模式（`immutable=1`）解析 Antigravity 本地 SQLite，无任何远程埋点或云端中转（AI 历史建议仅在你主动填入个人 Key 时直连 Google AI Studio）；随时执行 `bash ./uninstall.sh` 或 `.\uninstall.ps1` 即可无痕退回原生状态。
 - **专为零掉帧架构**：所有模块共用 1 个带自隔离的根级观测器，高频速率走叶节点原地刷新，并由自动化测试守卫全仓零 `:has()` 选择器。
 
 | 实测工程与安全指标 | 当前基线 |
 | :--- | :--- |
-| 对 `/Applications/Antigravity.app` 的改动 | **`0 bytes`**（官方签名与自动更新完好） |
+| 对 Antigravity 客户端二进制的改动 | **`0 bytes`**（官方签名与自动更新完好） |
 | 根 DOM 观测器数量（`MagaKernel`） | **`1`** 个统一 `MutationObserver`（`data-maga-own` 自隔离） |
 | 主线程刷帧耗时（Apple Silicon 本地 CDP 实测） | **`1.5–3.6 ms`**，高频遥测走叶节点原地更新（`MetricsBus`） |
 | 全局 CSS `:has()` 选择器数量 | **`0`**（自动化测试硬守卫） |
 | 自动化回归与不变量测试（`npm test`） | **`175+`** 项全部通过，**`0`** 项跳过 |
-| 后台进程占用 | **`1`** 个本地 macOS `LaunchAgent` |
+| 后台进程占用 | **`1`** 个本地 `LaunchAgent`（macOS）/ 计划任务（Windows） |
 
 ---
 
@@ -268,7 +284,7 @@ bash ./install.sh
 
 ## 局限与平台支持
 
-- **目前仅支持 macOS**：守护进程保活与 CDP 自动引导依赖 macOS `LaunchAgent` 与 `/usr/bin/open`。Windows 与 Linux 支持已在 GitHub Issues 立项排期，欢迎前往投票。
+- **已支持 macOS 与 Windows 10/11；Linux 规划中**：macOS 基于 `LaunchAgent` + `/usr/bin/open`（支持完整终端代理环境变量透传）；Windows 基于用户级无黑框计划任务（`AGYStudioDaemon`，受限策略下自动回退 Startup `.vbs`）、开始菜单快捷方式 `Antigravity (AGY Studio)` 与温和 `WM_CLOSE` CDP 冷启动引导（注：Windows 无法读取已运行进程的环境变量，如遇网络报错建议在代理客户端开启系统代理或 TUN 模式）。Linux 支持已在 GitHub Issues 立项排期。
 - **提示词规则并非硬锁**：`~/.gemini/AGENTS.md` 中的 `fast-io` 规则能明显减少无效轮次，但大模型仍可能偶尔漏遵。
 - **不做多账号代理与切号**：AGY Studio 聚焦单工作台的并行工程、跨模型把关与用量掌控，不修改请求网关或做多号轮询。
 
@@ -337,16 +353,18 @@ bash ./install.sh
 │   ├── cli.mjs            # 统一 CLI（install / deploy / sync-rules / doctor / rollback）
 │   └── pack-release.mjs   # 零依赖 Release 压缩包打包器
 ├── test/                  # 自动化测试套件（175+ 项回归与架构守卫）
-├── install.sh             # 一键安装脚本（支持 --dry-run、预编包与源码模式）
-└── uninstall.sh           # 一键无痕回滚卸载脚本（支持 --dry-run）
+├── install.sh             # 一键 macOS 安装脚本（支持 --dry-run、预编包与源码模式）
+├── uninstall.sh           # 一键 macOS 无痕回滚卸载脚本（支持 --dry-run）
+├── install.ps1            # 一键 Windows PowerShell 安装脚本（支持 -DryRun / -NoRules / -NoShortcut）
+└── uninstall.ps1          # 一键 Windows 无痕回滚卸载脚本（支持 -DryRun / -Purge）
 ```
 
 | 开发者命令 | 作用 |
 | :--- | :--- |
-| `npm run wt:new -- feat/slug` | 创建隔离开发用 Git Worktree 并自动软链 `node_modules` |
-| `npm test` | 编译 `user/custom.js` 并运行全部 175+ 项回归与不变量测试 |
+| `npm run wt:new -- feat/slug` | 创建隔离开发用 Git Worktree 并自动软链 / Junction `node_modules` |
+| `npm test` | 编译 `user/custom.js` 并运行全部回归与不变量测试 |
 | `npm run deploy` | 在干净 `main` 上秒级热更新至运行中的 Antigravity（无需重启客户端） |
-| `npm run release:pack` | 生成零 `npm install` 的 macOS Release 压缩包及 SHA-256 校验文件到 `dist/` |
+| `npm run release:pack:all` | 生成零 `npm install` 的 macOS `.tar.gz` 与 Windows `.zip` 及 SHA-256 校验文件到 `dist/` |
 
 </details>
 

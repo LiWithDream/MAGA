@@ -135,9 +135,13 @@ export async function createGatewayServer(options = {}) {
       autoConnect: true,
     });
 
-  async function queryBridgeHealth() {
+  async function queryBridgeHealth({ fresh = false } = {}) {
     try {
-      return await udsClient.request('bridge.health', {}, { timeoutMs: 1500 });
+      return await udsClient.request(
+        'bridge.health',
+        fresh ? { fresh: true } : {},
+        { timeoutMs: fresh ? 3000 : 1500 }
+      );
     } catch {
       return null;
     }
@@ -146,7 +150,7 @@ export async function createGatewayServer(options = {}) {
   const auth = createAuthManager({
     remoteDir: paths.remoteDir,
     audit,
-    getHealth: queryBridgeHealth,
+    getHealth: () => queryBridgeHealth({ fresh: true }),
     now,
   });
 

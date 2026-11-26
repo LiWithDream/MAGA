@@ -75,6 +75,7 @@ function normalizeDelta(raw) {
 
 export function createRemoteWsClient(identity, handlers = {}) {
   let ws = null;
+  let connectInFlight = false;
   let disposed = false;
   let reconnectTimer = null;
   let pingTimer = null;
@@ -266,9 +267,6 @@ export function createRemoteWsClient(identity, handlers = {}) {
           lastSeq = Number(msg.seq);
         }
       }
-      if (msg.health && typeof msg.health === 'object') {
-        handlers.onHealth?.(msg.health);
-      }
       if (!connected) {
         connected = true;
         attempt = 0;
@@ -277,6 +275,9 @@ export function createRemoteWsClient(identity, handlers = {}) {
         if (desiredWatchId) {
           syncWatchOnServer();
         }
+      }
+      if (msg.health && typeof msg.health === 'object') {
+        handlers.onHealth?.(msg.health);
       }
       const items = Array.isArray(msg.items) ? msg.items : [];
       for (const item of items) {
@@ -329,132 +330,138 @@ export function createRemoteWsClient(identity, handlers = {}) {
   };
 
   async function connect() {
-    if (disposed) return;
+    if (disposed || connectInFlight) return;
     if (ws && (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN)) {
       return;
     }
+    connectInFlight = true;
     connected = false;
     emitStatus(attempt === 0 ? 'connecting' : 'reconnecting', '');
 
-    let challenge = null;
     try {
-      const res = await fetch('/api/auth/challenge', {
-        method: 'GET',
-        cache: 'no-store',
-        credentials: 'same-origin',
-      });
-      const data = await res.json().catch(() => null);
-      if (!res.ok || !data?.nonce) {
-        if (res.status === 401 || res.status === 403) {
-          emitStatus('error', data?.error || `鉴权拒绝 (HTTP ${res.status})`);
-          scheduleReconnect(8_000, '等待认证恢复');
-          return;
+      let challenge = null;
+      try {
+        const res = await fetch('/api/auth/challenge', {
+          method: 'GET',
+          cache: 'no-store',
+          credentials: 'same-origin',
+        });
+        const data = await res.json().catch(() => null);
+        if (!res.ok || !data?.nonce) {
+          if (res.status === 401 || res.status === 403) {
+            emitStatus('error', data?.error || `鉴权拒绝 (HTTP ${res.status})`);
+            scheduleReconnect(8_000, '等待认证恢复');
+            return;
+          }
+          if (res.status === 429) {
+            emitStatus('error', '鉴权失败次数过多，已暂时锁定');
+            scheduleReconnect(20_000, '已限流，20s 后重试');
+            return;
+          }
+          throw new Error(data?.error || `获取 challenge 失败 (HTTP ${res.status})`);
         }
-        if (res.status === 429) {
-          emitStatus('error', '鉴权失败次数过多，已暂时锁定');
-          scheduleReconnect(20_000, '已限流，20s 后重试');
-          return;
-        }
-        throw new Error(data?.error || `获取 challenge 失败 (HTTP ${res.status})`);
+        challenge = data;
+      } catch (err) {
+        handlers.onError?.(err);
+        scheduleReconnect(null, String(err?.message || '网络不可达'));
+        return;
       }
-      challenge = data;
-    } catch (err) {
-      handlers.onError?.(err);
-      scheduleReconnect(null, String(err?.message || '网络不可达'));
-      return;
-    }
 
-    let signature = '';
-    const helloSeq = lastEpoch ? lastSeq : 0;
-    const helloEpoch = lastEpoch || '';
-    try {
-      signature = await signChallengePayload({
-        privateKey: identity.privateKey,
-        nonce: challenge.nonce,
-        deviceId: identity.deviceId,
-        lastSeq: helloSeq,
-        lastEpoch: helloEpoch,
-      });
-    } catch (err) {
-      disposed = true;
-      emitStatus('revoked', String(err?.message || '设备签名失败'));
-      return;
-    }
-
-    if (disposed) return;
-
-    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const socket = new WebSocket(`${proto}//${window.location.host}/ws`);
-    ws = socket;
-
-    socket.addEventListener('open', () => {
-      if (ws !== socket || disposed) return;
-      lastActivityAt = Date.now();
-      sendJson({
-        type: 'hello',
-        protocol: 'maga-remote/1',
-        deviceId: identity.deviceId,
-        nonce: challenge.nonce,
-        signature,
-        lastSeq: helloSeq,
-        lastEpoch: helloEpoch,
-      });
-    });
-
-    socket.addEventListener('message', (ev) => {
-      if (ws !== socket || disposed) return;
-      handleMessage(ev.data);
-    });
-
-    socket.addEventListener('close', (ev) => {
-      if (ws !== socket) return;
-      ws = null;
-      connected = false;
-      activeWatchId = null;
-      if (pingTimer) {
-        clearInterval(pingTimer);
-        pingTimer = null;
+      let signature = '';
+      const helloSeq = lastEpoch ? lastSeq : 0;
+      const helloEpoch = lastEpoch || '';
+      try {
+        signature = await signChallengePayload({
+          privateKey: identity.privateKey,
+          nonce: challenge.nonce,
+          deviceId: identity.deviceId,
+          lastSeq: helloSeq,
+          lastEpoch: helloEpoch,
+        });
+      } catch (err) {
+        disposed = true;
+        emitStatus('revoked', String(err?.message || '设备签名失败'));
+        return;
       }
-      clearResumeProbeTimer();
-      rejectAllPending('connection_closed');
+
       if (disposed) return;
 
-      const reason = String(ev.reason || '');
-      const isTimeoutOrNonce = /timeout|nonce/i.test(reason);
-      if (
-        (ev.code === 4001 && !isTimeoutOrNonce) ||
-        ev.code === 4003 ||
-        ev.code === 4401 ||
-        ev.code === 4403 ||
-        /revoked|unknown_device|fingerprint/i.test(reason)
-      ) {
-        disposed = true;
-        const msg =
-          ev.code === 4003 || reason === 'device_role_demoted'
-            ? '设备权限已降级，请重新配对或刷新权限'
-            : reason === 'device_revoked' || ev.code === 4001
-              ? '设备已被吊销，请重新配对'
-              : reason || '设备已吊销或网关身份已变更';
-        emitStatus('revoked', msg);
-        return;
-      }
-      if (reason === 'resume_probe_timeout') {
-        attempt = 0;
-        scheduleReconnect(200, '网络恢复中');
-        return;
-      }
-      scheduleReconnect(null, reason || `连接已断开 (${ev.code || 1006})`);
-    });
+      const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const socket = new WebSocket(`${proto}//${window.location.host}/ws`);
+      ws = socket;
 
-    socket.addEventListener('error', () => {
-      // close event handles reconnect transition
-    });
+      socket.addEventListener('open', () => {
+        if (ws !== socket || disposed) return;
+        lastActivityAt = Date.now();
+        sendJson({
+          type: 'hello',
+          protocol: 'maga-remote/1',
+          deviceId: identity.deviceId,
+          nonce: challenge.nonce,
+          signature,
+          lastSeq: helloSeq,
+          lastEpoch: helloEpoch,
+        });
+      });
+
+      socket.addEventListener('message', (ev) => {
+        if (ws !== socket || disposed) return;
+        handleMessage(ev.data);
+      });
+
+      socket.addEventListener('close', (ev) => {
+        if (ws !== socket) return;
+        ws = null;
+        connected = false;
+        activeWatchId = null;
+        if (pingTimer) {
+          clearInterval(pingTimer);
+          pingTimer = null;
+        }
+        clearResumeProbeTimer();
+        rejectAllPending('connection_closed');
+        if (disposed) return;
+
+        const reason = String(ev.reason || '');
+        const isTimeoutOrNonce = /timeout|nonce/i.test(reason);
+        if (
+          (ev.code === 4001 && !isTimeoutOrNonce) ||
+          ev.code === 4003 ||
+          ev.code === 4401 ||
+          ev.code === 4403 ||
+          /revoked|unknown_device|fingerprint/i.test(reason)
+        ) {
+          disposed = true;
+          const msg =
+            ev.code === 4003 || reason === 'device_role_demoted'
+              ? '设备权限已降级，请重新配对或刷新权限'
+              : reason === 'device_revoked' || ev.code === 4001
+                ? '设备已被吊销，请重新配对'
+                : reason || '设备已吊销或网关身份已变更';
+          emitStatus('revoked', msg);
+          return;
+        }
+        if (reason === 'resume_probe_timeout') {
+          attempt = 0;
+          scheduleReconnect(200, '网络恢复中');
+          return;
+        }
+        scheduleReconnect(null, reason || `连接已断开 (${ev.code || 1006})`);
+      });
+
+      socket.addEventListener('error', () => {
+        // close event handles reconnect transition
+      });
+    } finally {
+      connectInFlight = false;
+    }
   }
 
   const onVisibilityOrOnline = () => {
     if (disposed) return;
     if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
     if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
+      if (connectInFlight) return;
       attempt = 0;
       if (reconnectTimer) {
         clearTimeout(reconnectTimer);

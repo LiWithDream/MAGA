@@ -1378,9 +1378,21 @@ test('Remote stability & cache busting: versioned PWA assets, no-store headers, 
     assert.ok(builtHtml.includes(`/styles.css?v=${built.buildHash}`), 'index.html must version styles.css');
     assert.ok(builtHtml.includes(`/app.js?v=${built.buildHash}`), 'index.html must version app.js');
     assert.ok(builtSw.includes(`maga-remote-shell-${built.buildHash}`), 'sw.js CACHE_NAME must match buildHash');
+    assert.ok(
+      builtSw.includes("const PRECACHE_PATHS = ['/', '/index.html', '/app.js', '/styles.css', '/manifest.webmanifest'];"),
+      'sw.js must precache offline shell CSS/JS'
+    );
 
-    // 2. Gateway sets anti-cache headers on all static assets, resets ping timeout on app-level ping, and includes health in deltas replay
+    const appSrc = fs.readFileSync(path.join(PWA_DIR, 'src', 'app.mjs'), 'utf8');
+    const ccMatch = appSrc.match(/addEventListener\('controllerchange',[\s\S]{0,400}/);
+    assert.ok(ccMatch, 'app.mjs must register controllerchange listener');
+    for (const guardKey of ['state.pairingCode', 'state.pairingBusy', 'state.sendBusy', 'state.draftText', 'state.draftMedia']) {
+      assert.ok(ccMatch[0].includes(guardKey), `controllerchange must guard ${guardKey}`);
+    }
+
+    // 2. Gateway sets anti-cache headers on all static assets, resets ping timeout on app-level ping, uses fresh probe on pairing, and includes health in deltas replay
     const tapListeners = new Set();
+    const bridgeHealthParams = [];
     const mockUds = {
       onTap(fn) {
         tapListeners.add(fn);
@@ -1389,8 +1401,9 @@ test('Remote stability & cache busting: versioned PWA assets, no-store headers, 
       onConnect() {
         return () => {};
       },
-      async request(method) {
+      async request(method, params) {
         if (method === 'bridge.health') {
+          bridgeHealthParams.push(params || {});
           return { ok: true, hostAttached: true, globalPreset: 2, capabilities: { reduxSummaries: true, sendMessage: true } };
         }
         if (method === 'convo.list') {
@@ -1431,12 +1444,20 @@ test('Remote stability & cache busting: versioned PWA assets, no-store headers, 
       })
     ).json();
     assert.equal(pairRes.ok, true);
+    assert.ok(
+      bridgeHealthParams.some((p) => p?.fresh === true),
+      'pairing must bypass bridge capability cache with fresh: true'
+    );
 
     const readAppMsg = async (reader, expectType) => {
       for (let i = 0; i < 16; i += 1) {
         const frm = await reader.nextFrame();
         if (frm.opcode !== 0x1) continue;
         const parsed = JSON.parse(frm.payload.toString('utf8'));
+        if (expectType === 'pong') {
+          if (parsed?.type === 'pong') return parsed;
+          continue;
+        }
         if (parsed?.type === 'ping' || parsed?.type === 'pong') continue;
         if (!expectType || parsed?.type === expectType) return parsed;
       }
@@ -1477,6 +1498,12 @@ test('Remote stability & cache busting: versioned PWA assets, no-store headers, 
     }
     assert.equal(closedEarly, false, 'app-level ping activity must reset server heartbeat watchdog');
 
+    // Non-numeric ping.ts coerces to finite numeric pong.ts
+    ws1.socket.write(makeMaskedClientFrame(0x1, Buffer.from(JSON.stringify({ type: 'ping', ts: 'bad-ts' }))));
+    const coercedPong = await readAppMsg(r1, 'pong');
+    assert.equal(typeof coercedPong.ts, 'number');
+    assert.equal(Number.isFinite(coercedPong.ts), true);
+
     for (const fn of tapListeners) {
       fn({ kind: 'summaries', ts: Date.now(), data: { source: 'cdp', upserts: [] } });
       fn({ kind: 'summaries', ts: Date.now(), data: { source: 'cdp', upserts: [] } });
@@ -1511,14 +1538,18 @@ test('Remote stability & cache busting: versioned PWA assets, no-store headers, 
     assert.equal(deltasMsg.health?.hostAttached, true);
     ws2.socket.destroy();
 
-    // 3. ws-client.mjs starts with lastSeq: 0 and lastEpoch: '' even when localStorage has a stale cursor
+    // 3. ws-client.mjs: fresh page-load cursor, single in-flight connect() on wake burst, and connected=true before deltas.onHealth
     const sentHellos = [];
+    const sentRequests = [];
+    let challengeFetchCount = 0;
+    let onHealthError = null;
     const origWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
     const origDoc = Object.getOwnPropertyDescriptor(globalThis, 'document');
     const origFetch = Object.getOwnPropertyDescriptor(globalThis, 'fetch');
     const origWs = Object.getOwnPropertyDescriptor(globalThis, 'WebSocket');
     const origLs = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
     const listeners = new Map();
+    const docListeners = new Map();
     let activeClient = null;
     try {
       globalThis.localStorage = {
@@ -1532,10 +1563,14 @@ test('Remote stability & cache busting: versioned PWA assets, no-store headers, 
       };
       globalThis.document = {
         visibilityState: 'visible',
-        addEventListener: () => {},
-        removeEventListener: () => {},
+        addEventListener: (ev, fn) => docListeners.set(ev, fn),
+        removeEventListener: (ev) => docListeners.delete(ev),
       };
-      globalThis.fetch = async () => ({ ok: true, json: async () => ({ nonce: 'nonce-fresh-1' }) });
+      globalThis.fetch = async () => {
+        challengeFetchCount += 1;
+        await new Promise((r) => setTimeout(r, 25));
+        return { ok: true, json: async () => ({ nonce: `nonce-fresh-${challengeFetchCount}` }) };
+      };
       class MockWs {
         static OPEN = 1;
         static CONNECTING = 0;
@@ -1551,7 +1586,22 @@ test('Remote stability & cache busting: versioned PWA assets, no-store headers, 
         }
         send(raw) {
           const parsed = JSON.parse(raw);
-          if (parsed.type === 'hello') sentHellos.push(parsed);
+          if (parsed.type === 'hello') {
+            sentHellos.push(parsed);
+            setTimeout(() => {
+              this._handlers.get('message')?.({
+                data: JSON.stringify({
+                  type: 'deltas',
+                  seq: 1,
+                  epoch: 'ep-mock-1',
+                  health: { hostAttached: true, globalPreset: 2 },
+                  items: [],
+                }),
+              });
+            }, 0);
+          } else if (parsed.type === 'req') {
+            sentRequests.push(parsed);
+          }
         }
         close() {
           this.readyState = 3;
@@ -1559,11 +1609,31 @@ test('Remote stability & cache busting: versioned PWA assets, no-store headers, 
       }
       globalThis.WebSocket = MockWs;
       const wsClientMod = await import(pathToFileURL(path.join(PWA_DIR, 'src', 'ws-client.mjs')).href);
-      activeClient = wsClientMod.createRemoteWsClient({ deviceId: pairRes.deviceId, privateKey: kp.privateKey }, {});
-      await new Promise((r) => setTimeout(r, 40));
+      activeClient = wsClientMod.createRemoteWsClient(
+        { deviceId: pairRes.deviceId, privateKey: kp.privateKey },
+        {
+          onHealth: () => {
+            activeClient?.refreshList(false).catch((err) => {
+              onHealthError = err;
+            });
+          },
+        }
+      );
+      // Simultaneous wake events while /api/auth/challenge fetch is in flight must coalesce into 1 connect attempt
+      listeners.get('focus')?.();
+      listeners.get('online')?.();
+      listeners.get('pageshow')?.();
+      docListeners.get('visibilitychange')?.();
+      await new Promise((r) => setTimeout(r, 80));
+      assert.equal(challengeFetchCount, 1, 'concurrent wake events must share single in-flight connect()');
       assert.equal(sentHellos.length, 1);
       assert.equal(sentHellos[0].lastSeq, 0, 'fresh page load must always send lastSeq=0 to get full welcome');
       assert.equal(sentHellos[0].lastEpoch, '', 'fresh page load must always send empty lastEpoch');
+      assert.equal(onHealthError, null, 'deltas.onHealth must see connected=true without ws_not_connected');
+      assert.ok(
+        sentRequests.some((r) => r.method === 'convo.list'),
+        'deltas.onHealth refreshList call must dispatch convo.list RPC'
+      );
     } finally {
       activeClient?.dispose();
       const restore = (k, desc) => {

@@ -915,7 +915,7 @@ export function createWsServer({
 
     if (msg.type === 'ping') {
       client.markAlive();
-      client.sendJson({ type: 'pong', ts: msg.ts ?? Date.now() });
+      client.sendJson({ type: 'pong', ts: typeof msg.ts === 'number' && Number.isFinite(msg.ts) ? msg.ts : now() });
       return;
     }
 
@@ -1279,7 +1279,10 @@ export function createWsServer({
         }
         if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
           if (parsed.type === 'ping') {
-            client.sendJson({ type: 'pong', ts: parsed.ts ?? Date.now() });
+            client.sendJson({
+              type: 'pong',
+              ts: typeof parsed.ts === 'number' && Number.isFinite(parsed.ts) ? parsed.ts : now(),
+            });
             return;
           }
           if (parsed.type === 'pong') {

@@ -396,10 +396,24 @@ export async function buildRemotePwa({ outDir = REMOTE_PWA_DIST, allowPrebuilt =
   writeFileSync(jsDest, jsOut, 'utf8');
   writeFileSync(cssDest, cssOut, 'utf8');
 
+  const staticFileNames = ['index.html', 'manifest.webmanifest', 'sw.js'];
+  const staticSources = {};
+  for (const staticFile of staticFileNames) {
+    const src = path.join(REMOTE_PWA_DIR, staticFile);
+    if (!existsSync(src)) {
+      throw new Error(`Missing remote PWA static asset at ${src}`);
+    }
+    staticSources[staticFile] = readFileSync(src, 'utf8');
+  }
+
   const buildHash = createHash('sha256')
     .update(jsOut)
     .update('\0')
     .update(cssOut)
+    .update('\0')
+    .update(staticSources['index.html'])
+    .update('\0')
+    .update(staticSources['sw.js'])
     .digest('hex')
     .slice(0, 8);
 
@@ -408,19 +422,16 @@ export async function buildRemotePwa({ outDir = REMOTE_PWA_DIST, allowPrebuilt =
     'styles.css': Buffer.byteLength(cssOut, 'utf8'),
   };
 
-  for (const staticFile of ['index.html', 'manifest.webmanifest', 'sw.js']) {
+  for (const staticFile of staticFileNames) {
     const src = path.join(REMOTE_PWA_DIR, staticFile);
-    if (!existsSync(src)) {
-      throw new Error(`Missing remote PWA static asset at ${src}`);
-    }
     const dst = path.join(outDir, staticFile);
     if (staticFile === 'index.html') {
-      const htmlSrc = readFileSync(src, 'utf8')
+      const htmlSrc = staticSources['index.html']
         .replace('href="/styles.css"', `href="/styles.css?v=${buildHash}"`)
         .replace('src="/app.js"', `src="/app.js?v=${buildHash}"`);
       writeFileSync(dst, htmlSrc, 'utf8');
     } else if (staticFile === 'sw.js') {
-      const swSrc = readFileSync(src, 'utf8').replace(
+      const swSrc = staticSources['sw.js'].replace(
         /const CACHE_NAME = ['"][^'"]+['"];/,
         `const CACHE_NAME = 'maga-remote-shell-${buildHash}';`
       );

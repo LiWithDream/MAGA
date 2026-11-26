@@ -1860,6 +1860,15 @@ async function boot() {
     if (typeof navigator.serviceWorker.addEventListener === 'function') {
       navigator.serviceWorker.addEventListener('controllerchange', () => {
         if (!hadController || swReloading) return;
+        if (
+          state.pairingCode ||
+          state.pairingBusy ||
+          state.sendBusy ||
+          (state.draftText && state.draftText.trim()) ||
+          (Array.isArray(state.draftMedia) && state.draftMedia.length > 0)
+        ) {
+          return;
+        }
         swReloading = true;
         try {
           window.location.reload();

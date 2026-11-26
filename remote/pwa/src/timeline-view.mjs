@@ -3,6 +3,7 @@
  * Strict invariant: NEVER use unsafe HTML injection APIs; build DOM with createElement + textContent only.
  */
 import {
+  appendNodes,
   clearNode,
   el,
   findConversationMeta,
@@ -12,7 +13,7 @@ import {
   normalizeStepStatus,
 } from './ui-helpers.mjs';
 
-function appendInlineMarkdown(parent, line) {
+function appendInlineMarkdown(parent, line, depth = 0) {
   const tokenRe = /\[([^\]\n]+)\]\(([^)\s]+)\)|`([^`\n]+)`|\*\*([^*\n]+)\*\*/g;
   let lastIdx = 0;
   let match;
@@ -41,7 +42,13 @@ function appendInlineMarkdown(parent, line) {
     } else if (match[3] !== undefined) {
       parent.appendChild(el('code', { className: 'rc-md-code', text: match[3] }));
     } else if (match[4] !== undefined) {
-      parent.appendChild(el('strong', { text: match[4] }));
+      const strong = el('strong');
+      if (depth < 2) {
+        appendInlineMarkdown(strong, match[4], depth + 1);
+      } else {
+        strong.textContent = match[4];
+      }
+      parent.appendChild(strong);
     }
     lastIdx = tokenRe.lastIndex;
   }
@@ -244,7 +251,7 @@ export function renderWaitingCards(
     if (!canWrite) {
       footerEl = el('div', {
         className: 'rc-convo-meta',
-        text: `只读观察模式 (observe)：请在 Mac 桌面端点击 Allow Once / Deny，或以 --role steer 重新配对${hash ? ` · hash:${hash.slice(0, 8)}` : ''}`,
+        text: `只读观察模式 (observe)：请在 Mac 桌面端点击 Allow Once / Deny，或在「AGY Studio 设置 → 远程控制」中一键升为协作 (steer) / 重新配对${hash ? ` · hash:${hash.slice(0, 8)}` : ''}`,
       });
     } else if (!isPermission) {
       footerEl = el('div', {
@@ -331,7 +338,8 @@ export function renderDetailTimeline({
   clearNode(refs.detailSub);
   const runInfo = normalizeRunStatus(snap?.status ?? convo?.status);
   const wtMeta = state.studioOverview?.worktreeByCid?.[cid] || null;
-  refs.detailSub.append(
+  appendNodes(
+    refs.detailSub,
     el('span', { className: 'rc-pill', 'data-tone': runInfo.tone, text: runInfo.label }),
     el('span', { className: 'rc-mono', text: cid.slice(0, 13) }),
     wtMeta?.branch ? el('span', { className: 'rc-pill', 'data-tone': 'info', text: `⎇ ${wtMeta.branch}` }) : null,

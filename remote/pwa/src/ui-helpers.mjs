@@ -33,15 +33,19 @@ export function el(tag, props = {}, ...children) {
       node.setAttribute(key, String(val));
     }
   }
-  for (const child of children.flat()) {
+  return appendNodes(node, ...children);
+}
+
+export function appendNodes(parent, ...items) {
+  for (const child of items.flat(Infinity)) {
     if (child === undefined || child === null || child === false) continue;
     if (typeof child === 'string' || typeof child === 'number') {
-      node.appendChild(document.createTextNode(String(child)));
+      parent.appendChild(document.createTextNode(String(child)));
     } else {
-      node.appendChild(child);
+      parent.appendChild(child);
     }
   }
-  return node;
+  return parent;
 }
 
 export function clearNode(node) {

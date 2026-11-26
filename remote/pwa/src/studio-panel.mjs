@@ -3,7 +3,7 @@
  * Interrupted-Task Silent Resume Banner, and Opus Gate Proposal Card.
  * Strict invariant: NEVER use unsafe HTML injection APIs; build DOM with createElement + textContent only.
  */
-import { clearNode, el } from './ui-helpers.mjs';
+import { appendNodes, clearNode, el } from './ui-helpers.mjs';
 
 export function formatCompactTokens(n) {
   const v = Number(n || 0);
@@ -202,7 +202,8 @@ export function renderResumeBanner(
   else if (!online) hint = '宿主离线，无法静默续跑';
   else if (needTurboConfirm && !turboConfirmed) hint = '请先勾选下方 TURBO 高危确认框';
 
-  container.append(
+  appendNodes(
+    container,
     el(
       'div',
       { className: 'rc-studio-card-head' },
@@ -238,7 +239,8 @@ export function renderOpusGateBanner(
   }
   container.classList.remove('rc-hidden');
 
-  container.append(
+  appendNodes(
+    container,
     el(
       'div',
       { className: 'rc-studio-card-head' },

@@ -5,7 +5,6 @@
  * - Idempotently syncs/removes the native `maga-auto-compact` Antigravity plugin
  * - Verifies SQLite `step_type = 132` schedule decoder compatibility for `doctor`
  */
-import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -14,11 +13,17 @@ import {
   AUTO_COMPACT_REQUESTS_DIR,
   DB_FILE_RE,
   DatabaseSync,
-  GLOBAL_PLUGINS_DIR,
-  REPO_ROOT,
   readJsonOrFallback,
   writeAtomicUtf8,
 } from '../../core/daemon/env.mjs';
+import {
+  buildPinnedHooksJsonForPlugin,
+  extractPluginHookNodeBin,
+  getPluginTargetDir as resolveManagedPluginTargetDir,
+  isPluginInstalled,
+  syncManagedPlugin,
+  verifyPluginHookNodeRuntime,
+} from './plugin-sync.mjs';
 
 const SAFE_CID_RE = /^[A-Za-z0-9_-]{4,128}$/;
 export const AUTO_COMPACT_REQUEST_TTL_MS = 5 * 60 * 1000;
@@ -35,6 +40,8 @@ const PLUGIN_FILES = [
   'skills/auto-compact/SKILL.md',
   'hooks/compact-check.mjs',
 ];
+const REQUIRED_PLUGIN_FILES = ['plugin.json', 'hooks.json', 'hooks/compact-check.mjs'];
+const EXECUTABLE_PLUGIN_FILES = new Set(['hooks/compact-check.mjs']);
 
 export const AUTO_COMPACT_ACTIONS = new Set([
   'getAutoCompactStatus',
@@ -151,119 +158,36 @@ function isRequestActive(entry, now) {
 }
 
 function getPluginTargetDir(opts = {}) {
-  return path.join(opts.pluginsDir || GLOBAL_PLUGINS_DIR, PLUGIN_NAME);
+  return resolveManagedPluginTargetDir(PLUGIN_NAME, opts);
 }
 
 export function isAutoCompactPluginInstalled(opts = {}) {
-  const targetDir = getPluginTargetDir(opts);
-  return (
-    fs.existsSync(path.join(targetDir, 'plugin.json')) &&
-    fs.existsSync(path.join(targetDir, 'hooks.json')) &&
-    fs.existsSync(path.join(targetDir, 'hooks', 'compact-check.mjs'))
-  );
-}
-
-function formatPinnedHookCommand(rawCmd, nodeBin) {
-  const cmd = String(rawCmd || '').trim();
-  const m = cmd.match(/^node\s+(.+)$/);
-  if (!m || !nodeBin) return cmd;
-  const quoted =
-    process.platform === 'win32'
-      ? `"${String(nodeBin).replace(/"/g, '\\"')}"`
-      : `'${String(nodeBin).replace(/'/g, `'\\''`)}'`;
-  return `${quoted} ${m[1]}`;
+  return isPluginInstalled(PLUGIN_NAME, REQUIRED_PLUGIN_FILES, opts);
 }
 
 export function buildPinnedHooksJson(rawText, nodeBin = process.execPath) {
-  const parsed = JSON.parse(rawText);
-  const root = parsed?.['maga-auto-compact'];
-  if (root && typeof root === 'object') {
-    for (const handlers of Object.values(root)) {
-      if (!Array.isArray(handlers)) continue;
-      for (const h of handlers) {
-        if (h && typeof h === 'object' && typeof h.command === 'string') {
-          h.command = formatPinnedHookCommand(h.command, nodeBin);
-        }
-        if (Array.isArray(h?.hooks)) {
-          for (const sub of h.hooks) {
-            if (sub && typeof sub === 'object' && typeof sub.command === 'string') {
-              sub.command = formatPinnedHookCommand(sub.command, nodeBin);
-            }
-          }
-        }
-      }
-    }
-  }
-  return `${JSON.stringify(parsed, null, 2)}\n`;
+  return buildPinnedHooksJsonForPlugin(PLUGIN_NAME, rawText, nodeBin);
 }
 
 export function extractHookNodeBin(hooksObj) {
-  const stopHandlers = hooksObj?.['maga-auto-compact']?.Stop;
-  const cmd = Array.isArray(stopHandlers) ? String(stopHandlers[0]?.command || '').trim() : '';
-  if (!cmd) return process.execPath;
-  const sq = cmd.match(/^'((?:[^']|'\\'')+)'\s+/);
-  if (sq) return sq[1].replace(/'\\''/g, "'");
-  const dq = cmd.match(/^"([^"]+)"\s+/);
-  if (dq) return dq[1];
-  const bare = cmd.match(/^(\S+)\s+/);
-  return bare ? bare[1] : process.execPath;
+  return extractPluginHookNodeBin(PLUGIN_NAME, hooksObj);
 }
 
 export function syncAutoCompactPlugin({ remove = false } = {}, opts = {}) {
-  const srcDir = opts.pluginSrcDir || path.join(REPO_ROOT, 'studio', 'plugin', PLUGIN_NAME);
-  const targetDir = getPluginTargetDir(opts);
-  if (remove) {
-    fs.rmSync(targetDir, { recursive: true, force: true });
-    return { ok: true, action: 'removed', pluginDir: targetDir, installed: false };
-  }
-  if (!fs.existsSync(srcDir)) {
-    return { ok: false, error: 'missing_plugin_source', srcDir };
-  }
-  const nodeBin = opts.nodeExecPath || process.execPath;
-  const copied = [];
-  for (const rel of PLUGIN_FILES) {
-    const from = path.join(srcDir, rel);
-    const to = path.join(targetDir, rel);
-    if (!fs.existsSync(from)) continue;
-    fs.mkdirSync(path.dirname(to), { recursive: true });
-    let body = fs.readFileSync(from, 'utf8');
-    if (rel === 'hooks.json') {
-      try {
-        body = buildPinnedHooksJson(body, nodeBin);
-      } catch {}
-    }
-    writeAtomicUtf8(to, body);
-    copied.push(rel);
-  }
-  return {
-    ok: true,
-    action: 'synced',
-    pluginDir: targetDir,
-    files: copied,
-    nodeBin,
-    installed: isAutoCompactPluginInstalled(opts),
-  };
+  return syncManagedPlugin(
+    {
+      pluginName: PLUGIN_NAME,
+      pluginFiles: PLUGIN_FILES,
+      requiredFiles: REQUIRED_PLUGIN_FILES,
+      executableFiles: EXECUTABLE_PLUGIN_FILES,
+      remove,
+    },
+    opts
+  );
 }
 
 export function verifyInstalledHookNodeRuntime(opts = {}) {
-  const hooksFile = path.join(getPluginTargetDir(opts), 'hooks.json');
-  const hooksObj = readJsonOrFallback(hooksFile, null);
-  const nodeBin = hooksObj ? extractHookNodeBin(hooksObj) : opts.nodeExecPath || process.execPath;
-  try {
-    execFileSync(
-      nodeBin,
-      ['-e', "import('node:sqlite').then(m => { if (!m.DatabaseSync) process.exit(2); })"],
-      { timeout: 2500, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }
-    );
-    return { ok: true, nodeBin, sqliteSupported: true };
-  } catch (err) {
-    return {
-      ok: false,
-      nodeBin,
-      sqliteSupported: false,
-      error: String(err?.message || err).slice(0, 160),
-    };
-  }
+  return verifyPluginHookNodeRuntime(PLUGIN_NAME, { requireSqlite: true }, opts);
 }
 
 export function getAutoCompactStatus(payload = {}, opts = {}) {

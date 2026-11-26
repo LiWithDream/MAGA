@@ -26,7 +26,11 @@ import {
   stripStudioBlocksOnly,
 } from './build.mjs';
 import { collectUsageStatsAsync } from './daemon/usage-service.mjs';
-import { isOpusGatePluginInstalled, syncOpusGatePlugin } from './daemon/opus-gate-service.mjs';
+import {
+  isOpusGatePluginInstalled,
+  syncOpusGatePlugin,
+  verifyOpusGateHookNodeRuntime,
+} from './daemon/opus-gate-service.mjs';
 import {
   isAutoCompactPluginInstalled,
   syncAutoCompactPlugin,
@@ -198,6 +202,7 @@ async function runDoctor() {
     orchestratorModel: agyCfg?.userSettings?.orchestratorModel ?? null,
     fastIoRuleInstalled: hasFastIo,
     opusGatePluginInstalled: isOpusGatePluginInstalled(),
+    opusGateHookNode: verifyOpusGateHookNodeRuntime(),
     opusGateQuotaStatePresent: existsSync(QUOTA_STATE_FILE),
     autoCompactPluginInstalled: isAutoCompactPluginInstalled(),
     autoCompactHookNode: verifyInstalledHookNodeRuntime(),
@@ -268,15 +273,17 @@ try {
   } else if (cmd === 'deploy') {
     const res = await deployStudio({ allowNonMain: allowNonMainDeploy });
     await applyDefaultOrchestratorModelPreference();
-    const compactPluginRes =
-      res?.ok && !allowNonMainDeploy && !res?.deployedFrom?.preview
-        ? syncAutoCompactPlugin()
-        : { ok: true, skipped: true, reason: 'preview_deploy' };
-    const gitWorkflowPluginRes =
-      res?.ok && !allowNonMainDeploy && !res?.deployedFrom?.preview
-        ? syncGitWorkflowPlugin()
-        : { ok: true, skipped: true, reason: 'preview_deploy' };
-    console.log(JSON.stringify({ ...res, autoCompactPlugin: compactPluginRes, gitWorkflowPlugin: gitWorkflowPluginRes }, null, 2));
+    const shouldSyncPlugins = Boolean(res?.ok && !allowNonMainDeploy && !res?.deployedFrom?.preview);
+    const opusGatePluginRes = shouldSyncPlugins
+      ? syncOpusGatePlugin()
+      : { ok: true, skipped: true, reason: 'preview_deploy' };
+    const compactPluginRes = shouldSyncPlugins
+      ? syncAutoCompactPlugin()
+      : { ok: true, skipped: true, reason: 'preview_deploy' };
+    const gitWorkflowPluginRes = shouldSyncPlugins
+      ? syncGitWorkflowPlugin()
+      : { ok: true, skipped: true, reason: 'preview_deploy' };
+    console.log(JSON.stringify({ ...res, opusGatePlugin: opusGatePluginRes, autoCompactPlugin: compactPluginRes, gitWorkflowPlugin: gitWorkflowPluginRes }, null, 2));
   } else if (cmd === 'sync-rules') {
     const rulesRes = syncFastIoRules();
     const pluginRes = syncOpusGatePlugin();

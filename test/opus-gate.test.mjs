@@ -23,6 +23,7 @@ const {
   loadQuotaState,
   syncOpusGatePlugin,
   isOpusGatePluginInstalled,
+  verifyOpusGateHookNodeRuntime,
   getOpusGateStatus,
   dismissOpusGateProposal,
   buildOpusHandoffBrief,
@@ -1086,6 +1087,36 @@ test('evaluatePreflight and --preflight CLI enforce mode, checkpoint switch, quo
     assert.equal(parsedCli.mode, 'semi');
     assert.equal(parsedCli.kind, 'plan');
     assert.equal(parsedCli.proposalPublished, true);
+  } finally {
+    dirs.cleanup();
+  }
+});
+
+test('syncOpusGatePlugin pins absolute Node executable, chmods hook, prunes stale files & verifies runtime', () => {
+  const dirs = makeTempDirs('og-pin-');
+  try {
+    const staleFile = path.join(dirs.pluginsDir, 'maga-opus-gate', 'hooks', 'legacy-stale.mjs');
+    fs.mkdirSync(path.dirname(staleFile), { recursive: true });
+    fs.writeFileSync(staleFile, '// stale\n', 'utf8');
+
+    const synced = syncOpusGatePlugin({}, { pluginsDir: dirs.pluginsDir, nodeExecPath: process.execPath });
+    assert.equal(synced.ok, true);
+    assert.equal(synced.pinned, true);
+    assert.equal(synced.installed, true);
+    assert.equal(fs.existsSync(staleFile), false, 'stale orphaned plugin file pruned on sync');
+
+    const syncedHooks = JSON.parse(fs.readFileSync(path.join(dirs.pluginsDir, 'maga-opus-gate', 'hooks.json'), 'utf8'));
+    const repoHooks = JSON.parse(fs.readFileSync(path.join(REPO, 'studio', 'plugin', 'maga-opus-gate', 'hooks.json'), 'utf8'));
+    assert.equal(repoHooks['maga-opus-gate'].Stop[0].command, 'node ./hooks/gate-check.mjs');
+    assert.ok(syncedHooks['maga-opus-gate'].Stop[0].command.includes(process.execPath));
+    assert.ok(syncedHooks['maga-opus-gate'].PostToolUse[0].hooks[0].command.includes(process.execPath));
+
+    const hookStat = fs.statSync(path.join(dirs.pluginsDir, 'maga-opus-gate', 'hooks', 'gate-check.mjs'));
+    assert.ok((hookStat.mode & 0o111) !== 0, 'gate-check.mjs must be executable');
+
+    const runtimeCheck = verifyOpusGateHookNodeRuntime({ pluginsDir: dirs.pluginsDir });
+    assert.equal(runtimeCheck.ok, true);
+    assert.equal(runtimeCheck.pinned, true);
   } finally {
     dirs.cleanup();
   }

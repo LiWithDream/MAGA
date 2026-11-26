@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -4231,4 +4231,522 @@ test('footer-unified re-adopts #ag-live-metrics-pill from any direct sibling und
     }
     dom.window.close();
   }
+});
+
+// ---- Resume Detector & Resume Banner Regression Tests ----
+
+function encodeVarintTest(n) {
+  const bytes = [];
+  let v = Number(n) >>> 0;
+  while (v >= 0x80) {
+    bytes.push((v & 0x7f) | 0x80);
+    v >>>= 7;
+  }
+  bytes.push(v);
+  return Buffer.from(bytes);
+}
+
+function encodeProtoFieldTest(fieldNo, value) {
+  if (typeof value === 'number') {
+    return Buffer.concat([encodeVarintTest((fieldNo << 3) | 0), encodeVarintTest(value)]);
+  }
+  const buf = typeof value === 'string' ? Buffer.from(value, 'utf8') : Buffer.from(value);
+  return Buffer.concat([encodeVarintTest((fieldNo << 3) | 2), encodeVarintTest(buf.length), buf]);
+}
+
+function encodeToolMetadata(toolName) {
+  return encodeProtoFieldTest(4, encodeProtoFieldTest(2, toolName));
+}
+
+function encodePlannerPayload({ stopReason = 2, toolCalls = 0 } = {}) {
+  const parts = [encodeProtoFieldTest(12, stopReason)];
+  for (let i = 0; i < toolCalls; i++) {
+    parts.push(encodeProtoFieldTest(7, encodeProtoFieldTest(2, `tool_${i}`)));
+  }
+  return encodeProtoFieldTest(20, Buffer.concat(parts));
+}
+
+function encodeExecMetadata(terminationReason, lastStepIdx) {
+  return Buffer.concat([encodeProtoFieldTest(1, terminationReason), encodeProtoFieldTest(3, lastStepIdx)]);
+}
+
+function encodeRawSummaryTermReason(terminationReason) {
+  return encodeProtoFieldTest(28, terminationReason);
+}
+
+function setupResumeFixtureDir(prefix = 'agy-resume-suite-') {
+  const root = mkdtempSync(path.join(tmpdir(), prefix));
+  const convDir = path.join(root, 'conversations');
+  const sumDbPath = path.join(root, 'conversation_summaries.db');
+  mkdirSync(convDir, { recursive: true });
+  return { root, convDir, sumDbPath };
+}
+
+function writeConvDb(convDir, cid, steps, execRows = []) {
+  const dbPath = path.join(convDir, `${cid}.db`);
+  const db = new DatabaseSync(dbPath);
+  db.exec(
+    'CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER, status INTEGER, error_details BLOB, metadata BLOB, step_payload BLOB);'
+  );
+  const insStep = db.prepare(
+    'INSERT INTO steps (idx, step_type, status, error_details, metadata, step_payload) VALUES (?, ?, ?, ?, ?, ?);'
+  );
+  for (const s of steps) {
+    insStep.run(
+      s.idx,
+      s.stepType,
+      s.status,
+      s.errorDetails ?? Buffer.alloc(0),
+      s.metadata ?? Buffer.alloc(0),
+      s.stepPayload ?? Buffer.alloc(0)
+    );
+  }
+  if (execRows.length) {
+    db.exec('CREATE TABLE executor_metadata (idx INTEGER PRIMARY KEY, data BLOB);');
+    const insExec = db.prepare('INSERT INTO executor_metadata (idx, data) VALUES (?, ?);');
+    for (const e of execRows) insExec.run(e.idx, e.data);
+  }
+  db.close();
+  return dbPath;
+}
+
+function writeSummariesDb(sumDbPath, rows) {
+  const db = new DatabaseSync(sumDbPath);
+  db.exec(
+    'CREATE TABLE conversation_summaries (conversation_id TEXT PRIMARY KEY, parent_conversation_id TEXT DEFAULT "", status TEXT DEFAULT "", not_fully_idle INTEGER DEFAULT 0, killed INTEGER DEFAULT 0, step_count INTEGER DEFAULT 0, raw_summary BLOB);'
+  );
+  const ins = db.prepare(
+    'INSERT INTO conversation_summaries (conversation_id, parent_conversation_id, status, not_fully_idle, killed, step_count, raw_summary) VALUES (?, ?, ?, ?, ?, ?, ?);'
+  );
+  for (const r of rows) {
+    ins.run(
+      r.cid,
+      r.parentCid ?? '',
+      r.status ?? 'CASCADE_RUN_STATUS_IDLE',
+      r.notFullyIdle ? 1 : 0,
+      r.killed ? 1 : 0,
+      r.stepCount ?? 0,
+      r.rawSummary ?? Buffer.alloc(0)
+    );
+  }
+  db.close();
+}
+
+test('resume-detector suppresses false positives on waiting/background/swarm states with zero sidecars', () => {
+  const { root, convDir, sumDbPath } = setupResumeFixtureDir();
+  try {
+    // 1. Summary DB not_fully_idle = 1 (waiting on timer/subagent) + zero sidecars
+    const cidWaitBg = 'conv_wait_bg_001';
+    const dbWaitBg = writeConvDb(convDir, cidWaitBg, [
+      { idx: 1, stepType: 15, status: 3, stepPayload: encodePlannerPayload({ stopReason: 2 }) },
+      { idx: 2, stepType: 132, status: 3, metadata: encodeToolMetadata('run_command') },
+    ]);
+    // 2. Summary DB RUNNING
+    const cidRunning = 'conv_running_002';
+    writeConvDb(convDir, cidRunning, [{ idx: 1, stepType: 132, status: 2 }]);
+    // 3. Running child subagent in summaries DB
+    const cidChildWait = 'conv_child_wait_003';
+    writeConvDb(convDir, cidChildWait, [
+      { idx: 1, stepType: 132, status: 3, metadata: encodeToolMetadata('invoke_subagent') },
+    ]);
+    // 4. Stale RUNNING summary overridden by liveIdle: true when step is aborted (GENERATING=8)
+    const cidLiveIdleOverride = 'conv_live_idle_004';
+    writeConvDb(convDir, cidLiveIdleOverride, [{ idx: 1, stepType: 15, status: 8 }]);
+
+    writeSummariesDb(sumDbPath, [
+      { cid: cidWaitBg, status: 'CASCADE_RUN_STATUS_IDLE', notFullyIdle: true, stepCount: 2 },
+      { cid: cidRunning, status: 'CASCADE_RUN_STATUS_RUNNING', notFullyIdle: true, stepCount: 1 },
+      { cid: cidChildWait, status: 'CASCADE_RUN_STATUS_IDLE', notFullyIdle: false, stepCount: 1 },
+      {
+        cid: 'child_sub_active_01',
+        parentCid: cidChildWait,
+        status: 'CASCADE_RUN_STATUS_IDLE',
+        notFullyIdle: true,
+        killed: false,
+      },
+      { cid: cidLiveIdleOverride, status: 'CASCADE_RUN_STATUS_RUNNING', notFullyIdle: true, stepCount: 1 },
+    ]);
+
+    const r1 = collectResumeState({ cascadeId: cidWaitBg }, { conversationsDir: convDir });
+    assert.equal(r1.interrupted, false);
+    assert.equal(r1.waiting, true);
+    assert.equal(r1.reason, 'waiting_background');
+    assert.equal(existsSync(`${dbWaitBg}-wal`), false);
+    assert.equal(existsSync(`${dbWaitBg}-shm`), false);
+    assert.equal(existsSync(`${sumDbPath}-wal`), false);
+    assert.equal(existsSync(`${sumDbPath}-shm`), false);
+
+    const r2 = collectResumeState({ cascadeId: cidRunning }, { conversationsDir: convDir });
+    assert.equal(r2.interrupted, false);
+    assert.equal(r2.active, true);
+    assert.equal(r2.reason, 'running');
+
+    const r3 = collectResumeState({ cascadeId: cidChildWait }, { conversationsDir: convDir });
+    assert.equal(r3.interrupted, false);
+    assert.equal(r3.waiting, true);
+    assert.equal(r3.reason, 'waiting_background');
+
+    const r4 = collectResumeState({ cascadeId: cidLiveIdleOverride, liveIdle: true }, { conversationsDir: convDir });
+    assert.equal(r4.interrupted, true);
+    assert.equal(r4.reason, 'aborted');
+
+    // 5. Deliberate wait tools (swarm_wait, schedule, ask_question, exit_plan_mode)
+    for (const [tool, expectedReason] of [
+      ['swarm_wait', 'waiting_swarm'],
+      ['schedule', 'waiting_timer'],
+      ['ask_question', 'waiting_user'],
+      ['exit_plan_mode', 'waiting_user'],
+    ]) {
+      const cid = `conv_wait_tool_${tool}`;
+      writeConvDb(convDir, cid, [{ idx: 5, stepType: 132, status: 3, metadata: encodeToolMetadata(tool) }]);
+      const res = collectResumeState({ cascadeId: cid }, { conversationsDir: convDir });
+      assert.equal(res.interrupted, false, `Expected interrupted=false for wait tool ${tool}`);
+      assert.equal(res.reason, expectedReason);
+    }
+
+    // 6. executor_metadata TERMINAL_CUSTOM_HOOK (9)
+    const cidHook = 'conv_term_hook_005';
+    writeConvDb(
+      convDir,
+      cidHook,
+      [{ idx: 8, stepType: 132, status: 3, metadata: encodeToolMetadata('run_command') }],
+      [{ idx: 0, data: encodeExecMetadata(9, 8) }]
+    );
+    const r6 = collectResumeState({ cascadeId: cidHook }, { conversationsDir: convDir });
+    assert.equal(r6.interrupted, false);
+    assert.equal(r6.reason, 'waiting_swarm');
+
+    // 7. STATUS_WAITING (9)
+    const cidWaitStatus = 'conv_status_wait_006';
+    writeConvDb(convDir, cidWaitStatus, [{ idx: 3, stepType: 132, status: 9 }]);
+    const r7 = collectResumeState({ cascadeId: cidWaitStatus }, { conversationsDir: convDir });
+    assert.equal(r7.interrupted, false);
+    assert.equal(r7.waiting, true);
+    assert.equal(r7.reason, 'waiting_user');
+
+    // 8. Normal PLANNER_RESPONSE followed by trailing SYSTEM_MESSAGE (101, DONE=3)
+    const cidNormalMeta = 'conv_normal_sys_007';
+    writeConvDb(convDir, cidNormalMeta, [
+      { idx: 1, stepType: 15, status: 3, stepPayload: encodePlannerPayload({ stopReason: 2 }) },
+      { idx: 2, stepType: 101, status: 3 },
+    ]);
+    const r8 = collectResumeState({ cascadeId: cidNormalMeta }, { conversationsDir: convDir });
+    assert.equal(r8.interrupted, false);
+    assert.equal(r8.reason, 'done');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('resume-detector catches missed interruption, cancel, error, and max-step states', () => {
+  const { root, convDir } = setupResumeFixtureDir('agy-resume-fn-');
+  try {
+    // 1. Interrupted (12) and active incomplete statuses (1, 8, 11)
+    const cidInt = 'conv_int_12_001';
+    writeConvDb(convDir, cidInt, [{ idx: 4, stepType: 132, status: 12 }]);
+    assert.deepEqual(
+      { interrupted: collectResumeState({ cascadeId: cidInt }, { conversationsDir: convDir }).interrupted, reason: collectResumeState({ cascadeId: cidInt }, { conversationsDir: convDir }).reason },
+      { interrupted: true, reason: 'interrupted' }
+    );
+
+    for (const st of [1, 8, 11]) {
+      const cid = `conv_active_st_${st}`;
+      writeConvDb(convDir, cid, [{ idx: 2, stepType: 15, status: st }]);
+      const res = collectResumeState({ cascadeId: cid }, { conversationsDir: convDir });
+      assert.equal(res.interrupted, true, `status=${st} must be detected as interrupted`);
+      assert.equal(res.reason, 'aborted');
+    }
+
+    // 2. STEP_ERROR_MESSAGE (17, status=3, empty error_details)
+    const cidErrMsg = 'conv_err_msg_002';
+    writeConvDb(convDir, cidErrMsg, [{ idx: 9, stepType: 17, status: 3 }]);
+    const rErr = collectResumeState({ cascadeId: cidErrMsg }, { conversationsDir: convDir });
+    assert.equal(rErr.interrupted, true);
+    assert.equal(rErr.reason, 'error');
+
+    // 3. ERROR_MESSAGE (17) or CANCELED (6) masked by trailing SYSTEM_MESSAGE (101, DONE=3)
+    const cidMaskedErr = 'conv_masked_err_003';
+    writeConvDb(convDir, cidMaskedErr, [
+      { idx: 10, stepType: 17, status: 3 },
+      { idx: 11, stepType: 101, status: 3 },
+    ]);
+    const rMaskedErr = collectResumeState({ cascadeId: cidMaskedErr }, { conversationsDir: convDir });
+    assert.equal(rMaskedErr.interrupted, true);
+    assert.equal(rMaskedErr.reason, 'error');
+    assert.equal(rMaskedErr.lastIdx, 11);
+
+    const cidMaskedCancel = 'conv_masked_cancel_004';
+    writeConvDb(convDir, cidMaskedCancel, [
+      { idx: 20, stepType: 132, status: 6 },
+      { idx: 21, stepType: 101, status: 3 },
+    ]);
+    const rMaskedCancel = collectResumeState({ cascadeId: cidMaskedCancel }, { conversationsDir: convDir });
+    assert.equal(rMaskedCancel.interrupted, true);
+    assert.equal(rMaskedCancel.reason, 'canceled');
+
+    // 4. PLANNER_RESPONSE abnormal stop_reason (16, 18) or dangling tool_calls (field 7)
+    const cidSr16 = 'conv_planner_sr16';
+    writeConvDb(convDir, cidSr16, [
+      { idx: 1, stepType: 15, status: 3, stepPayload: encodePlannerPayload({ stopReason: 16 }) },
+    ]);
+    assert.equal(collectResumeState({ cascadeId: cidSr16 }, { conversationsDir: convDir }).reason, 'canceled');
+
+    const cidSr18 = 'conv_planner_sr18';
+    writeConvDb(convDir, cidSr18, [
+      { idx: 1, stepType: 15, status: 3, stepPayload: encodePlannerPayload({ stopReason: 18 }) },
+    ]);
+    assert.equal(collectResumeState({ cascadeId: cidSr18 }, { conversationsDir: convDir }).reason, 'error');
+
+    const cidDanglingTc = 'conv_planner_dangling_tc';
+    writeConvDb(convDir, cidDanglingTc, [
+      { idx: 1, stepType: 15, status: 3, stepPayload: encodePlannerPayload({ stopReason: 2, toolCalls: 1 }) },
+    ]);
+    const rTc = collectResumeState({ cascadeId: cidDanglingTc }, { conversationsDir: convDir });
+    assert.equal(rTc.interrupted, true);
+    assert.equal(rTc.reason, 'aborted');
+
+    // 5. executor_metadata USER_CANCELED (2), ERROR (1), MAX_INVOCATIONS (3)
+    for (const [termReason, expectedReason] of [
+      [2, 'canceled'],
+      [1, 'error'],
+      [3, 'max_steps'],
+    ]) {
+      const cid = `conv_exec_tr_${termReason}`;
+      writeConvDb(
+        convDir,
+        cid,
+        [{ idx: 7, stepType: 15, status: 3, stepPayload: encodePlannerPayload({ stopReason: 2 }) }],
+        [{ idx: 0, data: encodeExecMetadata(termReason, 7) }]
+      );
+      const res = collectResumeState({ cascadeId: cid }, { conversationsDir: convDir });
+      assert.equal(res.interrupted, true);
+      assert.equal(res.reason, expectedReason);
+    }
+
+    // 6. Stale executor_metadata (lastStepIdx < effectiveIdx) must not suppress newer mid-tool interruption
+    const cidStaleExec = 'conv_stale_exec_008';
+    writeConvDb(
+      convDir,
+      cidStaleExec,
+      [
+        { idx: 5, stepType: 15, status: 3, stepPayload: encodePlannerPayload({ stopReason: 2 }) },
+        { idx: 6, stepType: 132, status: 3, metadata: encodeToolMetadata('run_command') },
+      ],
+      [{ idx: 0, data: encodeExecMetadata(4, 5) }]
+    );
+    const rStale = collectResumeState({ cascadeId: cidStaleExec }, { conversationsDir: convDir });
+    assert.equal(rStale.interrupted, true);
+    assert.equal(rStale.reason, 'mid_tool');
+
+    // 7. Summary raw_summary fallback when executor_metadata table is absent
+    const sumDbPath = path.join(root, 'conversation_summaries.db');
+    const cidRawSum = 'conv_raw_sum_fallback';
+    writeConvDb(convDir, cidRawSum, [
+      { idx: 0, stepType: 14, status: 3 },
+      { idx: 1, stepType: 15, status: 3, stepPayload: encodePlannerPayload({ stopReason: 2 }) },
+    ]);
+    writeSummariesDb(sumDbPath, [
+      {
+        cid: cidRawSum,
+        status: 'CASCADE_RUN_STATUS_IDLE',
+        notFullyIdle: false,
+        stepCount: 2,
+        rawSummary: encodeRawSummaryTermReason(2),
+      },
+    ]);
+    const rRaw = collectResumeState({ cascadeId: cidRawSum }, { conversationsDir: convDir });
+    assert.equal(rRaw.interrupted, true);
+    assert.equal(rRaw.reason, 'canceled');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('resume-banner suppresses pill during waiting states, clears stale cache, retries on settle, and preserves pendingForce', async () => {
+  const env = makeMockDomEnv({ pathname: '/c/conv-wait-guard', lang: 'en', width: 640 });
+  const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms));
+
+  await withGlobals(env, async () => {
+    const mainBox = env.createEl('div');
+    mainBox.id = 'antigravity.agentSidePanelInputBox';
+    const footer = env.createEl('div');
+    footer.className = 'agy-composer-footer';
+    const leftGroup = env.createEl('div');
+    leftGroup.append(env.createEl('button'));
+    const cancelBtn = env.createEl('button');
+    cancelBtn.setAttribute('data-testid', 'input-cancel-button');
+    cancelBtn.offsetParent = null; // hidden initially
+    footer.append(leftGroup, cancelBtn);
+    mainBox.append(footer);
+
+    const convView = env.createEl('div');
+    convView.setAttribute('data-testid', 'conversation-view');
+    const idleWaitNode = env.createEl('div');
+    idleWaitNode.setAttribute('data-testid', 'idle-status-text');
+    idleWaitNode.textContent = 'Waiting for subagent';
+    idleWaitNode.offsetParent = null; // hidden initially
+
+    convView.append(idleWaitNode);
+
+    // Mock React store on #root > firstChild
+    let storeState = {
+      trajectorySummaries: {
+        summaries: {
+          'conv-wait-guard': {
+            status: 1,
+            notFullyIdle: false,
+            hasRunningSubagents: false,
+            hasActiveChildren: false,
+            backgroundTaskCount: 0,
+            waitingSteps: [],
+            interrupted: false,
+            latestExecutorTerminationReason: 4,
+            stepCount: 10,
+          },
+        },
+      },
+    };
+    const storeListeners = new Set();
+    const mockStore = {
+      getState: () => storeState,
+      subscribe: (fn) => {
+        storeListeners.add(fn);
+        return () => storeListeners.delete(fn);
+      },
+    };
+    const rootEl = env.createEl('div');
+    rootEl.id = 'root';
+    const rootChild = env.createEl('div');
+    rootChild['__reactFiber$mock'] = { memoizedProps: { store: mockStore }, return: null };
+    rootEl.append(rootChild);
+    env.doc.body.append(rootEl, convView, mainBox);
+
+    let rpcQueue = [{ ok: true, interrupted: true, reason: 'canceled', lastIdx: 10 }];
+    let rpcCalls = [];
+    env.win.__agProjectCall = (action, payload) => {
+      rpcCalls.push({ action, payload });
+      const next = rpcQueue.length > 1 ? rpcQueue.shift() : rpcQueue[0];
+      return typeof next === 'function' ? next(payload) : Promise.resolve(next);
+    };
+
+    const rt = createResumeBannerRuntime({});
+    let dirtyCalls = 0;
+    rt.mount({
+      markDirty: () => {
+        dirtyCalls += 1;
+        rt.sync();
+      },
+    });
+
+    // 1. Initial idle + interrupted -> mounts Resume pill
+    rt.sync();
+    await tick(10);
+    assert.ok(env.doc.getElementById('agy-resume-pill'), 'pill mounts on genuine idle interruption');
+
+    // 2. Waiting via [data-testid="idle-status-text"] suppresses pill immediately
+    idleWaitNode.offsetParent = {};
+    rt.sync();
+    assert.equal(env.doc.getElementById('agy-resume-pill'), null, 'pill hidden while idle-status-text is visible');
+
+    // 3. Running child subagent in metrics suppresses pill
+    idleWaitNode.offsetParent = null;
+    env.win.__ag_last_metrics = {
+      cascadeId: 'conv-wait-guard',
+      hasData: true,
+      stats: { turns: 1, calls: 2, children: [{ id: 'sub1', running: true, killed: false }] },
+    };
+    rt.sync();
+    assert.equal(env.doc.getElementById('agy-resume-pill'), null, 'pill hidden while metrics shows running subagent');
+
+    // 4. Live React store notFullyIdle / backgroundTaskCount suppresses pill, and subscription fires markDirty
+    env.win.__ag_last_metrics = null;
+    storeState = {
+      trajectorySummaries: {
+        summaries: {
+          'conv-wait-guard': {
+            ...storeState.trajectorySummaries.summaries['conv-wait-guard'],
+            notFullyIdle: true,
+            backgroundTaskCount: 1,
+          },
+        },
+      },
+    };
+    for (const fn of storeListeners) fn();
+    assert.ok(dirtyCalls >= 1, 'store subscription notifies kernel');
+    assert.equal(env.doc.getElementById('agy-resume-pill'), null, 'pill hidden while live store reports waiting');
+
+    // 5. Transition busy -> idle: clears stale cache, does not flash stale pill, settles & retries on active:true -> mounts new pill
+    rpcQueue = [
+      { ok: true, interrupted: false, active: true, reason: 'running', lastIdx: 41 },
+      { ok: true, interrupted: true, reason: 'canceled', lastIdx: 42 },
+    ];
+    const callsBeforeSettle = rpcCalls.length;
+    storeState = {
+      trajectorySummaries: {
+        summaries: {
+          'conv-wait-guard': {
+            ...storeState.trajectorySummaries.summaries['conv-wait-guard'],
+            status: 1,
+            notFullyIdle: false,
+            backgroundTaskCount: 0,
+            interrupted: true,
+            latestExecutorTerminationReason: 2,
+            stepCount: 43,
+          },
+        },
+      },
+    };
+    for (const fn of storeListeners) fn();
+    assert.equal(env.doc.getElementById('agy-resume-pill'), null, 'must not flash stale pill before new settle fetch');
+
+    // Wait for 350ms settleTimer + 750ms bounded retry
+    await tick(420);
+    assert.equal(rpcCalls.length, callsBeforeSettle + 1, 'settle fetch fires after busy -> idle');
+    assert.equal(env.doc.getElementById('agy-resume-pill'), null, 'active:true response keeps pill hidden');
+
+    await tick(820);
+    assert.equal(rpcCalls.length, callsBeforeSettle + 2, 'bounded retry fires when first settle saw active:true');
+    assert.ok(env.doc.getElementById('agy-resume-pill'), 'pill mounts after bounded retry receives interrupted:true');
+
+    // 6. pendingForce preserves forced refetch when an earlier fetch is still inFlight
+    env.loc.pathname = '/c/conv-pending-force';
+    let resolveFirst = null;
+    let forceStep = 0;
+    rpcQueue = [
+      () =>
+        new Promise((resolve) => {
+          forceStep += 1;
+          if (forceStep === 1) resolveFirst = resolve;
+          else resolve({ ok: true, interrupted: true, reason: 'error', lastIdx: 55 });
+        }),
+    ];
+    rt.sync();
+    // Trigger a second forced fetch via live store stepCount advance while first RPC is inFlight
+    storeState = {
+      trajectorySummaries: {
+        summaries: {
+          'conv-pending-force': {
+            status: 1,
+            notFullyIdle: false,
+            hasRunningSubagents: false,
+            hasActiveChildren: false,
+            backgroundTaskCount: 0,
+            waitingSteps: [],
+            interrupted: true,
+            latestExecutorTerminationReason: 1,
+            stepCount: 56,
+          },
+        },
+      },
+    };
+    for (const fn of storeListeners) fn();
+    assert.equal(forceStep, 1, 'only one RPC in flight initially');
+    resolveFirst({ ok: true, interrupted: false, reason: 'done', lastIdx: 54 });
+    await tick(30);
+    assert.equal(forceStep, 2, 'pendingForce triggers queued forced refetch after first resolves');
+    assert.ok(env.doc.getElementById('agy-resume-pill'), 'pill mounts from queued forced refetch result');
+
+    rt.dispose();
+    assert.equal(storeListeners.size, 0, 'dispose unsubscribes from live store');
+  });
 });

@@ -34,7 +34,7 @@ function normalizeReviewerModel(raw, fallback = 'opus') {
   return fallback === 'carbon' ? 'carbon' : 'opus';
 }
 
-export function createOpusGatePillRuntime({ studioPrefs } = {}) {
+export function createOpusGatePillRuntime({ studioPrefs, motionThemes, openSubagent } = {}) {
   const PILL_ID = 'agy-opus-gate-pill';
   const MENU_ID = 'agy-opus-gate-menu';
   const DISMISS_STORAGE_KEY = 'agy_studio_opus_gate_dismissed_v1';
@@ -51,6 +51,12 @@ export function createOpusGatePillRuntime({ studioPrefs } = {}) {
   let selectedMenuModel = 'opus';
   let statusCache = { cid: '', ts: 0, inFlight: false, data: null };
   const fallbackTimers = new Set();
+  let fxRaf = 0;
+  let fxActiveModel = '';
+  let fxClock = 0;
+  let fxFlow = 0;
+  let fxLastTs = 0;
+  let fxCanvas = null;
 
   const isEnabled = () => (studioPrefs?.get?.()?.opusGateMode || 'semi') !== 'off';
   const getDefaultReviewerModel = () => normalizeReviewerModel(studioPrefs?.get?.()?.opusGateModel, 'opus');
@@ -210,7 +216,119 @@ export function createOpusGatePillRuntime({ studioPrefs } = {}) {
     if (menuEl) menuEl.removeAttribute('data-open');
   }
 
+  function stopFxLoop() {
+    if (fxRaf && typeof cancelAnimationFrame === 'function') {
+      cancelAnimationFrame(fxRaf);
+    }
+    fxRaf = 0;
+    fxActiveModel = '';
+    fxLastTs = 0;
+    fxCanvas = null;
+  }
+
+  function findActiveReviewChild(cid = getActiveRouteCid()) {
+    const m = typeof window === 'object' ? window.__ag_last_metrics : null;
+    if (!cid || !m || (m.cascadeId && m.cascadeId !== cid)) return null;
+    const raw = Array.isArray(m?.stats?.children) ? m.stats.children : [];
+    for (let i = raw.length - 1; i >= 0; i--) {
+      const ch = raw[i];
+      if (!ch || !ch.id || ch.running !== true || ch.killed) continue;
+      const rawName = String(ch.agentName || ch.title || '').trim();
+      if (!/(?:^|[-_])(?:opus|carbon|review)(?:[-_]|$)/i.test(rawName)) continue;
+      const hint = `${rawName} ${ch.modelName || ''} ${ch.model || ''}`;
+      let model = getDefaultReviewerModel();
+      if (/carbon|gemini/i.test(hint)) model = 'carbon';
+      else if (/opus|claude/i.test(hint)) model = 'opus';
+      return { id: ch.id, label: rawName, model };
+    }
+    return null;
+  }
+
+  function paintFxFrame(canvas, model) {
+    if (disposed || !canvas) return false;
+    let mt = null;
+    try {
+      mt = typeof motionThemes === 'function' ? motionThemes() : motionThemes;
+    } catch {
+      mt = null;
+    }
+    if (!mt) return false;
+    let ctx = null;
+    try {
+      ctx = canvas.getContext?.('2d') || null;
+    } catch {
+      ctx = null;
+    }
+    if (!ctx) return false;
+
+    const rect = canvas.parentElement?.getBoundingClientRect?.() || canvas.getBoundingClientRect?.() || { width: 0, height: 0 };
+    const w = rect.width > 0 ? Math.round(rect.width) : 116;
+    const h = rect.height > 0 ? Math.round(rect.height) : 28;
+    const dpr = Math.min((typeof window === 'object' && window.devicePixelRatio) || 1, 2);
+    const pxW = Math.max(1, Math.round(w * dpr));
+    const pxH = Math.max(1, Math.round(h * dpr));
+    if (canvas.width !== pxW) canvas.width = pxW;
+    if (canvas.height !== pxH) canvas.height = pxH;
+    if (typeof ctx.setTransform === 'function') ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    const prefs = studioPrefs?.get?.() || {};
+    const pal = model === 'carbon' ? mt.GEMINI_PALETTES?.carbon : mt.CLAUDE_PALETTES?.opus;
+    if (model === 'carbon' && typeof mt.paintGeminiSlider === 'function') {
+      mt.paintGeminiSlider(ctx, pal, prefs.geminiTheme || 'physical', w, h, fxFlow, fxClock, 0.92, { isLight: false });
+    } else if (typeof mt.paintClaudeSlider === 'function') {
+      mt.paintClaudeSlider(ctx, pal, prefs.claudeTheme || 'matrix', w, h, fxFlow, fxClock, 0.92, { isLight: false });
+    }
+    return { mt, pal, prefs };
+  }
+
+  function startFxLoop(canvas, model) {
+    if (disposed || !canvas) return;
+    const prefs = studioPrefs?.get?.() || {};
+    const motionLevel = prefs.motionLevel || 'full';
+    const effortMotion = prefs.effortMotion || 'full';
+    const mediaReduced = Boolean(typeof window === 'object' && window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches);
+    const staticOnly = motionLevel === 'off' || effortMotion === 'off' || mediaReduced;
+
+    if (fxCanvas === canvas && fxActiveModel === model && (fxRaf || staticOnly)) {
+      if (staticOnly) paintFxFrame(canvas, model);
+      return;
+    }
+
+    stopFxLoop();
+    const painted = paintFxFrame(canvas, model);
+    if (!painted || staticOnly || typeof requestAnimationFrame !== 'function') return;
+
+    fxCanvas = canvas;
+    fxActiveModel = model;
+    fxLastTs = 0;
+
+    const tickFx = (ts) => {
+      if (disposed || fxCanvas !== canvas || !canvas.isConnected) {
+        stopFxLoop();
+        return;
+      }
+      const curPrefs = studioPrefs?.get?.() || {};
+      const curMotion = curPrefs.motionLevel || 'full';
+      const curEffort = curPrefs.effortMotion || 'full';
+      if (curMotion === 'off' || curEffort === 'off') {
+        paintFxFrame(canvas, fxActiveModel);
+        stopFxLoop();
+        return;
+      }
+      const dt = fxLastTs > 0 ? Math.min(0.05, Math.max(0.001, (ts - fxLastTs) / 1000)) : 0.016;
+      fxLastTs = ts;
+      const slow = curMotion === 'reduced' ? 0.45 : 1;
+      const speedMul = Number(painted.pal?.speedMul || 1);
+      fxClock += dt * slow;
+      fxFlow += dt * slow * speedMul;
+      paintFxFrame(canvas, fxActiveModel);
+      fxRaf = requestAnimationFrame(tickFx);
+    };
+    fxRaf = requestAnimationFrame(tickFx);
+  }
+
   function removePill() {
+    stopFxLoop();
     closeMenu();
     document.getElementById(PILL_ID)?.remove();
   }
@@ -509,21 +627,31 @@ export function createOpusGatePillRuntime({ studioPrefs } = {}) {
       return;
     }
 
+    const activeReview = findActiveReviewChild(cid);
     const running = plan ? plan.running : isComposerRunning();
     const editorEmpty = plan ? plan.editorEmpty : isEditorEmpty(box);
-    if (running || !editorEmpty) {
+    if (activeReview) {
+      if (!editorEmpty) {
+        removePill();
+        return;
+      }
+      closeMenu();
+    } else {
+      stopFxLoop();
+      if (running || !editorEmpty) {
+        removePill();
+        return;
+      }
+    }
+
+    const prop = activeReview ? null : statusCache.cid === cid ? statusCache.data?.proposal : null;
+    if (!activeReview && (!prop || prop.dismissed)) {
       removePill();
       return;
     }
 
-    const prop = statusCache.cid === cid ? statusCache.data?.proposal : null;
-    if (!prop || prop.dismissed) {
-      removePill();
-      return;
-    }
-
-    const key = proposalKey(cid, prop);
-    if (dismissedSet.has(key)) {
+    const key = activeReview ? `reviewing:${activeReview.id}:${activeReview.model}` : proposalKey(cid, prop);
+    if (!activeReview && dismissedSet.has(key)) {
       removePill();
       return;
     }
@@ -536,6 +664,7 @@ export function createOpusGatePillRuntime({ studioPrefs } = {}) {
       pill.setAttribute('data-no-drag', '');
       pill.setAttribute('data-ag-i18n-ignore', '1');
       pill.innerHTML =
+        '<canvas class="agy-opus-fx" aria-hidden="true"></canvas>' +
         '<button type="button" class="agy-opus-go">' +
           '<span class="agy-opus-star" aria-hidden="true">✦</span>' +
           '<span class="agy-opus-label"></span>' +
@@ -548,6 +677,16 @@ export function createOpusGatePillRuntime({ studioPrefs } = {}) {
         e.preventDefault();
         e.stopPropagation();
         const curCid = getActiveRouteCid();
+        const liveRev = findActiveReviewChild(curCid);
+        if (liveRev) {
+          closeMenu();
+          if (typeof openSubagent === 'function') {
+            openSubagent(liveRev.id, liveRev.label);
+          } else {
+            document.getElementById('agy-main-subagent-pill')?.click?.();
+          }
+          return;
+        }
         const curProp = statusCache.cid === curCid ? statusCache.data?.proposal : null;
         if (menuOpen) closeMenu();
         else if (curProp) openMenuFor(pill, curProp.kind || 'review', curProp);
@@ -557,6 +696,7 @@ export function createOpusGatePillRuntime({ studioPrefs } = {}) {
         e.preventDefault();
         e.stopPropagation();
         const curCid = getActiveRouteCid();
+        if (findActiveReviewChild(curCid)) return;
         const curProp = statusCache.cid === curCid ? statusCache.data?.proposal : null;
         if (curCid && curProp) dismissCurrent(curCid, curProp);
       });
@@ -573,16 +713,38 @@ export function createOpusGatePillRuntime({ studioPrefs } = {}) {
       }
     }
 
+    const langTag = plan ? plan.langTag : (isZhUi() ? 'zh' : 'en');
+    if (activeReview) {
+      const label =
+        activeReview.model === 'carbon'
+          ? L('Carbon 审查中', 'Carbon Reviewing')
+          : L('Opus 审查中', 'Opus Reviewing');
+      const tip = L('点击查看审查子代理进度', 'Click to view active reviewer');
+      const sig = `${key}|${langTag}|reviewing|${label}`;
+      if (pill.getAttribute('data-sig') !== sig) {
+        setAttr(pill, 'data-sig', sig);
+        setAttr(pill, 'data-reviewing', '1');
+        setAttr(pill, 'data-reviewer-model', activeReview.model);
+        setAttr(pill, 'data-quota-blocked', '0');
+        const lblEl = pill.querySelector('.agy-opus-label');
+        if (lblEl) setLeafText(lblEl, label);
+        const goBtn = pill.querySelector('.agy-opus-go');
+        if (goBtn && goBtn.title !== tip) goBtn.title = tip;
+      }
+      startFxLoop(pill.querySelector('.agy-opus-fx'), activeReview.model);
+      return;
+    }
+
     const defaultModel = getDefaultReviewerModel();
     const live = computeLivePoolState(defaultModel, statusCache.data?.quotaState, prop);
     const label = live.quotaBlocked
       ? L('审查配额紧', 'Review · Low Quota')
       : L('请求审查', 'Review');
-    const langTag = plan ? plan.langTag : (isZhUi() ? 'zh' : 'en');
     const tip = `${kindLabel(prop.kind)}: ${prop.reason || ''} · ${live.spec.shortLabel} · ${live.quotaText}`;
     const sig = `${key}|${langTag}|${defaultModel}|${label}|${live.quotaBlocked ? 1 : 0}|${live.quotaText}`;
     if (pill.getAttribute('data-sig') !== sig) {
       setAttr(pill, 'data-sig', sig);
+      setAttr(pill, 'data-reviewing', '0');
       setAttr(pill, 'data-reviewer-model', defaultModel);
       setAttr(pill, 'data-quota-blocked', live.quotaBlocked ? '1' : '0');
       const lblEl = pill.querySelector('.agy-opus-label');
@@ -683,7 +845,7 @@ export function createOpusGatePillRuntime({ studioPrefs } = {}) {
   }
 
   return {
-    topics: ['composer', 'route', 'prefs'],
+    topics: ['composer', 'route', 'prefs', 'metrics', 'subagent'],
     read,
     write,
     sync,

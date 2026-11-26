@@ -1405,6 +1405,12 @@ test('detectLandingAction identifies git merge/push/deploy while ignoring safe a
     sourceRef: '',
     label: 'npm run deploy',
   });
+  assert.deepEqual(detectLandingAction('git merge -S feat/signed', REPO), {
+    action: 'merge',
+    repoDir: REPO,
+    sourceRef: 'feat/signed',
+    label: 'git merge',
+  });
 
   assert.equal(detectLandingAction('git merge-base main HEAD', REPO), null);
   assert.equal(detectLandingAction('git merge --abort', REPO), null);
@@ -1412,6 +1418,7 @@ test('detectLandingAction identifies git merge/push/deploy while ignoring safe a
   assert.equal(detectLandingAction('git push --dry-run origin feat/x', REPO), null);
   assert.equal(detectLandingAction('git push -n origin feat/x', REPO), null);
   assert.equal(detectLandingAction('git commit -m "handle git merge && npm run deploy"', REPO), null);
+  assert.equal(detectLandingAction("git commit -F - <<'EOF'\nfeat: handle\ngit merge edge\nEOF", REPO), null);
   assert.equal(detectLandingAction('grep -rn "npm run deploy" test/', REPO), null);
   assert.equal(detectLandingAction('npm test', REPO), null);
 });
@@ -1606,11 +1613,13 @@ test('PreToolUse enforces Pause-Once on pre-landing commands, unblocks after Sto
   }
 });
 
-test('PreToolUse catches committed clean worktree diffs on git merge & buildOpusHandoffBrief includes branch diff', async () => {
+test('PreToolUse catches committed clean worktree diffs on git merge & handles cross-repo, overlap & brief fallback', async () => {
   const dirs = makeTempDirs('og-realgit-');
   const mainRepo = path.join(dirs.root, 'repo-main');
   const wtDir = path.join(dirs.root, 'repo-wt-feat');
+  const otherRepo = path.join(dirs.root, 'repo-other');
   const cid = 'conv_realgit_3333';
+  const cidOverlap = 'conv_overlap_7777';
   const hookOpts = (extra = {}) => ({
     stateDir: dirs.stateDir,
     studioPrefsFile: dirs.studioPrefsFile,
@@ -1624,6 +1633,10 @@ test('PreToolUse catches committed clean worktree diffs on git merge & buildOpus
   try {
     fs.mkdirSync(path.join(mainRepo, 'studio', 'core'), { recursive: true });
     fs.writeFileSync(path.join(mainRepo, 'studio', 'core', 'kernel.mjs'), 'export const v = 1;\n');
+    fs.writeFileSync(path.join(mainRepo, 'notes.txt'), 'line 1\n');
+    fs.mkdirSync(otherRepo, { recursive: true });
+    fs.writeFileSync(path.join(otherRepo, 'notes.md'), '# Other repo\n');
+
     const gitIn = (dir, ...args) =>
       execFileSync('git', ['-C', dir, ...args], {
         encoding: 'utf8',
@@ -1635,6 +1648,12 @@ test('PreToolUse catches committed clean worktree diffs on git merge & buildOpus
     gitIn(mainRepo, 'add', '.');
     gitIn(mainRepo, 'commit', '-m', 'init main');
     gitIn(mainRepo, 'worktree', 'add', '-b', 'feat/branch-diff', wtDir, 'main');
+
+    gitIn(otherRepo, 'init', '-b', 'main');
+    gitIn(otherRepo, 'config', 'user.email', 'test@example.com');
+    gitIn(otherRepo, 'config', 'user.name', 'Test User');
+    gitIn(otherRepo, 'add', '.');
+    gitIn(otherRepo, 'commit', '-m', 'init other');
 
     fs.writeFileSync(dirs.studioPrefsFile, JSON.stringify({ ...DEFAULT_STUDIO_PREFS, opusGateMode: 'semi', opusGateModel: 'carbon' }));
     fs.writeFileSync(
@@ -1648,6 +1667,7 @@ test('PreToolUse catches committed clean worktree diffs on git merge & buildOpus
     );
 
     const wtKernel = path.join(wtDir, 'studio', 'core', 'kernel.mjs');
+    const otherNotes = path.join(otherRepo, 'notes.md');
     fs.writeFileSync(wtKernel, 'export const v = 2;\nexport const paused = true;\n');
     evaluateHookEvent(
       {
@@ -1661,7 +1681,19 @@ test('PreToolUse catches committed clean worktree diffs on git merge & buildOpus
     gitIn(wtDir, 'add', '.');
     gitIn(wtDir, 'commit', '-m', 'feat: update kernel');
 
-    // Even with a clean working tree in wtDir, git merge executed from mainRepo catches committed branch diff
+    // P1-1 regression: later touch in an unrelated repo must not bypass MAGA merge gate
+    fs.writeFileSync(otherNotes, '# Other repo modified\n');
+    evaluateHookEvent(
+      {
+        hookEventName: 'PostToolUse',
+        conversationId: cid,
+        cwd: otherRepo,
+        toolCall: { name: 'edit_file', args: { Path: otherNotes } },
+      },
+      hookOpts()
+    );
+
+    // Even with a clean working tree in wtDir + unrelated otherRepo touch, git merge in mainRepo catches committed diff
     const denyMerge = evaluateHookEvent(
       {
         hookEventName: 'PreToolUse',
@@ -1676,7 +1708,8 @@ test('PreToolUse catches committed clean worktree diffs on git merge & buildOpus
     assert.equal(prop?.kind, 'risk');
     assert.deepEqual(prop?.highRiskFiles, ['studio/core/kernel.mjs']);
 
-    // buildOpusHandoffBrief falls back to main...HEAD so committed clean worktree gets full diff snippet
+    // P1-2(c): unrelated unstaged change filling diffStat does NOT skip committed high-risk branch diffSnippet fallback
+    fs.writeFileSync(path.join(wtDir, 'notes.txt'), 'line 1 modified unstaged\n');
     const brief = await buildOpusHandoffBrief(
       { cascadeId: cid, dirPath: wtDir, model: 'carbon' },
       {
@@ -1690,12 +1723,48 @@ test('PreToolUse catches committed clean worktree diffs on git merge & buildOpus
     assert.equal(brief.ok, true);
     assert.match(brief.swarmPrompt, /studio\/core\/kernel\.mjs/);
     assert.match(brief.swarmPrompt, /\+export const paused = true;/);
+
+    // P1-2(b): overlapping uncommitted edit on committed branch file uses merge-base unified diff (no double count & same hash after commit)
+    fs.writeFileSync(path.join(wtDir, 'notes.txt'), 'line 1\n');
+    fs.writeFileSync(wtKernel, 'export const v = 2;\nexport const paused = false;\n');
+    evaluateHookEvent(
+      {
+        hookEventName: 'PostToolUse',
+        conversationId: cidOverlap,
+        cwd: wtDir,
+        toolCall: { name: 'edit_file', args: { Path: wtKernel } },
+      },
+      hookOpts()
+    );
+    assert.deepEqual(
+      evaluateHookEvent(
+        { hookEventName: 'Stop', conversationId: cidOverlap, cwd: wtDir, terminationReason: 'NO_TOOL_CALL' },
+        hookOpts()
+      ),
+      {}
+    );
+    const overlapProp = readProposal(dirs, cidOverlap);
+    assert.equal(overlapProp?.changedLines, 3, 'expected unified merge-base line count 3 (not double-counted 5)');
+    gitIn(wtDir, 'add', 'studio/core/kernel.mjs');
+    gitIn(wtDir, 'commit', '-m', 'fix: toggle paused');
+    assert.deepEqual(
+      evaluateHookEvent(
+        {
+          hookEventName: 'PreToolUse',
+          conversationId: cidOverlap,
+          cwd: mainRepo,
+          toolCall: { name: 'run_command', args: { CommandLine: 'git merge --no-ff feat/branch-diff' } },
+        },
+        hookOpts()
+      ),
+      { decision: 'allow' }
+    );
   } finally {
     dirs.cleanup();
   }
 });
 
-test('PostToolUse(swarm) unifies verbal review completion with pre-landing & pre-plan gates', () => {
+test('PostToolUse(swarm) requires review worker name and defers audit stamp until kill', () => {
   const dirs = makeTempDirs('og-swarm-sync-');
   const cid = 'conv_swarm_4444';
   const hookOpts = (extra = {}) => ({
@@ -1725,6 +1794,7 @@ test('PostToolUse(swarm) unifies verbal review completion with pre-landing & pre
       },
       hookOpts()
     );
+    assert.ok(readProposal(dirs, cid));
     evaluateHookEvent(
       {
         hookEventName: 'PostToolUse',
@@ -1745,7 +1815,22 @@ test('PostToolUse(swarm) unifies verbal review completion with pre-landing & pre
       diffHash: 'swarm_diff_1',
     };
 
-    // Verbal swarm review (add + kill) snapshots baseline and removes pending proposal
+    // P1-3: Non-review coding worker using Carbon must NOT dismiss or audit the gate
+    evaluateHookEvent(
+      {
+        hookEventName: 'PostToolUse',
+        conversationId: cid,
+        cwd: REPO,
+        toolCall: {
+          name: 'swarm',
+          args: { action: 'add', name: 'coder-1', model: 'gemini-4-carbon-high' },
+        },
+      },
+      hookOpts({ gitSummary: riskSummary })
+    );
+    assert.equal(fs.existsSync(proposalFile(dirs, cid)), true);
+
+    // P1-3: Review worker add removes pending proposal pill while STILL holding the merge gate until kill completes
     evaluateHookEvent(
       {
         hookEventName: 'PostToolUse',
@@ -1760,6 +1845,18 @@ test('PostToolUse(swarm) unifies verbal review completion with pre-landing & pre
     );
     assert.equal(fs.existsSync(proposalFile(dirs, cid)), false);
 
+    const stillBlocked = evaluateHookEvent(
+      {
+        hookEventName: 'PreToolUse',
+        conversationId: cid,
+        cwd: REPO,
+        toolCall: { name: 'run_command', args: { CommandLine: 'git merge --no-ff feat/x' } },
+      },
+      hookOpts({ gitSummary: riskSummary })
+    );
+    assert.equal(stillBlocked.decision, 'deny');
+
+    // Review worker kill completes the audit and clears blockingLandingHash
     evaluateHookEvent(
       {
         hookEventName: 'PostToolUse',
@@ -1945,6 +2042,189 @@ test('opus-gate-pill localizes pre-landing and pre-plan proposal reasons in zh-C
       await tick(30);
       document.querySelector('#agy-opus-gate-pill .agy-opus-go')?.click();
       assert.equal(document.querySelector('#agy-opus-gate-menu .agy-opus-menu-reason')?.textContent, '方案文档待确认：implementation_plan.md');
+    } finally {
+      runtime.dispose();
+      studioPrefs.dispose();
+    }
+  });
+});
+
+test('PreToolUse auto mode increments autoCalls once per distinct blockingLandingHash and caps at maxAutoPerSession', () => {
+  const dirs = makeTempDirs('og-autocap-');
+  const cid = 'conv_autocap_8888';
+  const hookOpts = (extra = {}) => ({
+    stateDir: dirs.stateDir,
+    studioPrefsFile: dirs.studioPrefsFile,
+    quotaStateFile: dirs.quotaStateFile,
+    proposalsDir: dirs.proposalsDir,
+    pluginDataDir: dirs.pluginDataDir,
+    now: 950_000,
+    ...extra,
+  });
+
+  try {
+    fs.writeFileSync(
+      dirs.studioPrefsFile,
+      JSON.stringify({
+        ...DEFAULT_STUDIO_PREFS,
+        opusGateMode: 'auto',
+        opusGateModel: 'carbon',
+        opusGateMaxAutoPerSession: 2,
+      })
+    );
+    fs.writeFileSync(
+      dirs.quotaStateFile,
+      JSON.stringify({
+        schema: 1,
+        updatedAt: 950_000,
+        gemini: { fiveHourRemainingPct: 85, weeklyRemainingPct: 90 },
+      })
+    );
+
+    const kAbs = path.join(REPO, 'studio/core/kernel.mjs');
+    const dAbs = path.join(REPO, 'studio/core/dom.mjs');
+    const pAbs = path.join(REPO, 'core/daemon/prefs-bundle.mjs');
+
+    const touchAndMakeSummary = (absFiles, rels) => {
+      evaluateHookEvent(
+        { hookEventName: 'PostToolUse', conversationId: cid, cwd: REPO, toolCall: { name: 'edit_file', args: { Path: absFiles[absFiles.length - 1] } } },
+        hookOpts()
+      );
+      const changedRelByAbs = {};
+      const perFileLines = {};
+      absFiles.forEach((a, i) => {
+        changedRelByAbs[a] = rels[i];
+        perFileLines[a] = 20 + i * 5;
+      });
+      return {
+        gitRoot: REPO,
+        changedAbsFiles: absFiles,
+        changedRelByAbs,
+        perFileLines,
+        changedFiles: absFiles.length,
+        changedLines: Object.values(perFileLines).reduce((s, n) => s + n, 0),
+        gitHighRisk: rels,
+        diffHash: `diff_${absFiles.length}`,
+      };
+    };
+
+    const s1 = touchAndMakeSummary([kAbs], ['studio/core/kernel.mjs']);
+    const r1 = evaluateHookEvent(
+      { hookEventName: 'PreToolUse', conversationId: cid, cwd: REPO, toolCall: { name: 'run_command', args: { CommandLine: 'git merge feat/1' } } },
+      hookOpts({ gitSummary: s1 })
+    );
+    assert.equal(r1.decision, 'deny');
+    assert.match(r1.reason, /Load the `opus-gate` skill/);
+
+    // Same-turn retry stays auto and does NOT burn the 2nd autoCall
+    const r1Retry = evaluateHookEvent(
+      { hookEventName: 'PreToolUse', conversationId: cid, cwd: REPO, toolCall: { name: 'run_command', args: { CommandLine: 'git merge feat/1' } } },
+      hookOpts({ gitSummary: s1 })
+    );
+    assert.match(r1Retry.reason, /Load the `opus-gate` skill/);
+
+    evaluateHookEvent({ hookEventName: 'Stop', conversationId: cid, cwd: REPO, terminationReason: 'NO_TOOL_CALL' }, hookOpts({ gitSummary: s1 }));
+
+    const s2 = touchAndMakeSummary([kAbs, dAbs], ['studio/core/kernel.mjs', 'studio/core/dom.mjs']);
+    const r2 = evaluateHookEvent(
+      { hookEventName: 'PreToolUse', conversationId: cid, cwd: REPO, toolCall: { name: 'run_command', args: { CommandLine: 'git merge feat/1' } } },
+      hookOpts({ gitSummary: s2 })
+    );
+    assert.equal(r2.decision, 'deny');
+    assert.match(r2.reason, /Load the `opus-gate` skill/);
+
+    evaluateHookEvent({ hookEventName: 'Stop', conversationId: cid, cwd: REPO, terminationReason: 'NO_TOOL_CALL' }, hookOpts({ gitSummary: s2 }));
+
+    // 3rd distinct landing gate exceeds opusGateMaxAutoPerSession=2 -> falls back to manual pause
+    const s3 = touchAndMakeSummary([kAbs, dAbs, pAbs], ['studio/core/kernel.mjs', 'studio/core/dom.mjs', 'core/daemon/prefs-bundle.mjs']);
+    const r3 = evaluateHookEvent(
+      { hookEventName: 'PreToolUse', conversationId: cid, cwd: REPO, toolCall: { name: 'run_command', args: { CommandLine: 'git merge feat/1' } } },
+      hookOpts({ gitSummary: s3 })
+    );
+    assert.equal(r3.decision, 'deny');
+    assert.match(r3.reason, /Paused before `git merge`/);
+  } finally {
+    dirs.cleanup();
+  }
+});
+
+test('opus-gate-pill morphs to live reviewing state with Effort canvas & panel jump', { skip: skipDom }, async () => {
+  const cid = 'conv_live_rev_9999';
+  const dom = new JSDOM(
+    `<!doctype html><html data-ag-ux-lang="zh-CN"><body>
+      <div id="antigravity.agentSidePanelInputBox">
+        <div data-lexical-editor="true"></div>
+        <div class="agy-composer-footer">
+          <div class="left-group"><span>anchor</span></div>
+          <div class="right-group"></div>
+        </div>
+      </div>
+    </body></html>`,
+    { url: `http://127.0.0.1/c/${cid}` }
+  );
+
+  await withMockDom(dom, async () => {
+    const openedSubagents = [];
+    let geminiPaints = 0;
+    let claudePaints = 0;
+    const mockThemes = {
+      GEMINI_PALETTES: { carbon: { id: 'carbon', speedMul: 0.95 } },
+      CLAUDE_PALETTES: { opus: { id: 'opus', speedMul: 0.94 } },
+      paintGeminiSlider: () => { geminiPaints += 1; },
+      paintClaudeSlider: () => { claudePaints += 1; },
+    };
+    dom.window.HTMLCanvasElement.prototype.getContext = () => ({ setTransform() {} });
+    window.__agProjectCall = async () => ({
+      ok: true,
+      pluginInstalled: true,
+      quotaState: { gemini: { fiveHourRemainingPct: 88, weeklyRemainingPct: 90 } },
+      proposal: null,
+    });
+    window.__ag_last_metrics = {
+      cascadeId: cid,
+      stats: {
+        children: [{ id: 'sub-carbon-1', agentName: 'review-carbon', running: true, killed: false }],
+      },
+    };
+
+    const studioPrefs = createStudioPrefsRuntime({ initialPrefs: { opusGateMode: 'semi', opusGateModel: 'carbon', motionLevel: 'off' } });
+    const runtime = createOpusGatePillRuntime({
+      studioPrefs,
+      motionThemes: () => mockThemes,
+      openSubagent: (id, label) => openedSubagents.push([id, label]),
+    });
+    try {
+      assert.ok(runtime.topics.includes('metrics'));
+      assert.ok(runtime.topics.includes('subagent'));
+
+      runtime.sync();
+      const pill = document.getElementById('agy-opus-gate-pill');
+      assert.ok(pill, 'expected live reviewing pill even with no proposal');
+      assert.equal(pill.getAttribute('data-reviewing'), '1');
+      assert.equal(pill.getAttribute('data-reviewer-model'), 'carbon');
+      assert.equal(pill.querySelector('.agy-opus-label')?.textContent, 'Carbon 审查中');
+      assert.ok(pill.querySelector('.agy-opus-fx'));
+      assert.equal(geminiPaints >= 1, true);
+
+      pill.querySelector('.agy-opus-go')?.click();
+      assert.deepEqual(openedSubagents, [['sub-carbon-1', 'review-carbon']]);
+      assert.equal(document.getElementById('agy-opus-gate-menu'), null);
+
+      // Switch active reviewer to Opus
+      window.__ag_last_metrics.stats.children = [
+        { id: 'sub-opus-1', agentName: 'review-opus', running: true, killed: false },
+      ];
+      runtime.sync();
+      assert.equal(pill.getAttribute('data-reviewer-model'), 'opus');
+      assert.equal(pill.querySelector('.agy-opus-label')?.textContent, 'Opus 审查中');
+      assert.equal(claudePaints >= 1, true);
+
+      // Stopping reviewer removes pill cleanly
+      window.__ag_last_metrics.stats.children = [
+        { id: 'sub-opus-1', agentName: 'review-opus', running: false, killed: false },
+      ];
+      runtime.sync();
+      assert.equal(document.getElementById('agy-opus-gate-pill'), null);
     } finally {
       runtime.dispose();
       studioPrefs.dispose();

@@ -420,13 +420,61 @@ const GIT_MERGE_VALUE_FLAGS = new Set([
   '--strategy-option',
   '--into-name',
   '--cleanup',
-  '-S',
-  '--gpg-sign',
 ]);
+
+function stripHeredocBodies(cmd) {
+  const src = String(cmd || '');
+  if (!src.includes('<<')) return src;
+  const lines = src.split(/\r?\n/);
+  const out = [];
+  const pendingDelims = [];
+
+  for (const line of lines) {
+    if (pendingDelims.length > 0) {
+      const cur = pendingDelims[0];
+      const check = cur.stripTabs ? line.replace(/^\t+/, '') : line;
+      if (check === cur.delim) {
+        pendingDelims.shift();
+      }
+      continue;
+    }
+    out.push(line);
+    let quote = '';
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (quote === "'") {
+        if (ch === "'") quote = '';
+        continue;
+      }
+      if (quote === '"') {
+        if (ch === '\\' && i + 1 < line.length) i += 1;
+        else if (ch === '"') quote = '';
+        continue;
+      }
+      if (ch === '\\' && i + 1 < line.length) {
+        i += 1;
+        continue;
+      }
+      if (ch === "'" || ch === '"') {
+        quote = ch;
+        continue;
+      }
+      if (ch === '<' && line[i + 1] === '<' && line[i + 2] !== '<') {
+        const m = line.slice(i).match(/^<<(-?)\s*(?:'([^']+)'|"([^"]+)"|([A-Za-z_][A-Za-z0-9_-]*))/);
+        if (m) {
+          const delim = m[2] || m[3] || m[4] || '';
+          if (delim) pendingDelims.push({ delim, stripTabs: m[1] === '-' });
+          i += m[0].length - 1;
+        }
+      }
+    }
+  }
+  return out.join('\n');
+}
 
 function splitCommandSegments(cmd) {
   const segs = [];
-  const src = String(cmd || '');
+  const src = stripHeredocBodies(cmd);
   let cur = '';
   let quote = '';
   for (let i = 0; i < src.length; i++) {
@@ -674,6 +722,13 @@ function getGitCommonDirNoSpawn(dir) {
       const m = content.match(/^gitdir:\s*(.+)$/m);
       if (m && m[1]) {
         const gitdir = path.resolve(root, m[1].trim());
+        const commondirFile = path.join(gitdir, 'commondir');
+        try {
+          if (fs.existsSync(commondirFile)) {
+            const relCommon = fs.readFileSync(commondirFile, 'utf8').trim();
+            if (relCommon) return realpathSafe(path.resolve(gitdir, relCommon));
+          }
+        } catch {}
         const wtMatch = gitdir.match(/^(.*[/\\]\.git)[/\\]worktrees[/\\][^/\\]+[/\\]?$/);
         if (wtMatch) return realpathSafe(wtMatch[1]);
         return realpathSafe(gitdir);
@@ -695,9 +750,26 @@ function resolveEffectiveGitRoot(touchedAbsFiles, fallbackCwd = '') {
   return findGitRootSync(fallbackCwd || '');
 }
 
+function resolveLandingGitRoot(touchedAbsFiles, landingRepoDir, fallbackCwd = '') {
+  const landingRoot = findGitRootSync(landingRepoDir || fallbackCwd || '');
+  if (landingRoot) {
+    const landingCommon = getGitCommonDirNoSpawn(landingRoot);
+    if (landingCommon && Array.isArray(touchedAbsFiles)) {
+      for (let i = touchedAbsFiles.length - 1; i >= 0; i--) {
+        const p = touchedAbsFiles[i];
+        if (!p) continue;
+        const root = findGitRootSync(p);
+        if (root && getGitCommonDirNoSpawn(root) === landingCommon) return root;
+      }
+    }
+    return landingRoot;
+  }
+  return resolveEffectiveGitRoot(touchedAbsFiles, fallbackCwd);
+}
+
 function inspectGitSummary(
   gitRoot,
-  { includeBranchDiff = false, mergeRepoDir = '', mergeSourceRef = '' } = {}
+  { includeBranchDiff = false, mergeRepoDir = '', mergeSourceRef = '', includeUpstreamOnMain = false } = {}
 ) {
   if (!gitRoot || !fs.existsSync(gitRoot)) {
     return {
@@ -748,9 +820,6 @@ function inspectGitSummary(
   if (numstat === null) numstat = execGit(['diff', '--cached', '--numstat']) || '';
 
   const relList = parsePorcelainZ(statusZ);
-  const { byRel, total: uncommittedTotal } = parseNumstatLines(numstat);
-  let total = uncommittedTotal;
-
   let branchNumstat = '';
   let branchMeta = '';
   if (includeBranchDiff) {
@@ -765,27 +834,49 @@ function inspectGitSummary(
       const targetRepo = mergeRepoDir && fs.existsSync(mergeRepoDir) ? mergeRepoDir : gitRoot;
       const headSha = (execGitIn(targetRepo, ['rev-parse', '--verify', '--quiet', 'HEAD']) || '').trim();
       const srcSha = (execGitIn(targetRepo, ['rev-parse', '--verify', '--quiet', safeRef]) || '').trim();
-      if (srcSha) {
-        branchNumstat = execGitIn(targetRepo, ['diff', '--numstat', `HEAD...${safeRef}`, '--']) || '';
-        branchMeta = `${headSha}..${srcSha}`;
+      const wtHeadSha = (execGit(['rev-parse', '--verify', '--quiet', 'HEAD']) || '').trim();
+      let handledUnified = false;
+      if (statusZ && wtHeadSha && srcSha && wtHeadSha === srcSha && headSha) {
+        const mb = (execGit(['merge-base', headSha, 'HEAD']) || '').trim();
+        const unified = mb ? execGit(['diff', '--numstat', mb, '--']) : null;
+        if (unified !== null) {
+          numstat = unified;
+          branchMeta = `${mb}..wt(${srcSha})`;
+          handledUnified = true;
+        }
+      }
+      if (!handledUnified) {
+        if (headSha && srcSha) {
+          branchNumstat = execGitIn(targetRepo, ['diff', '--numstat', `${headSha}...${srcSha}`, '--']) || '';
+          branchMeta = `${headSha}..${srcSha}`;
+        } else if (srcSha) {
+          branchNumstat = execGitIn(targetRepo, ['diff', '--numstat', `HEAD...${safeRef}`, '--']) || '';
+          branchMeta = safeRef;
+        }
       }
     } else {
       const curBranch = (execGit(['rev-parse', '--abbrev-ref', 'HEAD']) || '').trim();
-      if (curBranch && curBranch !== 'HEAD' && curBranch !== 'main' && curBranch !== 'master') {
-        let baseRef = '';
-        for (const cand of ['main', 'master']) {
-          if ((execGit(['rev-parse', '--verify', '--quiet', cand]) || '').trim()) {
+      const headSha = (execGit(['rev-parse', '--verify', '--quiet', 'HEAD']) || '').trim();
+      let baseRef = '';
+      if (curBranch && curBranch !== 'main' && curBranch !== 'master') {
+        for (const cand of ['main', 'master', '@{upstream}']) {
+          const sha = (execGit(['rev-parse', '--verify', '--quiet', cand]) || '').trim();
+          if (sha && (!headSha || sha !== headSha)) {
             baseRef = cand;
             break;
           }
         }
-        if (!baseRef) {
-          const upSha = (execGit(['rev-parse', '--verify', '--quiet', '@{upstream}']) || '').trim();
-          const headSha = (execGit(['rev-parse', '--verify', '--quiet', 'HEAD']) || '').trim();
-          if (upSha && upSha !== headSha) baseRef = '@{upstream}';
-        }
-        if (baseRef) {
-          const headSha = (execGit(['rev-parse', '--verify', '--quiet', 'HEAD']) || '').trim();
+      } else if ((curBranch === 'main' || curBranch === 'master') && includeUpstreamOnMain) {
+        const upSha = (execGit(['rev-parse', '--verify', '--quiet', '@{upstream}']) || '').trim();
+        if (upSha && (!headSha || upSha !== headSha)) baseRef = '@{upstream}';
+      }
+      if (baseRef) {
+        const mb = (execGit(['merge-base', baseRef, 'HEAD']) || '').trim();
+        const unified = mb ? execGit(['diff', '--numstat', mb, '--']) : null;
+        if (unified !== null) {
+          numstat = unified;
+          branchMeta = `${baseRef}@${mb}..wt`;
+        } else {
           branchNumstat = execGit(['diff', '--numstat', `${baseRef}...HEAD`, '--']) || '';
           branchMeta = `${baseRef}..${headSha}`;
         }
@@ -793,8 +884,8 @@ function inspectGitSummary(
     }
   }
 
-  const { byRel: branchByRel, total: branchTotal } = parseNumstatLines(branchNumstat);
-  total += branchTotal;
+  const { byRel } = parseNumstatLines(numstat);
+  const { byRel: branchByRel } = parseNumstatLines(branchNumstat);
 
   const changedAbsFiles = [];
   const changedRelByAbs = {};
@@ -815,7 +906,7 @@ function inspectGitSummary(
   }
   for (const [rel, lines] of byRel.entries()) {
     const abs = realpathSafe(path.join(gitRoot, rel));
-    perFileLines[abs] = lines;
+    perFileLines[abs] = Math.max(perFileLines[abs] || 0, lines);
     const cleanRel = rel.split(path.sep).join('/');
     if (!seenAbs.has(abs)) {
       seenAbs.add(abs);
@@ -826,7 +917,7 @@ function inspectGitSummary(
   }
   for (const [rel, lines] of branchByRel.entries()) {
     const abs = realpathSafe(path.join(gitRoot, rel));
-    perFileLines[abs] = (perFileLines[abs] || 0) + lines;
+    perFileLines[abs] = Math.max(perFileLines[abs] || 0, lines);
     const cleanRel = rel.split(path.sep).join('/');
     if (!seenAbs.has(abs)) {
       seenAbs.add(abs);
@@ -835,6 +926,9 @@ function inspectGitSummary(
     }
     if (HIGH_RISK_PATH_RE.test(cleanRel) && !gitHighRisk.includes(cleanRel)) gitHighRisk.push(cleanRel);
   }
+
+  let total = 0;
+  for (const lines of Object.values(perFileLines)) total += Number(lines || 0);
 
   return {
     gitRoot,
@@ -1109,10 +1203,15 @@ export function evaluateHookEvent(payload = {}, opts = {}) {
           now,
         })
       );
+      const isAutoReview =
+        prefs.opusGateMode === 'auto' && quotaPolicy.healthy && conv.autoCalls < prefs.opusGateMaxAutoPerSession;
+      if (isAutoReview && conv.blockingPlanHash !== planHash) {
+        conv.autoCalls += 1;
+      }
       conv.blockingPlanHash = planHash;
       persistConvState(convFile, conv, touchLogFile, pluginDataDir);
 
-      if (prefs.opusGateMode === 'auto' && quotaPolicy.healthy && conv.autoCalls < prefs.opusGateMaxAutoPerSession) {
+      if (isAutoReview) {
         return {
           decision: 'deny',
           reason:
@@ -1140,13 +1239,14 @@ export function evaluateHookEvent(payload = {}, opts = {}) {
         return emptyResult;
       }
 
-      const effectiveGitRoot = resolveEffectiveGitRoot(conv.touchedAbsFiles, landing.repoDir || payload.cwd || '');
+      const effectiveGitRoot = resolveLandingGitRoot(conv.touchedAbsFiles, landing.repoDir, payload.cwd || '');
       const git =
         opts.gitSummary ||
         inspectGitSummary(effectiveGitRoot, {
           includeBranchDiff: true,
           mergeRepoDir: landing.repoDir,
           mergeSourceRef: landing.sourceRef,
+          includeUpstreamOnMain: landing.action === 'push',
         });
       if (!git.gitRoot && effectiveGitRoot) git.gitRoot = effectiveGitRoot;
 
@@ -1197,10 +1297,15 @@ export function evaluateHookEvent(payload = {}, opts = {}) {
           now,
         })
       );
+      const isAutoReview =
+        prefs.opusGateMode === 'auto' && quotaPolicy.healthy && conv.autoCalls < prefs.opusGateMaxAutoPerSession;
+      if (isAutoReview && conv.blockingLandingHash !== landingHash) {
+        conv.autoCalls += 1;
+      }
       conv.blockingLandingHash = landingHash;
       persistConvState(convFile, conv, touchLogFile, pluginDataDir);
 
-      if (prefs.opusGateMode === 'auto' && quotaPolicy.healthy && conv.autoCalls < prefs.opusGateMaxAutoPerSession) {
+      if (isAutoReview) {
         return {
           decision: 'deny',
           reason:
@@ -1267,9 +1372,8 @@ export function evaluateHookEvent(payload = {}, opts = {}) {
       const args = payload.toolCall?.args && typeof payload.toolCall.args === 'object' ? payload.toolCall.args : {};
       const action = String(args.action || '').trim().toLowerCase();
       const name = String(args.name || '').trim();
-      const model = String(args.model || '').trim();
       const isReviewName = /(?:^|[-_])(?:opus|carbon|review)(?:[-_]|$)/i.test(name);
-      const isReviewAdd = action === 'add' && (/(?:opus|carbon)/i.test(model) || isReviewName);
+      const isReviewAdd = action === 'add' && isReviewName;
       const isReviewKill =
         action === 'kill' && ((Boolean(conv.activeReviewWorker) && conv.activeReviewWorker === name) || isReviewName);
 
@@ -1278,9 +1382,14 @@ export function evaluateHookEvent(payload = {}, opts = {}) {
         return {};
       }
 
-      if (isReviewAdd) conv.activeReviewWorker = name || 'reviewer';
-      if (isReviewKill) conv.activeReviewWorker = '';
+      if (isReviewAdd) {
+        conv.activeReviewWorker = name;
+        removeProposalFile(proposalsDir, cid);
+        persistConvState(convFile, conv, touchLogFile, pluginDataDir);
+        return {};
+      }
 
+      conv.activeReviewWorker = '';
       const effectiveGitRoot = resolveEffectiveGitRoot(conv.touchedAbsFiles, payload.cwd || '');
       const git = opts.gitSummary || (effectiveGitRoot ? inspectGitSummary(effectiveGitRoot, { includeBranchDiff: true }) : null);
       if (git && !git.gitRoot && effectiveGitRoot) git.gitRoot = effectiveGitRoot;

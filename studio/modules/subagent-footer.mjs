@@ -428,11 +428,18 @@ export function createSubagentFooterRuntime({ motionThemes, shortenModelName, sh
     document.querySelectorAll(`[${SUB_GROUP_ATTR}]`).forEach((el) => el.remove());
   }
 
+  function openSubagent(id, label = '') {
+    if (!id || disposed) return;
+    closeMenu();
+    handoff.openOrToggleSubagentSidePanel(id, { label, allowToggleClose: true });
+  }
+
   return {
     topics: ['composer', 'subagent', 'metrics', 'route', 'overview', 'prefs'],
     read,
     write,
     sync,
+    openSubagent,
     dispose,
   };
 }

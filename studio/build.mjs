@@ -350,7 +350,7 @@ export async function buildRemotePwa({ outDir = REMOTE_PWA_DIST } = {}) {
   if (!compiledJs) {
     throw new Error('esbuild produced an empty bundle for remote/pwa/src/app.mjs');
   }
-  const jsOut = `/* MAGA Remote PWA — compiled from remote/pwa/src/app.mjs */\n${compiledJs}\n`;
+  const jsOut = `/* AGY Studio Remote PWA — compiled from remote/pwa/src/app.mjs */\n${compiledJs}\n`;
   new Function(jsOut);
 
   const cssRaw = readFileSync(REMOTE_PWA_CSS, 'utf8');

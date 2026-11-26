@@ -1,6 +1,6 @@
 {
-  "name": "MAGA Remote Control",
-  "short_name": "MAGA Remote",
+  "name": "AGY Studio Remote",
+  "short_name": "AGY Remote",
   "description": "Zero-invasive remote cockpit for Google Antigravity Desktop 2.0",
   "start_url": "/",
   "scope": "/",

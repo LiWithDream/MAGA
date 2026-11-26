@@ -299,7 +299,7 @@ async function loadHealthForPairing() {
     state.capabilities = health.capabilities || null;
     state.pairingError = '';
   } catch (err) {
-    state.pairingError = String(err?.message || '无法连接到 MAGA Remote 网关');
+    state.pairingError = String(err?.message || '无法连接到 AGY Studio Remote 网关');
   }
   render();
 }
@@ -386,7 +386,7 @@ function renderPairingScreen() {
       el(
         'div',
         {},
-        el('h1', { className: 'rc-pair-title', text: 'MAGA Remote Control' }),
+        el('h1', { className: 'rc-pair-title', text: 'AGY Studio Remote' }),
         el('p', {
           className: 'rc-pair-sub',
           text: '设备密钥由浏览器 WebCrypto 生成且不可导出',
@@ -583,7 +583,7 @@ function ensureWorkspaceShell() {
       'div',
       { className: 'rc-topbar-left' },
       brandDot,
-      el('span', { className: 'rc-topbar-title', text: 'MAGA Remote' }),
+      el('span', { className: 'rc-topbar-title', text: 'AGY Studio Remote' }),
       wsPill,
       hostPill,
       presetPill

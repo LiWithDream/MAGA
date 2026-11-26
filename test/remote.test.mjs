@@ -311,6 +311,7 @@ test('Static security & MAGA architecture invariants for remote control modules'
   for (const filePath of gwFiles) {
     execFileSync(process.execPath, ['--check', filePath], { stdio: 'pipe' });
     const src = fs.readFileSync(filePath, 'utf8');
+    assert.ok(src.split('\n').length < 2000, `${path.relative(REPO, filePath)} must stay < 2000 lines`);
     let m;
     while ((m = importRe.exec(src)) !== null) {
       const spec = m[1];
@@ -319,6 +320,21 @@ test('Static security & MAGA architecture invariants for remote control modules'
         `Third-party or parent import "${spec}" forbidden in ${path.relative(REPO, filePath)}`
       );
     }
+  }
+
+  const pwaMjsFiles = collectFiles(path.join(PWA_DIR, 'src'), { exts: ['.mjs'] });
+  assert.ok(pwaMjsFiles.length >= 3, 'expected PWA .mjs source modules');
+  for (const filePath of pwaMjsFiles) {
+    execFileSync(process.execPath, ['--check', filePath], { stdio: 'pipe' });
+    const src = fs.readFileSync(filePath, 'utf8');
+    assert.ok(src.split('\n').length < 2000, `${path.relative(REPO, filePath)} must stay < 2000 lines`);
+  }
+
+  for (const rel of ['core/daemon/remote-bridge.mjs', 'studio/remote-cli.mjs']) {
+    const abs = path.join(REPO, rel);
+    execFileSync(process.execPath, ['--check', abs], { stdio: 'pipe' });
+    const src = fs.readFileSync(abs, 'utf8');
+    assert.ok(src.split('\n').length < 2000, `${rel} must stay < 2000 lines`);
   }
 
   const tapSrc = fs.readFileSync(path.join(REPO, 'user', 'src', 'modules', 'remote-tap.mjs'), 'utf8');

@@ -52,7 +52,7 @@ function isAmbiguousWriteError(errCode) {
     errCode === 'uds_error' ||
     errCode === 'cdp_timeout' ||
     errCode === 'eval_timeout' ||
-    /timeout|uds_|deadline_exceeded|target_closed|socket_closed|host_disconnected/i.test(errCode)
+    /timeout|uds_|deadline_exceeded|target[_ ]closed|socket[_ ]closed|websocket[_ ]closed|host[_ ]disconnected/i.test(errCode)
   );
 }
 
@@ -559,7 +559,7 @@ export function createWsServer({
         ok: true,
         cascadeId,
         idempotencyKey: rawKey,
-        payloadHash: sha256Hex(JSON.stringify(['opus.dismiss', cascadeId, proposalId])),
+        payloadHash: sha256Hex(JSON.stringify(['opus.dismiss', cascadeId, proposalId, ts ?? 0])),
         rpcParams: { cascadeId, proposalId, ...(ts ? { ts } : {}) },
         auditMeta: { cascadeId, proposalId },
       };
@@ -897,7 +897,7 @@ export function createWsServer({
         return;
       }
       try {
-        const result = await udsClient.request('convo.resumeState', { cascadeId });
+        const result = await udsClient.request('convo.resumeState', { cascadeId }, { timeoutMs: 6500 });
         if (!client.closed) client.sendJson({ type: 'res', reqId, ok: true, result });
       } catch (err) {
         if (!client.closed) {
@@ -914,7 +914,11 @@ export function createWsServer({
         return;
       }
       try {
-        const result = await udsClient.request('studio.overview', rawCid ? { cascadeId: rawCid } : {});
+        const result = await udsClient.request(
+          'studio.overview',
+          rawCid ? { cascadeId: rawCid } : {},
+          { timeoutMs: 8500 }
+        );
         if (!client.closed) client.sendJson({ type: 'res', reqId, ok: true, result });
       } catch (err) {
         if (!client.closed) {

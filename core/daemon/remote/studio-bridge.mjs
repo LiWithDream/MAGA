@@ -4,11 +4,13 @@
  * - Sanitized Studio Overview aggregator (Projects, Worktrees, Quota, Today Usage, Opus Gate & Auto-Compact)
  * - Safe Opus Gate proposal dismissal
  */
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { NATIVE_PROJECTS_DIR, UUID_RE, readJsonOrFallback } from '../env.mjs';
 import {
+  extractNativeProjectFolderUris,
   getAuthorizedProjectDirs,
   listRepoWorktreesAsync,
   loadConversationWorktreeMap,
@@ -67,7 +69,7 @@ function readNativeProjectMetaMap(nativeProjectsDir = NATIVE_PROJECTS_DIR) {
       if (!rec || typeof rec !== 'object') continue;
       const id = String(rec.id || ent.name.slice(0, -'.json'.length)).trim();
       const name = String(rec.name || rec.title || '').trim();
-      const folders = Array.isArray(rec.folderUris) ? rec.folderUris : [];
+      const folders = extractNativeProjectFolderUris(rec);
       for (const rawFolder of folders) {
         const fsPath = decodeFolderPath(rawFolder);
         if (!fsPath) continue;
@@ -169,7 +171,8 @@ export async function collectStudioOverview(params = {}, opts = {}) {
   const convWtMap = loadConversationWorktreeMap(convMapOpts);
 
   const listWtFn = opts.listRepoWorktreesAsync || listRepoWorktreesAsync;
-  const wtResults = await Promise.allSettled(
+  const collectUsageFn = opts.collectUsageStatsAsync || collectUsageStatsAsync;
+  const wtPromise = Promise.allSettled(
     targetDirs.map(async (dirPath) => {
       const wtRes = await listWtFn(dirPath, {
         includeStats: false,
@@ -178,6 +181,10 @@ export async function collectStudioOverview(params = {}, opts = {}) {
       return { dirPath, wtRes };
     })
   );
+  const usagePromise = Promise.resolve()
+    .then(() => collectUsageFn({ force: false }))
+    .catch(() => null);
+  const [wtResults, usageRes] = await Promise.all([wtPromise, usagePromise]);
 
   const repoMetaByNorm = new Map();
   const projects = [];
@@ -185,7 +192,12 @@ export async function collectStudioOverview(params = {}, opts = {}) {
     const dirPath = targetDirs[i];
     const normDir = normalizeRealPath(dirPath);
     const meta = nativeMetaByNorm.get(normDir) || null;
-    const projId = meta?.id || normDir || path.basename(dirPath);
+    const fallbackId = `proj-${crypto
+      .createHash('sha256')
+      .update(normDir || String(dirPath || ''), 'utf8')
+      .digest('hex')
+      .slice(0, 12)}`;
+    const projId = meta?.id || fallbackId;
     const projName = meta?.name || path.basename(dirPath) || 'Project';
     repoMetaByNorm.set(normDir, { id: projId, name: projName });
 
@@ -235,25 +247,22 @@ export async function collectStudioOverview(params = {}, opts = {}) {
   const nowMs = Number(opts.now) > 0 ? Number(opts.now) : Date.now();
   const todayStr = formatLocalDay(nowMs);
   let todayUsage = { date: todayStr, requests: 0, totalTokens: 0, uncached: 0, cacheRead: 0, output: 0 };
-  try {
-    const usageRes = await (opts.collectUsageStatsAsync || collectUsageStatsAsync)({ force: false });
-    const days = Array.isArray(usageRes?.days) ? usageRes.days : [];
-    const todayBucket = days.find((d) => d?.date === todayStr);
-    if (todayBucket) {
-      const uncached = Number(todayBucket.uncached || 0);
-      const cacheRead = Number(todayBucket.cacheRead || 0);
-      const cacheWrite = Number(todayBucket.cacheWrite || 0);
-      const output = Number(todayBucket.output || 0);
-      todayUsage = {
-        date: todayStr,
-        requests: Number(todayBucket.requests || 0),
-        totalTokens: uncached + cacheRead + cacheWrite + output,
-        uncached,
-        cacheRead,
-        output,
-      };
-    }
-  } catch {}
+  const days = Array.isArray(usageRes?.days) ? usageRes.days : [];
+  const todayBucket = days.find((d) => d?.date === todayStr);
+  if (todayBucket) {
+    const uncached = Number(todayBucket.uncached || 0);
+    const cacheRead = Number(todayBucket.cacheRead || 0);
+    const cacheWrite = Number(todayBucket.cacheWrite || 0);
+    const output = Number(todayBucket.output || 0);
+    todayUsage = {
+      date: todayStr,
+      requests: Number(todayBucket.requests || 0),
+      totalTokens: uncached + cacheRead + cacheWrite + output,
+      uncached,
+      cacheRead,
+      output,
+    };
+  }
 
   let activeCascade;
   if (cascadeId) {
@@ -270,7 +279,7 @@ export async function collectStudioOverview(params = {}, opts = {}) {
             diffHash: String(rawProp.diffHash || ''),
             ts: Number(rawProp.ts || 0),
             kind: String(rawProp.kind || ''),
-            reason: String(rawProp.reason || ''),
+            reason: String(rawProp.reason || '').slice(0, 280),
             summary: String(rawProp.summary || rawProp.reason || '').slice(0, 280),
             trigger: String(rawProp.trigger || rawProp.kind || ''),
             recommendedTier: String(rawProp.recommendedTier || ''),
@@ -285,8 +294,8 @@ export async function collectStudioOverview(params = {}, opts = {}) {
       enabled: Boolean(acRaw?.pluginInstalled),
       pending: rawReq
         ? {
-            requestId: String(rawReq.requestId || ''),
-            reason: String(rawReq.reason || ''),
+            requestId: String(rawReq.id || rawReq.requestId || ''),
+            reason: String(rawReq.reason || '').slice(0, 120),
             ctxPct: Number(rawReq.ctxPct || 0),
             createdAt: Number(rawReq.ts || 0),
           }
@@ -317,15 +326,20 @@ export function handleRemoteOpusDismiss(params = {}, opts = {}) {
     throw Object.assign(new Error('invalid_proposal_id'), { code: 'invalid_proposal_id' });
   }
 
-  let diffHash = proposalId === 'active' ? '' : proposalId;
+  let diffHash = '';
   let ts = Number(params?.ts || 0);
-  if (proposalId.startsWith('ts-') && /^\d+$/.test(proposalId.slice(3))) {
+  if (proposalId === 'active') {
+    diffHash = '';
+    ts = 0;
+  } else if (proposalId.startsWith('ts-') && /^\d+$/.test(proposalId.slice(3))) {
     ts = Number(proposalId.slice(3));
     diffHash = '';
+  } else {
+    diffHash = proposalId;
   }
 
   const res = (opts.dismissOpusGateProposal || dismissOpusGateProposal)(
-    { cascadeId, diffHash, ...(ts > 0 ? { ts } : {}) },
+    { cascadeId, diffHash, ...(ts > 0 ? { ts } : {}), strictCas: true },
     opts.opusOpts
   );
   if (!res?.ok) {

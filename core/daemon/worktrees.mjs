@@ -59,7 +59,7 @@ function getPinsFilePath(convWtDir = CONV_WORKTREES_DIR) {
   return path.join(convWtDir, PINS_FILE_NAME);
 }
 
-function extractNativeProjectFolderUris(record) {
+export function extractNativeProjectFolderUris(record) {
   const uris = [];
   if (!record || typeof record !== 'object') return uris;
   if (Array.isArray(record.folderUris)) uris.push(...record.folderUris);

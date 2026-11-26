@@ -336,6 +336,8 @@ test('Phase 2 End-to-End (Gateway + Bridge + Tap): studio.overview, convo.resume
 
     let currentPreset = 3; // TURBO
     let hasDraft = false;
+    let cidStatus = 1;
+    let cidWaitingSteps = [];
     const sentMessages = [];
     const compactCalls = [];
     dom.window.__agClaudeUxBridge = {
@@ -351,7 +353,7 @@ test('Phase 2 End-to-End (Gateway + Bridge + Tap): studio.overview, convo.resume
         userStatus: { permissionSettings: { globalPreset: currentPreset } },
         trajectorySummaries: {
           summaries: {
-            [cid]: { summary: 'Interrupted Task', status: 1, waitingSteps: [] },
+            [cid]: { summary: 'Interrupted Task', status: cidStatus, waitingSteps: cidWaitingSteps },
             [otherCid]: { summary: 'Background Chat', status: 1, waitingSteps: [] },
           },
         },
@@ -522,12 +524,50 @@ test('Phase 2 End-to-End (Gateway + Bridge + Tap): studio.overview, convo.resume
     assert.deepEqual(compactCalls.at(-1), { expectedCid: cid, requireEmptyDraft: true });
 
     // opus.dismiss via Gateway -> Bridge -> opus-gate-service.mjs
+    // First test idempotency payloadHash binds `ts` too
+    const disMismatch = await callRpc(cSteer, 's-9a', 'opus.dismiss', {
+      cascadeId: cid, proposalId: 'planhash0001', ts: 123456, idempotencyKey: 'k-opus-dis-ts',
+    });
+    assert.equal(disMismatch.ok, true);
+    assert.equal(disMismatch.result.matched, false);
+    const disConflict = await callRpc(cSteer, 's-9b', 'opus.dismiss', {
+      cascadeId: cid, proposalId: 'planhash0001', ts: 999999, idempotencyKey: 'k-opus-dis-ts',
+    });
+    assert.equal(disConflict.ok, false);
+    assert.equal(disConflict.error, 'idempotency_key_conflict');
+
     const disOk = await callRpc(cSteer, 's-9', 'opus.dismiss', {
       cascadeId: cid, proposalId: 'planhash0001', idempotencyKey: 'k-opus-dis-1',
     });
     assert.equal(disOk.ok, true);
+    assert.equal(disOk.result.matched, true);
     const ovAfterDis = await callRpc(cSteer, 's-10', 'studio.overview', { cascadeId: cid });
     assert.equal(ovAfterDis.result.activeCascade.opusGate.proposal, null);
+
+    // P1-1 regression: convo.resume rejects during 3s cooldown and when live host is RUNNING or has waitingSteps
+    assert.equal(
+      (await callRpc(cSteer, 's-11', 'convo.resume', {
+        cascadeId: cid, expectedLastIdx: 4, idempotencyKey: 'k-st-res-cool', turboWriteConfirmed: true,
+      })).error,
+      'resume_state_changed'
+    );
+    lockMod.resetCascadeWriteLocksForTest();
+    cidStatus = 2; // RUNNING
+    assert.equal(
+      (await callRpc(cSteer, 's-12', 'convo.resume', {
+        cascadeId: cid, expectedLastIdx: 4, idempotencyKey: 'k-st-res-live-run', turboWriteConfirmed: true,
+      })).error,
+      'resume_state_changed'
+    );
+    cidStatus = 1;
+    cidWaitingSteps = [{ stepIndex: 4, case: 'permission' }];
+    assert.equal(
+      (await callRpc(cSteer, 's-13', 'convo.resume', {
+        cascadeId: cid, expectedLastIdx: 4, idempotencyKey: 'k-st-res-live-wait', turboWriteConfirmed: true,
+      })).error,
+      'resume_state_changed'
+    );
+    cidWaitingSteps = [];
   } finally {
     for (const s of openSockets) {
       try { s.destroy(); } catch {}
@@ -547,7 +587,106 @@ test('Phase 2 End-to-End (Gateway + Bridge + Tap): studio.overview, convo.resume
   }
 });
 
-test('Phase 2 static invariants: 7 gateway files, <2000 lines, Zero-XSS & zero :has()', () => {
+test('Phase 2 Carbon P1 regressions: strict opus CAS, projectResources/hashed projId & parallel studio overview + explicit UDS timeouts', async () => {
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'maga-rem-p2reg-'));
+  try {
+    const cid = 'ffffffff-ffff-4fff-8fff-fffffffffff6';
+    const proposalsDir = path.join(tmpRoot, 'opus-gate-proposals');
+    const nativeProjectsDir = path.join(tmpRoot, 'projects');
+    const projKnown = path.join(tmpRoot, 'secret-user-path', 'known-repo');
+    const projUnmatched = path.join(tmpRoot, 'secret-user-path', 'unmatched-repo');
+    fs.mkdirSync(nativeProjectsDir, { recursive: true });
+    fs.mkdirSync(projKnown, { recursive: true });
+    fs.mkdirSync(projUnmatched, { recursive: true });
+
+    // Strict CAS checks in studio-bridge + opus-gate-service
+    opusService.writeOpusGateProposal(
+      cid,
+      { kind: 'risk', reason: 'A'.repeat(400), diffHash: 'hashA111', ts: 10001 },
+      { proposalsDir }
+    );
+    assert.equal(
+      studioBridgeMod.handleRemoteOpusDismiss({ cascadeId: cid, proposalId: 'active' }, { opusOpts: { proposalsDir } }).matched,
+      false,
+      '"active" must not bypass CAS on hashed/timestamped proposal'
+    );
+    assert.equal(
+      studioBridgeMod.handleRemoteOpusDismiss({ cascadeId: cid, proposalId: 'ts-99999' }, { opusOpts: { proposalsDir } }).matched,
+      false,
+      'mismatched ts-<n> must not dismiss'
+    );
+    // Empty-hash debug proposal must not be dismissed by stale hash
+    opusService.writeOpusGateProposal(
+      cid,
+      { kind: 'debug', reason: 'Error burst', diffHash: '', ts: 20002 },
+      { proposalsDir }
+    );
+    assert.equal(
+      studioBridgeMod.handleRemoteOpusDismiss({ cascadeId: cid, proposalId: 'hashA111' }, { opusOpts: { proposalsDir } }).matched,
+      false,
+      'stale hash must not dismiss empty-hash debug proposal'
+    );
+    assert.equal(
+      studioBridgeMod.handleRemoteOpusDismiss({ cascadeId: cid, proposalId: 'ts-20002' }, { opusOpts: { proposalsDir } }).matched,
+      true
+    );
+
+    // projectResources extraction & hashed fallback projId + parallel usage stats
+    fs.writeFileSync(
+      path.join(nativeProjectsDir, 'p-res.json'),
+      JSON.stringify({
+        id: 'proj-from-resources',
+        name: 'Resources Repo',
+        projectResources: { resources: [{ workspaceFolderAbsoluteUri: `file://${projKnown}` }] },
+      })
+    );
+    let wtStarted = false;
+    let usageStarted = false;
+    let bothConcurrent = false;
+    let relWt;
+    let relUsage;
+    const overviewPromise = studioBridgeMod.collectStudioOverview(
+      {},
+      {
+        authorizedDirs: [projKnown, projUnmatched],
+        nativeProjectsDir,
+        listRepoWorktreesAsync: () =>
+          new Promise((resolve) => {
+            wtStarted = true;
+            if (usageStarted) bothConcurrent = true;
+            const done = () => resolve({ ok: true, worktrees: [] });
+            if (relWt) done();
+            else relWt = done;
+          }),
+        collectUsageStatsAsync: () =>
+          new Promise((resolve) => {
+            usageStarted = true;
+            if (wtStarted) bothConcurrent = true;
+            const done = () => resolve({ ok: true, days: [] });
+            if (relUsage) done();
+            else relUsage = done;
+          }),
+      }
+    );
+    await new Promise((r) => setTimeout(r, 20));
+    relWt?.();
+    relUsage?.();
+    const overview = await overviewPromise;
+    assert.equal(bothConcurrent, true, 'collectUsageStatsAsync must run concurrently with listRepoWorktreesAsync');
+    assert.equal(overview.projects[0].id, 'proj-from-resources');
+    assert.match(overview.projects[1].id, /^proj-[0-9a-f]{12}$/);
+    assert.equal(overview.projects[1].id.includes('secret-user-path'), false);
+
+    // ws-server.mjs passes explicit UDS timeouts >= studio-bridge budgets
+    const wsServerSrc = fs.readFileSync(path.join(GW_DIR, 'ws-server.mjs'), 'utf8');
+    assert.match(wsServerSrc, /request\(\s*'convo\.resumeState'[\s\S]*?timeoutMs:\s*6500/);
+    assert.match(wsServerSrc, /request\(\s*'studio\.overview'[\s\S]*?timeoutMs:\s*8500/);
+  } finally {
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+test('Phase 2 static invariants: 7 gateway files, <2000 lines, Zero-XSS across all PWA modules & zero :has()', () => {
   const gwFiles = fs.readdirSync(GW_DIR).filter((f) => f.endsWith('.mjs'));
   assert.equal(gwFiles.length, 7, 'remote/gateway/*.mjs must remain strictly 7 files');
 
@@ -567,8 +706,16 @@ test('Phase 2 static invariants: 7 gateway files, <2000 lines, Zero-XSS & zero :
     assert.ok(src.split('\n').length < 2000, `${path.relative(REPO, abs)} must stay < 2000 lines`);
   }
 
-  const studioPanelSrc = fs.readFileSync(path.join(PWA_DIR, 'src', 'studio-panel.mjs'), 'utf8');
-  assert.equal(/\b(innerHTML|outerHTML|insertAdjacentHTML|document\.write)\b/.test(studioPanelSrc), false);
+  const pwaSrcFiles = fs.readdirSync(path.join(PWA_DIR, 'src')).filter((f) => f.endsWith('.mjs'));
+  assert.ok(pwaSrcFiles.length > 0);
+  for (const fname of pwaSrcFiles) {
+    const src = fs.readFileSync(path.join(PWA_DIR, 'src', fname), 'utf8');
+    assert.equal(
+      /\b(innerHTML|outerHTML|insertAdjacentHTML|document\.write)\b/.test(src),
+      false,
+      `PWA module ${fname} must not contain XSS sinks`
+    );
+  }
   const cssSrc = fs.readFileSync(path.join(PWA_DIR, 'src', 'styles.css'), 'utf8');
   assert.equal(cssSrc.includes(':has('), false);
 });

@@ -79,6 +79,7 @@ const state = {
 
 let wsClient = null;
 let snapshotRefreshTimer = null;
+let studioOverviewSeq = 0;
 let cancelConfirmTimer = null;
 let workspaceRefs = null;
 const rootEl = document.getElementById('app');
@@ -999,10 +1000,13 @@ function applyConvoListResult(result) {
 
 function refreshStudioOverview(cascadeId = state.selectedId) {
   if (!wsClient) return;
+  const reqSeq = ++studioOverviewSeq;
+  const reqCid = cascadeId || '';
   wsClient
-    .fetchStudioOverview(cascadeId || '')
+    .fetchStudioOverview(reqCid)
     .then((ov) => {
-      if (!ov || !wsClient) return;
+      if (!ov || !wsClient || reqSeq !== studioOverviewSeq) return;
+      if (reqCid && state.selectedId !== reqCid) return;
       state.studioOverview = ov;
       if (state.identity) {
         renderStudioPanels();
@@ -1044,10 +1048,14 @@ async function fetchAndRenderSnapshot(cascadeId) {
     const snap = await wsClient.fetchSnapshot(cascadeId);
     applySnapshot(cascadeId, snap);
   } catch (err) {
-    state.snapshotError = String(err?.message || '获取会话快照失败');
+    if (state.selectedId === cascadeId) {
+      state.snapshotError = String(err?.message || '获取会话快照失败');
+    }
   } finally {
-    state.snapshotLoading = false;
-    if (state.selectedId === cascadeId) renderDetailTimeline();
+    if (state.selectedId === cascadeId) {
+      state.snapshotLoading = false;
+      renderDetailTimeline();
+    }
   }
 }
 
@@ -1104,9 +1112,11 @@ async function selectConversation(cascadeId) {
       syncComposerControls();
     }
   } catch (err) {
-    state.snapshotLoading = false;
-    state.snapshotError = String(err?.message || '加载会话失败');
-    if (state.selectedId === cascadeId) renderDetailTimeline();
+    if (state.selectedId === cascadeId) {
+      state.snapshotLoading = false;
+      state.snapshotError = String(err?.message || '加载会话失败');
+      renderDetailTimeline();
+    }
   }
 }
 

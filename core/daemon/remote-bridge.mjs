@@ -25,7 +25,7 @@ import {
   stopGatewayChildGracefully,
   stopGatewayChildSync
 } from './remote/gateway-supervisor.mjs';
-import { withCascadeWriteLock } from './remote/cascade-lock.mjs';
+import { isCascadeWriteRecent, withCascadeWriteLock } from './remote/cascade-lock.mjs';
 import {
   SILENT_RESUME_PROMPT,
   collectStudioOverview,
@@ -667,11 +667,29 @@ async function handleConvoResume(params = {}) {
     cascadeId,
     'remote:resume',
     async () => {
+      if (isCascadeWriteRecent(cascadeId)) {
+        throw Object.assign(new Error('resume_state_changed'), { code: 'resume_state_changed' });
+      }
       const host = await resolveHostForCascade(cascadeId);
       const capRes = await evalOnHost(host, 'window.__agRemoteTap ? window.__agRemoteTap.getCapabilities() : null', 2000);
       const preset = capRes.ok && capRes.value && typeof capRes.value === 'object' ? capRes.value.globalPreset : null;
       if (isTurboPreset(preset) && params.turboWriteConfirmed !== true) {
         throw Object.assign(new Error('turbo_write_confirmation_required'), { code: 'turbo_write_confirmation_required' });
+      }
+
+      const sumRes = await evalOnHost(
+        host,
+        'window.__agRemoteTap ? window.__agRemoteTap.listSummaries({ includeSubagents: true }) : null',
+        2000
+      );
+      const sumList = sumRes.ok && sumRes.value?.ok && Array.isArray(sumRes.value.conversations) ? sumRes.value.conversations : [];
+      const liveSum = sumList.find((c) => c && c.id === cascadeId);
+      if (
+        liveSum &&
+        (/RUNNING|BUSY|CANCEL/i.test(String(liveSum.status || '')) ||
+          (Array.isArray(liveSum.waitingSteps) && liveSum.waitingSteps.length > 0))
+      ) {
+        throw Object.assign(new Error('resume_state_changed'), { code: 'resume_state_changed' });
       }
 
       const st = collectResumeState(
@@ -690,7 +708,7 @@ async function handleConvoResume(params = {}) {
           text: SILENT_RESUME_PROMPT,
           turboWriteConfirmed: Boolean(params.turboWriteConfirmed),
         },
-        10000
+        9000
       );
       if (!r.ok || !r.value?.ok) {
         const errCode = r.value?.error || r.error || 'resume_failed';

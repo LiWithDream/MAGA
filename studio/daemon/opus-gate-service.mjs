@@ -230,10 +230,23 @@ export function dismissOpusGateProposal(payload = {}, opts = {}) {
   if (!cur) {
     return { ok: true, cascadeId: cid, matched: false };
   }
+  const curHash = String(cur.diffHash || '').trim();
+  const curTs = Number(cur.ts || 0);
   const expectedHash = typeof payload?.diffHash === 'string' ? payload.diffHash.trim() : '';
   const expectedTs = Number(payload?.ts || 0);
-  if (expectedHash && cur.diffHash && cur.diffHash !== expectedHash) {
-    if (!expectedTs || Number(cur.ts || 0) !== expectedTs) {
+  if (expectedHash) {
+    if (curHash !== expectedHash) {
+      return { ok: true, cascadeId: cid, matched: false };
+    }
+    if (expectedTs > 0 && curTs > 0 && curTs !== expectedTs) {
+      return { ok: true, cascadeId: cid, matched: false };
+    }
+  } else if (expectedTs > 0) {
+    if (curTs !== expectedTs) {
+      return { ok: true, cascadeId: cid, matched: false };
+    }
+  } else if (payload?.strictCas) {
+    if (curHash || curTs > 0) {
       return { ok: true, cascadeId: cid, matched: false };
     }
   }
@@ -242,7 +255,7 @@ export function dismissOpusGateProposal(payload = {}, opts = {}) {
     {
       ...cur,
       dismissed: true,
-      dismissedDiffHash: cur.diffHash || expectedHash || '',
+      dismissedDiffHash: curHash || expectedHash || '',
     },
     opts
   );

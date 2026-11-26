@@ -23,18 +23,26 @@ export function isCascadeWriteActive(cascadeId, now = Date.now()) {
   return true;
 }
 
+export function isCascadeWriteRecent(
+  cascadeId,
+  { cooldownMs = DEFAULT_RECENT_WRITE_COOLDOWN_MS, now = Date.now() } = {}
+) {
+  const cid = typeof cascadeId === 'string' ? cascadeId.trim() : '';
+  if (!cid) return false;
+  const ts = recentWrites.get(cid);
+  if (!ts) return false;
+  if (now - ts < cooldownMs) return true;
+  recentWrites.delete(cid);
+  return false;
+}
+
 export function isCascadeWriteActiveOrRecent(
   cascadeId,
   { cooldownMs = DEFAULT_RECENT_WRITE_COOLDOWN_MS, now = Date.now() } = {}
 ) {
   const cid = typeof cascadeId === 'string' ? cascadeId.trim() : '';
   if (!cid) return false;
-  if (isCascadeWriteActive(cid, now)) return true;
-  const ts = recentWrites.get(cid);
-  if (!ts) return false;
-  if (now - ts < cooldownMs) return true;
-  recentWrites.delete(cid);
-  return false;
+  return isCascadeWriteActive(cid, now) || isCascadeWriteRecent(cid, { cooldownMs, now });
 }
 
 export function markCascadeWritten(cascadeId, now = Date.now()) {

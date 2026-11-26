@@ -316,7 +316,10 @@ export function createOpusGatePillRuntime({ studioPrefs, motionThemes, openSubag
     const staticOnly = motionLevel === 'off' || effortMotion === 'off' || mediaReduced;
 
     if (fxCanvas === canvas && fxActiveModel === model && (fxRaf || fxTickFn || staticOnly)) {
-      if (staticOnly) paintFxFrame(canvas, model);
+      if (staticOnly) {
+        if (fxRaf || fxTickFn) stopFxLoop();
+        paintFxFrame(canvas, model);
+      }
       return;
     }
 
@@ -341,7 +344,8 @@ export function createOpusGatePillRuntime({ studioPrefs, motionThemes, openSubag
       const curPrefs = studioPrefs?.get?.() || {};
       const curMotion = curPrefs.motionLevel || 'full';
       const curEffort = curPrefs.effortMotion || 'full';
-      if (curMotion === 'off' || curEffort === 'off') {
+      const curMediaReduced = Boolean(typeof window === 'object' && window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches);
+      if (curMotion === 'off' || curEffort === 'off' || curMediaReduced) {
         paintFxFrame(canvas, fxActiveModel);
         stopFxLoop();
         return;

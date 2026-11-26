@@ -2367,7 +2367,8 @@ test('readProjectWorkspaceStatusAsync & handleProjectRpcRequest return Git commi
   const direct = await readProjectWorkspaceStatusAsync(REPO, { force: true });
   assert.equal(direct.ok, true);
   assert.equal(direct.dirPath, REPO);
-  assert.equal(direct.pkgVersion, '1.2.0');
+  const expectedPkgVersion = JSON.parse(readFileSync(path.join(REPO, 'package.json'), 'utf8')).version;
+  assert.equal(direct.pkgVersion, expectedPkgVersion);
   assert.ok(Array.isArray(direct.scripts) && direct.scripts.includes('test'));
   assert.ok(direct.git && direct.git.branch, 'detects live git branch');
   assert.ok(Array.isArray(direct.recentCommits) && direct.recentCommits.length >= 1);
@@ -2399,7 +2400,7 @@ test('readProjectWorkspaceStatusAsync & handleProjectRpcRequest return Git commi
   );
   assert.equal(rpcOk?.reqId, 'ws-1');
   assert.equal(rpcOk?.result?.ok, true);
-  assert.equal(rpcOk?.result?.pkgVersion, '1.2.0');
+  assert.equal(rpcOk?.result?.pkgVersion, expectedPkgVersion);
 
   const unsafeEtc = await readProjectWorkspaceStatusAsync('/etc');
   assert.equal(unsafeEtc.ok, false);

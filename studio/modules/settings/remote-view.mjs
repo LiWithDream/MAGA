@@ -3,7 +3,17 @@
  */
 import { esc } from './constants.mjs';
 import { renderQrSvg } from './qr-svg.mjs';
-import { renderSegRow, renderSwitchRow } from './views.mjs';
+
+function renderLocalSwitchRow(key, kind, title, desc, checked) {
+  return `
+      <div class="agy-ms-row">
+        <div class="agy-ms-row-text">
+          <div class="agy-ms-row-title">${esc(title)}</div>
+          ${desc ? `<div class="agy-ms-row-desc">${esc(desc)}</div>` : ''}
+        </div>
+        <button type="button" class="agy-ms-switch" role="switch" data-ms-kind="${kind}" data-ms-key="${esc(key)}" aria-label="${esc(title)}" aria-checked="${checked ? 'true' : 'false'}"><span></span></button>
+      </div>`;
+}
 
 function isLoopbackHost(host) {
   const h = String(host || '').trim().toLowerCase();
@@ -154,7 +164,7 @@ export function renderL2Remote(state, { L }) {
       </div>`;
   } else {
     transportFieldsHtml = `
-      ${renderSwitchRow(
+      ${renderLocalSwitchRow(
         'allowLocalPairingWithoutEdge',
         'remote-local-pair',
         L('允许本机 Loopback 直接配对', 'Allow Local Loopback Pairing'),
@@ -174,14 +184,26 @@ export function renderL2Remote(state, { L }) {
   const pairing = state?.remotePairing;
   let qrStageHtml = '';
   if (pairing && pairing.code && pairing.pairingUrl) {
-    let qrSvgHtml = '';
-    try {
-      qrSvgHtml = renderQrSvg(pairing.pairingUrl, { sizePx: 180, quietZone: 4 });
-    } catch {
-      qrSvgHtml = '';
-    }
-    const expStr = formatTsShort(pairing.expiresAt);
-    qrStageHtml = `
+    const isExpired = Number(pairing.expiresAt || 0) > 0 && Date.now() > Number(pairing.expiresAt);
+    if (isExpired) {
+      qrStageHtml = `
+      <div class="agy-ms-remote-qr-stage">
+        <div class="agy-ms-remote-diag-item" data-level="warn">${esc(
+          L('配对二维码已过期，请点击上方按钮重新生成。', 'Pairing QR expired — generate a new code.')
+        )}</div>
+        <div class="agy-ms-tools" style="padding:2px 0 0;justify-content:center">
+          <button type="button" class="agy-ms-btn" data-ms-remote-action="clear-pair">${esc(L('收起', 'Hide'))}</button>
+        </div>
+      </div>`;
+    } else {
+      let qrSvgHtml = '';
+      try {
+        qrSvgHtml = renderQrSvg(pairing.pairingUrl, { sizePx: 180, quietZone: 4 });
+      } catch {
+        qrSvgHtml = '';
+      }
+      const expStr = formatTsShort(pairing.expiresAt);
+      qrStageHtml = `
       <div class="agy-ms-remote-qr-stage">
         ${qrSvgHtml ? `<div class="agy-ms-remote-qr-box">${qrSvgHtml}</div>` : ''}
         <div class="agy-ms-remote-qr-code">${esc(pairing.code)}</div>
@@ -198,6 +220,7 @@ export function renderL2Remote(state, { L }) {
           <button type="button" class="agy-ms-btn" data-ms-remote-action="clear-pair">${esc(L('收起', 'Hide'))}</button>
         </div>
       </div>`;
+    }
   }
 
   const activeDevices = Array.isArray(st?.devices) ? st.devices.filter((d) => !d?.revokedAt) : [];

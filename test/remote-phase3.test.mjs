@@ -353,8 +353,19 @@ test('Phase 3 desktop Settings UI: L1 card, L2 Remote Control view, QR SVG, XSS 
     });
     assert.equal(handledPair, true);
     assert.equal(rpcCalls.at(-1).action, 'createRemotePairing');
-    assert.ok(root.querySelector('.agy-ms-remote-qr-box svg'), 'should render local QR SVG inside box');
+    assert.equal(root.querySelector('.agy-ms-remote-qr-box svg') !== null, true, 'should render local QR SVG inside box');
     assert.ok(root.textContent.includes('AABBCCDDEEFF0011'));
+
+    // Expired pairing omits QR SVG and renders expired hint
+    state.remotePairing = {
+      ...state.remotePairing,
+      expiresAt: Date.now() - 5000,
+    };
+    rerender();
+    assert.equal(root.querySelector('.agy-ms-remote-qr-box svg'), null, 'expired pairing must omit QR SVG');
+    assert.ok(root.textContent.includes('Pairing QR expired'));
+    state.remotePairing = null;
+    rerender();
 
     // Click Revoke -> sends revokeRemoteDevice
     const revBtn = root.querySelector('[data-ms-remote-revoke="d-xss"]');
@@ -384,6 +395,9 @@ test('Phase 3 static invariants: studio-settings < 550 lines, zero :has(), zero 
 
   const settingsCss = fs.readFileSync(path.join(REPO, 'studio', 'styles', 'studio-settings.css'), 'utf8');
   assert.equal(settingsCss.includes(':has('), false, 'studio-settings.css must have zero :has() selectors');
+
+  const remoteViewSrc = fs.readFileSync(path.join(REPO, 'studio', 'modules', 'settings', 'remote-view.mjs'), 'utf8');
+  assert.equal(/from\s+['"]\.\/views\.mjs['"]/.test(remoteViewSrc), false, 'remote-view.mjs must not import ./views.mjs (acyclic)');
 
   const phase3Files = [
     path.join(REPO, 'core', 'daemon', 'remote', 'settings-rpc.mjs'),

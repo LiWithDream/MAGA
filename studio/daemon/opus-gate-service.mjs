@@ -425,6 +425,28 @@ export async function buildOpusHandoffBrief(payload = {}, opts = {}) {
       execGitBriefAsync(absDir, ['diff', '--stat']),
       execGitBriefAsync(absDir, diffArgs),
     ]);
+    if (!diffStat && !diffSnippet) {
+      const curBranch = await execGitBriefAsync(absDir, ['rev-parse', '--abbrev-ref', 'HEAD']);
+      if (curBranch && curBranch !== 'HEAD' && curBranch !== 'main' && curBranch !== 'master') {
+        let baseRef = '';
+        for (const cand of ['main', 'master']) {
+          const sha = await execGitBriefAsync(absDir, ['rev-parse', '--verify', '--quiet', cand]);
+          if (sha) {
+            baseRef = cand;
+            break;
+          }
+        }
+        if (baseRef) {
+          const branchDiffArgs = safeRelPaths.length
+            ? ['diff', '-U3', `${baseRef}...HEAD`, '--', ...safeRelPaths]
+            : ['diff', '-U3', `${baseRef}...HEAD`, '--'];
+          [diffStat, diffSnippet] = await Promise.all([
+            execGitBriefAsync(absDir, ['diff', '--stat', `${baseRef}...HEAD`, '--']),
+            execGitBriefAsync(absDir, branchDiffArgs),
+          ]);
+        }
+      }
+    }
   }
 
   const scopeLines = [];

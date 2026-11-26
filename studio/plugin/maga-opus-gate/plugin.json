@@ -1,6 +1,6 @@
 {
   "name": "maga-opus-gate",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "displayName": "AGY Studio · Review Gate",
   "description": "Quota-guarded high-tier (Gemini 4 Carbon / Claude Opus 5.5) architecture, debugging & audit checkpoints for Antigravity 2.0."
 }

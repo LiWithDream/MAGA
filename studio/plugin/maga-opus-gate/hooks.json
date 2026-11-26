@@ -1,8 +1,20 @@
 {
   "maga-opus-gate": {
+    "PreToolUse": [
+      {
+        "matcher": "run_command|edit_file|write_file",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ./hooks/gate-check.mjs",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
-        "matcher": "run_command|edit_file|write_file|exit_plan_mode",
+        "matcher": "run_command|edit_file|write_file|swarm",
         "hooks": [
           {
             "type": "command",

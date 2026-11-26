@@ -287,12 +287,18 @@ function defaultConvState() {
     pendingPlanReason: '',
     lastAuditedPlanHash: '',
     lastSuggestedPlanHash: '',
+    blockingPlanHash: '',
+    acknowledgedPlanHash: '',
     lastAuditedRiskHash: '',
     lastSuggestedRiskHash: '',
     lastAuditedStopFiles: 0,
     lastAuditedStopLines: 0,
     lastSuggestedStopFiles: 0,
     lastSuggestedStopLines: 0,
+    blockingLandingHash: '',
+    acknowledgedLandingHash: '',
+    lastAuditedLandingHash: '',
+    activeReviewWorker: '',
     autoCalls: 0,
     lastAutoSemanticHash: '',
     lastSuggestedSemanticHash: '',
@@ -392,6 +398,291 @@ function parseNumstatLines(text) {
   return { byRel, total };
 }
 
+const ENV_ASSIGN_RE = /^[A-Za-z_][A-Za-z0-9_]*=.*$/;
+const GIT_GLOBAL_VALUE_FLAGS = new Set([
+  '-C',
+  '-c',
+  '--git-dir',
+  '--work-tree',
+  '--namespace',
+  '--super-prefix',
+  '--exec-path',
+  '--config-env',
+]);
+const GIT_MERGE_VALUE_FLAGS = new Set([
+  '-m',
+  '--message',
+  '-F',
+  '--file',
+  '-s',
+  '--strategy',
+  '-X',
+  '--strategy-option',
+  '--into-name',
+  '--cleanup',
+  '-S',
+  '--gpg-sign',
+]);
+
+function splitCommandSegments(cmd) {
+  const segs = [];
+  const src = String(cmd || '');
+  let cur = '';
+  let quote = '';
+  for (let i = 0; i < src.length; i++) {
+    const ch = src[i];
+    if (quote === "'") {
+      cur += ch;
+      if (ch === "'") quote = '';
+      continue;
+    }
+    if (quote === '"') {
+      cur += ch;
+      if (ch === '\\' && i + 1 < src.length) {
+        cur += src[++i];
+      } else if (ch === '"') {
+        quote = '';
+      }
+      continue;
+    }
+    if (ch === '\\' && i + 1 < src.length) {
+      cur += ch + src[++i];
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      cur += ch;
+      continue;
+    }
+    if ((ch === '&' && src[i + 1] === '&') || (ch === '|' && src[i + 1] === '|')) {
+      segs.push(cur);
+      cur = '';
+      i += 1;
+      continue;
+    }
+    if (ch === ';' || ch === '|' || ch === '&' || ch === '\n' || ch === '\r' || ch === '(' || ch === ')' || ch === '{' || ch === '}') {
+      segs.push(cur);
+      cur = '';
+      continue;
+    }
+    cur += ch;
+  }
+  if (cur) segs.push(cur);
+  return segs;
+}
+
+function tokenizeSegment(seg) {
+  const tokens = [];
+  const src = String(seg || '');
+  let cur = '';
+  let inTok = false;
+  let quote = '';
+  for (let i = 0; i < src.length; i++) {
+    const ch = src[i];
+    if (quote === "'") {
+      inTok = true;
+      if (ch === "'") quote = '';
+      else cur += ch;
+      continue;
+    }
+    if (quote === '"') {
+      inTok = true;
+      if (ch === '\\' && i + 1 < src.length) {
+        const next = src[i + 1];
+        if (next === '"' || next === '\\' || next === '$' || next === '`' || next === '\n') {
+          cur += next;
+          i += 1;
+          continue;
+        }
+      }
+      if (ch === '"') quote = '';
+      else cur += ch;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      if (inTok) {
+        tokens.push(cur);
+        cur = '';
+        inTok = false;
+      }
+      continue;
+    }
+    if (ch === '\\' && i + 1 < src.length) {
+      inTok = true;
+      cur += src[++i];
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      inTok = true;
+      quote = ch;
+      continue;
+    }
+    inTok = true;
+    cur += ch;
+  }
+  if (inTok) tokens.push(cur);
+  return tokens;
+}
+
+function resolveCdTarget(baseDir, rawTarget) {
+  const s = String(rawTarget || '').trim();
+  if (!s || s === '-') return baseDir;
+  let expanded = s;
+  if (expanded === '~') expanded = os.homedir();
+  else if (expanded.startsWith('~/') || expanded.startsWith(`~${path.sep}`)) {
+    expanded = path.join(os.homedir(), expanded.slice(2));
+  }
+  return path.resolve(baseDir || process.cwd(), expanded);
+}
+
+/**
+ * Inspect a shell command string for high-impact landing operations (`git merge`, `git push`, `npm run deploy`).
+ */
+export function detectLandingAction(commandLine, fallbackCwd = '') {
+  const raw = String(commandLine || '');
+  if (!raw.trim()) return null;
+  let curDir = fallbackCwd ? resolveAbsPath(fallbackCwd) || fallbackCwd : '';
+  const segs = splitCommandSegments(raw);
+
+  for (const seg of segs) {
+    let tokens = tokenizeSegment(seg);
+    let idx = 0;
+    while (idx < tokens.length && ENV_ASSIGN_RE.test(tokens[idx])) idx += 1;
+    while (idx < tokens.length && (tokens[idx] === 'env' || tokens[idx] === 'command' || tokens[idx] === 'exec')) {
+      idx += 1;
+      while (idx < tokens.length && (ENV_ASSIGN_RE.test(tokens[idx]) || tokens[idx] === '-u')) {
+        if (tokens[idx] === '-u') idx += 1;
+        idx += 1;
+      }
+    }
+    tokens = tokens.slice(idx);
+    if (tokens.length === 0) continue;
+
+    const cmdBase = path.basename(tokens[0]);
+    if (cmdBase === 'cd' || cmdBase === 'pushd') {
+      let arg = '';
+      for (let i = 1; i < tokens.length; i++) {
+        if (tokens[i] === '--' && i + 1 < tokens.length) {
+          arg = tokens[i + 1];
+          break;
+        }
+        if (!tokens[i].startsWith('-')) {
+          arg = tokens[i];
+          break;
+        }
+      }
+      if (arg) curDir = resolveCdTarget(curDir, arg);
+      continue;
+    }
+
+    if (cmdBase === 'git') {
+      let repoDir = curDir;
+      let sub = '';
+      let subStart = -1;
+      for (let i = 1; i < tokens.length; i++) {
+        const tok = tokens[i];
+        if (tok === '-C' && i + 1 < tokens.length) {
+          repoDir = resolveCdTarget(curDir, tokens[++i]);
+          continue;
+        }
+        if (tok.startsWith('-C') && tok.length > 2) {
+          repoDir = resolveCdTarget(curDir, tok.slice(2));
+          continue;
+        }
+        if (tok === '--work-tree' && i + 1 < tokens.length) {
+          repoDir = resolveCdTarget(curDir, tokens[++i]);
+          continue;
+        }
+        if (tok.startsWith('--work-tree=')) {
+          repoDir = resolveCdTarget(curDir, tok.slice('--work-tree='.length));
+          continue;
+        }
+        if (GIT_GLOBAL_VALUE_FLAGS.has(tok) && i + 1 < tokens.length) {
+          i += 1;
+          continue;
+        }
+        if (tok.startsWith('-')) continue;
+        sub = tok;
+        subStart = i + 1;
+        break;
+      }
+      if (!sub) continue;
+      const subArgs = tokens.slice(subStart);
+      if (sub === 'merge') {
+        if (subArgs.includes('--abort') || subArgs.includes('--quit')) continue;
+        let sourceRef = '';
+        for (let j = 0; j < subArgs.length; j++) {
+          const a = subArgs[j];
+          if (a === '--') {
+            if (j + 1 < subArgs.length && !subArgs[j + 1].startsWith('-')) {
+              sourceRef = subArgs[j + 1];
+            }
+            break;
+          }
+          if (GIT_MERGE_VALUE_FLAGS.has(a) && j + 1 < subArgs.length) {
+            j += 1;
+            continue;
+          }
+          if (a.startsWith('-')) continue;
+          sourceRef = a;
+          break;
+        }
+        return { action: 'merge', repoDir, sourceRef, label: 'git merge' };
+      }
+      if (sub === 'push') {
+        if (subArgs.includes('--dry-run') || subArgs.includes('-n')) continue;
+        return { action: 'push', repoDir, sourceRef: '', label: 'git push' };
+      }
+      continue;
+    }
+
+    if (cmdBase === 'npm' || cmdBase === 'pnpm' || cmdBase === 'yarn' || cmdBase === 'bun') {
+      let deployDir = curDir;
+      const pos = [];
+      for (let i = 1; i < tokens.length; i++) {
+        const tok = tokens[i];
+        if ((tok === '--prefix' || tok === '-C' || tok === '--cwd') && i + 1 < tokens.length) {
+          deployDir = resolveCdTarget(curDir, tokens[++i]);
+          continue;
+        }
+        if (tok.startsWith('--prefix=')) {
+          deployDir = resolveCdTarget(curDir, tok.slice('--prefix='.length));
+          continue;
+        }
+        if (tok === '--') break;
+        if (tok.startsWith('-')) continue;
+        pos.push(tok);
+      }
+      if ((pos[0] === 'run' && pos[1] === 'deploy') || pos[0] === 'deploy') {
+        const label = cmdBase === 'npm' && pos[0] === 'run' ? 'npm run deploy' : `${cmdBase} ${pos[0] === 'run' ? 'run deploy' : 'deploy'}`;
+        return { action: 'deploy', repoDir: deployDir, sourceRef: '', label };
+      }
+    }
+  }
+  return null;
+}
+
+function getGitCommonDirNoSpawn(dir) {
+  const root = findGitRootSync(dir);
+  if (!root) return '';
+  const dotGit = path.join(root, '.git');
+  try {
+    const st = fs.lstatSync(dotGit);
+    if (st.isDirectory()) return realpathSafe(dotGit);
+    if (st.isFile()) {
+      const content = fs.readFileSync(dotGit, 'utf8');
+      const m = content.match(/^gitdir:\s*(.+)$/m);
+      if (m && m[1]) {
+        const gitdir = path.resolve(root, m[1].trim());
+        const wtMatch = gitdir.match(/^(.*[/\\]\.git)[/\\]worktrees[/\\][^/\\]+[/\\]?$/);
+        if (wtMatch) return realpathSafe(wtMatch[1]);
+        return realpathSafe(gitdir);
+      }
+    }
+  } catch {}
+  return '';
+}
+
 function resolveEffectiveGitRoot(touchedAbsFiles, fallbackCwd = '') {
   if (Array.isArray(touchedAbsFiles)) {
     for (let i = touchedAbsFiles.length - 1; i >= 0; i--) {
@@ -404,7 +695,10 @@ function resolveEffectiveGitRoot(touchedAbsFiles, fallbackCwd = '') {
   return findGitRootSync(fallbackCwd || '');
 }
 
-function inspectGitSummary(gitRoot) {
+function inspectGitSummary(
+  gitRoot,
+  { includeBranchDiff = false, mergeRepoDir = '', mergeSourceRef = '' } = {}
+) {
   if (!gitRoot || !fs.existsSync(gitRoot)) {
     return {
       gitRoot: '',
@@ -419,11 +713,11 @@ function inspectGitSummary(gitRoot) {
   }
   const deadline = Date.now() + GIT_DEADLINE_MS;
   const gitEnv = { ...process.env, GIT_OPTIONAL_LOCKS: '0' };
-  const execGit = (args) => {
+  const execGitIn = (dir, args) => {
     const rem = deadline - Date.now();
-    if (rem < 150) return null;
+    if (rem < 150 || !dir || !fs.existsSync(dir)) return null;
     try {
-      return execFileSync('git', ['-C', gitRoot, ...args], {
+      return execFileSync('git', ['-C', dir, ...args], {
         encoding: 'utf8',
         timeout: Math.min(1500, rem),
         maxBuffer: 256 * 1024,
@@ -434,6 +728,7 @@ function inspectGitSummary(gitRoot) {
       return null;
     }
   };
+  const execGit = (args) => execGitIn(gitRoot, args);
 
   const statusZ = execGit(['status', '--porcelain', '-z']);
   if (statusZ === null) {
@@ -453,7 +748,53 @@ function inspectGitSummary(gitRoot) {
   if (numstat === null) numstat = execGit(['diff', '--cached', '--numstat']) || '';
 
   const relList = parsePorcelainZ(statusZ);
-  const { byRel, total } = parseNumstatLines(numstat);
+  const { byRel, total: uncommittedTotal } = parseNumstatLines(numstat);
+  let total = uncommittedTotal;
+
+  let branchNumstat = '';
+  let branchMeta = '';
+  if (includeBranchDiff) {
+    const safeRef =
+      typeof mergeSourceRef === 'string' &&
+      mergeSourceRef &&
+      !/^-/.test(mergeSourceRef) &&
+      !/[\u0000-\u001F\s]/.test(mergeSourceRef)
+        ? mergeSourceRef
+        : '';
+    if (safeRef) {
+      const targetRepo = mergeRepoDir && fs.existsSync(mergeRepoDir) ? mergeRepoDir : gitRoot;
+      const headSha = (execGitIn(targetRepo, ['rev-parse', '--verify', '--quiet', 'HEAD']) || '').trim();
+      const srcSha = (execGitIn(targetRepo, ['rev-parse', '--verify', '--quiet', safeRef]) || '').trim();
+      if (srcSha) {
+        branchNumstat = execGitIn(targetRepo, ['diff', '--numstat', `HEAD...${safeRef}`, '--']) || '';
+        branchMeta = `${headSha}..${srcSha}`;
+      }
+    } else {
+      const curBranch = (execGit(['rev-parse', '--abbrev-ref', 'HEAD']) || '').trim();
+      if (curBranch && curBranch !== 'HEAD' && curBranch !== 'main' && curBranch !== 'master') {
+        let baseRef = '';
+        for (const cand of ['main', 'master']) {
+          if ((execGit(['rev-parse', '--verify', '--quiet', cand]) || '').trim()) {
+            baseRef = cand;
+            break;
+          }
+        }
+        if (!baseRef) {
+          const upSha = (execGit(['rev-parse', '--verify', '--quiet', '@{upstream}']) || '').trim();
+          const headSha = (execGit(['rev-parse', '--verify', '--quiet', 'HEAD']) || '').trim();
+          if (upSha && upSha !== headSha) baseRef = '@{upstream}';
+        }
+        if (baseRef) {
+          const headSha = (execGit(['rev-parse', '--verify', '--quiet', 'HEAD']) || '').trim();
+          branchNumstat = execGit(['diff', '--numstat', `${baseRef}...HEAD`, '--']) || '';
+          branchMeta = `${baseRef}..${headSha}`;
+        }
+      }
+    }
+  }
+
+  const { byRel: branchByRel, total: branchTotal } = parseNumstatLines(branchNumstat);
+  total += branchTotal;
 
   const changedAbsFiles = [];
   const changedRelByAbs = {};
@@ -475,11 +816,24 @@ function inspectGitSummary(gitRoot) {
   for (const [rel, lines] of byRel.entries()) {
     const abs = realpathSafe(path.join(gitRoot, rel));
     perFileLines[abs] = lines;
+    const cleanRel = rel.split(path.sep).join('/');
     if (!seenAbs.has(abs)) {
       seenAbs.add(abs);
       changedAbsFiles.push(abs);
-      changedRelByAbs[abs] = rel.split(path.sep).join('/');
+      changedRelByAbs[abs] = cleanRel;
     }
+    if (HIGH_RISK_PATH_RE.test(cleanRel) && !gitHighRisk.includes(cleanRel)) gitHighRisk.push(cleanRel);
+  }
+  for (const [rel, lines] of branchByRel.entries()) {
+    const abs = realpathSafe(path.join(gitRoot, rel));
+    perFileLines[abs] = (perFileLines[abs] || 0) + lines;
+    const cleanRel = rel.split(path.sep).join('/');
+    if (!seenAbs.has(abs)) {
+      seenAbs.add(abs);
+      changedAbsFiles.push(abs);
+      changedRelByAbs[abs] = cleanRel;
+    }
+    if (HIGH_RISK_PATH_RE.test(cleanRel) && !gitHighRisk.includes(cleanRel)) gitHighRisk.push(cleanRel);
   }
 
   return {
@@ -490,7 +844,11 @@ function inspectGitSummary(gitRoot) {
     changedFiles: changedAbsFiles.length,
     changedLines: total,
     gitHighRisk,
-    diffHash: sha1Short(`${statusZ}\n--\n${numstat}`),
+    diffHash: sha1Short(
+      branchNumstat || branchMeta
+        ? `${statusZ}\n--\n${numstat}\n--\n${branchMeta}\n${branchNumstat}`
+        : `${statusZ}\n--\n${numstat}`
+    ),
   };
 }
 
@@ -518,24 +876,63 @@ function persistConvState(convFile, conv, touchLogFile, pluginDataDir, pruneOpts
   pruneDirFiles(pluginDataDir, pruneOpts);
 }
 
+export function computeAttributionHash(attr) {
+  return sha1Short(
+    JSON.stringify({
+      files: Array.isArray(attr?.attributedRel) ? attr.attributedRel.slice().sort() : [],
+      lines: Number(attr?.stopLines || 0),
+      risk: Array.isArray(attr?.highRiskRel) ? attr.highRiskRel.slice().sort() : [],
+    })
+  );
+}
+
 function computeAttribution(conv, git, { injectedSummary = false } = {}) {
   const root = git.gitRoot || '';
   if (Array.isArray(git.changedAbsFiles)) {
     const gitSet = new Set(git.changedAbsFiles.map((p) => realpathSafe(p)));
+    const gitCommonDir = root ? getGitCommonDirNoSpawn(root) : '';
+    const changedRelMap = new Map();
+    for (const abs of git.changedAbsFiles) {
+      const rAbs = realpathSafe(abs);
+      const rawRel =
+        (git.changedRelByAbs && (git.changedRelByAbs[abs] || git.changedRelByAbs[rAbs])) ||
+        normalizeRelPath(rAbs, root);
+      if (rawRel) changedRelMap.set(rawRel.split(path.sep).join('/'), rAbs);
+    }
+
     const attributedAbs = [];
     const attributedRel = [];
     const highRiskRel = [];
+    const seenRel = new Set();
     let stopLines = 0;
 
     for (const rawAbs of conv.touchedAbsFiles) {
       const abs = realpathSafe(rawAbs);
-      if (!gitSet.has(abs)) continue;
-      attributedAbs.push(abs);
-      const rel = sanitizePathDisplay(
-        (git.changedRelByAbs && git.changedRelByAbs[abs]) || normalizeRelPath(abs, root) || abs
-      );
+      let matchedAbs = gitSet.has(abs) ? abs : '';
+      let rel = '';
+      if (matchedAbs) {
+        rel = sanitizePathDisplay(
+          (git.changedRelByAbs && (git.changedRelByAbs[rawAbs] || git.changedRelByAbs[matchedAbs])) ||
+            normalizeRelPath(matchedAbs, root) ||
+            matchedAbs
+        );
+      } else {
+        const touchedRoot = findGitRootSync(abs) || root;
+        const touchedRel = normalizeRelPath(abs, touchedRoot);
+        if (touchedRel && changedRelMap.has(touchedRel)) {
+          const touchedCommon = getGitCommonDirNoSpawn(touchedRoot);
+          if (!gitCommonDir || !touchedCommon || gitCommonDir === touchedCommon) {
+            matchedAbs = changedRelMap.get(touchedRel);
+            rel = sanitizePathDisplay(touchedRel);
+          }
+        }
+      }
+      if (!matchedAbs) continue;
+      if (rel && seenRel.has(rel)) continue;
+      if (rel) seenRel.add(rel);
+      attributedAbs.push(matchedAbs);
       attributedRel.push(rel);
-      stopLines += Number(git.perFileLines?.[abs] || 0);
+      stopLines += Number(git.perFileLines?.[matchedAbs] || git.perFileLines?.[abs] || 0);
       if (HIGH_RISK_PATH_RE.test(rel) && !highRiskRel.includes(rel)) {
         highRiskRel.push(rel);
       }
@@ -610,25 +1007,218 @@ function buildProposalRecord({
   };
 }
 
+function applyAuditBaselineSnapshot(conv, convFile, touchLogFile, pluginDataDir, proposalsDir, cid, effectiveGitRoot, git, attr) {
+  removeProposalFile(proposalsDir, cid);
+  if (conv.pendingPlanHash) {
+    conv.lastAuditedPlanHash = conv.pendingPlanHash;
+    conv.lastSuggestedPlanHash = conv.pendingPlanHash;
+    conv.acknowledgedPlanHash = conv.pendingPlanHash;
+    conv.pendingPlanHash = '';
+    conv.pendingPlanReason = '';
+  }
+  conv.blockingPlanHash = '';
+  conv.blockingLandingHash = '';
+  if (git && attr) {
+    if (attr.highRiskRel.length > 0) {
+      const riskHash = sha1Short(attr.highRiskRel.slice().sort().join('\n'));
+      conv.lastAuditedRiskHash = riskHash;
+      conv.lastSuggestedRiskHash = riskHash;
+    }
+    conv.lastAuditedStopFiles = Math.max(conv.lastAuditedStopFiles, attr.stopFiles);
+    conv.lastAuditedStopLines = Math.max(conv.lastAuditedStopLines, attr.stopLines);
+    conv.lastSuggestedStopFiles = Math.max(conv.lastSuggestedStopFiles, attr.stopFiles);
+    conv.lastSuggestedStopLines = Math.max(conv.lastSuggestedStopLines, attr.stopLines);
+    if (attr.stopFiles > 0) {
+      conv.lastAuditedLandingHash = computeAttributionHash(attr);
+    }
+  }
+  persistConvState(convFile, conv, touchLogFile, pluginDataDir);
+}
+
 /**
  * Evaluate a single Antigravity lifecycle hook payload synchronously.
  * Accepts optional path/clock overrides via `opts` for isolated unit tests.
  */
 export function evaluateHookEvent(payload = {}, opts = {}) {
-  if (!payload || typeof payload !== 'object') return {};
+  const event = String(payload?.hookEventName || '');
+  const emptyResult = event === 'PreToolUse' ? { decision: 'allow' } : {};
+  if (!payload || typeof payload !== 'object') return emptyResult;
 
   const { prefsFile, quotaFile, proposalsDir, pluginDataDir } = resolvePaths(opts);
   const prefs = loadPrefs(prefsFile);
-  if (prefs.opusGateMode === 'off') return {};
-  if (isSelfOrHigherModel(prefs.opusGateModel, payload.modelName)) return {};
+  if (prefs.opusGateMode === 'off') return emptyResult;
+  if (isSelfOrHigherModel(prefs.opusGateModel, payload.modelName)) return emptyResult;
 
   const cid = getSafeCid(payload.conversationId);
-  if (!cid) return {};
+  if (!cid) return emptyResult;
 
   const { convFile, touchLogFile, conv, hadLog } = loadConvState(pluginDataDir, cid);
   const now = Number(opts.now) > 0 ? Number(opts.now) : Date.now();
-  const event = String(payload.hookEventName || '');
   const quota = resolveQuotaSnapshot(quotaFile);
+
+  if (event === 'PreToolUse') {
+    const toolName = String(payload.toolCall?.name || '').trim();
+    const args = payload.toolCall?.args && typeof payload.toolCall.args === 'object' ? payload.toolCall.args : {};
+
+    if (toolName === 'edit_file' || toolName === 'write_file') {
+      if (!prefs.opusGateCheckpoints.plan || !conv.pendingPlanHash) {
+        if (hadLog) persistConvState(convFile, conv, touchLogFile, pluginDataDir);
+        return emptyResult;
+      }
+      const rawFile = args.Path || args.path || args.TargetFile || args.AbsolutePath || '';
+      const absPath = resolveAbsPath(rawFile, payload.cwd || '');
+      const isPlanTarget = Boolean(args.ArtifactMetadata?.RequestFeedback) || (absPath ? PLAN_PATH_RE.test(absPath) : false);
+      if (isPlanTarget) {
+        if (hadLog) persistConvState(convFile, conv, touchLogFile, pluginDataDir);
+        return emptyResult;
+      }
+      const planHash = conv.pendingPlanHash;
+      const curProp = readJsonSafe(getProposalPath(proposalsDir, cid), null);
+      if (
+        conv.lastAuditedPlanHash === planHash ||
+        conv.acknowledgedPlanHash === planHash ||
+        (curProp?.dismissed === true && curProp?.dismissedDiffHash === planHash)
+      ) {
+        if (hadLog) persistConvState(convFile, conv, touchLogFile, pluginDataDir);
+        return emptyResult;
+      }
+
+      const effectiveGitRoot = resolveEffectiveGitRoot(conv.touchedAbsFiles, payload.cwd || '');
+      const planDisplayList = conv.planFiles
+        .map((p) => sanitizePathDisplay(normalizeRelPath(p, effectiveGitRoot) || p))
+        .filter(Boolean)
+        .slice(-5);
+      const quotaPolicy = evaluateQuotaPolicy(prefs, quota, 'plan');
+      const planNames = planDisplayList.length ? planDisplayList.join(', ') : 'plan artifact';
+      const planReason = `Plan artifact pending review before coding (${sanitizePromptText(planNames, 120)})`;
+
+      writeProposalFile(
+        proposalsDir,
+        cid,
+        buildProposalRecord({
+          kind: 'plan',
+          source: 'hook',
+          reason: planReason,
+          diffHash: planHash,
+          changedFiles: conv.touchedAbsFiles.length,
+          planFiles: planDisplayList,
+          worktreeRoot: effectiveGitRoot,
+          conv,
+          quota,
+          quotaPolicy,
+          now,
+        })
+      );
+      conv.blockingPlanHash = planHash;
+      persistConvState(convFile, conv, touchLogFile, pluginDataDir);
+
+      if (prefs.opusGateMode === 'auto' && quotaPolicy.healthy && conv.autoCalls < prefs.opusGateMaxAutoPerSession) {
+        return {
+          decision: 'deny',
+          reason:
+            `[MAGA Review Gate · plan] Plan artifact was just written without review. ` +
+            `Load the \`opus-gate\` skill and run a read-only ${quotaPolicy.label} plan review via \`swarm\` (\`${quotaPolicy.workerName}\`, \`model: "${quotaPolicy.recommendedModelId}"\`) before editing source files.`,
+        };
+      }
+      return {
+        decision: 'deny',
+        reason:
+          `[MAGA Review Gate · plan] Paused before editing source files: plan artifact (${sanitizePromptText(planNames, 120)}) has not been presented to the user yet. ` +
+          `Stop this turn now, present the plan summary to the user, and wait for them to click \`✦ 请求审查\` or confirm implementation.`,
+      };
+    }
+
+    if (toolName === 'run_command') {
+      const commandLine = String(args.CommandLine || args.command || '');
+      const landing = detectLandingAction(commandLine, payload.cwd || '');
+      if (!landing) {
+        if (hadLog) persistConvState(convFile, conv, touchLogFile, pluginDataDir);
+        return emptyResult;
+      }
+      if (conv.touchedAbsFiles.length === 0 && !opts.gitSummary) {
+        if (hadLog) persistConvState(convFile, conv, touchLogFile, pluginDataDir);
+        return emptyResult;
+      }
+
+      const effectiveGitRoot = resolveEffectiveGitRoot(conv.touchedAbsFiles, landing.repoDir || payload.cwd || '');
+      const git =
+        opts.gitSummary ||
+        inspectGitSummary(effectiveGitRoot, {
+          includeBranchDiff: true,
+          mergeRepoDir: landing.repoDir,
+          mergeSourceRef: landing.sourceRef,
+        });
+      if (!git.gitRoot && effectiveGitRoot) git.gitRoot = effectiveGitRoot;
+
+      const attr = computeAttribution(conv, git, { injectedSummary: Boolean(opts.gitSummary) });
+      const riskHit = prefs.opusGateCheckpoints.risk && attr.stopFiles > 0 && attr.highRiskRel.length > 0;
+      const stopHit =
+        prefs.opusGateCheckpoints.stop && attr.stopFiles > 0 && (attr.stopFiles >= 3 || attr.stopLines >= 120);
+      if (!riskHit && !stopHit) {
+        if (hadLog) persistConvState(convFile, conv, touchLogFile, pluginDataDir);
+        return emptyResult;
+      }
+
+      const landingHash = computeAttributionHash(attr);
+      const riskHash = attr.highRiskRel.length ? sha1Short(attr.highRiskRel.slice().sort().join('\n')) : '';
+      const curProp = readJsonSafe(getProposalPath(proposalsDir, cid), null);
+      if (
+        conv.lastAuditedLandingHash === landingHash ||
+        conv.acknowledgedLandingHash === landingHash ||
+        (curProp?.dismissed === true && curProp?.dismissedDiffHash === landingHash) ||
+        (riskHit && !stopHit && riskHash && conv.lastAuditedRiskHash === riskHash) ||
+        (stopHit && !riskHit && attr.stopFiles <= conv.lastAuditedStopFiles && attr.stopLines <= conv.lastAuditedStopLines)
+      ) {
+        if (hadLog) persistConvState(convFile, conv, touchLogFile, pluginDataDir);
+        return emptyResult;
+      }
+
+      const kind = riskHit ? 'risk' : 'stop';
+      const reason = riskHit
+        ? `Pre-${landing.action} high-risk changes (${attr.highRiskRel.slice(0, 3).join(', ')})`
+        : `Pre-${landing.action} review (${attr.stopFiles} files, ${attr.stopLines} lines)`;
+      const quotaPolicy = evaluateQuotaPolicy(prefs, quota, kind);
+
+      writeProposalFile(
+        proposalsDir,
+        cid,
+        buildProposalRecord({
+          kind,
+          source: 'hook',
+          reason,
+          diffHash: landingHash,
+          changedFiles: attr.stopFiles,
+          changedLines: attr.stopLines,
+          highRiskFiles: attr.highRiskRel,
+          worktreeRoot: effectiveGitRoot,
+          conv,
+          quota,
+          quotaPolicy,
+          now,
+        })
+      );
+      conv.blockingLandingHash = landingHash;
+      persistConvState(convFile, conv, touchLogFile, pluginDataDir);
+
+      if (prefs.opusGateMode === 'auto' && quotaPolicy.healthy && conv.autoCalls < prefs.opusGateMaxAutoPerSession) {
+        return {
+          decision: 'deny',
+          reason:
+            `[MAGA Review Gate · pre-${landing.action}] ${sanitizePromptText(reason, 200)}. ` +
+            `Load the \`opus-gate\` skill and run a read-only ${quotaPolicy.label} review via \`swarm\` (\`${quotaPolicy.workerName}\`, \`model: "${quotaPolicy.recommendedModelId}"\`) before running \`${landing.label}\`.`,
+        };
+      }
+      return {
+        decision: 'deny',
+        reason:
+          `[MAGA Review Gate · pre-${landing.action}] Paused before \`${landing.label}\`: ${sanitizePromptText(reason, 200)}. ` +
+          `Stop this turn now, summarize the verified changes and test results, and let the user choose \`✦ 请求审查\` in the bottom bar or reply to proceed directly.`,
+      };
+    }
+
+    if (hadLog) persistConvState(convFile, conv, touchLogFile, pluginDataDir);
+    return emptyResult;
+  }
 
   if (event === 'PostToolUse') {
     const toolName = String(payload.toolCall?.name || '').trim();
@@ -668,42 +1258,34 @@ export function evaluateHookEvent(payload = {}, opts = {}) {
       return {};
     }
 
-    if (toolName === 'exit_plan_mode') {
-      const args = payload.toolCall?.args && typeof payload.toolCall.args === 'object' ? payload.toolCall.args : {};
-      const planHash = sha1Short(`exit_plan_mode:${String(args.plan || '').slice(0, 4000)}`);
-      const planReason = 'Plan finalized via exit_plan_mode';
-      let suggestedPlanHash = '';
-      if (prefs.opusGateCheckpoints.plan && prefs.opusGateMode === 'semi') {
-        const curProp = readJsonSafe(getProposalPath(proposalsDir, cid), null);
-        if (curProp?.diffHash !== planHash && conv.lastSuggestedPlanHash !== planHash) {
-          const qp = evaluateQuotaPolicy(prefs, quota, 'plan');
-          const gitRoot = resolveEffectiveGitRoot(conv.touchedAbsFiles, payload.cwd || '');
-          writeProposalFile(
-            proposalsDir,
-            cid,
-            buildProposalRecord({
-              kind: 'plan',
-              source: 'hook',
-              reason: planReason,
-              diffHash: planHash,
-              changedFiles: conv.touchedAbsFiles.length,
-              planFiles: conv.planFiles.map((p) => normalizeRelPath(p, gitRoot) || p).slice(0, 5),
-              worktreeRoot: gitRoot,
-              conv,
-              quota,
-              quotaPolicy: qp,
-              now,
-            })
-          );
-          suggestedPlanHash = planHash;
-        }
+    if (toolName === 'swarm') {
+      const errText = typeof payload.error === 'string' ? payload.error.trim() : '';
+      if (errText) {
+        if (hadLog) persistConvState(convFile, conv, touchLogFile, pluginDataDir);
+        return {};
       }
-      fs.mkdirSync(pluginDataDir, { recursive: true });
-      fs.appendFileSync(
-        touchLogFile,
-        `${JSON.stringify({ abs: '', isPlan: true, planHash, planReason, suggestedPlanHash })}\n`,
-        'utf8'
-      );
+      const args = payload.toolCall?.args && typeof payload.toolCall.args === 'object' ? payload.toolCall.args : {};
+      const action = String(args.action || '').trim().toLowerCase();
+      const name = String(args.name || '').trim();
+      const model = String(args.model || '').trim();
+      const isReviewName = /(?:^|[-_])(?:opus|carbon|review)(?:[-_]|$)/i.test(name);
+      const isReviewAdd = action === 'add' && (/(?:opus|carbon)/i.test(model) || isReviewName);
+      const isReviewKill =
+        action === 'kill' && ((Boolean(conv.activeReviewWorker) && conv.activeReviewWorker === name) || isReviewName);
+
+      if (!isReviewAdd && !isReviewKill) {
+        if (hadLog) persistConvState(convFile, conv, touchLogFile, pluginDataDir);
+        return {};
+      }
+
+      if (isReviewAdd) conv.activeReviewWorker = name || 'reviewer';
+      if (isReviewKill) conv.activeReviewWorker = '';
+
+      const effectiveGitRoot = resolveEffectiveGitRoot(conv.touchedAbsFiles, payload.cwd || '');
+      const git = opts.gitSummary || (effectiveGitRoot ? inspectGitSummary(effectiveGitRoot, { includeBranchDiff: true }) : null);
+      if (git && !git.gitRoot && effectiveGitRoot) git.gitRoot = effectiveGitRoot;
+      const attr = git ? computeAttribution(conv, git, { injectedSummary: Boolean(opts.gitSummary) }) : null;
+      applyAuditBaselineSnapshot(conv, convFile, touchLogFile, pluginDataDir, proposalsDir, cid, effectiveGitRoot, git, attr);
       return {};
     }
 
@@ -772,12 +1354,41 @@ export function evaluateHookEvent(payload = {}, opts = {}) {
       return {};
     }
 
+    let justPausedLanding = false;
+    let justPausedPlan = false;
+    if (conv.blockingLandingHash) {
+      conv.acknowledgedLandingHash = conv.blockingLandingHash;
+      conv.blockingLandingHash = '';
+      justPausedLanding = true;
+    }
+    if (conv.blockingPlanHash) {
+      conv.acknowledgedPlanHash = conv.blockingPlanHash;
+      conv.blockingPlanHash = '';
+      if (prefs.opusGateMode === 'semi') {
+        conv.lastSuggestedPlanHash = conv.acknowledgedPlanHash;
+      }
+      justPausedPlan = true;
+    }
+    if (conv.pendingPlanHash) {
+      conv.acknowledgedPlanHash = conv.pendingPlanHash;
+    }
+
     const effectiveGitRoot = resolveEffectiveGitRoot(conv.touchedAbsFiles, payload.cwd || '');
-    const git = opts.gitSummary || inspectGitSummary(effectiveGitRoot);
+    const git = opts.gitSummary || inspectGitSummary(effectiveGitRoot, { includeBranchDiff: true });
     if (!git.gitRoot && effectiveGitRoot) git.gitRoot = effectiveGitRoot;
 
     const attr = computeAttribution(conv, git, { injectedSummary: Boolean(opts.gitSummary) });
     const riskHash = attr.highRiskRel.length ? sha1Short(attr.highRiskRel.slice().sort().join('\n')) : '';
+
+    if (justPausedLanding || justPausedPlan) {
+      if (justPausedLanding) {
+        if (riskHash) conv.lastSuggestedRiskHash = riskHash;
+        conv.lastSuggestedStopFiles = Math.max(conv.lastSuggestedStopFiles, attr.stopFiles);
+        conv.lastSuggestedStopLines = Math.max(conv.lastSuggestedStopLines, attr.stopLines);
+      }
+      persistConvState(convFile, conv, touchLogFile, pluginDataDir);
+      return {};
+    }
 
     const planPending = Boolean(conv.pendingPlanHash);
     const existingSemiPlan =
@@ -821,7 +1432,7 @@ export function evaluateHookEvent(payload = {}, opts = {}) {
     }
 
     if (!kind) {
-      if (hadLog) persistConvState(convFile, conv, touchLogFile, pluginDataDir);
+      if (hadLog || conv.pendingPlanHash) persistConvState(convFile, conv, touchLogFile, pluginDataDir);
       return {};
     }
 
@@ -866,7 +1477,8 @@ export function evaluateHookEvent(payload = {}, opts = {}) {
       };
     }
 
-    const diffHash = kind === 'plan' ? conv.pendingPlanHash : kind === 'risk' ? riskHash : git.diffHash || '';
+    const landingHash = attr.stopFiles > 0 ? computeAttributionHash(attr) : '';
+    const diffHash = kind === 'plan' ? conv.pendingPlanHash : landingHash || riskHash || git.diffHash || '';
     writeProposalFile(
       proposalsDir,
       cid,
@@ -893,6 +1505,7 @@ export function evaluateHookEvent(payload = {}, opts = {}) {
       if (riskHash) conv.lastSuggestedRiskHash = riskHash;
       conv.lastSuggestedStopFiles = Math.max(conv.lastSuggestedStopFiles, attr.stopFiles);
       conv.lastSuggestedStopLines = Math.max(conv.lastSuggestedStopLines, attr.stopLines);
+      if (landingHash) conv.acknowledgedLandingHash = landingHash;
     }
     persistConvState(convFile, conv, touchLogFile, pluginDataDir);
     return {};
@@ -1053,33 +1666,18 @@ export function clearGateState(params = {}, opts = {}) {
   if (!cid) return { ok: false, error: 'invalid_cid' };
 
   const { proposalsDir, pluginDataDir } = resolvePaths(opts);
-  removeProposalFile(proposalsDir, cid);
-
   const { convFile, touchLogFile, conv } = loadConvState(pluginDataDir, cid);
-  if (conv.pendingPlanHash) {
-    conv.lastAuditedPlanHash = conv.pendingPlanHash;
-    conv.lastSuggestedPlanHash = conv.pendingPlanHash;
-    conv.pendingPlanHash = '';
-    conv.pendingPlanReason = '';
-  }
+  conv.activeReviewWorker = '';
 
   const effectiveGitRoot = findGitRootSync(params?.dir || '') || resolveEffectiveGitRoot(conv.touchedAbsFiles, '');
-  const git = opts.gitSummary || (effectiveGitRoot ? inspectGitSummary(effectiveGitRoot) : null);
+  const git =
+    opts.gitSummary || (effectiveGitRoot ? inspectGitSummary(effectiveGitRoot, { includeBranchDiff: true }) : null);
+  let attr = null;
   if (git) {
     if (!git.gitRoot && effectiveGitRoot) git.gitRoot = effectiveGitRoot;
-    const attr = computeAttribution(conv, git, { injectedSummary: Boolean(opts.gitSummary) });
-    if (attr.highRiskRel.length > 0) {
-      const riskHash = sha1Short(attr.highRiskRel.slice().sort().join('\n'));
-      conv.lastAuditedRiskHash = riskHash;
-      conv.lastSuggestedRiskHash = riskHash;
-    }
-    conv.lastAuditedStopFiles = Math.max(conv.lastAuditedStopFiles, attr.stopFiles);
-    conv.lastAuditedStopLines = Math.max(conv.lastAuditedStopLines, attr.stopLines);
-    conv.lastSuggestedStopFiles = Math.max(conv.lastSuggestedStopFiles, attr.stopFiles);
-    conv.lastSuggestedStopLines = Math.max(conv.lastSuggestedStopLines, attr.stopLines);
+    attr = computeAttribution(conv, git, { injectedSummary: Boolean(opts.gitSummary) });
   }
-
-  persistConvState(convFile, conv, touchLogFile, pluginDataDir);
+  applyAuditBaselineSnapshot(conv, convFile, touchLogFile, pluginDataDir, proposalsDir, cid, effectiveGitRoot, git, attr);
   pruneDirFiles(proposalsDir);
   return {
     ok: true,
@@ -1123,6 +1721,7 @@ function isDirectCli() {
 if (isDirectCli()) {
   const isClear = process.argv.includes('--clear');
   const isPreflight = process.argv.includes('--preflight');
+  let rawStdin = '';
   let result = {};
   try {
     if (isClear) {
@@ -1140,13 +1739,19 @@ if (isDirectCli()) {
     } else {
       let payload = {};
       try {
-        const raw = fs.readFileSync(0, 'utf8').trim();
-        if (raw) payload = JSON.parse(raw);
+        rawStdin = fs.readFileSync(0, 'utf8').trim();
+        if (rawStdin) payload = JSON.parse(rawStdin);
       } catch {}
       result = evaluateHookEvent(payload);
     }
   } catch {
-    result = isClear ? { ok: false, error: 'error' } : isPreflight ? { action: 'skip', reason: 'error' } : {};
+    result = isClear
+      ? { ok: false, error: 'error' }
+      : isPreflight
+        ? { action: 'skip', reason: 'error' }
+        : rawStdin.includes('PreToolUse')
+          ? { decision: 'allow' }
+          : {};
   }
   process.stdout.write(`${JSON.stringify(result)}\n`);
 }

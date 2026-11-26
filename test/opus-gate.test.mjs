@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -37,6 +37,8 @@ const {
   evaluatePreflight,
   clearGateState,
   isSelfOrHigherModel,
+  detectLandingAction,
+  computeAttributionHash,
 } = await import('../studio/plugin/maga-opus-gate/hooks/gate-check.mjs');
 const { createOpusGatePillRuntime } = await import('../studio/modules/opus-gate-pill.mjs');
 const { buildStudioBundle } = await import('../studio/build.mjs');
@@ -1009,7 +1011,7 @@ test('buildStudioBundle compiles Opus Gate runtime & settings views without glob
   assert.equal(/[^\n]*:has\s*\(/.test(bundle.cssBlock), false);
 });
 
-test('gate-check sentinel detects plan artifacts & exit_plan_mode in semi and auto modes', () => {
+test('gate-check sentinel detects plan artifacts while ignoring exit_plan_mode noise', () => {
   const dirs = makeTempDirs('og-plan-');
   const cidSemi = 'conv_plan_semi_1234';
   const cidAuto = 'conv_plan_auto_5678';
@@ -1060,6 +1062,28 @@ test('gate-check sentinel detects plan artifacts & exit_plan_mode in semi and au
     );
     assert.equal(fs.existsSync(proposalFile(dirs, cidSemi)), false);
 
+    // Regression: PostToolUse(exit_plan_mode) must NOT create or overwrite a plan proposal
+    assert.deepEqual(
+      evaluateHookEvent(
+        {
+          hookEventName: 'PostToolUse',
+          conversationId: cidSemi,
+          toolCall: { name: 'exit_plan_mode', args: { plan: 'Ordered steps 1..4' } },
+        },
+        hookOpts()
+      ),
+      {}
+    );
+    assert.equal(fs.existsSync(proposalFile(dirs, cidSemi)), false);
+    assert.deepEqual(
+      evaluateHookEvent(
+        { hookEventName: 'Stop', conversationId: cidSemi, cwd: REPO, terminationReason: 'NO_TOOL_CALL' },
+        hookOpts({ gitSummary: { gitRoot: REPO, changedAbsFiles: [], changedFiles: 0, changedLines: 0, gitHighRisk: [], diffHash: 'empty' } })
+      ),
+      {}
+    );
+    assert.equal(fs.existsSync(proposalFile(dirs, cidSemi)), false);
+
     // RequestFeedback artifact with updated body produces a new planHash and re-publishes
     evaluateHookEvent(
       {
@@ -1079,19 +1103,6 @@ test('gate-check sentinel detects plan artifacts & exit_plan_mode in semi and au
     prop = readProposal(dirs, cidSemi);
     assert.equal(prop?.kind, 'plan');
     assert.notEqual(prop?.diffHash, hashV1);
-
-    // exit_plan_mode triggers plan proposal too
-    evaluateHookEvent(
-      {
-        hookEventName: 'PostToolUse',
-        conversationId: cidSemi,
-        toolCall: { name: 'exit_plan_mode', args: { plan: 'Ordered steps 1..4' } },
-      },
-      hookOpts()
-    );
-    prop = readProposal(dirs, cidSemi);
-    assert.equal(prop?.kind, 'plan');
-    assert.match(prop?.reason, /exit_plan_mode/);
 
     // Auto mode: write_file + Stop even when changedFiles === 0 returns decision='continue', then deduplicates
     fs.writeFileSync(dirs.studioPrefsFile, JSON.stringify({ ...DEFAULT_STUDIO_PREFS, opusGateMode: 'auto' }));
@@ -1346,7 +1357,10 @@ test('syncOpusGatePlugin pins absolute Node executable, chmods hook, prunes stal
     const syncedHooks = JSON.parse(fs.readFileSync(path.join(dirs.pluginsDir, 'maga-opus-gate', 'hooks.json'), 'utf8'));
     const repoHooks = JSON.parse(fs.readFileSync(path.join(REPO, 'studio', 'plugin', 'maga-opus-gate', 'hooks.json'), 'utf8'));
     assert.equal(repoHooks['maga-opus-gate'].Stop[0].command, 'node ./hooks/gate-check.mjs');
+    assert.match(repoHooks['maga-opus-gate'].PreToolUse[0].matcher, /run_command/);
+    assert.match(repoHooks['maga-opus-gate'].PostToolUse[0].matcher, /swarm/);
     assert.ok(syncedHooks['maga-opus-gate'].Stop[0].command.includes(process.execPath));
+    assert.ok(syncedHooks['maga-opus-gate'].PreToolUse[0].hooks[0].command.includes(process.execPath));
     assert.ok(syncedHooks['maga-opus-gate'].PostToolUse[0].hooks[0].command.includes(process.execPath));
 
     const hookStat = fs.statSync(path.join(dirs.pluginsDir, 'maga-opus-gate', 'hooks', 'gate-check.mjs'));
@@ -1358,4 +1372,582 @@ test('syncOpusGatePlugin pins absolute Node executable, chmods hook, prunes stal
   } finally {
     dirs.cleanup();
   }
+});
+
+test('detectLandingAction identifies git merge/push/deploy while ignoring safe and quoted commands', () => {
+  assert.deepEqual(detectLandingAction('git merge --no-ff feat/x', REPO), {
+    action: 'merge',
+    repoDir: REPO,
+    sourceRef: 'feat/x',
+    label: 'git merge',
+  });
+  assert.deepEqual(detectLandingAction('cd /tmp/repo-main && git merge -m "Merge feat" feat/y', REPO), {
+    action: 'merge',
+    repoDir: '/tmp/repo-main',
+    sourceRef: 'feat/y',
+    label: 'git merge',
+  });
+  assert.deepEqual(detectLandingAction('git -C /tmp/repo-c merge feat/z', REPO), {
+    action: 'merge',
+    repoDir: '/tmp/repo-c',
+    sourceRef: 'feat/z',
+    label: 'git merge',
+  });
+  assert.deepEqual(detectLandingAction('git push origin feat/x', REPO), {
+    action: 'push',
+    repoDir: REPO,
+    sourceRef: '',
+    label: 'git push',
+  });
+  assert.deepEqual(detectLandingAction('npm test && npm run deploy', REPO), {
+    action: 'deploy',
+    repoDir: REPO,
+    sourceRef: '',
+    label: 'npm run deploy',
+  });
+
+  assert.equal(detectLandingAction('git merge-base main HEAD', REPO), null);
+  assert.equal(detectLandingAction('git merge --abort', REPO), null);
+  assert.equal(detectLandingAction('git merge --quit', REPO), null);
+  assert.equal(detectLandingAction('git push --dry-run origin feat/x', REPO), null);
+  assert.equal(detectLandingAction('git push -n origin feat/x', REPO), null);
+  assert.equal(detectLandingAction('git commit -m "handle git merge && npm run deploy"', REPO), null);
+  assert.equal(detectLandingAction('grep -rn "npm run deploy" test/', REPO), null);
+  assert.equal(detectLandingAction('npm test', REPO), null);
+});
+
+test('PreToolUse enforces Pause-Once on pre-landing commands, unblocks after Stop/dismiss, and skips small edits', () => {
+  const dirs = makeTempDirs('og-prelanding-');
+  const cid = 'conv_prelanding_1111';
+  const hookOpts = (extra = {}) => ({
+    stateDir: dirs.stateDir,
+    studioPrefsFile: dirs.studioPrefsFile,
+    quotaStateFile: dirs.quotaStateFile,
+    proposalsDir: dirs.proposalsDir,
+    pluginDataDir: dirs.pluginDataDir,
+    now: 910_000,
+    ...extra,
+  });
+
+  try {
+    fs.writeFileSync(
+      dirs.studioPrefsFile,
+      JSON.stringify({ ...DEFAULT_STUDIO_PREFS, opusGateMode: 'semi', opusGateModel: 'carbon' })
+    );
+    fs.writeFileSync(
+      dirs.quotaStateFile,
+      JSON.stringify({
+        schema: 1,
+        updatedAt: 910_000,
+        claude: { fiveHourRemainingPct: 80, weeklyRemainingPct: 80 },
+        gemini: { fiveHourRemainingPct: 90, weeklyRemainingPct: 92 },
+      })
+    );
+
+    // Non-risk small edit (<3 files & <120 lines) passes pre-landing gate immediately
+    const smallAbs = path.join(REPO, 'studio/styles/footer-capsules.css');
+    evaluateHookEvent(
+      {
+        hookEventName: 'PostToolUse',
+        conversationId: cid,
+        cwd: REPO,
+        toolCall: { name: 'edit_file', args: { Path: smallAbs } },
+      },
+      hookOpts()
+    );
+    const smallSummary = {
+      gitRoot: REPO,
+      changedAbsFiles: [smallAbs],
+      changedRelByAbs: { [smallAbs]: 'studio/styles/footer-capsules.css' },
+      perFileLines: { [smallAbs]: 12 },
+      changedFiles: 1,
+      changedLines: 12,
+      gitHighRisk: [],
+      diffHash: 'small_1',
+    };
+    assert.deepEqual(
+      evaluateHookEvent(
+        {
+          hookEventName: 'PreToolUse',
+          conversationId: cid,
+          cwd: REPO,
+          toolCall: { name: 'run_command', args: { CommandLine: 'git merge --no-ff feat/css' } },
+        },
+        hookOpts({ gitSummary: smallSummary })
+      ),
+      { decision: 'allow' }
+    );
+
+    // High-risk edit triggers same-turn PreToolUse deny & creates proposal immediately
+    const riskAbs = path.join(REPO, 'studio/core/kernel.mjs');
+    evaluateHookEvent(
+      {
+        hookEventName: 'PostToolUse',
+        conversationId: cid,
+        cwd: REPO,
+        toolCall: { name: 'edit_file', args: { Path: riskAbs } },
+      },
+      hookOpts()
+    );
+    const riskSummary = {
+      gitRoot: REPO,
+      changedAbsFiles: [smallAbs, riskAbs],
+      changedRelByAbs: {
+        [smallAbs]: 'studio/styles/footer-capsules.css',
+        [riskAbs]: 'studio/core/kernel.mjs',
+      },
+      perFileLines: { [smallAbs]: 12, [riskAbs]: 25 },
+      changedFiles: 2,
+      changedLines: 37,
+      gitHighRisk: ['studio/core/kernel.mjs'],
+      diffHash: 'risk_1',
+    };
+
+    const deny1 = evaluateHookEvent(
+      {
+        hookEventName: 'PreToolUse',
+        conversationId: cid,
+        cwd: REPO,
+        toolCall: { name: 'run_command', args: { CommandLine: 'git merge --no-ff feat/css' } },
+      },
+      hookOpts({ gitSummary: riskSummary })
+    );
+    assert.equal(deny1.decision, 'deny');
+    assert.match(deny1.reason, /\[MAGA Review Gate · pre-merge\]/);
+    const prop = readProposal(dirs, cid);
+    assert.equal(prop?.kind, 'risk');
+    assert.match(prop?.reason || '', /Pre-merge high-risk changes/);
+    assert.equal(
+      prop?.diffHash,
+      computeAttributionHash({
+        attributedRel: ['studio/styles/footer-capsules.css', 'studio/core/kernel.mjs'],
+        stopLines: 37,
+        highRiskRel: ['studio/core/kernel.mjs'],
+      })
+    );
+
+    // Same-turn retry BEFORE Stop still denies (model cannot bypass within the same turn)
+    const denyRetry = evaluateHookEvent(
+      {
+        hookEventName: 'PreToolUse',
+        conversationId: cid,
+        cwd: REPO,
+        toolCall: { name: 'run_command', args: { CommandLine: 'git merge --no-ff feat/css' } },
+      },
+      hookOpts({ gitSummary: riskSummary })
+    );
+    assert.equal(denyRetry.decision, 'deny');
+
+    // Stop hands control back to user and promotes blockingLandingHash -> acknowledgedLandingHash
+    assert.deepEqual(
+      evaluateHookEvent(
+        { hookEventName: 'Stop', conversationId: cid, cwd: REPO, terminationReason: 'NO_TOOL_CALL' },
+        hookOpts({ gitSummary: riskSummary })
+      ),
+      {}
+    );
+    assert.equal(readProposal(dirs, cid)?.kind, 'risk');
+
+    // Next-turn git merge succeeds (Pause-Once: zero deadlock)
+    assert.deepEqual(
+      evaluateHookEvent(
+        {
+          hookEventName: 'PreToolUse',
+          conversationId: cid,
+          cwd: REPO,
+          toolCall: { name: 'run_command', args: { CommandLine: 'git merge --no-ff feat/css' } },
+        },
+        hookOpts({ gitSummary: riskSummary })
+      ),
+      { decision: 'allow' }
+    );
+
+    // Dismissing pill with matching diffHash also immediately unblocks a separate blocked push
+    const cidDismiss = 'conv_predismiss_2222';
+    evaluateHookEvent(
+      {
+        hookEventName: 'PostToolUse',
+        conversationId: cidDismiss,
+        cwd: REPO,
+        toolCall: { name: 'edit_file', args: { Path: riskAbs } },
+      },
+      hookOpts()
+    );
+    const denyPush = evaluateHookEvent(
+      {
+        hookEventName: 'PreToolUse',
+        conversationId: cidDismiss,
+        cwd: REPO,
+        toolCall: { name: 'run_command', args: { CommandLine: 'git push origin feat/css' } },
+      },
+      hookOpts({ gitSummary: riskSummary })
+    );
+    assert.equal(denyPush.decision, 'deny');
+    const disProp = readProposal(dirs, cidDismiss);
+    assert.ok(disProp?.diffHash);
+    dismissOpusGateProposal(
+      { cascadeId: cidDismiss, diffHash: disProp.diffHash },
+      { proposalsDir: dirs.proposalsDir }
+    );
+    assert.deepEqual(
+      evaluateHookEvent(
+        {
+          hookEventName: 'PreToolUse',
+          conversationId: cidDismiss,
+          cwd: REPO,
+          toolCall: { name: 'run_command', args: { CommandLine: 'git push origin feat/css' } },
+        },
+        hookOpts({ gitSummary: riskSummary })
+      ),
+      { decision: 'allow' }
+    );
+  } finally {
+    dirs.cleanup();
+  }
+});
+
+test('PreToolUse catches committed clean worktree diffs on git merge & buildOpusHandoffBrief includes branch diff', async () => {
+  const dirs = makeTempDirs('og-realgit-');
+  const mainRepo = path.join(dirs.root, 'repo-main');
+  const wtDir = path.join(dirs.root, 'repo-wt-feat');
+  const cid = 'conv_realgit_3333';
+  const hookOpts = (extra = {}) => ({
+    stateDir: dirs.stateDir,
+    studioPrefsFile: dirs.studioPrefsFile,
+    quotaStateFile: dirs.quotaStateFile,
+    proposalsDir: dirs.proposalsDir,
+    pluginDataDir: dirs.pluginDataDir,
+    now: 920_000,
+    ...extra,
+  });
+
+  try {
+    fs.mkdirSync(path.join(mainRepo, 'studio', 'core'), { recursive: true });
+    fs.writeFileSync(path.join(mainRepo, 'studio', 'core', 'kernel.mjs'), 'export const v = 1;\n');
+    const gitIn = (dir, ...args) =>
+      execFileSync('git', ['-C', dir, ...args], {
+        encoding: 'utf8',
+        env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
+      });
+    gitIn(mainRepo, 'init', '-b', 'main');
+    gitIn(mainRepo, 'config', 'user.email', 'test@example.com');
+    gitIn(mainRepo, 'config', 'user.name', 'Test User');
+    gitIn(mainRepo, 'add', '.');
+    gitIn(mainRepo, 'commit', '-m', 'init main');
+    gitIn(mainRepo, 'worktree', 'add', '-b', 'feat/branch-diff', wtDir, 'main');
+
+    fs.writeFileSync(dirs.studioPrefsFile, JSON.stringify({ ...DEFAULT_STUDIO_PREFS, opusGateMode: 'semi', opusGateModel: 'carbon' }));
+    fs.writeFileSync(
+      dirs.quotaStateFile,
+      JSON.stringify({
+        schema: 1,
+        updatedAt: 920_000,
+        gemini: { fiveHourRemainingPct: 88, weeklyRemainingPct: 90 },
+        claude: { fiveHourRemainingPct: 75, weeklyRemainingPct: 80 },
+      })
+    );
+
+    const wtKernel = path.join(wtDir, 'studio', 'core', 'kernel.mjs');
+    fs.writeFileSync(wtKernel, 'export const v = 2;\nexport const paused = true;\n');
+    evaluateHookEvent(
+      {
+        hookEventName: 'PostToolUse',
+        conversationId: cid,
+        cwd: wtDir,
+        toolCall: { name: 'edit_file', args: { Path: wtKernel } },
+      },
+      hookOpts()
+    );
+    gitIn(wtDir, 'add', '.');
+    gitIn(wtDir, 'commit', '-m', 'feat: update kernel');
+
+    // Even with a clean working tree in wtDir, git merge executed from mainRepo catches committed branch diff
+    const denyMerge = evaluateHookEvent(
+      {
+        hookEventName: 'PreToolUse',
+        conversationId: cid,
+        cwd: mainRepo,
+        toolCall: { name: 'run_command', args: { CommandLine: 'git merge --no-ff feat/branch-diff' } },
+      },
+      hookOpts()
+    );
+    assert.equal(denyMerge.decision, 'deny');
+    const prop = readProposal(dirs, cid);
+    assert.equal(prop?.kind, 'risk');
+    assert.deepEqual(prop?.highRiskFiles, ['studio/core/kernel.mjs']);
+
+    // buildOpusHandoffBrief falls back to main...HEAD so committed clean worktree gets full diff snippet
+    const brief = await buildOpusHandoffBrief(
+      { cascadeId: cid, dirPath: wtDir, model: 'carbon' },
+      {
+        studioPrefs: { ...DEFAULT_STUDIO_PREFS, opusGateModel: 'carbon' },
+        quotaStateFile: dirs.quotaStateFile,
+        proposalsDir: dirs.proposalsDir,
+        allowAnyDir: true,
+        now: 920_000,
+      }
+    );
+    assert.equal(brief.ok, true);
+    assert.match(brief.swarmPrompt, /studio\/core\/kernel\.mjs/);
+    assert.match(brief.swarmPrompt, /\+export const paused = true;/);
+  } finally {
+    dirs.cleanup();
+  }
+});
+
+test('PostToolUse(swarm) unifies verbal review completion with pre-landing & pre-plan gates', () => {
+  const dirs = makeTempDirs('og-swarm-sync-');
+  const cid = 'conv_swarm_4444';
+  const hookOpts = (extra = {}) => ({
+    stateDir: dirs.stateDir,
+    studioPrefsFile: dirs.studioPrefsFile,
+    quotaStateFile: dirs.quotaStateFile,
+    proposalsDir: dirs.proposalsDir,
+    pluginDataDir: dirs.pluginDataDir,
+    now: 930_000,
+    ...extra,
+  });
+
+  try {
+    fs.writeFileSync(
+      dirs.studioPrefsFile,
+      JSON.stringify({ ...DEFAULT_STUDIO_PREFS, opusGateMode: 'semi', opusGateModel: 'carbon' })
+    );
+    const riskAbs = path.join(REPO, 'studio/core/kernel.mjs');
+    const planAbs = path.join(REPO, 'docs/architecture-plan.md');
+
+    evaluateHookEvent(
+      {
+        hookEventName: 'PostToolUse',
+        conversationId: cid,
+        cwd: REPO,
+        toolCall: { name: 'write_file', args: { Path: planAbs, Content: '# Arch Plan' } },
+      },
+      hookOpts()
+    );
+    evaluateHookEvent(
+      {
+        hookEventName: 'PostToolUse',
+        conversationId: cid,
+        cwd: REPO,
+        toolCall: { name: 'edit_file', args: { Path: riskAbs } },
+      },
+      hookOpts()
+    );
+    const riskSummary = {
+      gitRoot: REPO,
+      changedAbsFiles: [riskAbs],
+      changedRelByAbs: { [riskAbs]: 'studio/core/kernel.mjs' },
+      perFileLines: { [riskAbs]: 35 },
+      changedFiles: 1,
+      changedLines: 35,
+      gitHighRisk: ['studio/core/kernel.mjs'],
+      diffHash: 'swarm_diff_1',
+    };
+
+    // Verbal swarm review (add + kill) snapshots baseline and removes pending proposal
+    evaluateHookEvent(
+      {
+        hookEventName: 'PostToolUse',
+        conversationId: cid,
+        cwd: REPO,
+        toolCall: {
+          name: 'swarm',
+          args: { action: 'add', name: 'carbon-p2', model: 'gemini-4-carbon-high' },
+        },
+      },
+      hookOpts({ gitSummary: riskSummary })
+    );
+    assert.equal(fs.existsSync(proposalFile(dirs, cid)), false);
+
+    evaluateHookEvent(
+      {
+        hookEventName: 'PostToolUse',
+        conversationId: cid,
+        cwd: REPO,
+        toolCall: {
+          name: 'swarm',
+          args: { action: 'kill', name: 'carbon-p2' },
+        },
+      },
+      hookOpts({ gitSummary: riskSummary })
+    );
+
+    assert.deepEqual(
+      evaluateHookEvent(
+        {
+          hookEventName: 'PreToolUse',
+          conversationId: cid,
+          cwd: REPO,
+          toolCall: { name: 'run_command', args: { CommandLine: 'git merge --no-ff feat/x' } },
+        },
+        hookOpts({ gitSummary: riskSummary })
+      ),
+      { decision: 'allow' }
+    );
+  } finally {
+    dirs.cleanup();
+  }
+});
+
+test('PreToolUse pauses once when editing source code right after writing a plan artifact', () => {
+  const dirs = makeTempDirs('og-plan-pause-');
+  const cid = 'conv_planpause_5555';
+  const hookOpts = (extra = {}) => ({
+    stateDir: dirs.stateDir,
+    studioPrefsFile: dirs.studioPrefsFile,
+    quotaStateFile: dirs.quotaStateFile,
+    proposalsDir: dirs.proposalsDir,
+    pluginDataDir: dirs.pluginDataDir,
+    now: 940_000,
+    ...extra,
+  });
+
+  try {
+    fs.writeFileSync(dirs.studioPrefsFile, JSON.stringify({ ...DEFAULT_STUDIO_PREFS, opusGateMode: 'semi' }));
+    fs.writeFileSync(
+      dirs.quotaStateFile,
+      JSON.stringify({ schema: 1, updatedAt: 940_000, claude: { fiveHourRemainingPct: 80, weeklyRemainingPct: 85 } })
+    );
+
+    const planAbs = path.join(REPO, 'implementation_plan.md');
+    const srcAbs = path.join(REPO, 'src/app.mjs');
+
+    evaluateHookEvent(
+      {
+        hookEventName: 'PostToolUse',
+        conversationId: cid,
+        cwd: REPO,
+        toolCall: { name: 'write_file', args: { Path: planAbs, Content: '# Multi-step plan' } },
+      },
+      hookOpts()
+    );
+
+    // Editing another plan doc in the same turn is allowed
+    assert.deepEqual(
+      evaluateHookEvent(
+        {
+          hookEventName: 'PreToolUse',
+          conversationId: cid,
+          cwd: REPO,
+          toolCall: { name: 'edit_file', args: { Path: path.join(REPO, 'design-plan.md') } },
+        },
+        hookOpts()
+      ),
+      { decision: 'allow' }
+    );
+
+    // Same-turn attempt to edit non-plan source code is paused
+    const denyCode = evaluateHookEvent(
+      {
+        hookEventName: 'PreToolUse',
+        conversationId: cid,
+        cwd: REPO,
+        toolCall: { name: 'edit_file', args: { Path: srcAbs } },
+      },
+      hookOpts()
+    );
+    assert.equal(denyCode.decision, 'deny');
+    assert.match(denyCode.reason, /\[MAGA Review Gate · plan\]/);
+
+    // Stop hands plan over to user -> next-turn source edit is allowed
+    assert.deepEqual(
+      evaluateHookEvent(
+        { hookEventName: 'Stop', conversationId: cid, cwd: REPO, terminationReason: 'NO_TOOL_CALL' },
+        hookOpts({ gitSummary: { gitRoot: REPO, changedAbsFiles: [], changedFiles: 0, changedLines: 0, gitHighRisk: [], diffHash: 'empty' } })
+      ),
+      {}
+    );
+    assert.deepEqual(
+      evaluateHookEvent(
+        {
+          hookEventName: 'PreToolUse',
+          conversationId: cid,
+          cwd: REPO,
+          toolCall: { name: 'edit_file', args: { Path: srcAbs } },
+        },
+        hookOpts()
+      ),
+      { decision: 'allow' }
+    );
+  } finally {
+    dirs.cleanup();
+  }
+});
+
+test('opus-gate-pill localizes pre-landing and pre-plan proposal reasons in zh-CN', { skip: skipDom }, async () => {
+  const cid = 'conv_reason_zh_6666';
+  const dom = new JSDOM(
+    `<!doctype html><html data-ag-ux-lang="zh-CN"><body>
+      <div id="antigravity.agentSidePanelInputBox">
+        <div data-lexical-editor="true"></div>
+        <div class="agy-composer-footer">
+          <div class="left-group"><span>anchor</span></div>
+          <div class="right-group"></div>
+        </div>
+      </div>
+    </body></html>`,
+    { url: `http://127.0.0.1/c/${cid}` }
+  );
+
+  await withMockDom(dom, async () => {
+    let curProposal = {
+      kind: 'risk',
+      reason: 'Pre-merge high-risk changes (kernel.mjs)',
+      diffHash: 'zh_hash_1',
+      reviewerModel: 'carbon',
+      quotaPool: 'gemini',
+      recommendedTier: 'high',
+      quotaBlocked: false,
+      ts: Date.now(),
+    };
+    window.__agProjectCall = async (action) => {
+      if (action === 'getOpusGateStatus') {
+        return {
+          ok: true,
+          pluginInstalled: true,
+          quotaState: { gemini: { fiveHourRemainingPct: 88, weeklyRemainingPct: 90 } },
+          proposal: curProposal,
+        };
+      }
+      return { ok: true };
+    };
+    const studioPrefs = createStudioPrefsRuntime({ initialPrefs: { opusGateMode: 'semi', opusGateModel: 'carbon' } });
+    const runtime = createOpusGatePillRuntime({ studioPrefs });
+    try {
+      runtime.sync();
+      await tick(30);
+      document.querySelector('#agy-opus-gate-pill .agy-opus-go')?.click();
+      assert.equal(document.querySelector('#agy-opus-gate-menu .agy-opus-menu-reason')?.textContent, '合并前涉及高风险文件：kernel.mjs');
+      document.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+
+      curProposal = {
+        ...curProposal,
+        kind: 'stop',
+        reason: 'Pre-merge review (4 files, 180 lines)',
+        diffHash: 'zh_hash_2',
+      };
+      window.history.pushState({}, '', '/c/conv_reason_zh_6667');
+      runtime.sync();
+      await tick(30);
+      document.querySelector('#agy-opus-gate-pill .agy-opus-go')?.click();
+      assert.equal(document.querySelector('#agy-opus-gate-menu .agy-opus-menu-reason')?.textContent, '合并前待审 · 4 个文件，约 180 行');
+      document.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+
+      curProposal = {
+        ...curProposal,
+        kind: 'plan',
+        reason: 'Plan artifact pending review before coding (implementation_plan.md)',
+        diffHash: 'zh_hash_3',
+      };
+      window.history.pushState({}, '', '/c/conv_reason_zh_6668');
+      runtime.sync();
+      await tick(30);
+      document.querySelector('#agy-opus-gate-pill .agy-opus-go')?.click();
+      assert.equal(document.querySelector('#agy-opus-gate-menu .agy-opus-menu-reason')?.textContent, '方案文档待确认：implementation_plan.md');
+    } finally {
+      runtime.dispose();
+      studioPrefs.dispose();
+    }
+  });
 });

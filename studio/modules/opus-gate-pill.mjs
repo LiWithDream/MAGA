@@ -341,7 +341,14 @@ export function createOpusGatePillRuntime({ studioPrefs } = {}) {
     const raw = String(rawReason || '').trim();
     if (!raw) return L('对当前工作区发起只读审查', 'Run a focused read-only review');
     if (!isZhUi()) return raw;
-    let m = raw.match(/^Substantial workspace diff \((\d+) files?, (\d+) lines?\)$/i);
+    const actMap = { merge: '合并', push: '推送', deploy: '部署' };
+    let m = raw.match(/^Pre-(merge|push|deploy) high-risk changes \((.+)\)$/i);
+    if (m) return `${actMap[m[1].toLowerCase()] || m[1]}前涉及高风险文件：${m[2]}`;
+    m = raw.match(/^Pre-(merge|push|deploy) review \((\d+) files?, (\d+) lines?\)$/i);
+    if (m) return `${actMap[m[1].toLowerCase()] || m[1]}前待审 · ${m[2]} 个文件，约 ${m[3]} 行`;
+    m = raw.match(/^Plan artifact pending review before coding \((.+)\)$/i);
+    if (m) return `方案文档待确认：${m[1]}`;
+    m = raw.match(/^Substantial workspace diff \((\d+) files?, (\d+) lines?\)$/i);
     if (m) return `工作区较大改动 · ${m[1]} 个文件，约 ${m[2]} 行`;
     m = raw.match(/^High-risk file changes \((.+)\)$/i);
     if (m) return `涉及高风险文件：${m[1]}`;

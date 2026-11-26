@@ -16,6 +16,7 @@ import {
   readJsonOrFallback,
   writeAtomicUtf8,
 } from '../../core/daemon/env.mjs';
+import { execGitAsync } from '../../core/daemon/git-exec.mjs';
 import { resolveLocalProjectDir } from '../../core/daemon/projects.mjs';
 import {
   CONV_WORKTREES_DIR,
@@ -26,9 +27,19 @@ import {
 
 export const DEFAULT_SUGGESTIONS_MODEL = 'gemini-3.8-flash';
 export const DEFAULT_GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com';
+export const SUGGESTIONS_PROMPT_VERSION = 2;
 export const SUGGESTIONS_COOLDOWN_MS = 60_000;
-export const SUGGESTIONS_TIMEOUT_MS = 18_000;
-export const TRANSCRIPT_TAIL_BYTES = 65_536;
+export const SUGGESTIONS_TIMEOUT_MS = 25_000;
+export const TRANSCRIPT_TAIL_BYTES = 262_144;
+export const MAX_BRIEF_CHATS = 8;
+export const MAX_RECENT_COMMITS = 15;
+
+export function buildThinkingConfig(modelName) {
+  const s = String(modelName || '').trim();
+  if (/^gemini-3(?:\.|[-_]|$)/i.test(s)) return { thinkingLevel: 'LOW' };
+  if (/^gemini-2\.5(?:\.|[-_]|$)/i.test(s)) return { thinkingBudget: 512 };
+  return null;
+}
 
 export const PROJECT_SUGGESTIONS_ACTIONS = new Set([
   'getProjectSuggestionsConfig',
@@ -76,6 +87,40 @@ function collapseText(raw, maxLen) {
     .trim();
   if (!clean) return '';
   return clean.length > maxLen ? `${clean.slice(0, Math.max(0, maxLen - 1))}…` : clean;
+}
+
+function collapseHeadTail(raw, maxLen = 520, headLen = 280, tailLen = 220) {
+  const clean = String(raw || '')
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!clean) return '';
+  if (clean.length <= maxLen) return clean;
+  return `${clean.slice(0, headLen).trimEnd()} … ${clean.slice(-tailLen).trimStart()}`;
+}
+
+export function extractMergedBranchesFromCommits(commits) {
+  const map = new Map();
+  for (const cm of Array.isArray(commits) ? commits : []) {
+    const subj = String(cm?.subject || '').trim();
+    if (!subj) continue;
+    let branch = '';
+    const mLocal = subj.match(/^Merge branch ['"]([^'"]+)['"]/i);
+    const mRemote = subj.match(/^Merge remote-tracking branch ['"](?:origin\/)?([^'"]+)['"]/i);
+    const mPr = subj.match(/^Merge pull request #\d+ from [^/\s]+\/([^\s]+)/i);
+    if (mLocal) branch = mLocal[1].trim();
+    else if (mRemote) branch = mRemote[1].trim();
+    else if (mPr) branch = mPr[1].trim();
+    if (!branch || branch === 'main' || branch === 'master') continue;
+    if (!map.has(branch)) {
+      map.set(branch, {
+        hash: String(cm.hash || '').trim(),
+        subject: subj,
+        relTime: String(cm.relTime || '').trim(),
+      });
+    }
+  }
+  return map;
 }
 
 function cleanUserTranscriptContent(raw) {
@@ -159,6 +204,7 @@ export function readTranscriptTailSummary(convId, brainDir = ANTIGRAVITY_BRAIN_D
   const out = {
     size: 0,
     mtimeMs: 0,
+    lastCreatedAt: '',
     lastUserText: '',
     lastModelText: '',
     artifacts: [],
@@ -197,12 +243,27 @@ export function readTranscriptTailSummary(convId, brainDir = ANTIGRAVITY_BRAIN_D
           continue;
         }
         if (!rec || typeof rec !== 'object') continue;
-        if (rec.source === 'USER' && typeof rec.content === 'string') {
+        const isUser =
+          (rec.type === 'USER_INPUT' || rec.source === 'USER' || rec.source === 'USER_EXPLICIT') &&
+          typeof rec.content === 'string';
+        const isModel =
+          rec.source === 'MODEL' && rec.type === 'PLANNER_RESPONSE' && typeof rec.content === 'string';
+        if (isUser) {
           const cleaned = cleanUserTranscriptContent(rec.content);
-          if (cleaned) out.lastUserText = cleaned;
-        } else if (rec.source === 'MODEL' && rec.type === 'PLANNER_RESPONSE' && typeof rec.content === 'string') {
-          const cleaned = collapseText(rec.content, 360);
-          if (cleaned) out.lastModelText = cleaned;
+          if (cleaned) {
+            out.lastUserText = cleaned;
+            if (typeof rec.created_at === 'string' && rec.created_at.trim()) {
+              out.lastCreatedAt = rec.created_at.trim();
+            }
+          }
+        } else if (isModel) {
+          const cleaned = collapseHeadTail(rec.content, 520, 280, 220);
+          if (cleaned) {
+            out.lastModelText = cleaned;
+            if (typeof rec.created_at === 'string' && rec.created_at.trim()) {
+              out.lastCreatedAt = rec.created_at.trim();
+            }
+          }
         }
       }
     }
@@ -240,7 +301,7 @@ export async function collectProjectBriefAsync(
 
   const validChats = (Array.isArray(chats) ? chats : [])
     .filter((c) => c && typeof c.id === 'string' && UUID_RE.test(c.id.trim()))
-    .slice(0, 5)
+    .slice(0, MAX_BRIEF_CHATS)
     .map((c) => ({
       id: c.id.trim(),
       title: collapseText(c.title || '', 120),
@@ -270,51 +331,190 @@ export async function collectProjectBriefAsync(
     }
   }
 
-  const activeWorktrees = (Array.isArray(wtListRes?.worktrees) ? wtListRes.worktrees : [])
+  const rawWorktrees = (Array.isArray(wtListRes?.worktrees) ? wtListRes.worktrees : [])
     .filter((w) => w && !w.bare && !w.prunable)
     .map((w) => {
       const realPath = String(w.realPath || w.path || '').trim();
       const dirtyCount = Number(w.git?.changedFiles || 0);
       const ahead = Number(w.ahead || 0);
-      return {
+      const item = {
         path: realPath,
         branch: String(w.branch || '').trim(),
         isMain: Boolean(w.isMain),
         ahead,
         dirtyCount,
       };
+      if (w.latestCommit && typeof w.latestCommit === 'object') {
+        item.latestCommit = {
+          hash: String(w.latestCommit.hash || '').trim(),
+          subject: collapseText(w.latestCommit.subject || '', 100),
+          relTime: String(w.latestCommit.relTime || '').trim(),
+        };
+      }
+      return item;
     })
     .filter((w) => w.path);
+
+  const runGit = opts.execGitAsync || execGitAsync;
+  const hasGitRepo =
+    opts.skipGitExec !== true && (typeof opts.execGitAsync === 'function' || fs.existsSync(path.join(absDir, '.git')));
+
+  let gitLogOut = null;
+  let revListOut = null;
+  const wtLatestCommits = new Map();
+
+  if (hasGitRepo) {
+    const wtTargets = rawWorktrees.filter(
+      (w) => !w.isMain && !w.latestCommit && (typeof opts.execGitAsync === 'function' || fs.existsSync(w.path))
+    );
+    const [logRaw, aheadRaw, ...wtLogs] = await Promise.all([
+      runGit(absDir, ['log', '-n', String(MAX_RECENT_COMMITS), '--format=%h%x1f%s%x1f%cr%x1f%ct'], 1000).catch(
+        () => null
+      ),
+      runGit(absDir, ['rev-list', '--left-right', '--count', 'HEAD...@{u}'], 800).catch(() => null),
+      ...wtTargets.map((w) =>
+        runGit(w.path, ['log', '-n', '1', '--format=%h%x1f%s%x1f%cr'], 800)
+          .then((out) => ({ path: w.path, out }))
+          .catch(() => ({ path: w.path, out: null }))
+      ),
+    ]);
+    gitLogOut = logRaw;
+    revListOut = aheadRaw;
+    for (const entry of wtLogs) {
+      if (!entry?.out) continue;
+      const line = entry.out.trim().split(/\r?\n/)[0] || '';
+      const [hash = '', subject = '', relTime = ''] = line.split('\x1f');
+      if (hash.trim()) {
+        wtLatestCommits.set(normalizeRealPath(entry.path), {
+          hash: hash.trim(),
+          subject: collapseText(subject, 100),
+          relTime: relTime.trim(),
+        });
+      }
+    }
+  }
+
+  const activeWorktrees = rawWorktrees.map((w) => {
+    if (w.latestCommit) return w;
+    const fetchedCommit = wtLatestCommits.get(normalizeRealPath(w.path));
+    return fetchedCommit ? { ...w, latestCommit: fetchedCommit } : w;
+  });
+
+  const parsedCommits = [];
+  if (typeof gitLogOut === 'string' && gitLogOut.trim()) {
+    for (const line of gitLogOut.split(/\r?\n/)) {
+      if (!line.trim()) continue;
+      const [hash = '', subject = '', relTime = '', ctRaw = ''] = line.split('\x1f');
+      if (!hash.trim()) continue;
+      const commitTimeSec = Number(ctRaw) > 0 ? Math.floor(Number(ctRaw)) : 0;
+      parsedCommits.push({
+        hash: hash.trim(),
+        subject: collapseText(subject, 100),
+        relTime: relTime.trim(),
+        commitTimeSec,
+      });
+      if (parsedCommits.length >= MAX_RECENT_COMMITS) break;
+    }
+  }
+
+  const recentCommits = parsedCommits.length
+    ? parsedCommits
+    : (Array.isArray(wsStatus?.recentCommits) ? wsStatus.recentCommits : []).slice(0, MAX_RECENT_COMMITS).map((cm) => ({
+        hash: String(cm.hash || '').trim(),
+        subject: collapseText(cm.subject || '', 100),
+        relTime: String(cm.relTime || '').trim(),
+        commitTimeSec: Number(cm.commitTimeSec) > 0 ? Math.floor(Number(cm.commitTimeSec)) : 0,
+      }));
+
+  let aheadOfUpstream = 0;
+  let behindOfUpstream = 0;
+  if (typeof revListOut === 'string' && revListOut.trim()) {
+    const parts = revListOut.trim().split(/\s+/);
+    if (parts.length >= 2) {
+      const a = Number(parts[0]);
+      const b = Number(parts[1]);
+      if (Number.isFinite(a) && a >= 0) aheadOfUpstream = a;
+      if (Number.isFinite(b) && b >= 0) behindOfUpstream = b;
+    }
+  }
+
+  const mergedMap = extractMergedBranchesFromCommits(recentCommits);
+  const mergedBranches = Array.from(mergedMap.keys());
+
+  const activeWtByPath = new Map();
+  const activeWtByBranch = new Map();
+  for (const wt of activeWorktrees) {
+    activeWtByPath.set(normalizeRealPath(wt.path), wt);
+    if (wt.branch && !activeWtByBranch.has(wt.branch)) {
+      activeWtByBranch.set(wt.branch, wt);
+    }
+  }
 
   const conversations = validChats.map((c) => {
     const wtBind = convWtEntries[c.id] || null;
     const tail = readTranscriptTailSummary(c.id, brainDir, opts.tailBytes || TRANSCRIPT_TAIL_BYTES);
+    const rawBranch = String(wtBind?.branch || '').trim();
+    const rawWtPath = String(wtBind?.worktreePath || '').trim();
+    const normWtPath = rawWtPath ? normalizeRealPath(rawWtPath) : '';
+
+    const wtByPath = normWtPath ? activeWtByPath.get(normWtPath) || null : null;
+    const wtByBranch = rawBranch ? activeWtByBranch.get(rawBranch) || null : null;
+    const matchedWt = wtByBranch || (wtByPath && (!rawBranch || rawBranch === wtByPath.branch) ? wtByPath : null);
+
+    let branchStatus = 'none';
+    let mergedCommit = '';
+    let resolvedWtPath = '';
+
+    if (matchedWt) {
+      resolvedWtPath = matchedWt.path;
+      if (matchedWt.isMain) {
+        branchStatus = 'main';
+      } else if (matchedWt.dirtyCount > 0) {
+        branchStatus = 'active_dirty';
+      } else if (matchedWt.ahead > 0) {
+        branchStatus = 'active_ahead';
+      } else {
+        branchStatus = 'active_clean';
+      }
+    } else if (rawBranch && mergedMap.has(rawBranch)) {
+      branchStatus = 'already_merged_into_main';
+      mergedCommit = mergedMap.get(rawBranch).hash;
+    } else if (rawBranch && rawBranch !== 'main' && rawBranch !== 'master') {
+      branchStatus = 'worktree_deleted';
+    } else if (rawBranch) {
+      branchStatus = 'main';
+    }
+
     return {
       id: c.id,
       title: c.title,
       updatedAt: c.updatedAt,
-      branch: String(wtBind?.branch || '').trim(),
-      worktreePath: String(wtBind?.worktreePath || '').trim(),
+      lastCreatedAt: tail.lastCreatedAt,
+      branch: rawBranch,
+      branchStatus,
+      mergedCommit,
+      worktreePath: resolvedWtPath,
       lastUserText: tail.lastUserText,
       lastModelText: tail.lastModelText,
       artifacts: tail.artifacts,
-      _sig: [c.id, tail.size, tail.mtimeMs, String(wtBind?.branch || ''), tail.artifacts.map((a) => `${a.name}:${a.mtimeMs}`)],
+      _sig: [c.id, tail.size, tail.mtimeMs, branchStatus, rawBranch, tail.artifacts.map((a) => `${a.name}:${a.mtimeMs}`)],
     };
   });
 
-  const git = wsStatus?.git
-    ? {
-        branch: String(wsStatus.git.branch || '').trim(),
-        changedFiles: Number(wsStatus.git.changedFiles || 0),
-        recentCommits: (Array.isArray(wsStatus.recentCommits) ? wsStatus.recentCommits : []).slice(0, 3).map((cm) => ({
-          hash: String(cm.hash || '').trim(),
-          subject: collapseText(cm.subject || '', 100),
-          relTime: String(cm.relTime || '').trim(),
-        })),
-      }
-    : null;
+  const git =
+    wsStatus?.git || recentCommits.length > 0
+      ? {
+          branch: String(wsStatus?.git?.branch || activeWorktrees.find((w) => w.isMain)?.branch || '').trim(),
+          changedFiles: Number(wsStatus?.git?.changedFiles || 0),
+          aheadOfUpstream,
+          behindOfUpstream,
+          mergedBranches,
+          recentCommits,
+        }
+      : null;
 
   const fpSource = {
+    promptVersion: SUGGESTIONS_PROMPT_VERSION,
     model: sanitizeModelName(model),
     lang: normLang,
     chats: conversations.map((c) => c._sig),
@@ -322,10 +522,11 @@ export async function collectProjectBriefAsync(
       ? {
           branch: git.branch,
           changedFiles: git.changedFiles,
+          aheadOfUpstream: git.aheadOfUpstream,
           commits: git.recentCommits.map((cm) => cm.hash),
         }
       : null,
-    worktrees: activeWorktrees.map((w) => [w.branch, w.ahead, w.dirtyCount]),
+    worktrees: activeWorktrees.map((w) => [w.branch, w.ahead, w.dirtyCount, w.latestCommit?.hash || '']),
   };
   const fingerprint = crypto.createHash('sha256').update(JSON.stringify(fpSource)).digest('hex').slice(0, 20);
 
@@ -367,6 +568,9 @@ function sanitizeSuggestionsOutput(rawList, brief) {
     addAllowedWt(w.path);
   }
 
+  const mergedSet = new Set(brief.git?.mergedBranches || []);
+  const activeBranchSet = new Set((brief.activeWorktrees || []).map((w) => w.branch).filter(Boolean));
+
   const allowedArtifactPaths = new Set();
   for (const c of brief.conversations || []) {
     for (const a of c.artifacts || []) {
@@ -377,7 +581,7 @@ function sanitizeSuggestionsOutput(rawList, brief) {
   const out = [];
   for (const item of Array.isArray(rawList) ? rawList : []) {
     if (!item || typeof item !== 'object') continue;
-    const label = collapseText(item.label, 48);
+    const label = collapseText(item.label, 34);
     const reason = collapseText(item.reason, 160);
     const prompt = String(item.prompt || '').replace(/\r\n/g, '\n').trim().slice(0, 1400);
     if (!label || !prompt) continue;
@@ -387,9 +591,13 @@ function sanitizeSuggestionsOutput(rawList, brief) {
     const sourceTitle = sourceConvId ? validConvMap.get(sourceConvId)?.title || '' : collapseText(item.sourceTitle, 80);
 
     const rawWt = typeof item.worktreePath === 'string' ? item.worktreePath.trim() : '';
-    const matchedWt = rawWt ? allowedWorktrees.get(normalizeRealPath(rawWt)) || '' : '';
+    let matchedWt = rawWt ? allowedWorktrees.get(normalizeRealPath(rawWt)) || '' : '';
 
-    const branch = collapseText(item.branch || '', 64);
+    let branch = collapseText(item.branch || '', 64);
+    if (branch && mergedSet.has(branch) && !activeBranchSet.has(branch)) {
+      branch = '';
+      matchedWt = '';
+    }
     const anchorFiles = [];
     for (const f of Array.isArray(item.anchorFiles) ? item.anchorFiles : []) {
       if (typeof f !== 'string') continue;
@@ -463,14 +671,26 @@ export async function callGeminiSuggestions({
   const isZh = String(lang || '').toLowerCase().startsWith('zh');
 
   const systemText = [
-    'You are a concise developer workspace assistant inside an AI coding IDE.',
-    'Analyze the JSON snapshot of recent conversations, git status, active worktrees, and artifact files.',
-    `Return exactly 3 actionable next-conversation suggestions in ${isZh ? 'Simplified Chinese (简体中文)' : 'English'}.`,
-    'Rules:',
-    `- "label": short pill button title (${isZh ? 'max 16 Chinese chars' : 'max 28 chars'}).`,
-    '- "reason": 1 concise line citing which recent conversation, branch, or commit motivates this suggestion.',
-    '- "prompt": a token-saving cold-start handoff brief (2-4 crisp sentences) naming the exact branch/worktree if applicable, 1-sentence established conclusion from the prior chat, key file/artifact paths, and the concrete next action so the new conversation skips exploratory turns.',
-    '- Only set "sourceConvId" / "worktreePath" to exact values present in the input JSON (leave empty string if none applies).',
+    'You are a staff-level developer workspace assistant inside an AI coding IDE.',
+    'Analyze the JSON snapshot of current git ground truth, active worktrees, and recent conversation tails.',
+    `Return exactly 3 distinct, genuinely open next-conversation suggestions in ${isZh ? 'Simplified Chinese (简体中文)' : 'English'}.`,
+    '',
+    'Ground Truth & Exclusion Rules (CRITICAL):',
+    '1. `git.recentCommits` (last 15 commits), `git.mergedBranches`, and `activeWorktrees` are authoritative over older conversation snippets.',
+    '2. Any branch in `git.mergedBranches` or appearing in a `Merge branch ...` commit, or any conversation with `branchStatus` equal to `already_merged_into_main` or `worktree_deleted`, or whose `lastAssistant` explicitly states it was already merged, deployed, restarted, or verified on main, is COMPLETED.',
+    '3. NEVER suggest merging, deploying, verifying, or finishing COMPLETED work, even if an earlier warning in chat history mentions an issue that later commits or `lastAssistant` already resolved.',
+    '4. Never repeat or overlap topics across the 3 suggestions; each suggestion must be a distinct next action.',
+    '',
+    'Priority Order:',
+    '1. Unmerged active feature worktrees in `activeWorktrees` (not main/master) with `dirtyCount > 0` or `ahead > 0` (use its `latestCommit` and matching conversation; set `branch` and `worktreePath` to that active worktree).',
+    '2. Genuinely open items from `recentConversations` (explicit unexecuted next steps, open product/release/publishing decisions, unresolved bugs/TODOs not completed in `git.recentCommits`).',
+    '3. High-value repository momentum grounded in real state (e.g., reviewing/pushing local commits if `git.aheadOfUpstream > 0`, release readiness, test/doc hardening, or next logical milestone).',
+    '',
+    'Output Formatting:',
+    `- "label": ultra-concise verb-first chip title (${isZh ? 'max 11 Chinese chars' : '2-4 words, max 22 chars'}). NEVER include the branch name in "label" (the UI renders the branch badge separately).`,
+    '- "reason": 1 concise line citing the specific active worktree, open conversation, or git state.',
+    '- "prompt": a token-saving cold-start handoff brief (2-4 crisp sentences) naming the exact active branch/worktree if applicable, 1-sentence established baseline, key file/artifact paths, and the concrete next action so the new conversation skips exploratory turns.',
+    '- Only set "sourceConvId" / "worktreePath" to exact values present in the input JSON (leave empty string if none applies; never output a deleted or already-merged worktree).',
   ].join('\n');
 
   const compactInput = {
@@ -482,7 +702,10 @@ export async function callGeminiSuggestions({
       id: c.id,
       title: c.title,
       branch: c.branch,
+      branchStatus: c.branchStatus,
+      mergedCommit: c.mergedCommit,
       worktreePath: c.worktreePath,
+      lastCreatedAt: c.lastCreatedAt,
       lastUser: c.lastUserText,
       lastAssistant: c.lastModelText,
       artifacts: (c.artifacts || []).map((a) => a.path),
@@ -492,6 +715,17 @@ export async function callGeminiSuggestions({
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   timer.unref?.();
+
+  const thinkingConfig = buildThinkingConfig(cleanModel);
+  const generationConfig = {
+    temperature: 0.25,
+    maxOutputTokens: 4096,
+    responseMimeType: 'application/json',
+    responseSchema: SUGGESTIONS_RESPONSE_SCHEMA,
+  };
+  if (thinkingConfig) {
+    generationConfig.thinkingConfig = thinkingConfig;
+  }
 
   try {
     const resp = await fetchImpl(url, {
@@ -503,12 +737,7 @@ export async function callGeminiSuggestions({
       body: JSON.stringify({
         systemInstruction: { parts: [{ text: systemText }] },
         contents: [{ role: 'user', parts: [{ text: JSON.stringify(compactInput) }] }],
-        generationConfig: {
-          temperature: 0.3,
-          maxOutputTokens: 1200,
-          responseMimeType: 'application/json',
-          responseSchema: SUGGESTIONS_RESPONSE_SCHEMA,
-        },
+        generationConfig,
       }),
       signal: controller.signal,
     });
@@ -530,15 +759,21 @@ export async function callGeminiSuggestions({
       return { ok: false, error: 'invalid_json_response' };
     }
 
+    const candidate = parsedResp?.candidates?.[0];
     const candidateText =
-      parsedResp?.candidates?.[0]?.content?.parts
-        ?.map((p) => (typeof p?.text === 'string' ? p.text : ''))
+      candidate?.content?.parts
+        ?.filter((p) => p && p.thought !== true && typeof p.text === 'string')
+        .map((p) => p.text)
         .join('') || '';
     let parsedJson;
     try {
       parsedJson = JSON.parse(candidateText);
     } catch {
-      return { ok: false, error: 'invalid_model_json' };
+      return {
+        ok: false,
+        error: 'invalid_model_json',
+        detail: String(candidate?.finishReason || ''),
+      };
     }
 
     const suggestions = sanitizeSuggestionsOutput(parsedJson?.suggestions, brief);

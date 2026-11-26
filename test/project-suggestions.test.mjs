@@ -27,6 +27,8 @@ const skipDom = JSDOM ? false : 'jsdom not installed';
 const {
   DEFAULT_SUGGESTIONS_MODEL,
   DEFAULT_GEMINI_BASE_URL,
+  SUGGESTIONS_PROMPT_VERSION,
+  extractMergedBranchesFromCommits,
   loadProjectSuggestionsConfig,
   getPublicProjectSuggestionsConfig,
   saveProjectSuggestionsConfig,
@@ -130,27 +132,31 @@ test('project-suggestions config: 0o600 permissions, key masking, partial save p
   }
 });
 
-test('readTranscriptTailSummary & collectProjectBriefAsync: 64KB tail read, metadata strip, artifacts & fingerprint invalidation', async () => {
+test('readTranscriptTailSummary & collectProjectBriefAsync: 256KB tail read, USER_EXPLICIT, head+tail summary, merged-branch reconciliation & fingerprint invalidation', async () => {
   const sb = makeSandbox();
   try {
     const convId = '11111111-2222-4333-8444-555555555555';
+    const mergedConvId = '22222222-3333-4444-8555-666666666666';
     const logsDir = path.join(sb.brainDir, convId, '.system_generated', 'logs');
     fs.mkdirSync(logsDir, { recursive: true });
     const transcriptPath = path.join(logsDir, 'transcript.jsonl');
 
-    // Write > 80 KB of old filler lines before recent entries
+    // Write > 80 KB of old filler lines before recent entries (tests reading past 64 KB)
     const filler = JSON.stringify({ source: 'MODEL', type: 'GENERIC', content: 'x'.repeat(1800) });
     const oldLines = Array.from({ length: 50 }, () => filler).join('\n');
     const recentUser = JSON.stringify({
-      source: 'USER',
+      source: 'USER_EXPLICIT',
       type: 'USER_INPUT',
+      created_at: '2026-11-26T03:15:00+08:00',
       content:
         '<USER_REQUEST>\nFix worktree handoff bug in daemon\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nlocal time: 2026\n</ADDITIONAL_METADATA>',
     });
+    const middleModelPadding = 'A'.repeat(260) + ' ' + 'M'.repeat(260);
     const recentModel = JSON.stringify({
       source: 'MODEL',
       type: 'PLANNER_RESPONSE',
-      content: 'Root cause located in worktrees.mjs. Next step: add regression tests and verify npm test.',
+      created_at: '2026-11-26T03:18:45+08:00',
+      content: `HeadStatus: Root cause located in worktrees.mjs. ${middleModelPadding} TailConclusion: All tests verified and deployed.`,
     });
     fs.writeFileSync(transcriptPath, `${oldLines}\n${recentUser}\n${recentModel}\n`, 'utf8');
 
@@ -162,12 +168,31 @@ test('readTranscriptTailSummary & collectProjectBriefAsync: 64KB tail read, meta
 
     const tail = readTranscriptTailSummary(convId, sb.brainDir);
     assert.equal(tail.lastUserText, 'Fix worktree handoff bug in daemon');
-    assert.match(tail.lastModelText, /Root cause located in worktrees\.mjs/);
+    assert.equal(tail.lastCreatedAt, '2026-11-26T03:18:45+08:00');
+    assert.match(tail.lastModelText, /HeadStatus: Root cause located in worktrees\.mjs/);
+    assert.match(tail.lastModelText, /TailConclusion: All tests verified and deployed\./);
     assert.equal(tail.artifacts.length, 2);
+
+    const execGitMock = async (dir, args) => {
+      if (dir === sb.projDir && args[0] === 'log') {
+        return [
+          "4abf39f\x1fMerge branch 'feat/already-merged'\x1f5 minutes ago\x1f1795634000",
+          'c8fd986\x1ffix(projects): header polish\x1f10 minutes ago\x1f1795633700',
+        ].join('\n');
+      }
+      if (dir === sb.projDir && args[0] === 'rev-list') {
+        return '2\t0\n';
+      }
+      if (dir === sb.wtDir && args[0] === 'log') {
+        return '3ee580a\x1ffeat(demo): work in progress\x1f1 hour ago\n';
+      }
+      return null;
+    };
 
     const opts = {
       brainDir: sb.brainDir,
       convWtDir: sb.convWtDir,
+      execGitAsync: execGitMock,
       worktrees: [
         { path: sb.projDir, realPath: sb.projDir, branch: 'main', isMain: true, ahead: 0, git: { changedFiles: 0 } },
         { path: sb.wtDir, realPath: sb.wtDir, branch: 'feat/demo', isMain: false, ahead: 2, git: { changedFiles: 1 } },
@@ -180,23 +205,47 @@ test('readTranscriptTailSummary & collectProjectBriefAsync: 64KB tail read, meta
       convWorktreeMap: {
         entries: {
           [convId]: { cid: convId, branch: 'feat/demo', worktreePath: sb.wtDir },
+          [mergedConvId]: { cid: mergedConvId, branch: 'feat/already-merged', worktreePath: sb.projDir },
         },
       },
     };
 
     const brief1 = await collectProjectBriefAsync(
-      { dirPath: sb.projDir, chats: [{ id: convId, title: 'Fix handoff', updatedAt: 1000 }], lang: 'en' },
+      {
+        dirPath: sb.projDir,
+        chats: [
+          { id: convId, title: 'Fix handoff', updatedAt: 1000 },
+          { id: mergedConvId, title: 'Already merged chat', updatedAt: 900 },
+        ],
+        lang: 'en',
+      },
       opts
     );
     const brief2 = await collectProjectBriefAsync(
-      { dirPath: sb.projDir, chats: [{ id: convId, title: 'Fix handoff', updatedAt: 1000 }], lang: 'en' },
+      {
+        dirPath: sb.projDir,
+        chats: [
+          { id: convId, title: 'Fix handoff', updatedAt: 1000 },
+          { id: mergedConvId, title: 'Already merged chat', updatedAt: 900 },
+        ],
+        lang: 'en',
+      },
       opts
     );
+    assert.equal(SUGGESTIONS_PROMPT_VERSION, 2);
     assert.equal(brief1.ok, true);
     assert.equal(brief1.fingerprint, brief2.fingerprint, 'fingerprint must be deterministic');
+    assert.equal(brief1.git.aheadOfUpstream, 2);
+    assert.deepEqual(brief1.git.mergedBranches, ['feat/already-merged']);
+    assert.equal(extractMergedBranchesFromCommits(brief1.git.recentCommits).get('feat/already-merged')?.hash, '4abf39f');
+    assert.equal(brief1.activeWorktrees[1].latestCommit?.hash, '3ee580a');
     assert.equal(brief1.conversations[0].branch, 'feat/demo');
+    assert.equal(brief1.conversations[0].branchStatus, 'active_dirty');
+    assert.equal(brief1.conversations[1].branchStatus, 'already_merged_into_main');
+    assert.equal(brief1.conversations[1].mergedCommit, '4abf39f');
+    assert.equal(brief1.conversations[1].worktreePath, '');
 
-    // Changing commit hash or language changes fingerprint
+    // Changing language or commit hash changes fingerprint
     const briefDiff = await collectProjectBriefAsync(
       { dirPath: sb.projDir, chats: [{ id: convId, title: 'Fix handoff', updatedAt: 1000 }], lang: 'zh' },
       opts
@@ -227,8 +276,13 @@ test('getProjectSuggestions & testProjectSuggestionsConfig: Gemini 3.8 Flash pay
           JSON.stringify({
             candidates: [
               {
+                finishReason: 'STOP',
                 content: {
                   parts: [
+                    {
+                      thought: true,
+                      text: 'Internal chain-of-thought reasoning that is not valid JSON...',
+                    },
                     {
                       text: JSON.stringify({
                         suggestions: [
@@ -251,6 +305,15 @@ test('getProjectSuggestions & testProjectSuggestionsConfig: Gemini 3.8 Flash pay
                             worktreePath: '/tmp/nonexistent-worktree-path',
                             anchorFiles: ['/etc/passwd'],
                           },
+                          {
+                            label: 'Merged branch check',
+                            reason: 'Should strip already-merged branch and its worktreePath',
+                            prompt: 'Run post-merge check.',
+                            sourceConvId: convId,
+                            branch: 'feat/done-already',
+                            worktreePath: sb.projDir,
+                            anchorFiles: [],
+                          },
                         ],
                       }),
                     },
@@ -272,6 +335,7 @@ test('getProjectSuggestions & testProjectSuggestionsConfig: Gemini 3.8 Flash pay
       fetchImpl: mockFetch,
       nowFn: () => nowMs,
       cooldownMs: 60_000,
+      skipGitExec: true,
       worktrees: [
         { path: sb.projDir, realPath: sb.projDir, branch: 'main', isMain: true, ahead: 0, git: { changedFiles: 0 } },
         { path: sb.wtDir, realPath: sb.wtDir, branch: 'feat/demo', isMain: false, ahead: 1, git: { changedFiles: 0 } },
@@ -279,7 +343,7 @@ test('getProjectSuggestions & testProjectSuggestionsConfig: Gemini 3.8 Flash pay
       wsStatus: {
         ok: true,
         git: { branch: 'main', changedFiles: 0 },
-        recentCommits: [{ hash: '1111111', subject: 'init', relTime: '1m' }],
+        recentCommits: [{ hash: '1111111', subject: "Merge branch 'feat/done-already'", relTime: '1m' }],
       },
       convWorktreeMap: { entries: {} },
     };
@@ -304,15 +368,23 @@ test('getProjectSuggestions & testProjectSuggestionsConfig: Gemini 3.8 Flash pay
     assert.match(capturedReq.url, /\/v1beta\/models\/gemini-3\.8-flash:generateContent$/);
     assert.equal(capturedReq.init.headers['x-goog-api-key'], 'AIzaMockKey123456');
     assert.equal(capturedReq.body.generationConfig.responseMimeType, 'application/json');
+    assert.ok(capturedReq.body.generationConfig.maxOutputTokens >= 4096);
+    assert.deepEqual(capturedReq.body.generationConfig.thinkingConfig, { thinkingLevel: 'LOW' });
     assert.ok(capturedReq.body.generationConfig.responseSchema);
+    const sysInst = capturedReq.body.systemInstruction?.parts?.[0]?.text || '';
+    assert.match(sysInst, /already_merged_into_main/);
+    assert.match(sysInst, /git\.mergedBranches/);
+    assert.match(sysInst, /2-4 words, max 22 chars/);
 
-    // Post-validation preserves valid worktree/conv/relative path and drops hallucinations
+    // Post-validation preserves valid worktree/conv/relative path and drops hallucinations & merged branch
     assert.equal(r1.suggestions[0].worktreePath, sb.wtDir);
     assert.equal(r1.suggestions[0].sourceConvId, convId);
     assert.deepEqual(r1.suggestions[0].anchorFiles, ['studio/daemon/project-suggestions.mjs']);
     assert.equal(r1.suggestions[1].worktreePath, '');
     assert.equal(r1.suggestions[1].sourceConvId, '');
     assert.deepEqual(r1.suggestions[1].anchorFiles, []);
+    assert.equal(r1.suggestions[2].branch, '');
+    assert.equal(r1.suggestions[2].worktreePath, '');
 
     // Second call with unchanged fingerprint reads disk cache
     const r3 = await getProjectSuggestions(
@@ -341,7 +413,7 @@ test('getProjectSuggestions & testProjectSuggestionsConfig: Gemini 3.8 Flash pay
     );
     assert.equal(errRes401.ok, false);
     assert.equal(errRes401.error, 'invalid_api_key');
-    assert.equal(errRes401.suggestions.length, 2, 'preserves cached suggestions on API error');
+    assert.equal(errRes401.suggestions.length, 3, 'preserves cached suggestions on API error');
 
     const errRes429 = await testProjectSuggestionsConfig(
       {},
@@ -513,7 +585,10 @@ test('Frontend cockpit UI, suggestions controller & MAGA settings integration', 
       aiSuggestionsState: ctx.pState.projectSuggestionsMap['/tmp/repo'],
       isLoadingAi: false,
     });
+    assert.match(aiHtml, /data-mode="ai" data-count="1"/);
+    assert.match(aiHtml, /ag-pd-quick-pills/);
     assert.match(aiHtml, /ag-pd-quick-pill is-ai/);
+    assert.match(aiHtml, /ag-pd-quick-pill-spark/);
     assert.match(aiHtml, /Run opus-gate tests/);
     assert.match(aiHtml, /feat\/opus-gate/);
     assert.match(aiHtml, /data-ag-pd-sugg-refresh="true"/);

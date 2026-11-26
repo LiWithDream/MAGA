@@ -18,6 +18,9 @@ export function createProjectWorkspaceUi(ctx) {
     RECENT_MORE_SVG,
   } = ICONS;
 
+  const SVG_AI_SPARKLE =
+    '<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 1.25c.32 0 .59.22.66.53l.74 3.23c.2.88.88 1.56 1.76 1.76l3.23.74a.68.68 0 0 1 0 1.32l-3.23.74a2.4 2.4 0 0 0-1.76 1.76l-.74 3.23a.68.68 0 0 1-1.32 0l-.74-3.23a2.4 2.4 0 0 0-1.76-1.76l-3.23-.74a.68.68 0 0 1 0-1.32l3.23-.74a2.4 2.4 0 0 0 1.76-1.76l.74-3.23c.07-.31.34-.53.66-.53z"/></svg>';
+
   function emitProjectsEvent(name, detail) {
     if (typeof window === 'undefined' || typeof window.dispatchEvent !== 'function') return;
     const Ctor = window.CustomEvent || (typeof CustomEvent === 'function' ? CustomEvent : null);
@@ -681,32 +684,22 @@ export function createProjectWorkspaceUi(ctx) {
       : '';
 
     if (aiList.length > 0) {
-      const pills = [];
-      if (git && git.changedFiles > 0) {
-        const revPrompt = L(
-          `请先检查当前工作区 ${git.changedFiles} 个未提交改动（\`git status\` / \`git diff\`），总结变更并排查隐患。`,
-          `Inspect the ${git.changedFiles} uncommitted changes (\`git status\` / \`git diff\`), summarize the delta, and check for risks.`
-        );
-        pills.push(
-          `<button type="button" class="ag-pd-quick-pill" data-ag-pd-starter-prompt="${escapeHtml(revPrompt)}" title="${escapeHtml(
-            L('点击填入输入框 · 按住 Shift 直接发送', 'Click to fill · Shift+Click to send')
-          )}">${escapeHtml(L(`审查改动 (${git.changedFiles})`, `Review changes (${git.changedFiles})`))}</button>`
-        );
-      }
-      aiList.forEach((s, idx) => {
+      const pills = aiList.map((s, idx) => {
         const branchName = typeof s.branch === 'string' ? s.branch.trim() : '';
         const showBranch = Boolean(branchName && branchName !== 'main' && branchName !== 'master');
         const branchBadge = showBranch
-          ? `<span class="ag-pd-quick-pill-branch">${escapeHtml(branchName)}</span>`
+          ? `<span class="ag-pd-quick-pill-branch" title="${escapeHtml(branchName)}">${escapeHtml(branchName)}</span>`
           : '';
-        const tip = [s.reason, L('点击填入输入框 · 按住 Shift 直接发送', 'Click to fill · Shift+Click to send')]
+        const tip = [
+          showBranch ? `${s.label} (${branchName})` : s.label,
+          s.reason,
+          L('点击填入输入框 · 按住 Shift 直接发送', 'Click to fill · Shift+Click to send'),
+        ]
           .filter(Boolean)
           .join('\n');
-        pills.push(
-          `<button type="button" class="ag-pd-quick-pill is-ai" data-ag-pd-ai-sugg-idx="${idx}" title="${escapeHtml(tip)}"><span class="ag-pd-quick-pill-label">${escapeHtml(s.label)}</span>${branchBadge}</button>`
-        );
+        return `<button type="button" class="ag-pd-quick-pill is-ai" data-ag-pd-ai-sugg-idx="${idx}" title="${escapeHtml(tip)}"><span class="ag-pd-quick-pill-spark" aria-hidden="true">${SVG_AI_SPARKLE}</span><span class="ag-pd-quick-pill-label">${escapeHtml(s.label)}</span>${branchBadge}</button>`;
       });
-      return `<div class="ag-pd-quick-strip" data-ag-pd-quick-strip="true">${pills.join('')}${refreshBtnHtml}</div>`;
+      return `<div class="ag-pd-quick-strip" data-ag-pd-quick-strip="true" data-mode="ai" data-count="${aiList.length}"><div class="ag-pd-quick-pills">${pills.join('')}</div>${refreshBtnHtml}</div>`;
     }
 
     const actions = [];
@@ -740,13 +733,14 @@ export function createProjectWorkspaceUi(ctx) {
     }
 
     if (!actions.length && !refreshBtnHtml) return '';
-    return `<div class="ag-pd-quick-strip" data-ag-pd-quick-strip="true">${actions
+    const staticPills = actions
       .slice(0, 4)
       .map(
         (a) =>
           `<button type="button" class="ag-pd-quick-pill" data-ag-pd-starter-prompt="${escapeHtml(a.prompt)}" title="${escapeHtml(L('点击填入输入框 · 按住 Shift 直接发送', 'Click to fill · Shift+Click to send'))}">${escapeHtml(a.label)}</button>`
       )
-      .join('')}${refreshBtnHtml}</div>`;
+      .join('');
+    return `<div class="ag-pd-quick-strip" data-ag-pd-quick-strip="true" data-mode="static"><div class="ag-pd-quick-pills">${staticPills}</div>${refreshBtnHtml}</div>`;
   }
 
   function buildQuickStartersHtml({ project, hasLocalDir, wsStatus, instructions, filesCount }) {

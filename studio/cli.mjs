@@ -111,7 +111,7 @@ async function applyDefaultOrchestratorModelPreference() {
 }
 
 async function runAntiClaudeInstall() {
-  await buildUserCustomJs({ writeToRepo: true });
+  await buildUserCustomJs({ writeToRepo: true, allowPrebuilt: true });
   // Strip studio blocks before base install so base custom.{js,css} installs cleanly
   stripStudioBlocksOnly();
   const installScript = path.join(REPO_ROOT, 'install.mjs');
@@ -229,6 +229,7 @@ const allowNonMainDeploy =
   cliArgs.includes('--preview') ||
   cliArgs.includes('--force') ||
   process.env.MAGA_DEPLOY_ALLOW_NON_MAIN === '1';
+const skipRulesSync = cliArgs.includes('--no-rules');
 
 try {
   if (cmd === 'install') {
@@ -238,7 +239,9 @@ try {
     }
     await runAntiClaudeInstall();
     const deployRes = await deployStudio({ allowNonMain: allowNonMainDeploy });
-    const rulesRes = syncFastIoRules();
+    const rulesRes = skipRulesSync
+      ? { ok: true, skipped: true, reason: '--no-rules' }
+      : syncFastIoRules();
     const pluginRes = syncOpusGatePlugin();
     console.log(JSON.stringify({ ok: true, command: 'install', deploy: deployRes, rules: rulesRes, opusGatePlugin: pluginRes }, null, 2));
   } else if (cmd === 'deploy') {

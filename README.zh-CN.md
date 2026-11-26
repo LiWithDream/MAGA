@@ -1,210 +1,256 @@
 <div align="center">
 
-# MAGA
+# AGY Studio
 
-### Make Antigravity Great Again
-
-**顶级引擎，当然要配顶级驾驶舱。**  
-*面向 macOS 上 Google Antigravity Desktop 2.0 的零侵入工作台升级套件——重塑视觉与双行四胶囊底栏、实时配额弹层与本机 Token 洞察、极简阶段同步与并行提效规则，再顺手补齐底栏子代理快捷分屏与一键静默续跑。*
+**面向 macOS 上 Google Antigravity Desktop 2.0 的多项目与 Git Worktree 桌面工作台** *（原名 MAGA）*。  
+把分项目 Token 用量、实时 Git 改动/提交抽屉、Gemini & Claude/GPT 双池配额、以及配额熔断 Claude Opus 把关整合进同一套单观测器前端，全程不修改 `/Applications/Antigravity.app`。
 
 [English](./README.md) · **简体中文**
 
-[![macOS](https://img.shields.io/badge/macOS-Apple%20Silicon%20%2F%20Intel-1f2328?style=flat-square&logo=apple&logoColor=white)](#快速开始)
-[![Antigravity](https://img.shields.io/badge/Antigravity-Desktop%202.0-4285F4?style=flat-square)](#为什么做-maga)
+[![macOS](https://img.shields.io/badge/macOS-Apple%20Silicon%20%2F%20Intel-1f2328?style=flat-square&logo=apple&logoColor=white)](#局限与平台说明)
+[![Antigravity](https://img.shields.io/badge/Antigravity-Desktop%202.0-4285F4?style=flat-square)](#核心能力)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D%2022-339933?style=flat-square&logo=nodedotjs&logoColor=white)](#快速开始)
-[![零侵入](https://img.shields.io/badge/原生应用签名-零修改-10B981?style=flat-square)](#安全与零侵入设计)
+[![零侵入](https://img.shields.io/badge/原生应用签名-零修改-10B981?style=flat-square)](#架构与安全)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue?style=flat-square)](./LICENSE)
 
-[为什么做 MAGA？](#为什么做-maga) · [核心功能](#核心功能) · [快速开始](#快速开始) · [安全设计](#安全与零侵入设计) · [致谢](#致谢acknowledgements)
+[快速开始](#快速开始) · [核心能力](#核心能力) · [兼容性矩阵](#兼容性矩阵) · [设置项参考](#设置项参考) · [故障排查](#故障排查) · [致谢](#致谢)
 
 <br />
 
-<img src="./docs/images/hero-workspace.png" alt="MAGA — 重塑后的 Google Antigravity Desktop 2.0 工作台" width="100%" />
+<img src="./docs/images/demo-cockpit.webp" alt="AGY Studio 项目工作台、Git 抽屉、分项目 Token 用量与统一设置台演示" width="100%" />
+
+<sub><i>Projects 排序与详情工作台、Git 未提交清单与 <code>@file</code> 一键引用、分项目 Token 图表与三标签统一设置台。</i></sub>
 
 </div>
 
 ---
 
-## 为什么做 MAGA？
+## 为什么做这个工具
 
-说句大实话：**Gemini 4（以及 Claude Opus）强得没话说。**  
-但浏览一圈 Reddit、Hacker News、V2EX 和 X 就会发现，大家对 **Google Antigravity Desktop 2.0** 的吐槽高度一致——问题并不在于某一个孤立小细节，而是这套桌面客户端的整体完成度还停留在半成品阶段：
+日常在 **Google Antigravity Desktop 2.0** 里同时跑多个仓库和子代理时，最影响效率的主要是三件事：
 
-| 社区高频吐槽的三大痛点 | MAGA 给出的完整解法 |
+1. **多项目缺少集中工作台**：原生 Projects 页面看不到仓库未提交改动，对话一多也不清楚每场对话跑在哪个分支或 Worktree 上、烧了多少 Token。
+2. **上下文与双池配额不透明**：5 小时滚动窗口、周配额、缓存命中率和按项目消耗都藏得很深，跑长任务很容易突然撞墙。
+3. **堆砌独立监听会拖慢界面**：同时挂多个全树 `MutationObserver` 或大量 CSS `:has()` 选择器，会导致流式输出和模型菜单明显掉帧。
+
+| 实测工程与安全指标 | 当前基线数据 |
 | :--- | :--- |
-| **1. 2.0 桌面端视觉与高频交互偏半成品** — 视觉层级平淡，思考档位调节不够顺手，常用操作与状态遥测混在一起，窄分屏或长模型名下底栏容易挤压错乱。 | **克制视觉重塑 + 双行四胶囊底栏** — Claude 风格明/暗色排版与全局宿主语言跟随；常驻双行四胶囊将操作与遥测上下分层，窄宽与长路由名渐进收敛绝不换行，四大模型家族各配专属动效思考滑轨。 |
-| **2. 上下文与配额一片黑箱** — 多轮规划与工具调用消耗极快，窗口水位、5h/周配额与真实 Token 去向不透明或深埋二级设置，长任务动不动突然撞墙。 | **全链路状态透明闭环** — 底栏常驻速率与上下文水位预警、一键 `Compact` 压缩；点开即看 Gemini & Claude / GPT 双池 5 小时 / 周配额；右侧原生融入 Overview 本机 Token 用量趋势，**事前预警、事中盯额度、事后看去向**。 |
-| **3. 长流程缺少掌控感，卡顿或中断打断心流** — 复杂任务常常静默黑盒干跑半天看不到阶段进展，零散工具调用拖慢节奏，偶遇崩溃或中断还得重新手动接续。 | **可控执行节奏 + 重度工作流效率加分项** — 通过极简阶段同步与并行提效规则告别黑盒也不刷屏；同时顺手补齐底栏子代理快捷分屏与一键静默 `Resume` 兜底。 |
-
-> [!NOTE]
-> **清晰的产品边界**：除了正面解决上述三大桌面端痛点，MAGA 还为重度日常工作流顺手补齐了两项高频提效能力——**底栏子代理快捷入口与宽敞分屏**、**偶发中断一键静默 `Resume`**。全套增强通过单一本机守护进程运行，**全程不动 `/Applications/Antigravity.app` 一根毫毛**。
-
----
-
-## 核心功能
-
-### 1. 视觉排版重塑 & 双行四胶囊交互底栏
-
-先把每天盯最久的主界面与输入区彻底磨顺手。
-
-- **克制的视觉体系 & 全局宿主语言跟随** — 借鉴 Claude 风格的明/暗色对比与平衡字重，中英文混排久读不累；所有胶囊标签、提示语与时间线分割线自动与 Antigravity 当前界面语言保持一致。
-- **操作与遥测上下分层** — 常驻双行底栏将高频动作收拢在上行（`+ Add context`、权限、语音、发送），将**模型与思考强度、上下文窗口、实时速率、子代理状态**四颗轻量胶囊整齐排布在下行。
-- **专属动效模型与思考强度选择器** — 切换模型与思考档位不再翻深层菜单：Gemini 4 Neon 霓虹红、Carbon 碳纤金、Hydrogen 气泡冰蓝、Claude Opus 陶土橙各带专属动效滑轨，支持快捷切换 Orchestrator 与自定义隐藏模型。
-- **宽窄屏与长名称渐进收敛** — 无论超宽屏、窄分屏，还是开启 Orchestrator 路由与长模型名，胶囊都会智能浓缩规划模型徽章并按实测宽度逐级精简，绝不折行、绝不挤压截断。
-
-<p align="center">
-  <img src="./docs/images/demo-composer.webp" alt="多模型家族专属动效思考强度滑块及上下文配额弹层交互演示" width="90%" />
-  <br />
-  <sub><i>切换不同模型家族自动呈现专属动效思考强度条，一键查看上下文水位压缩与 5h / 周套餐配额。</i></sub>
-</p>
-
----
-
-### 2. 全链路透明：实时配额弹层 & 原生本机 Token 洞察
-
-从“事前预警、事中盯额度”到“事后看去向”，一口气打穿全网吐槽最多的额度黑箱。
-
-- **底栏实时速率与上下文预警** — 下行速率胶囊持续显示生成速度与 TTFT 响应延迟；上下文水位环按占用分段变色预警，点开即可一键触发对话压缩。
-- **Gemini & Claude / GPT 双池配额弹层** — 点击上下文胶囊即可在同一个轻弹层内切换查看 Gemini 与 Claude / GPT 双池的 5 小时及周配额余量，跑长任务前心里有数。
-
-<table>
-  <tr>
-    <td width="56%" valign="middle">
-      <ul>
-        <li><b>原生融入右侧 Overview</b> — 在不打扰主对话的前提下，一屏汇总 Prompt 缓存命中率、轮次/调用统计、一键压缩与 5h / 周套餐配额。</li>
-        <li><b>日 / 周 / 月趋势视图</b> — 交互式堆叠柱状图支持自由翻页，悬浮即看非缓存、缓存读写与输出明细。</li>
-        <li><b>分模型家族消耗占比</b> — Gemini 与 Claude 各系列模型的用量分布一目了然。</li>
-        <li><b>100% 本地单进程</b> — 复用现有单一守护进程增量读取本机对话库，零额外 sidecar、零数据外传。</li>
-      </ul>
-    </td>
-    <td width="44%" align="center" valign="middle">
-      <img src="./docs/images/overview-usage.png" alt="Overview 面板内建本地 Token 用量统计卡片" width="100%" />
-    </td>
-  </tr>
-</table>
-
----
-
-### 3. 长流程掌控感与效率加分项
-
-搞定核心痛点之余，把重度工作流的节奏感和顺滑度一并拉满。
-
-#### 3.1 极简阶段同步与提效规则（告别黑箱也不刷屏）
-
-针对长任务过程不透明、零散等待拖慢节奏的顽疾，MAGA 将极简并行检索/白名单命令规范与克制的分阶段汇报规则整合进 `~/.gemini/AGENTS.md`（仅 `7` 行，绝不限制回答深度），精准落在“静默黑盒”与“碎嘴刷屏”之间的黄金平衡点：
-
-| 模式对比 | 复杂任务下的实际体验 |
-| :--- | :--- |
-| **原生静默执行** | 连续运行几十步毫无中间反馈，像在盯一个黑盒 |
-| **逐条工具播报** | 每次调工具前都输出一两句，界面被过程水话刷屏 |
-| **MAGA 阶段同步 + 提效规则** | **`1–4` 轮轻量任务直接给结果；`5` 轮以上复杂任务通过先 `grep` 后批读与免审白名单命令大幅减少无效等待，并在各阶段切换节点输出 `1` 句高信息量短句同步进展——告别黑箱也不刷屏，且绝不限制回答深度** |
-
-#### 3.2 底栏子代理快捷入口 & 宽敞联动分屏
-
-为了把子代理的日常查看与切换做得更顺手，MAGA 在底栏专门加入了独立快捷入口与自动化分屏体验：
-
-- **从派发到完成一眼可见** — 主对话派发子代理后，底栏自动亮起蓝色呼吸胶囊，完成后立刻转为翠绿就绪态，不必反复切侧栏翻找进度。
-- **一键自动清障分屏** — 点击底栏子代理胶囊即可直接打开宽敞对称的分屏视图，同时自动收起右侧 Overview 并移除冗余的内置子代理列表侧栏（状态与切换已由底栏胶囊菜单接管）；看完再点即利落收起退场，手动拖拽分屏宽度依旧自由。
-- **双侧同款自适应底栏** — 子代理输入区同样享有自适应四胶囊，随分屏宽度智能收敛。
-
-<p align="center">
-  <img src="./docs/images/demo-subagent-split.webp" alt="子代理生成到点击底栏胶囊打开联动分屏完整演示" width="100%" />
-  <br />
-  <sub><i>派发子代理后底栏实时浮现胶囊（蓝呼吸 → 绿就绪）→ 点击底栏胶囊自动收起 Overview 与冗余侧栏展开宽敞分屏 → 再点收起退场。</i></sub>
-</p>
-
-#### 3.3 偶发中断一键静默 `Resume`
-
-当长任务偶遇异常中断、崩溃重启或手动暂停时，给你一道安静无感的兜底保险：
-
-- **上排左侧自动亮起 `Resume` 胶囊** — 检测到未完成回合即克制提示，不用手动补敲“请继续”。
-- **零闪烁、无废话气泡** — 点一下即可静默唤醒模型从断点接续，输入框里不会闪现尴尬的预设文本，对话时间线上也只留下一条极轻的 **`▸ Resumed`** 细分割线。
-
-<p align="center">
-  <img src="./docs/images/demo-silent-resume.webp" alt="上排左侧一键静默续跑胶囊与时间线分割线演示" width="90%" />
-  <br />
-  <sub><i>点击上排左侧的 <code>Resume</code> 胶囊静默续跑，输入框零闪烁，时间线仅保留克制的 <code>▸ Resumed</code> 分割线。</i></sub>
-</p>
+| 根 DOM 观测器数量 (`window.__agyMagaKernel`) | **`1`** 个统一 `MutationObserver`（`data-maga-own` 自隔离） |
+| 主线程刷帧耗时（Apple Silicon 本地 CDP 实测 `lastFlushMs`） | **`3.6 ms`**，高频遥测走叶节点原地更新（`MetricsBus`） |
+| 全局 CSS `:has()` 选择器数量 | **`0`**（自动化测试硬守卫） |
+| 自动化测试套件 (`npm test`) | **`150+`** 项全部通过，**`0`** 项跳过 |
+| 对 `/Applications/Antigravity.app` 的改动 | **`0 bytes`**（苹果官方签名与自动更新完全不受影响） |
+| 本机后台运行形态 | **`1`** 个 `LaunchAgent` 本地守护进程，数据全留本机 |
 
 ---
 
 ## 快速开始
 
-**环境要求**：macOS · Node.js `>= 22` · Google Antigravity Desktop 2.0
+**环境要求**：macOS（Apple Silicon 或 Intel）· Node.js `>= 22` · Google Antigravity Desktop 2.0
 
-```bash
-git clone https://github.com/LiWithDream/MAGA.git
-cd MAGA
-npm run install-all
+### 方式一：让 Antigravity / Claude Code 直接帮你装（推荐）
+
+把下面这段话发给 Antigravity 或 Claude Code：
+
+```text
+帮我把 https://github.com/LiWithDream/agy-studio.git 克隆到 ~/Developer/agy-studio，先阅读 docs/INSTALL_AGENT.md，再执行 bash ./install.sh 并运行 node studio/cli.mjs doctor 验证状态。不要修改 /Applications/Antigravity.app，也不要删除现有对话和配置。
 ```
 
-### 日常命令
+### 方式二：预编译 Release 压缩包（零 `npm install`）
 
-| 命令 | 说明 |
-| :--- | :--- |
-| `npm run install-all` | 配置本机 LaunchAgent 守护进程、部署界面增强层并同步阶段进度与并行提效规则 |
-| `npm run deploy` | 修改 `studio/` 下任意代码后秒级热更新（无需重启 Antigravity） |
-| `npm run sync-rules` | 单独将最新的阶段进度同步与并行提效规则同步至 `~/.gemini/AGENTS.md` |
-| `npm run doctor` | 全面体检守护进程、实时连接、注入状态、用量扫描器与规则/配置状态 |
-| `npm run rollback` | 一键卸载 `studio` 增强层，干净恢复基础状态 |
+前往 [Releases](https://github.com/LiWithDream/agy-studio/releases) 下载最新 `agy-studio-v*-macos.tar.gz`，解压后直接安装：
+
+```bash
+tar -xzf agy-studio-v*-macos.tar.gz && cd agy-studio-v*-macos
+bash ./install.sh
+```
+
+Release 压缩包内已预编好 `user/custom.js` 与 `studio/prebuilt/studio-entry.js`，安装时会自动跳过 `npm install` 与 `esbuild`。
+
+### 方式三：从源码克隆安装（自动安装 `esbuild`）
+
+```bash
+git clone https://github.com/LiWithDream/agy-studio.git ~/Developer/agy-studio
+cd ~/Developer/agy-studio
+bash ./install.sh
+```
+
+`install.sh` 会自动检查 Node.js `>= 22`，在源码缺少 `node_modules` 时自动跑一次 `npm install` 补齐 `esbuild`，再注册本地 `LaunchAgent`、热部署前端层并同步 `7` 行 `fast-io` 规则到 `~/.gemini/AGENTS.md`。任何时候执行 `bash ./uninstall.sh` 即可干净退回原状，不删聊天记录和个人配置。
 
 ---
 
-## 安全与零侵入设计
+## 核心能力
 
-> [!TIP]
-> **零二进制魔改。** MAGA **从不修改** `/Applications/Antigravity.app`——苹果官方代码签名与 Antigravity 自动更新完全不受影响。
+### 1. Projects 工作台、Git 实时抽屉与 Worktree 并行
 
-- **单一轻量守护进程** — 一个本机 LaunchAgent 统一承载界面增强、本地用量统计、子代理指标与断点续跑检测，不挂多余后台服务。
-- **100% 本地隐私** — 所有 Token 统计与状态检测均在你的 Mac 本机完成，不上传、不代理、零遥测外传。
-- **随时一键热更新与回滚** — 开发调试可秒级热更新，任何时候执行 `npm run rollback` 即可无痕退回基础状态。
+<img src="./docs/images/projects-cockpit.png" alt="AGY Studio Projects 项目工作台、仓库卡片与分项目 Token 用量" width="100%" />
+
+- **项目排序墙与详情工作台**：支持按最近活跃、Token 用量、名称排序；进入项目后集中展示版本徽章、本地路径或远端仓库状态、`AGENTS.md` 指令渲染，以及带单场对话 Token 徽章的历史列表。
+- **Git 脏文件与 Commit 详情抽屉**：展开未提交改动清单（带彩色 `+/-` 行数统计），点一下 `+` 直接把 `@file` 插入输入框，支持一键 `Review changes` / `Draft commit`；点开任意 Commit 可查看改动文件清单并跳转远端链接。
+- **Git Worktree 界面与 `wt` 命令行**：在项目工作台与对话顶部项目栏（`#agy-conv-project-bar` + `#agy-wt-menu`）管理每场对话绑定的隔离 Worktree、实时分支与脏状态，或用 `npm run wt:new -- feat/name` / `wt:clean` 快速建删分身。
+- **分项目 Token 用量图表**：右下角原生嵌入日 / 周 / 月堆叠柱状图，悬浮即可核对非缓存输入、缓存读写、输出与全局占比（由单一守护进程以只读 `immutable=1` 扫描本机 SQLite，零额外盘扫）。
+- **可选 Gemini 3.8 Flash 历史建议**：填自己的 Google AI Studio Key（`0600` 权限仅存本地）后，会结合近期 Git 提交历史与最近 5 条对话生成 3 个续跑建议按钮并支持冷启动交接。
+
+<p align="center">
+  <img src="./docs/images/git-drawers.png" alt="Git 未提交改动抽屉与 Commit 详情抽屉及 @file 引用" width="94%" />
+</p>
+
+---
+
+### 2. 双池配额透明、专属思考滑轨与 Opus 额度守门
+
+<img src="./docs/images/hero-workspace.png" alt="AGY Studio 双行四胶囊底栏、双池配额弹层与 Overview 用量看板" width="100%" />
+
+- **双行四胶囊自适应底栏**：上行集中放操作按钮（`+ Add context`、权限、语音、发送），下行排布**模型与思考强度、上下文水位环、实时速率与 TTFT、子代理状态**；窄分屏与开启 Orchestrator 时按宽度逐级精简徽章，避免换行挤压。
+- **模型家族思考滑轨与静态 Orchestrator 折叠**：支持 Gemini 4 Neon / Carbon / Argon / Hydrogen 与 Claude Opus 专属动效滑轨、常用模型隐藏过滤，以及把静态 `Orchestrator` 折叠进独立开关。
+- **Gemini & Claude / GPT 双池配额 + Overview 看板**：点击上下文环即可看双池 5 小时 / 周配额余量并一键 `Compact`；右侧 Overview 长期展示缓存命中率、思维/输出占比和各模型系列消费趋势。
+- **配额熔断版 Claude Opus Gate**：针对“Claude 额度总在不经意间烧光”的问题，仅在 `plan`（定方案）、`risk`（高风险改码）、`debug`（连续报错）、`stop`（收尾终审）节点通过底栏 `✦ 请 Opus 把关` 胶囊或受控 `/swarm` 调度 Opus，并在 5h/周配额低于阈值时自动降级或熔断。
+
+---
+
+### 3. 执行节奏控制、子代理分屏与统一设置台
+
+<table>
+  <tr>
+    <td width="52%" valign="top">
+      <ul>
+        <li><b>三标签实时设置台</b> — 支持胶囊、滑条主题与 Orchestrator 样式实时预览，改动即时生效并持久化，支持 JSON 导入导出与一键复位。</li>
+        <li><b>底栏子代理快捷分屏</b> — 派发子代理后底栏实时亮起胶囊（运行中蓝呼吸 → 完成后转绿），点一下自动收起右侧 Overview 与冗余列表展开对称分屏，再点收起。</li>
+        <li><b>偶发中断一键静默 <code>Resume</code></b> — 检测到未完成对话时在上排左侧亮起温和胶囊，点一下直接从断点续跑，不在输入框闪现预设废话。</li>
+        <li><b>7 行 <code>fast-io</code> 执行规则</b> — 将先 <code>grep</code> 后批读、免审白名单命令和阶段节点短汇报写入 <code>~/.gemini/AGENTS.md</code>，减少无效等待且不限制回答深度。</li>
+      </ul>
+    </td>
+    <td width="48%" align="center" valign="middle">
+      <img src="./docs/images/settings-studio.png" alt="三标签统一设置工作台实时预览 Gemini 4 Neon High 滑轨" width="100%" />
+    </td>
+  </tr>
+</table>
 
 <details>
-<summary><b>想自己二次魔改？查看项目目录结构</b></summary>
+<summary><b>更多交互演示动图：模型滑轨与配额弹层、子代理分屏、静默 Resume</b></summary>
+<br />
+<p align="center">
+  <img src="./docs/images/demo-composer.webp" alt="模型与思考滑轨及配额弹层" width="90%" />
+  <br /><br />
+  <img src="./docs/images/demo-subagent-split.webp" alt="底栏子代理胶囊联动分屏" width="90%" />
+  <br /><br />
+  <img src="./docs/images/demo-silent-resume.webp" alt="一键静默 Resume 续跑" width="90%" />
+</p>
+</details>
+
+---
+
+## 兼容性矩阵
+
+很多开发者本机已经装了其他反重力插件，以下是实测或架构级的共存关系说明：
+
+| 插件 / 项目 | 共存关系 | 使用建议 |
+| :--- | :--- | :--- |
+| **`INK-Q/agy-fast`** | **可共存** | 对方专注 MCP 工具与搜索提效，不改写桌面前端 DOM，与 AGY Studio 互补。 |
+| **`oil-oil/agy-fast-io`** | **规则二选一** | AGY Studio 已内置精简版 `7` 行 `fast-io` 规则；若想保留原版，安装时加 `--no-rules`（`bash ./install.sh --no-rules`）。 |
+| **`Lumidarin/agy-capsule`** | **底栏重叠** | AGY Studio 已在 `vendor/agy-capsule/` 内置整合其 MIT 核心代码，不建议同时再挂一份独立 `agy-capsule`。 |
+| **`WhiteBr1ck/agy-powertools`** | **CDP 界面重叠** | 两者都会接管 Antigravity 的前端注入层，请勿同时启用；切换前先执行 `bash ./uninstall.sh`。 |
+| **第三方 ASAR 汉化补丁** | **未并发实测** | AGY Studio 设置页内置了轻量中文汉化开关且不动 `app.asar`；与直接解包修改 `app.asar` 的补丁混用暂未做交叉测试。 |
+
+---
+
+## 局限与平台说明
+
+- **目前仅支持 macOS**：守护进程保活依赖 macOS `LaunchAgent` 与 `/usr/bin/open` CDP 自动重拉机制（`--remote-debugging-port=0`）。Windows 与 Linux 需单独适配进程托管与凭据隔离，已在 GitHub Issues 列为后续里程碑，欢迎前去投票排期。
+- **提示词规则并非硬锁**：`~/.gemini/AGENTS.md` 中的 `7` 行规范能显著降低无效轮次，但大模型仍可能偶尔漏遵。
+- **不做多账号代理与切号**：AGY Studio 定位在单工作台的多项目 / Worktree 调度、Git 联动与用量透明度，不修改请求网关或做多号轮询。
+
+---
+
+## 设置项参考
+
+<details>
+<summary><b>AGY Studio 设置面板完整可开关项清单（实时生效并自动持久化）</b></summary>
+
+| 分类 | 设置项 | 默认值 | 说明 |
+| :--- | :--- | :--- | :--- |
+| **模型与思考** | 思考强度条与品牌色点 | `开` | 交互滑轨、色点识别、隐藏 `New` 等推广角标、Orchestrator 开关 |
+| **模型与思考** | 滑条与 Orchestrator 主题 | `跟随模型` | 分家族动效皮肤（物理/丝带/星云、矩阵/诗行/星芒、Codex 流光等） |
+| **模型与思考** | 按家族默认思考档位 | `Neon: High` | 切换模型家族时自动选中的初始档位 |
+| **模型与思考** | 隐藏不常用模型 | `全部显示` | 从底部选择器隐藏用不到的模型项 |
+| **模型与思考** | Opus 协同把关 (`Opus Gate`) | `半自动` | 模式（关闭/半自动/自动）、首选档位、5h/周配额熔断水位与 4 类触发节点 |
+| **模型与思考** | Orchestrator 执行器模型 | `跟随系统默认` | 持久化覆盖开启 Orchestrator 后的轻量执行模型 |
+| **对话与过程流** | 隐藏思考过程正文 | `开` | 收起冗长的英文 Thought 正文与展开箭头 |
+| **对话与过程流** | 步骤流展示模式 | `紧凑折叠` | 统一同步宿主 `verboseConversationSteps` 与步骤展开状态 |
+| **对话与过程流** | 中断恢复胶囊 (`Resume`) | `开` | 检测到任务意外中止时在底栏显示静默续跑按钮 |
+| **对话与过程流** | 长代码块折叠与吸顶 | `开` | 超过 40 行自动折叠并吸顶语言栏与复制按钮 |
+| **工作区与面板** | Overview 与项目用量图表 | `开` | 右侧 Overview 与项目详情页的日/周/月 Token 柱状图 |
+| **工作区与面板** | 底部子代理胶囊与分屏 | `开` | 底栏实时状态胶囊与一键 50/50 联动分屏 |
+| **工作区与面板** | 上下文圆环与双池配额弹层 | `开` | 实时上下文水位预警、5h/周限额与一键 `Compact` |
+| **工作区与面板** | 侧栏统一「最近对话」 | `关` | 可选把原生项目分组收拢为按时间混排列表 |
+| **工作区与面板** | AI 历史对话建议 | `关`（可选 Key） | 使用 Gemini 3.8 Flash 结合 Git 历史与最近 5 条对话推荐下一步起点 |
+| **语言与外观** | 中文界面汉化与字高校准 | `关` / `95%` | 内置简体中文开关与苹果苹方视觉字高（`94.5%` / `95%` / `100%`） |
+| **语言与外观** | 交互动效强度 | `完整` | `完整` / `精简` / `关闭` |
+
+</details>
+
+### 日常命令
+
+| 命令 | 作用 |
+| :--- | :--- |
+| `bash ./install.sh` | 一键安装（源码缺依赖时自动补齐，Release 包跳过 `npm install`）、注册守护进程并同步规则 |
+| `npm run deploy` | 在干净 `main` 上修改代码后秒级热更新至运行中的 Antigravity（无需重启客户端） |
+| `node studio/cli.mjs doctor` | 全面检查守护进程、CDP 连接、注入标记、用量扫描与 `proxyDiagnostics` |
+| `npm run wt:new -- feat/slug` | 创建隔离开发用 Git Worktree 并自动软链 `node_modules` |
+| `npm run release:pack` | 生成零 `npm install` 的 macOS Release 压缩包及 SHA-256 校验文件到 `dist/` |
+| `bash ./uninstall.sh` | 干净卸载增强层、守护进程与注入规则，保留聊天记录与个人设置 |
+
+---
+
+## 架构与安全
+
+<details>
+<summary><b>目录结构与自动化守卫</b></summary>
 
 ```text
 .
-├── core/                  # 轻量本机 CDP 守护进程与基础运行时
-├── user/                  # 基础主题与交互层模板
-├── vendor/agy-capsule/    # 内化的零依赖模型选择器与遥测内核
+├── core/                  # 本地 CDP 守护进程与子模块（挂载、冷启引导、SQLite、项目扫描、git-exec）
+├── user/src/              # 18 个模块化 ESM 前端源码（全部 <2,000 行，编入 user/custom.js）
+├── vendor/agy-capsule/    # 内化整合的 MIT 模型/滑轨核心、动效主题与 SQLite 解析
 ├── studio/
-│   ├── cli.mjs            # 统一命令行入口（install / deploy / sync-rules / doctor / rollback）
-│   ├── build.mjs          # 模块打包与热部署管线
-│   ├── daemon/            # 本机 SQLite 用量、子代理指标与中断状态服务
-│   ├── modules/           # 前端模块化运行时（底栏、选择器、子代理、续跑、用量）
-│   ├── styles/            # 分职责样式表（排版、胶囊、弹层、用量卡片）
-│   └── rules/fast-io.md   # 7 行极简阶段同步与并行提效规则
-├── test/                  # 自动化打包、DOM 与 CSS 回归测试
-├── docs/images/           # 实机高清截图与交互演示动图
-└── install.mjs            # LaunchAgent 与守护进程安装器
+│   ├── core/              # MagaKernel（单根观测器）、DomFlags、MetricsBus、状态快照
+│   ├── daemon/            # 本机 Token 用量聚合、中断检测、AI 历史建议与 Opus Gate 服务
+│   ├── modules/           # 底栏胶囊、三标签设置台、项目用量、子代理分屏
+│   ├── styles/            # 作用域样式表（全仓 0 条 :has() 选择器）
+│   ├── cli.mjs            # 统一 CLI（install / deploy / sync-rules / doctor / rollback）
+│   └── pack-release.mjs   # 零依赖 Release 压缩包打包器
+├── test/                  # 自动化测试套件（DOM、CSS 守卫、Opus Gate、Worktree、安装链路）
+├── install.sh             # 一键安装脚本（支持 --dry-run、预编包与源码模式）
+└── uninstall.sh           # 一键无痕回滚卸载脚本（支持 --dry-run）
 ```
 
 </details>
 
 ---
 
-## 常见问题与排查（Troubleshooting）
+## 故障排查
 
 ### 遇到 `Error Loading Models` / `loadCodeAssist: EOF`
 
-- **错误根因**：该报错来自 Antigravity 原生后端进程 `language_server` 访问 Google 接口（`daily-cloudcode-pa.googleapis.com`）时 TLS/代理连接意外断开，**并非 MAGA 前端注入逻辑导致**。
-- **建议处理**：
-  1. 在代理客户端（Clash / Mihomo / Surge / V2Ray 等）开启 **TUN（增强）模式**或**系统代理**，并确认 `daily-cloudcode-pa.googleapis.com`（及 `*.googleapis.com`）走稳定节点。
-  2. **兼容增强**：如你习惯从终端附带代理环境变量（`HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` / `NO_PROXY` / `SSL_CERT_FILE` / `NODE_EXTRA_CA_CERTS`）或 `--proxy-*` 启动参数拉起 Antigravity，MAGA 在 macOS 自动补充 `--remote-debugging-port=0` 重拉进程时会自动透传保留这些配置；也可运行 `npm run doctor` 查看 `proxyDiagnostics` 本地代理状态。
-  3. 若希望完全由自己手动管理 `--remote-debugging-port=0` 启动参数而不由守护进程自动重拉，可在运行守护进程时设置环境变量 `ANTI_CLAUDE_NO_CDP_BOOTSTRAP=1`。
+该报错来自 Antigravity 原生后端 `language_server` 访问 `daily-cloudcode-pa.googleapis.com` 时代理或 TLS 断开，与前端注入无关：
+
+1. 在代理客户端（Clash / Mihomo / Surge / V2Ray）开启 **TUN 模式**或**系统代理**，确认 `*.googleapis.com` 走稳定节点。
+2. **启动参数自动透传**：如果在终端带了代理或自定义 CA 环境变量（`HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`、`NO_PROXY`、`SSL_CERT_FILE`、`NODE_EXTRA_CA_CERTS`）或 `--proxy-*` 启动参数，AGY Studio 在 macOS 自动补充 `--remote-debugging-port=0` 重拉时会完整透传；可运行 `node studio/cli.mjs doctor` 查看 `proxyDiagnostics`。
+3. 如希望手动管理 `--remote-debugging-port=0` 而不由守护进程重拉，启动守护进程时加上 `ANTI_CLAUDE_NO_CDP_BOOTSTRAP=1`。
 
 ---
 
-## 致谢（Acknowledgements）
+## 致谢
 
-MAGA 基于以下优秀的开源项目构建与演进，在此向各上游项目的作者与贡献者致以诚挚感谢，并清晰说明各项目的具体贡献与集成方式：
+AGY Studio（原名 MAGA）基于以下开源项目构建并集成其 MIT 核心模块：
 
-- [**hongqi7/Anti-Claude**](https://github.com/hongqi7/Anti-Claude) — 直接提供了零修改 `.app` 二进制的 Antigravity CDP 本机守护进程基础架构（`core/`）、Claude 风格明暗色视觉与排版体系、右侧 Overview 面板框架、上下文水位环与 5h/周配额弹层基础，以及分阶段执行同步规则的早期启发；MAGA 在此基础上抽离并构建了模块化 `studio/` 热更新层、双行四胶囊自适应底栏、底栏子代理快捷分屏、静默 `Resume` 及原生 Overview Token 用量集成。
-- [**Lumidarin/agy-capsule**](https://github.com/Lumidarin/agy-capsule)（MIT 协议）— `vendor/agy-capsule/` 直接引入并整合了其零依赖增强模型与思考强度选择器、多模型家族动效主题、实时生成速率遥测以及本机 SQLite 对话用量解析方案（其中用量分析能力由 `studio/daemon/usage-service.mjs` 与 `studio/modules/overview-usage.mjs` 重构进 MAGA 单一守护进程与原生 Overview 面板）。
-- **`antigravity-Codex-Claude-effort-slider`**（作者：月上寒 / `LLYSH-HANNARI`，MIT 协议）— 随 `agy-capsule` 引入；开创了各模型家族专属星尘/点阵/滑块动效设计，以及从宿主 React 树读取模型选项并一次提交模型与思考档位的实现思路。
-- [**oil-oil/agy-fast-io**](https://github.com/oil-oil/agy-fast-io) — 直接贡献了先 `grep` 定位后批读、优先使用免审白名单裸命令及减少无效云端排队等待的核心效率法则；MAGA 将其核心检索与批处理原则精炼为 `studio/rules/fast-io.md`（不限制回答深度），并与分阶段进度简报融合为 `7` 行极简工作台同步规则。
+- [**hongqi7/Anti-Claude**](https://github.com/hongqi7/Anti-Claude) — 提供了不修改 `.app` 二进制的 Antigravity 本地 CDP 守护进程底座（`core/`）、Claude 风格明暗视觉体系、Overview 面板框架及上下文/配额弹层基础。
+- [**Lumidarin/agy-capsule**](https://github.com/Lumidarin/agy-capsule)（MIT 协议）— 直接内置整合于 `vendor/agy-capsule/`，提供了模型与思考强度选择器、多模型动效主题、实时速率遥测与本地 SQLite 用量解析逻辑。
+- [**LLYSH-HANNARI/antigravity-Codex-Claude-effort-slider**](https://github.com/LLYSH-HANNARI/antigravity-Codex-Claude-effort-slider)（MIT 协议）— 随 `agy-capsule` 引入，贡献了分模型家族的专属滑轨动效设计及从宿主 React 树直写模型与思考档位的思路。
+- [**oil-oil/agy-fast-io**](https://github.com/oil-oil/agy-fast-io) — 贡献了先 `grep` 定位后批读、优先用免审白名单只读命令的核心提效思路，精炼整合为 `studio/rules/fast-io.md`。
 
 ---
 
 <div align="center">
-  <sub>如果 MAGA 让你的 Gemini 4 + Antigravity 日常开发顺手了不少，欢迎点一颗 ⭐ 支持一下！</sub>
+  <sub>MIT License · 如果 AGY Studio 帮你在 macOS 上把 Antigravity 2.0 用得更顺手，欢迎点一颗 ⭐，也欢迎到 Issues 给 Windows 支持投票。</sub>
 </div>

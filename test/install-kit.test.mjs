@@ -1,0 +1,129 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import crypto from 'node:crypto';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+
+const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
+test('install.sh and uninstall.sh --dry-run and pipe-mode isolation run cleanly against temp HOME', () => {
+  const fakeHome = mkdtempSync(path.join(tmpdir(), 'maga-home-dry-'));
+  try {
+    const env = { ...process.env, HOME: fakeHome };
+    const installOut = execFileSync('bash', [path.join(REPO, 'install.sh'), '--dry-run'], {
+      cwd: REPO,
+      env,
+      encoding: 'utf8',
+    });
+    assert.match(installOut, /\[dry-run\] os=Darwin/);
+    assert.match(installOut, /\[dry-run\] mode=(prebuilt|source|source-bootstrap)/);
+    assert.match(installOut, /studio\/cli\.mjs install/);
+
+    const installNoRulesOut = execFileSync('bash', [path.join(REPO, 'install.sh'), '--dry-run', '--no-rules'], {
+      cwd: REPO,
+      env,
+      encoding: 'utf8',
+    });
+    assert.match(installNoRulesOut, /studio\/cli\.mjs install --no-rules/);
+
+    // Piped stdin mode must NOT trust $PWD/studio/cli.mjs; it must route to remote-clone ($INSTALL_DIR).
+    const pipedScript = readFileSync(path.join(REPO, 'install.sh'), 'utf8');
+    const pipedOut = execFileSync('bash', ['-s', '--', '--dry-run'], {
+      cwd: REPO,
+      env,
+      input: pipedScript,
+      encoding: 'utf8',
+    });
+    assert.match(pipedOut, /\[dry-run\] mode=remote-clone/);
+
+    const uninstallOut = execFileSync('bash', [path.join(REPO, 'uninstall.sh'), '--dry-run'], {
+      cwd: REPO,
+      env,
+      encoding: 'utf8',
+    });
+    assert.match(uninstallOut, /studio\/cli\.mjs rollback/);
+    assert.match(uninstallOut, /install\.mjs uninstall/);
+    assert.match(uninstallOut, /preserve:.*studio-prefs\.json/);
+
+    assert.equal(existsSync(path.join(fakeHome, '.gemini')), false, 'dry-run must not mutate HOME/.gemini');
+  } finally {
+    rmSync(fakeHome, { recursive: true, force: true });
+  }
+});
+
+test('packRelease builds zero-npm-install macOS tarball with valid SHA-256, zero personal prefs, and clean manifest', async () => {
+  const distOut = mkdtempSync(path.join(tmpdir(), 'maga-dist-'));
+  const unpackDir = mkdtempSync(path.join(tmpdir(), 'maga-unpack-'));
+  try {
+    const { packRelease } = await import(pathToFileURL(path.join(REPO, 'studio', 'pack-release.mjs')).href);
+    const { buildUserCustomJs } = await import(pathToFileURL(path.join(REPO, 'studio', 'build.mjs')).href);
+    const res = await packRelease({ outDir: distOut });
+    assert.equal(res.ok, true);
+    assert.equal(existsSync(res.archive), true);
+    assert.equal(existsSync(res.sha256File), true);
+
+    const expectedHash = crypto.createHash('sha256').update(readFileSync(res.archive)).digest('hex');
+    assert.equal(res.sha256, expectedHash);
+    const shaLine = readFileSync(res.sha256File, 'utf8').trim();
+    assert.ok(shaLine.startsWith(`${expectedHash}  `));
+
+    const tarList = execFileSync('tar', ['-tzf', res.archive], { encoding: 'utf8' });
+    const tarEntries = tarList.split('\n').filter(Boolean);
+    const forbidden = tarEntries.filter((e) =>
+      /(^|\/)(node_modules|\.git|\.agents|test|DEVELOPMENT_HISTORY\.md|studio-prefs\.json|project-suggestions-config\.json)(\/|$)/.test(
+        e
+      ) || /^[^/]+\/AGENTS\.md$/.test(e)
+    );
+    assert.deepEqual(forbidden, [], `Forbidden paths leaked into release tarball: ${forbidden.join(', ')}`);
+
+    execFileSync('tar', ['-xzf', res.archive, '-C', unpackDir]);
+    const extractedRoot = path.join(unpackDir, `agy-studio-v${res.version}-macos`);
+    assert.equal(existsSync(path.join(extractedRoot, 'node_modules')), false, 'tarball must exclude node_modules');
+    assert.equal(existsSync(path.join(extractedRoot, 'test')), false, 'tarball must exclude test/');
+    assert.equal(existsSync(path.join(extractedRoot, 'user', 'custom.js')), true);
+    assert.equal(existsSync(path.join(extractedRoot, 'studio', 'prebuilt', 'studio-entry.js')), true);
+    assert.equal(existsSync(path.join(extractedRoot, 'install.sh')), true);
+    assert.equal(existsSync(path.join(extractedRoot, 'docs', 'INSTALL_AGENT.md')), true);
+
+    // Verify packaged user/custom.js matches a clean build (no personal prefs baked in)
+    const freshUser = await buildUserCustomJs({ writeToRepo: false, allowPrebuilt: false });
+    const packedUser = readFileSync(path.join(extractedRoot, 'user', 'custom.js'), 'utf8');
+    assert.equal(packedUser, freshUser.code, 'Packaged user/custom.js must match clean default build');
+
+    // Run extracted studio/build.mjs in an environment WITHOUT node_modules using MAGA_USE_PREBUILT=1
+    const fakeHome = path.join(unpackDir, 'fake-home');
+    mkdirSync(fakeHome, { recursive: true });
+    const verifyScript = `
+      import { buildStudioBundle, buildUserCustomJs } from './studio/build.mjs';
+      const u = await buildUserCustomJs({ writeToRepo: false, allowPrebuilt: true });
+      const b = await buildStudioBundle({ allowPrebuilt: true });
+      if (!u.prebuilt || u.bytes < 1000) throw new Error('Expected prebuilt user/custom.js');
+      if (!b.jsBlock.includes('createMagaKernel') || !b.cssBlock.includes('studio-settings.css')) {
+        throw new Error('Prebuilt studio bundle missing expected markers');
+      }
+      console.log(JSON.stringify({ ok: true, userBytes: u.bytes, studioBytes: b.jsBlock.length }));
+    `;
+    const checkOut = execFileSync(process.execPath, ['--input-type=module', '-e', verifyScript], {
+      cwd: extractedRoot,
+      env: { ...process.env, HOME: fakeHome, MAGA_USE_PREBUILT: '1' },
+      encoding: 'utf8',
+    });
+    const parsed = JSON.parse(checkOut.trim().split('\n').pop());
+    assert.equal(parsed.ok, true);
+
+    // Verify install.sh --dry-run detects prebuilt mode inside unpacked tarball
+    const dryOut = execFileSync('bash', [path.join(extractedRoot, 'install.sh'), '--dry-run'], {
+      cwd: extractedRoot,
+      env: { ...process.env, HOME: fakeHome },
+      encoding: 'utf8',
+    });
+    assert.match(dryOut, /\[dry-run\] mode=prebuilt/);
+  } finally {
+    rmSync(distOut, { recursive: true, force: true });
+    rmSync(unpackDir, { recursive: true, force: true });
+    rmSync(path.join(REPO, 'studio', 'prebuilt'), { recursive: true, force: true });
+  }
+});

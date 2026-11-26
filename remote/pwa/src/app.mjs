@@ -125,10 +125,18 @@ const state = {
 let wsClient = null;
 let snapshotRefreshTimer = null;
 let studioOverviewSeq = 0;
+let studioOverviewRetryTimer = null;
 let cancelConfirmTimer = null;
 let workspaceRefs = null;
 let globalListenersBound = false;
 const rootEl = document.getElementById('app');
+
+function clearStudioOverviewRetry() {
+  if (studioOverviewRetryTimer) {
+    clearTimeout(studioOverviewRetryTimer);
+    studioOverviewRetryTimer = null;
+  }
+}
 
 function getResolvedLayoutMode() {
   const w = typeof window !== 'undefined' ? window.innerWidth : DESKTOP_BREAKPOINT_PX;
@@ -305,6 +313,7 @@ function ensureWorkspaceShell() {
       state.studioDrawerOpen = false;
       state.selectedProjectId = '';
       state.resumeState = null;
+      clearStudioOverviewRetry();
       resetCancelConfirm();
       workspaceRefs = null;
       pairView.loadHealthForPairing();
@@ -568,6 +577,7 @@ function ensureWorkspaceShell() {
     resumeBanner,
     opusBanner,
     actionBanner,
+    composerCard,
     turboWriteLabel,
     turboWriteCheckbox,
     composerRow,
@@ -702,6 +712,8 @@ function syncComposerControls() {
   const hasSelection = Boolean(state.selectedId);
   const needTurboConfirm = requiresTurboAck(state.globalPreset);
 
+  refs.composerCard.setAttribute('data-writable', writable ? 'true' : 'false');
+  refs.composerCard.setAttribute('data-has-selection', hasSelection ? 'true' : 'false');
   refs.roleBanner.setAttribute('data-writable', writable ? 'true' : 'false');
   if (writable) {
     refs.roleBannerText.textContent = '受控远程操控模式：支持远程发送消息、停止当前任务与仅本次 (Allow Once) / 拒绝审批。';
@@ -1128,23 +1140,6 @@ function renderFilterChips() {
     );
   }
 
-  refs.filterRow.appendChild(
-    el('button', {
-      type: 'button',
-      className: 'rc-chip',
-      'aria-pressed': state.includeSubagents ? 'true' : 'false',
-      text: '含子代理',
-      onClick: () => {
-        state.includeSubagents = !state.includeSubagents;
-        renderFilterChips();
-        renderSidebarList();
-        if (wsClient) {
-          wsClient.refreshList(state.includeSubagents).then(applyConvoListResult).catch(() => {});
-        }
-      },
-    })
-  );
-
   refs.groupRow.appendChild(el('span', { className: 'rc-group-label', text: '排列' }));
   for (const grp of [
     { id: 'recent', label: '时间流' },
@@ -1165,6 +1160,23 @@ function renderFilterChips() {
       })
     );
   }
+
+  refs.groupRow.appendChild(
+    el('button', {
+      type: 'button',
+      className: 'rc-chip is-compact rc-group-subagent',
+      'aria-pressed': state.includeSubagents ? 'true' : 'false',
+      text: '含子代理',
+      onClick: () => {
+        state.includeSubagents = !state.includeSubagents;
+        renderFilterChips();
+        renderSidebarList();
+        if (wsClient) {
+          wsClient.refreshList(state.includeSubagents).then(applyConvoListResult).catch(() => {});
+        }
+      },
+    })
+  );
 }
 
 function buildConversationRow(c) {
@@ -1351,6 +1363,7 @@ function refreshStudioOverview(cascadeId = state.selectedId) {
     .then((ov) => {
       if (!ov || !wsClient || reqSeq !== studioOverviewSeq) return;
       if (reqCid && state.selectedId !== reqCid) return;
+      clearStudioOverviewRetry();
       state.studioOverview = ov;
       if (state.identity) {
         renderStudioPanels();
@@ -1359,7 +1372,17 @@ function refreshStudioOverview(cascadeId = state.selectedId) {
         syncComposerControls();
       }
     })
-    .catch(() => {});
+    .catch(() => {
+      if (!wsClient || !state.identity || state.studioOverview || state.wsStatus !== 'connected') return;
+      if (!studioOverviewRetryTimer) {
+        studioOverviewRetryTimer = setTimeout(() => {
+          studioOverviewRetryTimer = null;
+          if (wsClient && state.identity && state.wsStatus === 'connected') {
+            refreshStudioOverview(state.selectedId);
+          }
+        }, 2000);
+      }
+    });
 }
 
 function applySnapshot(cascadeId, snap) {
@@ -1479,11 +1502,16 @@ function handleTapDelta(delta) {
   if (!data || typeof data !== 'object') return;
 
   if (kind === 'host_status') {
+    const wasAttached = state.hostAttached;
     if ('hostAttached' in data) state.hostAttached = Boolean(data.hostAttached);
     if ('globalPreset' in data) updateGlobalPreset(data.globalPreset);
     if ('capabilities' in data) state.capabilities = data.capabilities;
     if ('source' in data) state.source = data.source;
     renderTopStatus();
+    renderStudioPanels();
+    if (!wasAttached && state.hostAttached) {
+      refreshAllData();
+    }
     return;
   }
 
@@ -1641,6 +1669,7 @@ function handleTapDelta(delta) {
 
 function startWorkspaceSession() {
   ensureGlobalUiListeners();
+  clearStudioOverviewRetry();
   if (wsClient) {
     wsClient.dispose();
     wsClient = null;
@@ -1650,7 +1679,10 @@ function startWorkspaceSession() {
     onStatus: (status, detail) => {
       state.wsStatus = status;
       state.wsDetail = detail || '';
-      if (state.identity) renderTopStatus();
+      if (state.identity) {
+        renderTopStatus();
+        renderStudioPanels();
+      }
     },
     onWelcome: (msg) => {
       if (msg.deviceRole && state.identity && state.identity.role !== msg.deviceRole) {

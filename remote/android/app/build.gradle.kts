@@ -8,6 +8,17 @@ val keystorePassword = System.getenv("AGY_KEYSTORE_PASSWORD") ?: (project.findPr
 val keyAliasProp = System.getenv("AGY_KEY_ALIAS") ?: (project.findProperty("agyKeyAlias") as String?) ?: "agy-remote"
 val keyPasswordProp = System.getenv("AGY_KEY_PASSWORD") ?: (project.findProperty("agyKeyPassword") as String?) ?: keystorePassword
 
+val defaultServerUrlProp = (
+    System.getenv("AGY_SERVER_URL")?.trim()?.takeIf { it.isNotBlank() }
+        ?: (project.findProperty("agyServerUrl") as String?)?.trim()?.takeIf { it.isNotBlank() }
+        ?: "https://example.invalid"
+).removeSuffix("/")
+val defaultServerHost = try {
+    java.net.URI(defaultServerUrlProp).host ?: "example.invalid"
+} catch (_: Exception) {
+    "example.invalid"
+}
+
 android {
     namespace = "com.agystudio.remote"
     compileSdk = 35
@@ -16,9 +27,10 @@ android {
         applicationId = "com.agystudio.remote"
         minSdk = 26
         targetSdk = 35
-        versionCode = 10401
-        versionName = "1.4.1"
-        buildConfigField("String", "DEFAULT_SERVER_URL", "\"https://agy.miracleli.com\"")
+        versionCode = 10402
+        versionName = "1.4.2"
+        buildConfigField("String", "DEFAULT_SERVER_URL", "\"${defaultServerUrlProp.replace("\"", "\\\"")}\"")
+        manifestPlaceholders["agyServerHost"] = defaultServerHost
     }
 
     signingConfigs {

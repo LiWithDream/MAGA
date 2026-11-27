@@ -446,6 +446,17 @@ test('deploy-meta provenance, single-desktop deploy guard & standalone studio/wt
     assert.match(blockedWtGuard.reason || '', /Currently live bundle was deployed from 'main'/);
     assert.match(blockedWtGuard.reason || '', /--preview/);
 
+    const blockedWtInstallGuard = evaluateDeployGuard(createdJson.worktreePath, { mode: 'install', metaPath });
+    assert.equal(blockedWtInstallGuard.allowed, false);
+    assert.match(blockedWtInstallGuard.reason || '', /--preview/);
+
+    const allowedWtInstallPreview = evaluateDeployGuard(createdJson.worktreePath, {
+      mode: 'install',
+      allowNonMain: true,
+      metaPath,
+    });
+    assert.equal(allowedWtInstallPreview.allowed, true);
+
     // Explicit preview flag permits deploy with daemon split-brain warning & previous-live notice
     const previewGuard = evaluateDeployGuard(createdJson.worktreePath, { allowNonMain: true, metaPath });
     assert.equal(previewGuard.allowed, true);
@@ -465,13 +476,20 @@ test('deploy-meta provenance, single-desktop deploy guard & standalone studio/wt
     const driftedGuard = evaluateDeployGuard(mainRepo, { metaPath });
     assert.equal(driftedGuard.allowed, false);
     assert.match(driftedGuard.reason || '', /feat\/drifted/);
+    const installNonMainGuard = evaluateDeployGuard(mainRepo, { mode: 'install', metaPath });
+    assert.equal(installNonMainGuard.allowed, true);
+    assert.equal(installNonMainGuard.preview, false);
     gitSync(mainRepo, ['checkout', 'main']);
 
-    // Dirty primary main also blocked unless allowNonMain (--force / --preview)
+    // Dirty primary main also blocked unless allowNonMain (--force / --preview) or mode === 'install'
     fs.writeFileSync(path.join(mainRepo, 'README.md'), '# Dirty main\n', 'utf8');
     const dirtyMainGuard = evaluateDeployGuard(mainRepo, { metaPath });
     assert.equal(dirtyMainGuard.allowed, false);
     assert.match(dirtyMainGuard.reason || '', /dirty primary/);
+    const installDirtyGuard = evaluateDeployGuard(mainRepo, { mode: 'install', metaPath });
+    assert.equal(installDirtyGuard.allowed, true);
+    assert.equal(installDirtyGuard.preview, false);
+    assert.ok(installDirtyGuard.warnings.some((w) => /uncommitted changes/i.test(w)));
     const dirtyMainForced = evaluateDeployGuard(mainRepo, { allowNonMain: true, metaPath });
     assert.equal(dirtyMainForced.allowed, true);
     assert.equal(dirtyMainForced.preview, true);

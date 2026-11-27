@@ -5,6 +5,18 @@ All notable changes to **AGY Studio (`agy-studio`, formerly MAGA)** will be docu
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.2] - 2026-11-27
+
+Hardened end-user & AI-assisted installation, refined `doctor` first-install status reporting, added `.gitattributes` line-ending hygiene, and removed personal default domains from Android/test fixtures.
+
+### Changed
+- **Install Guard Decoupling (`studio/deploy-meta.mjs`, `studio/build.mjs`, `studio/cli.mjs`)**: Added `mode: 'install'` to `evaluateDeployGuard` and `deployStudio` so end-user `install` commands are never blocked by dirty working trees (such as npm lockfile drift) or non-`main`/tag checkouts, while preserving strict `mode: 'deploy'` checks for contributors; also added Windows-safe atomic rename retry in `writeDeployMeta`.
+- **Android Default Server Parameterization (`remote/android/app/build.gradle.kts`, `remote/android/app/src/main/AndroidManifest.xml`, `test/remote-phase2.test.mjs`)**: Replaced hardcoded personal URL/host with `AGY_SERVER_URL` / `agyServerUrl` Gradle property & `manifestPlaceholders["agyServerHost"]` (defaulting to `https://example.invalid`) and neutralized personal domain strings in test fixtures.
+- **Idempotent Installer & Agent Docs (`install.sh`, `docs/INSTALL_AGENT.md`, `README.md`, `README.zh-CN.md`, `.gitattributes`)**: Switched `install.sh` to `git pull --ff-only --autostash` and `npm ci` (when `package-lock.json` is present), added `.gitattributes`, updated AI install prompts to handle existing clones cleanly, and forbade quitting/relaunching Antigravity from inside an active Antigravity session.
+
+### Fixed
+- **First-Install `doctor` Exit Status (`studio/cli.mjs`)**: Accepted `partial` status from `install.mjs doctor` without failing `studio/cli.mjs doctor`, and reported `cdpStatus: 'ready' | 'pending_restart'` with `restartRequired` + `restartHint` when `DevToolsActivePort` is not yet active.
+
 ## [1.4.1] - 2026-11-27
 
 Cross-device state synchronization fixes, Android bridge origin isolation, and OTA updater reliability hardening (following a full Claude Opus 5.5 read-only audit).

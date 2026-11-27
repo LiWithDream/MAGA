@@ -182,10 +182,10 @@
 把下面这段话直接发给 Antigravity 或 Claude Code：
 
 ```text
-帮我把 https://github.com/LiWithDream/agy-studio.git 克隆到 ~/Developer/agy-studio，先阅读 docs/INSTALL_AGENT.md，再执行 bash ./install.sh 并运行 node studio/cli.mjs doctor 验证状态。不要修改 /Applications/Antigravity.app，也不要删除现有对话和配置。
+先检查 Node.js >= 22（`node -v`）。若 ~/Developer/agy-studio/.git 已存在则执行 `git -C ~/Developer/agy-studio pull --ff-only --autostash`，否则将 https://github.com/LiWithDream/agy-studio.git 克隆到 ~/Developer/agy-studio；先阅读 docs/INSTALL_AGENT.md，再执行 bash ./install.sh 并运行 node studio/cli.mjs doctor 验证状态。不要修改 /Applications/Antigravity.app，不要删除现有对话和配置，也不要在当前 Antigravity 对话内部退出或重启客户端（若 doctor 返回 pending_restart，请提示我手动重启一次 Antigravity）。
 ```
 
-> **安全无侵入**：不修改 `/Applications/Antigravity.app`，所有数据留在本地，随时执行 `bash ./uninstall.sh` 即可无痕还原 → [了解安全与性能设计](#safe-fast)。
+> **安全无侵入**：不修改 `/Applications/Antigravity.app`，所有数据留在本地，随时执行 `bash ./uninstall.sh` 即可无痕还原 → [了解安全与性能设计](#safe-fast)。*（`v1.4.x` 目前仅支持 macOS，请勿在 Windows 上运行 `bash ./install.sh`；Windows 10/11 原生支持将在随后的 `v1.5.0` 合入。）*
 
 <details>
 <summary><b>其他安装方式（预编译 Release 压缩包 / 源码安装 / 诊断与卸载）</b></summary>
@@ -260,7 +260,7 @@ bash ./install.sh
 | 根 DOM 观测器数量（`MagaKernel`） | **`1`** 个统一 `MutationObserver`（`data-maga-own` 自隔离） |
 | 主线程刷帧耗时（Apple Silicon 本地 CDP 实测） | **`1.5–3.6 ms`**，高频遥测走叶节点原地更新（`MetricsBus`） |
 | 全局 CSS `:has()` 选择器数量 | **`0`**（自动化测试硬守卫） |
-| 自动化回归与不变量测试（`npm test`） | **`210+`** 项全部通过，**`0`** 项跳过 |
+| 自动化回归与不变量测试（`npm test`） | **`215+`** 项全部通过，**`0`** 项跳过 |
 | 后台进程占用 | **`1`** 个本地 macOS `LaunchAgent` |
 
 ---
@@ -351,7 +351,7 @@ bash ./install.sh
 │   ├── styles/            # 作用域样式表（全仓 0 条 :has() 选择器）
 │   ├── cli.mjs            # 统一 CLI（install / deploy / sync-rules / doctor / rollback / remote）
 │   └── pack-release.mjs   # 零依赖 Release 压缩包打包器
-├── test/                  # 自动化测试套件（210+ 项回归与架构守卫）
+├── test/                  # 自动化测试套件（215+ 项回归与架构守卫）
 ├── install.sh             # 一键安装脚本（支持 --dry-run、预编包与源码模式）
 └── uninstall.sh           # 一键无痕回滚卸载脚本（支持 --dry-run）
 ```
@@ -359,7 +359,7 @@ bash ./install.sh
 | 开发者命令 | 作用 |
 | :--- | :--- |
 | `npm run wt:new -- feat/slug` | 创建隔离开发用 Git Worktree 并自动软链 `node_modules` |
-| `npm test` | 编译 `user/custom.js` 并运行全部 210+ 项回归与不变量测试 |
+| `npm test` | 编译 `user/custom.js` 并运行全部 215+ 项回归与不变量测试 |
 | `npm run deploy` | 在干净 `main` 上秒级热更新至运行中的 Antigravity（无需重启客户端） |
 | `npm run release:pack` | 生成零 `npm install` 的 macOS Release 压缩包及 SHA-256 校验文件到 `dist/` |
 

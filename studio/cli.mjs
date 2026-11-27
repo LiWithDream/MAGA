@@ -27,7 +27,7 @@ import {
   stripBlock,
   stripStudioBlocksOnly,
 } from './build.mjs';
-import { QUOTA_STATE_FILE } from '../core/daemon/env.mjs';
+import { QUOTA_STATE_FILE, discoverEndpoints } from '../core/daemon/env.mjs';
 import { collectUsageStatsAsync } from './daemon/usage-service.mjs';
 import {
   isOpusGatePluginInstalled,
@@ -159,7 +159,7 @@ async function runAntiClaudeInstall() {
   await applyDefaultOrchestratorModelPreference();
 }
 
-async function runDoctor() {
+export async function runDoctor() {
   let baseDoctor = null;
   try {
     const out = execFileSync(process.execPath, [path.join(REPO_ROOT, 'install.mjs'), 'doctor'], {
@@ -183,6 +183,16 @@ async function runDoctor() {
   const deployMeta = readDeployMeta();
   const remoteControl = collectRemoteControlDiagnostics();
 
+  const baseDoctorOk = Boolean(
+    baseDoctor && !baseDoctor.error && (baseDoctor.ok === true || baseDoctor.status === 'partial')
+  );
+  const devToolsPortPresent = discoverEndpoints().some((ep) => Boolean(ep.portFile && existsSync(ep.portFile)));
+  const cdpStatus = devToolsPortPresent ? 'ready' : 'pending_restart';
+  const restartRequired = !devToolsPortPresent;
+  const restartHint = restartRequired
+    ? 'Antigravity is not yet exposing DevToolsActivePort. Ask the user to manually quit and reopen Antigravity once (never force-kill from inside an active Antigravity session) so the daemon can attach via CDP.'
+    : null;
+
   let daemonAlignedWithDeploy = true;
   if (daemonRepoDir && deployMeta.present && deployMeta.meta?.worktreePath) {
     try {
@@ -202,13 +212,16 @@ async function runDoctor() {
 
   return {
     ok: Boolean(
-      baseDoctor?.ok &&
+      baseDoctorOk &&
       pointsToStudio &&
       hasJsMarker &&
       hasCssMarker &&
       usage?.ok &&
       remoteControl.ok
     ),
+    cdpStatus,
+    restartRequired,
+    ...(restartHint ? { restartHint } : {}),
     repoRoot: REPO_ROOT,
     daemonRepoDir,
     daemonAlignedWithDeploy,
@@ -287,12 +300,12 @@ if (isMainModule) {
 
   try {
     if (cmd === 'install') {
-      const installGuard = evaluateDeployGuard(REPO_ROOT, { allowNonMain: allowNonMainDeploy });
+      const installGuard = evaluateDeployGuard(REPO_ROOT, { allowNonMain: allowNonMainDeploy, mode: 'install' });
       if (!installGuard.allowed) {
         throw new Error(installGuard.reason);
       }
       await runAntiClaudeInstall();
-      const deployRes = await deployStudio({ allowNonMain: allowNonMainDeploy });
+      const deployRes = await deployStudio({ allowNonMain: allowNonMainDeploy, mode: 'install' });
       const rulesRes = skipRulesSync
         ? { ok: true, skipped: true, reason: '--no-rules' }
         : syncFastIoRules();

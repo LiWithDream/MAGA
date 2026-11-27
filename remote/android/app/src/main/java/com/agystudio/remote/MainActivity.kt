@@ -5,6 +5,7 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
 import android.content.res.Configuration
+import android.graphics.Bitmap
 import android.graphics.Color
 import android.net.ConnectivityManager
 import android.net.Network
@@ -73,6 +74,9 @@ class MainActivity : AppCompatActivity(), NativeBridge.HostActions {
     private var lastNetworkOnline: Boolean = true
     private var lastNetworkTransport: String = ""
     private var networkCallbackRegistered: Boolean = false
+    @Volatile
+    private var currentMainFrameOrigin: String = ""
+    private var authRedirectActive: Boolean = false
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val ioExecutor = Executors.newSingleThreadExecutor()
@@ -137,6 +141,12 @@ class MainActivity : AppCompatActivity(), NativeBridge.HostActions {
         KeepAliveService.onStoppedListener = {
             runOnUiThread {
                 Toast.makeText(this, "已停止后台常驻监听", Toast.LENGTH_SHORT).show()
+                if (webReady && isTrustedServerOrigin(extractOrigin(webView.url))) {
+                    webView.evaluateJavascript(
+                        "window.__agyNativeKeepAliveChanged && window.__agyNativeKeepAliveChanged(false);",
+                        null
+                    )
+                }
             }
         }
         if (ServerPrefs.isKeepAliveEnabled(this)) {
@@ -243,7 +253,7 @@ class MainActivity : AppCompatActivity(), NativeBridge.HostActions {
         }
         val switchServerBtn = Button(this).apply {
             text = "切换服务器地址"
-            setOnClickListener { onOpenSettings() }
+            setOnClickListener { openNativeSettingsDialog() }
         }
 
         errorOverlay = LinearLayout(this).apply {
@@ -383,25 +393,58 @@ class MainActivity : AppCompatActivity(), NativeBridge.HostActions {
                     openExternally(uri)
                     return true
                 }
-                val currentHost = view?.url?.let { runCatching { Uri.parse(it).host?.lowercase() }.getOrNull() }
-                val serverHost = Uri.parse(ServerPrefs.getServerUrl(this@MainActivity)).host?.lowercase()?.trim()
-                val inAuthFlow = !currentHost.isNullOrEmpty() && !serverHost.isNullOrEmpty() && currentHost != serverHost
-                // Always keep server/Access redirects and active OAuth flows inside WebView;
-                // user-tapped external links (e.g. Google Drive / GitHub) inside chat open externally.
-                if (inAuthFlow || req.isRedirect || !req.hasGesture() || isServerOrAccessHost(uri.host)) {
+                val targetHost = uri.host?.lowercase()?.trim()
+                val currentHost = view?.url?.let { runCatching { Uri.parse(it).host?.lowercase()?.trim() }.getOrNull() }
+                if (isAccessHost(targetHost) || (isServerHost(currentHost) && req.isRedirect && !isServerHost(targetHost))) {
+                    authRedirectActive = true
+                }
+                // Always keep exact server host, Cloudflare Access, and active IdP OAuth flows inside WebView;
+                // user-tapped external links inside chat open in external browser/app.
+                if (isServerOrAccessHost(targetHost) ||
+                    (authRedirectActive && (req.isRedirect || !req.hasGesture() || isKnownAuthHost(targetHost)))
+                ) {
                     return false
                 }
                 openExternally(uri)
                 return true
             }
 
+            override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+                super.onPageStarted(view, url, favicon)
+                val origin = extractOrigin(url)
+                currentMainFrameOrigin = origin
+                if (!isTrustedServerOrigin(origin)) {
+                    webReady = false
+                    val host = url?.let { runCatching { Uri.parse(it).host }.getOrNull() }
+                    if (isAccessHost(host)) {
+                        authRedirectActive = true
+                    }
+                }
+            }
+
+            override fun doUpdateVisitedHistory(view: WebView?, url: String?, isReload: Boolean) {
+                super.doUpdateVisitedHistory(view, url, isReload)
+                val origin = extractOrigin(url)
+                currentMainFrameOrigin = origin
+                if (!isTrustedServerOrigin(origin)) {
+                    webReady = false
+                }
+            }
+
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
+                val origin = extractOrigin(url)
+                currentMainFrameOrigin = origin
+                if (isTrustedServerOrigin(origin)) {
+                    authRedirectActive = false
+                } else {
+                    webReady = false
+                }
                 pageLoadedOnce = true
                 errorOverlay.visibility = View.GONE
                 CookieManager.getInstance().flush()
                 pushLastInsetsToWeb()
-                if (webReady) {
+                if (webReady && isTrustedServerOrigin(origin)) {
                     flushPendingDispatches()
                 }
             }
@@ -426,18 +469,56 @@ class MainActivity : AppCompatActivity(), NativeBridge.HostActions {
         }
     }
 
-    private fun isServerOrAccessHost(host: String?): Boolean {
-        val target = host?.lowercase()?.trim() ?: return false
-        val serverHost = Uri.parse(ServerPrefs.getServerUrl(this)).host?.lowercase()?.trim()
-        if (!serverHost.isNullOrEmpty()) {
-            if (target == serverHost) return true
-            val parts = serverHost.split(".")
-            if (parts.size >= 2) {
-                val rootDomain = parts.takeLast(2).joinToString(".")
-                if (target == rootDomain || target.endsWith(".$rootDomain")) return true
-            }
+    private fun extractOrigin(rawUrl: String?): String {
+        val raw = rawUrl?.trim().orEmpty()
+        if (raw.isEmpty()) return ""
+        return try {
+            val uri = Uri.parse(raw)
+            val scheme = uri.scheme?.lowercase()?.trim().orEmpty()
+            val host = uri.host?.lowercase()?.trim().orEmpty()
+            if ((scheme != "http" && scheme != "https") || host.isEmpty()) return ""
+            val port = uri.port
+            val omitPort = port <= 0 || (scheme == "http" && port == 80) || (scheme == "https" && port == 443)
+            if (omitPort) "$scheme://$host" else "$scheme://$host:$port"
+        } catch (_: Exception) {
+            ""
         }
+    }
+
+    private fun expectedServerOrigin(): String = extractOrigin(ServerPrefs.getServerUrl(this))
+
+    private fun isTrustedServerOrigin(origin: String? = currentMainFrameOrigin): Boolean {
+        val expected = expectedServerOrigin()
+        val candidate = origin?.trim().orEmpty()
+        return expected.isNotEmpty() && candidate == expected
+    }
+
+    private fun isServerHost(host: String?): Boolean {
+        val target = host?.lowercase()?.trim() ?: return false
+        val serverHost = runCatching { Uri.parse(ServerPrefs.getServerUrl(this)).host?.lowercase()?.trim() }.getOrNull()
+        return !serverHost.isNullOrEmpty() && target == serverHost
+    }
+
+    private fun isAccessHost(host: String?): Boolean {
+        val target = host?.lowercase()?.trim() ?: return false
         return target == "cloudflareaccess.com" || target.endsWith(".cloudflareaccess.com")
+    }
+
+    private fun isServerOrAccessHost(host: String?): Boolean = isServerHost(host) || isAccessHost(host)
+
+    private fun isKnownAuthHost(host: String?): Boolean {
+        val target = host?.lowercase()?.trim() ?: return false
+        if (isAccessHost(target)) return true
+        return target == "accounts.google.com" ||
+            target == "google.com" || target.endsWith(".google.com") ||
+            target.endsWith(".googleapis.com") ||
+            target.endsWith(".gstatic.com") ||
+            target == "login.microsoftonline.com" ||
+            target == "login.live.com" ||
+            target == "github.com" || target.endsWith(".github.com") ||
+            target == "appleid.apple.com" ||
+            target.endsWith(".okta.com") ||
+            target.endsWith(".auth0.com")
     }
 
     private fun openExternally(uri: Uri) {
@@ -514,8 +595,9 @@ class MainActivity : AppCompatActivity(), NativeBridge.HostActions {
 
     private fun pushLastNetworkToWeb() {
         val json = lastNetworkJson ?: return
-        if (!webReady) return
+        if (!webReady || !isTrustedServerOrigin()) return
         webView.post {
+            if (!isTrustedServerOrigin(extractOrigin(webView.url))) return@post
             webView.evaluateJavascript(
                 "window.__agyNativeNetworkChange && window.__agyNativeNetworkChange($json);",
                 null
@@ -605,7 +687,7 @@ class MainActivity : AppCompatActivity(), NativeBridge.HostActions {
             val now = System.currentTimeMillis()
             if (now - lastThreeFingerTriggerMs > 800L) {
                 lastThreeFingerTriggerMs = now
-                onOpenSettings()
+                openNativeSettingsDialog()
                 return true
             }
         }
@@ -630,7 +712,7 @@ class MainActivity : AppCompatActivity(), NativeBridge.HostActions {
         if (intent == null) return
         if (intent.action == Intent.ACTION_VIEW) {
             val viewUri = intent.data
-            if (viewUri != null && (viewUri.scheme == "https" || viewUri.scheme == "http") && isServerOrAccessHost(viewUri.host)) {
+            if (viewUri != null && (viewUri.scheme == "https" || viewUri.scheme == "http") && isServerHost(viewUri.host)) {
                 pendingLaunchUrl = viewUri.toString()
             }
         }
@@ -673,12 +755,13 @@ class MainActivity : AppCompatActivity(), NativeBridge.HostActions {
     }
 
     private fun flushPendingDispatches() {
-        if (!webReady) return
+        if (!webReady || !isTrustedServerOrigin(extractOrigin(webView.url))) return
         val cid = pendingFocusCascadeId
         if (!cid.isNullOrEmpty()) {
             pendingFocusCascadeId = null
             val quoted = JSONObject.quote(cid)
             webView.post {
+                if (!isTrustedServerOrigin(extractOrigin(webView.url))) return@post
                 webView.evaluateJavascript(
                     "window.__agyFocusConversation && window.__agyFocusConversation($quoted);",
                     null
@@ -689,6 +772,7 @@ class MainActivity : AppCompatActivity(), NativeBridge.HostActions {
         if (!mediaJson.isNullOrEmpty()) {
             pendingSharedMediaJson = null
             webView.post {
+                if (!isTrustedServerOrigin(extractOrigin(webView.url))) return@post
                 webView.evaluateJavascript(
                     "window.__agyReceiveSharedMedia && window.__agyReceiveSharedMedia($mediaJson);",
                     null
@@ -699,6 +783,8 @@ class MainActivity : AppCompatActivity(), NativeBridge.HostActions {
 
     private fun loadCurrentServer(clearCache: Boolean) {
         errorOverlay.visibility = View.GONE
+        currentMainFrameOrigin = ""
+        authRedirectActive = false
         webReady = false
         if (clearCache) {
             webView.clearCache(true)
@@ -720,10 +806,12 @@ class MainActivity : AppCompatActivity(), NativeBridge.HostActions {
         syncSystemBarIconAppearance()
         CookieManager.getInstance().flush()
         syncNetworkStateNow(pushToWeb = true)
+        AppUpdater.resumePendingInstall(this)
         val now = System.currentTimeMillis()
-        if (webReady && now - lastResumeDispatchMs > 600L) {
+        if (webReady && isTrustedServerOrigin(extractOrigin(webView.url)) && now - lastResumeDispatchMs > 600L) {
             lastResumeDispatchMs = now
             webView.post {
+                if (!isTrustedServerOrigin(extractOrigin(webView.url))) return@post
                 webView.evaluateJavascript(
                     "window.__agyNativeResume && window.__agyNativeResume();",
                     null
@@ -739,28 +827,38 @@ class MainActivity : AppCompatActivity(), NativeBridge.HostActions {
 
     override fun onDestroy() {
         KeepAliveService.onStoppedListener = null
+        AppUpdater.onActivityDestroyed(this)
         unregisterNetworkMonitor()
         ioExecutor.shutdownNow()
+        runCatching { webView.removeJavascriptInterface("__agyNative") }
         webView.destroy()
         super.onDestroy()
     }
 
+    private fun openNativeSettingsDialog() {
+        SettingsDialog.show(
+            context = this,
+            onServerUrlUpdated = { _ -> loadCurrentServer(clearCache = false) },
+            onForceReload = { clear -> loadCurrentServer(clearCache = clear) },
+            onKeepAliveToggled = { enabled -> applyKeepAliveToggle(enabled) },
+            onCheckForUpdate = { AppUpdater.checkForUpdate(this, false) }
+        )
+    }
+
     override fun onOpenSettings() {
+        if (!isTrustedServerOrigin()) return
         runOnUiThread {
-            SettingsDialog.show(
-                context = this,
-                onServerUrlUpdated = { _ -> loadCurrentServer(clearCache = false) },
-                onForceReload = { clear -> loadCurrentServer(clearCache = clear) },
-                onKeepAliveToggled = { enabled -> onSetKeepAliveEnabled(enabled) },
-                onCheckForUpdate = { onCheckForUpdate(false) }
-            )
+            if (!isTrustedServerOrigin(extractOrigin(webView.url))) return@runOnUiThread
+            openNativeSettingsDialog()
         }
     }
 
     override fun onNotify(title: String, body: String, tag: String, category: String, cascadeId: String) {
+        if (!isTrustedServerOrigin()) return
         runOnUiThread {
+            if (!isTrustedServerOrigin(extractOrigin(webView.url))) return@runOnUiThread
             if (!NotificationHelper.hasNotificationPermission(this)) {
-                onRequestNotificationPermission()
+                requestPostNotificationPermission()
                 return@runOnUiThread
             }
             NotificationHelper.showNotification(this, title, body, tag, category, cascadeId)
@@ -768,25 +866,37 @@ class MainActivity : AppCompatActivity(), NativeBridge.HostActions {
     }
 
     override fun onVibrate(timings: LongArray) {
+        if (!isTrustedServerOrigin()) return
         NotificationHelper.vibratePattern(applicationContext, timings)
     }
 
+    private fun requestPostNotificationPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !NotificationHelper.hasNotificationPermission(this)) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+
     override fun onRequestNotificationPermission() {
+        if (!isTrustedServerOrigin()) return
         runOnUiThread {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !NotificationHelper.hasNotificationPermission(this)) {
-                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-            }
+            if (!isTrustedServerOrigin(extractOrigin(webView.url))) return@runOnUiThread
+            requestPostNotificationPermission()
         }
     }
 
     override fun onReloadPage(clearCache: Boolean) {
+        if (!isTrustedServerOrigin()) return
         runOnUiThread {
+            if (!isTrustedServerOrigin(extractOrigin(webView.url))) return@runOnUiThread
             loadCurrentServer(clearCache = clearCache)
         }
     }
 
     override fun onWebReady() {
         runOnUiThread {
+            val liveOrigin = extractOrigin(webView.url)
+            if (liveOrigin.isNotEmpty()) currentMainFrameOrigin = liveOrigin
+            if (!isTrustedServerOrigin()) return@runOnUiThread
             webReady = true
             pushLastInsetsToWeb()
             pushLastNetworkToWeb()
@@ -794,7 +904,7 @@ class MainActivity : AppCompatActivity(), NativeBridge.HostActions {
             if (!hasAutoCheckedUpdate) {
                 hasAutoCheckedUpdate = true
                 mainHandler.postDelayed({
-                    if (!isFinishing && !isDestroyed) {
+                    if (!isFinishing && !isDestroyed && isTrustedServerOrigin(extractOrigin(webView.url))) {
                         AppUpdater.checkForUpdate(this, silent = true)
                     }
                 }, 3500L)
@@ -802,18 +912,24 @@ class MainActivity : AppCompatActivity(), NativeBridge.HostActions {
         }
     }
 
-    override fun getCurrentServerUrl(): String = ServerPrefs.getServerUrl(this)
+    override fun getCurrentServerUrl(): String {
+        if (!isTrustedServerOrigin()) return ""
+        return ServerPrefs.getServerUrl(this)
+    }
 
-    override fun isKeepAliveEnabled(): Boolean = ServerPrefs.isKeepAliveEnabled(this)
+    override fun isKeepAliveEnabled(): Boolean {
+        if (!isTrustedServerOrigin()) return false
+        return ServerPrefs.isKeepAliveEnabled(this)
+    }
 
-    override fun onSetKeepAliveEnabled(enabled: Boolean): Boolean {
+    private fun applyKeepAliveToggle(enabled: Boolean): Boolean {
         if (!enabled) {
             ServerPrefs.setKeepAliveEnabled(this, false)
             KeepAliveService.stop(this)
             return false
         }
         if (!NotificationHelper.hasNotificationPermission(this)) {
-            onRequestNotificationPermission()
+            runOnUiThread { requestPostNotificationPermission() }
         }
         val started = KeepAliveService.start(this, KeepAliveService.lastStatusText)
         ServerPrefs.setKeepAliveEnabled(this, started)
@@ -825,11 +941,21 @@ class MainActivity : AppCompatActivity(), NativeBridge.HostActions {
         return started
     }
 
+    override fun onSetKeepAliveEnabled(enabled: Boolean): Boolean {
+        if (!isTrustedServerOrigin()) return false
+        return applyKeepAliveToggle(enabled)
+    }
+
     override fun onUpdateKeepAliveStatus(statusText: String) {
+        if (!isTrustedServerOrigin()) return
         KeepAliveService.updateStatus(this, statusText)
     }
 
     override fun onCheckForUpdate(silent: Boolean) {
-        AppUpdater.checkForUpdate(this, silent)
+        if (!isTrustedServerOrigin()) return
+        runOnUiThread {
+            if (!isTrustedServerOrigin(extractOrigin(webView.url))) return@runOnUiThread
+            AppUpdater.checkForUpdate(this, silent)
+        }
     }
 }

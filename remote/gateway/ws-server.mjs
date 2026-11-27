@@ -254,6 +254,15 @@ export function createWsServer({
       return null;
     }
     client.device.role = nextRole;
+    if (nextRank > prevRank) {
+      audit?.append('device_role_promoted', {
+        deviceId: did,
+        fromRole: prevRole,
+        toRole: nextRole,
+        clientKey: client.clientKey,
+      });
+      client.sendJson({ type: 'role_changed', role: nextRole });
+    }
     return liveDevice;
   }
 

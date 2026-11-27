@@ -151,6 +151,7 @@ export function bindNativeAndroidBridge({
   onNavigateToList,
   onNativeResume,
   onNativeNetworkChange,
+  onNativeKeepAliveChanged,
 } = {}) {
   if (typeof window === 'undefined') return () => {};
   const native = getNativeBridge();
@@ -160,6 +161,16 @@ export function bindNativeAndroidBridge({
 
   window.__agyApplyNativeInsets = (insets) => {
     applyNativeInsets(insets);
+  };
+
+  window.__agyNativeKeepAliveChanged = (enabled) => {
+    lastKeepAliveStatusText = '';
+    try {
+      onNativeKeepAliveChanged?.(Boolean(enabled));
+      return true;
+    } catch {
+      return false;
+    }
   };
 
   window.__agyNativeResume = () => {
@@ -257,6 +268,7 @@ export function bindNativeAndroidBridge({
 
   return () => {
     delete window.__agyApplyNativeInsets;
+    delete window.__agyNativeKeepAliveChanged;
     delete window.__agyNativeResume;
     delete window.__agyNativeNetworkChange;
     delete window.__agyNativeBack;

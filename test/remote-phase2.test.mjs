@@ -2646,16 +2646,21 @@ test('Android OTA Gateway Endpoints & Native Keep-Alive / Update Bridge', async 
 
     assert.equal(nativeBridgeMod.getNativeAppVersion(), '1.4.0');
     assert.equal(nativeBridgeMod.isNativeKeepAliveEnabled(), false);
+
+    // Status emitted while keep-alive is OFF must not poison dedup once toggled ON
+    const noticeHost = dom.window.document.createElement('div');
+    const connState = { wsStatus: 'connected', wsRttMs: 28, hostAttached: true, conversations: [] };
+    mobileEnhMod.renderConnectionNoticeBar(noticeHost, { state: connState });
+    assert.equal(statusUpdates.length, 0, 'does not emit keep-alive status while service disabled');
+
     assert.equal(nativeBridgeMod.setNativeKeepAliveEnabled(true), true);
     assert.equal(nativeBridgeMod.isNativeKeepAliveEnabled(), true);
     nativeBridgeMod.checkNativeAppUpdate(false);
     assert.deepEqual(updateChecks, [false]);
 
-    const noticeHost = dom.window.document.createElement('div');
-    const connState = { wsStatus: 'connected', wsRttMs: 28, hostAttached: true, conversations: [] };
     mobileEnhMod.renderConnectionNoticeBar(noticeHost, { state: connState });
     mobileEnhMod.renderConnectionNoticeBar(noticeHost, { state: connState });
-    assert.equal(statusUpdates.length, 1, 'identical keep-alive status must be deduplicated');
+    assert.equal(statusUpdates.length, 1, 'identical keep-alive status must be deduplicated while enabled');
     assert.match(statusUpdates[0], /已连接.*28ms/);
 
     mobileEnhMod.renderConnectionNoticeBar(noticeHost, {
@@ -2670,7 +2675,7 @@ test('Android OTA Gateway Endpoints & Native Keep-Alive / Update Bridge', async 
     assert.match(statusUpdates[1], /2 项待审批/);
 
     const menuEl = dom.window.document.createElement('div');
-    let menuUpdates = 0;
+    const notices = [];
     const menuCtrl = mobileEnhMod.createMoreMenuController({
       state: {
         moreMenuOpen: true,
@@ -2688,7 +2693,7 @@ test('Android OTA Gateway Endpoints & Native Keep-Alive / Update Bridge', async 
       formatPresetBadge: () => ({ label: 'REVIEW (2)' }),
       layoutButtonLabel: () => '视图: 自动',
       alertManager: { getAlertLabel: () => '提醒：开', toggleAlerts: () => true },
-      setActionNotice: () => {},
+      setActionNotice: (msg) => notices.push(msg),
       writeLayoutPref: () => {},
       applyLayoutAttrs: () => {},
       renderSidebarList: () => {},
@@ -2697,13 +2702,34 @@ test('Android OTA Gateway Endpoints & Native Keep-Alive / Update Bridge', async 
       handleUnpairDevice: () => {},
     });
     menuCtrl.render();
-    const btns = Array.from(menuEl.querySelectorAll('button.rc-more-item'));
+    let btns = Array.from(menuEl.querySelectorAll('button.rc-more-item'));
     const kaBtn = btns.find((b) => /后台常驻监听：已开启/.test(b.textContent || ''));
     const updBtn = btns.find((b) => /检查 App 更新 \(v1\.4\.0\)/.test(b.textContent || ''));
     assert.ok(kaBtn, 'more menu must show keep-alive toggle inside native APK');
     assert.ok(updBtn, 'more menu must show check-update button with current version');
     kaBtn.click();
     assert.equal(keepAliveFlag, false);
+
+    // If Android FGS start is blocked (setKeepAliveEnabled returns false), show block notice and stay disabled
+    dom.window.__agyNative.setKeepAliveEnabled = () => {
+      keepAliveFlag = false;
+      return false;
+    };
+    btns = Array.from(menuEl.querySelectorAll('button.rc-more-item'));
+    const kaOffBtn = btns.find((b) => /后台常驻监听：已关闭/.test(b.textContent || ''));
+    assert.ok(kaOffBtn);
+    kaOffBtn.click();
+    assert.match(notices[notices.length - 1], /系统当前限制开启后台常驻监听/);
+
+    // Turning back on pushes current status immediately
+    dom.window.__agyNative.setKeepAliveEnabled = (v) => {
+      keepAliveFlag = Boolean(v);
+      return keepAliveFlag;
+    };
+    Array.from(menuEl.querySelectorAll('button.rc-more-item')).find((b) => /后台常驻监听/.test(b.textContent || '')).click();
+    assert.equal(statusUpdates.length, 3);
+    assert.match(statusUpdates[2], /已连接.*28ms/);
+
     updBtn.click();
     assert.deepEqual(updateChecks, [false, false]);
     delete dom.window.__agyNative;

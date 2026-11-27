@@ -1052,10 +1052,17 @@ export function createMoreMenuController({
           : null,
       onToggleKeepAlive: nativeMode
         ? () => {
-            const next = !isNativeKeepAliveEnabled();
-            setNativeKeepAliveEnabled(next);
+            const want = !isNativeKeepAliveEnabled();
+            const actual = setNativeKeepAliveEnabled(want);
+            if (actual) {
+              updateNativeKeepAliveStatus(buildKeepAliveStatusLine(state));
+            }
             render();
-            setActionNotice(next ? '已开启后台常驻监听（通知栏可查看状态）' : '已关闭后台常驻监听');
+            if (want && !actual) {
+              setActionNotice('系统当前限制开启后台常驻监听，请检查电池优化设置');
+            } else {
+              setActionNotice(actual ? '已开启后台常驻监听（通知栏可查看状态）' : '已关闭后台常驻监听');
+            }
           }
         : null,
       onCheckForUpdate: nativeMode

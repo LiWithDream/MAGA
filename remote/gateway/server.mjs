@@ -6,6 +6,7 @@
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
+import { pipeline } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 
 import { createAuditLogger } from './audit.mjs';
@@ -351,14 +352,11 @@ export async function createGatewayServer(options = {}) {
           return;
         }
         const apkStream = fs.createReadStream(info.apkPath);
-        apkStream.on('error', () => {
-          if (!res.headersSent) {
+        pipeline(apkStream, res, (err) => {
+          if (err && !res.headersSent) {
             sendJson(res, 500, { ok: false, error: 'apk_read_error' });
-          } else {
-            res.destroy();
           }
         });
-        apkStream.pipe(res);
         return;
       }
 

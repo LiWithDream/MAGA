@@ -87,6 +87,7 @@ export function isNativeKeepAliveEnabled() {
 
 export function setNativeKeepAliveEnabled(enabled) {
   const b = getNativeBridge();
+  lastKeepAliveStatusText = '';
   if (!b || typeof b.setKeepAliveEnabled !== 'function') return false;
   try {
     return Boolean(b.setKeepAliveEnabled(Boolean(enabled)));
@@ -103,6 +104,7 @@ export function updateNativeKeepAliveStatus(text) {
   if (!b || typeof b.updateKeepAliveStatus !== 'function') return false;
   const clean = String(text || '').trim().slice(0, 120);
   if (!clean) return false;
+  if (!isNativeKeepAliveEnabled()) return false;
   if (b === lastKeepAliveBridgeRef && clean === lastKeepAliveStatusText) return false;
   lastKeepAliveBridgeRef = b;
   lastKeepAliveStatusText = clean;

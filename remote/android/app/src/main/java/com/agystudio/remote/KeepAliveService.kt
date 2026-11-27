@@ -16,7 +16,6 @@ class KeepAliveService : Service() {
     companion object {
         const val NOTIF_ID = 10401
         const val ACTION_START = "com.agystudio.remote.KEEPALIVE_START"
-        const val ACTION_UPDATE = "com.agystudio.remote.KEEPALIVE_UPDATE"
         const val ACTION_STOP = "com.agystudio.remote.KEEPALIVE_STOP"
         const val EXTRA_STATUS = "status_text"
 
@@ -25,21 +24,39 @@ class KeepAliveService : Service() {
             private set
 
         @Volatile
+        var lastStatusText: String = "等待桌面端审批与任务完成提醒"
+            private set
+
+        @Volatile
         var onStoppedListener: (() -> Unit)? = null
 
-        fun start(context: Context, statusText: String = "等待桌面端审批与任务完成提醒") {
+        fun start(context: Context, statusText: String = lastStatusText): Boolean {
+            val cleanStatus = statusText.trim().ifEmpty { lastStatusText }
+            lastStatusText = cleanStatus
             val intent = Intent(context, KeepAliveService::class.java).apply {
                 action = ACTION_START
-                putExtra(EXTRA_STATUS, statusText)
+                putExtra(EXTRA_STATUS, cleanStatus)
             }
-            ContextCompat.startForegroundService(context, intent)
+            return try {
+                ContextCompat.startForegroundService(context, intent)
+                true
+            } catch (_: Exception) {
+                isRunning = false
+                ServerPrefs.setKeepAliveEnabled(context, false)
+                false
+            }
         }
 
         fun updateStatus(context: Context, statusText: String) {
+            val cleanStatus = statusText.trim().ifEmpty { return }
+            lastStatusText = cleanStatus
             if (!isRunning) return
-            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
-            NotificationHelper.ensureChannels(context)
-            nm.notify(NOTIF_ID, buildNotification(context, statusText))
+            try {
+                val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
+                NotificationHelper.ensureChannels(context)
+                nm.notify(NOTIF_ID, buildNotification(context, cleanStatus))
+            } catch (_: Exception) {
+            }
         }
 
         fun stop(context: Context) {
@@ -94,26 +111,36 @@ class KeepAliveService : Service() {
             ServerPrefs.setKeepAliveEnabled(this, false)
             isRunning = false
             onStoppedListener?.invoke()
-            stopForeground(STOP_FOREGROUND_REMOVE)
+            runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
             stopSelf()
             return START_NOT_STICKY
         }
 
         NotificationHelper.ensureChannels(this)
-        val statusText = intent?.getStringExtra(EXTRA_STATUS).orEmpty().ifBlank { "等待桌面端审批与任务完成提醒" }
+        val statusText = intent?.getStringExtra(EXTRA_STATUS).orEmpty().ifBlank { lastStatusText }
+        lastStatusText = statusText
         val notif = buildNotification(this, statusText)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(NOTIF_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
-        } else {
-            startForeground(NOTIF_ID, notif)
+        return try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(NOTIF_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+            } else {
+                startForeground(NOTIF_ID, notif)
+            }
+            isRunning = true
+            START_NOT_STICKY
+        } catch (_: Exception) {
+            isRunning = false
+            ServerPrefs.setKeepAliveEnabled(this, false)
+            stopSelf()
+            START_NOT_STICKY
         }
-        isRunning = true
-        return START_STICKY
     }
 
     override fun onTimeout(startId: Int, fgsType: Int) {
         isRunning = false
-        stopForeground(STOP_FOREGROUND_REMOVE)
+        ServerPrefs.setKeepAliveEnabled(this, false)
+        onStoppedListener?.invoke()
+        runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
         stopSelf()
     }
 

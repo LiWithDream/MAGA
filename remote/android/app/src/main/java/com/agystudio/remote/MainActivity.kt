@@ -140,7 +140,9 @@ class MainActivity : AppCompatActivity(), NativeBridge.HostActions {
             }
         }
         if (ServerPrefs.isKeepAliveEnabled(this)) {
-            KeepAliveService.start(this, "正在恢复后台连接…")
+            if (!KeepAliveService.start(this, "正在恢复后台连接…")) {
+                ServerPrefs.setKeepAliveEnabled(this, false)
+            }
         }
         buildContentView()
         configureWebView(webView)
@@ -805,24 +807,26 @@ class MainActivity : AppCompatActivity(), NativeBridge.HostActions {
     override fun isKeepAliveEnabled(): Boolean = ServerPrefs.isKeepAliveEnabled(this)
 
     override fun onSetKeepAliveEnabled(enabled: Boolean): Boolean {
-        ServerPrefs.setKeepAliveEnabled(this, enabled)
-        runOnUiThread {
-            if (enabled) {
-                if (!NotificationHelper.hasNotificationPermission(this)) {
-                    onRequestNotificationPermission()
-                }
-                KeepAliveService.start(this, "后台实时监听已开启")
-            } else {
-                KeepAliveService.stop(this)
+        if (!enabled) {
+            ServerPrefs.setKeepAliveEnabled(this, false)
+            KeepAliveService.stop(this)
+            return false
+        }
+        if (!NotificationHelper.hasNotificationPermission(this)) {
+            onRequestNotificationPermission()
+        }
+        val started = KeepAliveService.start(this, KeepAliveService.lastStatusText)
+        ServerPrefs.setKeepAliveEnabled(this, started)
+        if (!started) {
+            runOnUiThread {
+                Toast.makeText(this, "系统当前限制启动后台服务，请稍后重试或关闭电池优化", Toast.LENGTH_LONG).show()
             }
         }
-        return enabled
+        return started
     }
 
     override fun onUpdateKeepAliveStatus(statusText: String) {
-        if (KeepAliveService.isRunning) {
-            KeepAliveService.updateStatus(this, statusText)
-        }
+        KeepAliveService.updateStatus(this, statusText)
     }
 
     override fun onCheckForUpdate(silent: Boolean) {

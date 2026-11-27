@@ -160,7 +160,10 @@ function main() {
 
   fs.mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 });
   const destPath = isDebug ? path.join(STATE_DIR, 'AGY-Studio-Remote-debug.apk') : OUTPUT_APK_PATH;
-  fs.copyFileSync(builtApk, destPath);
+  const tmpApkPath = `${destPath}.tmp.${process.pid}`;
+  fs.copyFileSync(builtApk, tmpApkPath);
+  fs.chmodSync(tmpApkPath, 0o600);
+  fs.renameSync(tmpApkPath, destPath);
   const buf = fs.readFileSync(destPath);
   const sha256 = crypto.createHash('sha256').update(buf).digest('hex');
   const { versionCode, versionName } = readGradleVersionInfo();

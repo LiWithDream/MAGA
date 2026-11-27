@@ -35,6 +35,8 @@ import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.webkit.WebSettingsCompat
+import androidx.webkit.WebViewFeature
 import org.json.JSONObject
 import java.util.concurrent.Executors
 
@@ -51,6 +53,7 @@ class MainActivity : AppCompatActivity(), NativeBridge.HostActions {
     private var pageLoadedOnce: Boolean = false
     private var pendingSharedMediaJson: String? = null
     private var pendingFocusCascadeId: String? = null
+    private var pendingLaunchUrl: String? = null
     private var lastInsetsJson: String? = null
 
     private val ioExecutor = Executors.newSingleThreadExecutor()
@@ -201,6 +204,7 @@ class MainActivity : AppCompatActivity(), NativeBridge.HostActions {
         webView.settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
+            @Suppress("DEPRECATION")
             databaseEnabled = true
             cacheMode = WebSettings.LOAD_DEFAULT
             mediaPlaybackRequiresUserGesture = false
@@ -208,7 +212,11 @@ class MainActivity : AppCompatActivity(), NativeBridge.HostActions {
             allowContentAccess = true
             setSupportMultipleWindows(false)
             mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
-            userAgentString = "$userAgentString AGYStudioRemoteAndroid/${BuildConfig.VERSION_NAME}"
+            // Use clean Chrome Mobile UA (no `; wv)` or custom suffix) so Google/Cloudflare OAuth allows in-app sign-in
+            userAgentString = userAgentString.replace("; wv)", ")").replace("Version/4.0 ", "")
+        }
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.REQUESTED_WITH_HEADER_ALLOW_LIST)) {
+            WebSettingsCompat.setRequestedWithHeaderOriginAllowList(webView.settings, emptySet())
         }
 
         webView.addJavascriptInterface(NativeBridge(this), "__agyNative")
@@ -251,13 +259,22 @@ class MainActivity : AppCompatActivity(), NativeBridge.HostActions {
 
         webView.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
-                val uri = request?.url ?: return false
+                val req = request ?: return false
+                val uri = req.url ?: return false
                 val scheme = uri.scheme?.lowercase() ?: return false
                 if (scheme != "http" && scheme != "https") {
+                    // Block intent:// jumps back to Chrome during OAuth unless explicitly non-browser scheme
+                    if (scheme == "intent" || scheme == "googlechrome" || scheme == "android-app") {
+                        return true
+                    }
                     openExternally(uri)
                     return true
                 }
-                if (isAllowedInAppHost(uri.host)) {
+                // While on any auth/login page (not yet on our server host), NEVER kick navigations out to external browser
+                val currentHost = view?.url?.let { runCatching { Uri.parse(it).host?.lowercase() }.getOrNull() }
+                val serverHost = Uri.parse(ServerPrefs.getServerUrl(this@MainActivity)).host?.lowercase()?.trim()
+                val inAuthFlow = !currentHost.isNullOrEmpty() && !serverHost.isNullOrEmpty() && currentHost != serverHost
+                if (inAuthFlow || req.isRedirect || !req.hasGesture() || isAllowedInAppHost(uri.host)) {
                     return false
                 }
                 openExternally(uri)
@@ -290,10 +307,30 @@ class MainActivity : AppCompatActivity(), NativeBridge.HostActions {
     private fun isAllowedInAppHost(host: String?): Boolean {
         val target = host?.lowercase()?.trim() ?: return false
         val serverHost = Uri.parse(ServerPrefs.getServerUrl(this)).host?.lowercase()?.trim()
-        if (!serverHost.isNullOrEmpty() && target == serverHost) return true
-        if (target.endsWith(".cloudflareaccess.com") || target == "cloudflareaccess.com") return true
-        if (target == "accounts.google.com" || target == "github.com") return true
-        return false
+        if (!serverHost.isNullOrEmpty()) {
+            if (target == serverHost) return true
+            val parts = serverHost.split(".")
+            if (parts.size >= 2) {
+                val rootDomain = parts.takeLast(2).joinToString(".")
+                if (target == rootDomain || target.endsWith(".$rootDomain")) return true
+            }
+        }
+        val authDomains = listOf(
+            "cloudflareaccess.com",
+            "cloudflare.com",
+            "google.com",
+            "googleapis.com",
+            "googleusercontent.com",
+            "gstatic.com",
+            "youtube.com",
+            "github.com",
+            "githubusercontent.com",
+            "microsoftonline.com",
+            "live.com",
+            "okta.com",
+            "auth0.com"
+        )
+        return authDomains.any { target == it || target.endsWith(".$it") }
     }
 
     private fun openExternally(uri: Uri) {
@@ -398,11 +435,22 @@ class MainActivity : AppCompatActivity(), NativeBridge.HostActions {
         super.onNewIntent(intent)
         setIntent(intent)
         handleIncomingIntent(intent)
+        val launchUrl = pendingLaunchUrl
+        if (!launchUrl.isNullOrEmpty()) {
+            pendingLaunchUrl = null
+            webView.loadUrl(launchUrl)
+        }
         flushPendingDispatches()
     }
 
     private fun handleIncomingIntent(intent: Intent?) {
         if (intent == null) return
+        if (intent.action == Intent.ACTION_VIEW) {
+            val viewUri = intent.data
+            if (viewUri != null && (viewUri.scheme == "https" || viewUri.scheme == "http") && isAllowedInAppHost(viewUri.host)) {
+                pendingLaunchUrl = viewUri.toString()
+            }
+        }
         val focusCid = intent.getStringExtra(NotificationHelper.EXTRA_CASCADE_ID)?.trim()
         if (!focusCid.isNullOrEmpty()) {
             pendingFocusCascadeId = focusCid
@@ -471,7 +519,9 @@ class MainActivity : AppCompatActivity(), NativeBridge.HostActions {
         if (clearCache) {
             webView.clearCache(true)
         }
-        webView.loadUrl(ServerPrefs.getServerUrl(this))
+        val targetUrl = pendingLaunchUrl?.takeIf { it.isNotBlank() } ?: ServerPrefs.getServerUrl(this)
+        pendingLaunchUrl = null
+        webView.loadUrl(targetUrl)
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {

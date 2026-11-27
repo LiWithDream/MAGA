@@ -704,7 +704,10 @@ export function ensureWinCoreDaemon({
 
   let shortcutRes = { skipped: true };
   if (createShortcut) {
-    const exePath = findWinAntigravityDesktopExe({ existsSync: fsImpl.existsSync, readdirSync: fsImpl.readdirSync });
+    const exePath = findWinAntigravityDesktopExe({
+      existsSync: (p) => fsImpl.existsSync(p),
+      readdirSync: (p, o) => fsImpl.readdirSync(p, o),
+    });
     if (exePath) {
       shortcutRes = ensureWinStudioShortcut({ exePath, shortcutPath, enabled: true, execFileSyncFn, fsImpl });
     }
@@ -784,7 +787,7 @@ export function inspectWinCoreDaemon({
   isMatchingPidFn = isOwnDaemonProcess,
   execFileSyncFn = execFileSync,
   fsImpl = fs,
-  existsSyncFn = fsImpl.existsSync,
+  existsSyncFn = (p) => fsImpl.existsSync(p),
 } = {}) {
   let pidAlive = false;
   let pid = null;

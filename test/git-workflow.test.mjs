@@ -659,13 +659,63 @@ test('git-workflow-service syncs plugin with pinned Node, manages policy atomica
       {
         dirPath: pyRepo,
         mode: 'worktree-only',
-        localOnlyPaths: ['scratch/**', 'analysis/', '../escape', '.agents/hooks', '.agents/hooks.json', 'ENV.md', 'GEMINI.md'],
+        localOnlyPaths: [
+          '.',
+          './',
+          '*',
+          '**',
+          '/abs/nope',
+          'C:\\abs\\nope',
+          'scratch/**',
+          'analysis/',
+          '../escape',
+          '.agents/hooks',
+          '.agents/hooks.json',
+          'ENV.md',
+          'GEMINI.md',
+        ],
       },
       { stateDir: polStateDir, nativeProjectsDir: nativeProjDir }
     );
     assert.equal(setRes1.ok, true);
     const pyEntry1 = Object.values(setRes1.policy.projects)[0];
     assert.deepEqual(pyEntry1.localOnlyPaths, ['scratch', 'analysis', 'ENV.md', 'GEMINI.md']);
+
+    // Even if a corrupt policy on disk contains "." or "**", runtime isPrimaryLocalOnlyPath rejects repo-root wildcarding
+    writePolicy(polStateDir, {
+      schema: 1,
+      defaultMode: 'observe',
+      blockForcePushProtected: true,
+      blockPushTags: false,
+      projects: {
+        [pyEntry1.commonDir ? normalizePolicyKey(pyEntry1.commonDir) : Object.keys(setRes1.policy.projects)[0]]: {
+          mode: 'worktree-only',
+          displayRoot: pyRepo,
+          localOnlyPaths: ['.', './', '**', '/etc', 'ENV.md'],
+        },
+      },
+    });
+    assert.equal(
+      evaluateHookPayloadWithOptions(
+        { hookEventName: 'PreToolUse', cwd: pyRepo, toolCall: { name: 'edit_file', args: { Path: path.join(pyRepo, 'README.md') } } },
+        { stateDir: polStateDir, pluginsDir }
+      ).decision,
+      'deny',
+      '"." in localOnlyPaths must NEVER unlock primary repo root'
+    );
+    assert.equal(
+      evaluateHookPayloadWithOptions(
+        { hookEventName: 'PreToolUse', cwd: pyRepo, toolCall: { name: 'edit_file', args: { Path: path.join(pyRepo, 'ENV.md') } } },
+        { stateDir: polStateDir, pluginsDir }
+      ).decision,
+      'allow'
+    );
+
+    // Restore clean entry before testing mode-switch preservation
+    await setGitWorkflowPolicy(
+      { dirPath: pyRepo, mode: 'worktree-only', localOnlyPaths: ['scratch', 'analysis', 'ENV.md', 'GEMINI.md'] },
+      { stateDir: polStateDir, nativeProjectsDir: nativeProjDir }
+    );
 
     const setRes2 = await setGitWorkflowPolicy(
       { dirPath: pyRepo, mode: 'protect-main' },

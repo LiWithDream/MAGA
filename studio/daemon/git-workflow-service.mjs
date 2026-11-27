@@ -122,13 +122,19 @@ function sanitizeLocalOnlyPaths(rawList) {
   const seen = new Set();
   for (const item of rawList) {
     if (typeof item !== 'string') continue;
-    const trimmed = item
-      .trim()
+    const rawTrimmed = item.trim();
+    if (!rawTrimmed) continue;
+    if (path.posix.isAbsolute(rawTrimmed) || path.win32.isAbsolute(rawTrimmed) || rawTrimmed.startsWith('\\')) {
+      continue;
+    }
+    const trimmed = rawTrimmed
       .replace(/\\/g, '/')
-      .replace(/^\/+|\/+$/g, '')
+      .replace(/^\.\/+/, '')
+      .replace(/\/+$/g, '')
       .replace(/\/\*\*$/, '');
-    if (!trimmed) continue;
-    if (path.isAbsolute(trimmed) || trimmed.split('/').includes('..')) continue;
+    if (!trimmed || trimmed === '.' || trimmed === '*' || trimmed === '**') continue;
+    const segs = trimmed.split('/');
+    if (segs.some((s) => !s || s === '.' || s === '..' || s === '*' || s === '**')) continue;
     if (trimmed === '.agents/hooks' || trimmed === '.agents/hooks.json' || trimmed.startsWith('.agents/hooks/')) continue;
     if (!seen.has(trimmed)) {
       seen.add(trimmed);

@@ -10,6 +10,7 @@
     "install-all": "npm run build:user && node studio/cli.mjs install",
     "build:user": "node -e \"import('./studio/build.mjs').then(m => m.buildUserCustomJs()).then(r => console.log(JSON.stringify({ ok: true, bytes: r.bytes })))\"",
     "build:remote": "node -e \"import('./studio/build.mjs').then(m => m.buildRemotePwa()).then(r => console.log(JSON.stringify({ ok: true, outDir: r.outDir, files: r.files })))\"",
+    "build:android": "node scripts/build-android-apk.mjs",
     "deploy": "node studio/cli.mjs deploy",
     "doctor": "node studio/cli.mjs doctor",
     "sync-rules": "node studio/cli.mjs sync-rules",

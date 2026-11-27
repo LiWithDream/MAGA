@@ -571,11 +571,26 @@ function renderModelPopoverPanel(
   appendNodes(container, ...children);
 }
 
+function formatQuotaShort(pool) {
+  if (!pool || typeof pool !== 'object') return null;
+  const h5 = pool.fiveHourRemainingPct;
+  const wk = pool.weeklyRemainingPct;
+  const hasH5 = h5 !== null && h5 !== undefined && Number.isFinite(Number(h5));
+  const hasWk = wk !== null && wk !== undefined && Number.isFinite(Number(wk));
+  if (!hasH5 && !hasWk) return null;
+  const h5Pct = hasH5 ? Math.max(0, Math.min(100, Math.round(Number(h5)))) : null;
+  const wkPct = hasWk ? Math.max(0, Math.min(100, Math.round(Number(wk)))) : null;
+  const minPct = Math.min(h5Pct ?? 100, wkPct ?? 100);
+  const tone = minPct <= 10 ? 'crit' : minPct <= 25 ? 'warn' : 'ok';
+  return { h5Pct, wkPct, tone };
+}
+
 function renderContextPopoverPanel(
   container,
   {
     open = false,
     metrics = null,
+    quota = null,
     canWrite = false,
     online = false,
     compactBusy = false,
@@ -667,6 +682,35 @@ function renderContextPopoverPanel(
     }
   }
 
+  const gPool = formatQuotaShort(quota?.gemini);
+  const cPool = formatQuotaShort(quota?.claude);
+  if (gPool) {
+    const gParts = [];
+    if (gPool.h5Pct !== null) gParts.push(`5h ${gPool.h5Pct}%`);
+    if (gPool.wkPct !== null) gParts.push(`周 ${gPool.wkPct}%`);
+    kvRows.push(
+      el(
+        'div',
+        { className: 'rc-ctx-pop-kv' },
+        el('span', { className: 'rc-ctx-pop-k', text: 'Gemini 剩余限额' }),
+        el('span', { className: 'rc-ctx-pop-v', text: gParts.join(' · ') })
+      )
+    );
+  }
+  if (cPool) {
+    const cParts = [];
+    if (cPool.h5Pct !== null) cParts.push(`5h ${cPool.h5Pct}%`);
+    if (cPool.wkPct !== null) cParts.push(`周 ${cPool.wkPct}%`);
+    kvRows.push(
+      el(
+        'div',
+        { className: 'rc-ctx-pop-kv' },
+        el('span', { className: 'rc-ctx-pop-k', text: 'Claude 剩余限额' }),
+        el('span', { className: 'rc-ctx-pop-v', text: cParts.join(' · ') })
+      )
+    );
+  }
+
   let actionsSection = null;
   if (canWrite) {
     const compactDisabled = !online || compactBusy || compactSupported === false;
@@ -709,9 +753,7 @@ export function renderComposerFooterBar(
     showHiddenModels = false,
     modelBusy = false,
     metrics = null,
-    isStreaming = false,
-    streamElapsedSec = 0,
-    streamChars = 0,
+    quota = null,
     canWrite = false,
     online = false,
     hasSelection = false,
@@ -754,6 +796,7 @@ export function renderComposerFooterBar(
     renderContextPopoverPanel(refs.contextPopover, {
       open: contextPopoverOpen && hasSelection,
       metrics,
+      quota,
       canWrite,
       online,
       compactBusy,
@@ -897,17 +940,43 @@ export function renderComposerFooterBar(
     );
   }
 
-  // 4. Live Speed / TTFT micro-pill
-  if (isStreaming) {
-    const secs = Math.max(0, Math.floor(Number(streamElapsedSec || 0)));
-    const elapsedText = secs >= 60 ? `${Math.floor(secs / 60)}m${String(secs % 60).padStart(2, '0')}s` : `${secs}s`;
+  // 4. Quota micro-pill (replaces noisy streaming timer; falls back to tok/s when quota unavailable)
+  const preferClaude = /claude|opus|sonnet|haiku/i.test(accentSource);
+  const claudeQuota = formatQuotaShort(quota?.claude);
+  const geminiQuota = formatQuotaShort(quota?.gemini);
+  const activeQuota = preferClaude ? claudeQuota || geminiQuota : geminiQuota || claudeQuota;
+  const activePoolTag = activeQuota
+    ? (activeQuota === claudeQuota ? 'C' : 'G')
+    : '';
+  const activePoolName = activeQuota
+    ? (activeQuota === claudeQuota ? 'Claude' : 'Gemini')
+    : '';
+
+  if (activeQuota) {
+    const primaryText =
+      activeQuota.h5Pct !== null
+        ? `${activePoolTag} 5h ${activeQuota.h5Pct}%`
+        : `${activePoolTag} 周 ${activeQuota.wkPct}%`;
+    const weeklyExtra =
+      activeQuota.h5Pct !== null && activeQuota.wkPct !== null
+        ? ` · 周 ${activeQuota.wkPct}%`
+        : '';
+    const qTitle = `${activePoolName} 剩余限额：${activeQuota.h5Pct !== null ? `5h ${activeQuota.h5Pct}%` : ''}${activeQuota.h5Pct !== null && activeQuota.wkPct !== null ? ' · ' : ''}${activeQuota.wkPct !== null ? `周 ${activeQuota.wkPct}%` : ''}（点击查看详情）`;
     leftCluster.appendChild(
       el(
-        'span',
-        { className: 'rc-footer-pill rc-metrics-pill is-streaming' },
-        el('span', { className: 'rc-pulse' }),
-        el('span', { className: 'rc-stream-sec', text: `生成中 ${elapsedText}` }),
-        streamChars > 0 ? el('span', { className: 'rc-stream-chars', text: ` · ${streamChars}字` }) : null
+        'button',
+        {
+          type: 'button',
+          className: 'rc-footer-pill rc-quota-pill',
+          'data-tone': activeQuota.tone,
+          title: qTitle,
+          onClick: (ev) => {
+            ev?.stopPropagation?.();
+            onToggleContextPopover?.();
+          },
+        },
+        el('span', { className: 'rc-quota-primary', text: primaryText }),
+        weeklyExtra ? el('span', { className: 'rc-quota-weekly', text: weeklyExtra }) : null
       )
     );
   } else if (metrics && (Number(metrics.displayTps) > 0 || Number(metrics.ttft) > 0)) {

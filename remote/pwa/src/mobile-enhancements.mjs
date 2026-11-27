@@ -6,6 +6,15 @@
  * Strict invariant: NEVER use unsafe HTML injection APIs; build DOM with createElement + textContent only.
  */
 import { appendNodes, clearNode, el, isRunningStatus } from './ui-helpers.mjs';
+import {
+  bindNativeAndroidBridge,
+  isNativeAndroidApp,
+  openNativeSettingsDialog,
+  requestNativeNotificationPermission,
+  sendNativeNotification,
+  vibrateNative,
+} from './native-bridge.mjs';
+export { bindNativeAndroidBridge };
 
 const ALERTS_STORAGE_KEY = 'rc:alertsEnabled';
 
@@ -120,6 +129,7 @@ export function createAlertManager({ baseTitle = 'AGY Studio Remote' } = {}) {
   const isDocHidden = () => typeof document !== 'undefined' && document.visibilityState === 'hidden';
 
   const vibratePattern = (pattern) => {
+    if (vibrateNative(pattern)) return;
     try {
       if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
         navigator.vibrate(pattern);
@@ -127,7 +137,8 @@ export function createAlertManager({ baseTitle = 'AGY Studio Remote' } = {}) {
     } catch {}
   };
 
-  const fireWebNotification = (title, body, tag) => {
+  const fireWebNotification = (title, body, tag, { category = 'completed', cascadeId = '' } = {}) => {
+    if (sendNativeNotification({ title, body, tag, category, cascadeId })) return;
     try {
       if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
       new Notification(title, { body, tag, silent: false });
@@ -197,13 +208,19 @@ export function createAlertManager({ baseTitle = 'AGY Studio Remote' } = {}) {
       const total = approvals.reduce((acc, a) => acc + a.count, 0);
       setDocTitle(`⏳ 待审批 (${total}) · ${baseTitle}`);
       vibratePattern([80, 60, 80]);
-      if (isDocHidden()) {
-        fireWebNotification('等待桌面端审批', `${approvals[0].title} 需要确认操作`, `agy-wait-${approvals[0].id}`);
+      if (isDocHidden() || isNativeAndroidApp()) {
+        fireWebNotification('等待桌面端审批', `${approvals[0].title} 需要确认操作`, `agy-wait-${approvals[0].id}`, {
+          category: 'approval',
+          cascadeId: approvals[0].id,
+        });
       }
     } else if (completed.length > 0) {
-      if (isDocHidden()) {
+      if (isDocHidden() || isNativeAndroidApp()) {
         setDocTitle(`✓ 已完成 · ${baseTitle}`);
-        fireWebNotification('任务已完成', completed[0].title, `agy-done-${completed[0].id}`);
+        fireWebNotification('任务已完成', completed[0].title, `agy-done-${completed[0].id}`, {
+          category: 'completed',
+          cascadeId: completed[0].id,
+        });
       }
       vibratePattern([35, 50, 35]);
     }
@@ -216,6 +233,7 @@ export function createAlertManager({ baseTitle = 'AGY Studio Remote' } = {}) {
     if (!enabled) {
       clearTitleBadge();
     } else {
+      requestNativeNotificationPermission();
       try {
         if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
           Promise.resolve(Notification.requestPermission()).catch(() => {});
@@ -703,7 +721,81 @@ export function createMobileHistoryController({
     enterModal,
     leaveModal,
     handlePopState,
+    closeOverlays: () => onCloseOverlays?.(),
+    closeModal: () => onCloseModal?.(),
+    navigateToList: () => onNavigateToList?.(),
   };
+}
+
+export function createOpusGateActions({
+  state,
+  getWsClient,
+  canSteer,
+  requiresTurboAck,
+  createIdempotencyKey,
+  buildPrompt,
+  setActionNotice,
+  syncComposerControls,
+  refreshStudioOverview,
+  refreshAllData,
+}) {
+  async function dismiss(prop) {
+    const wsClient = getWsClient();
+    if (!wsClient || !state.selectedId || !canSteer() || state.opusDismissBusy || !prop?.id) return;
+    const targetCid = state.selectedId;
+    state.opusDismissBusy = true;
+    state.actionError = '';
+    state.actionNotice = '';
+    syncComposerControls();
+    try {
+      await wsClient.dismissOpusProposal(targetCid, prop.id, { ts: prop.ts });
+      if (state.selectedId === targetCid) setActionNotice('已忽略 Opus Gate 检查点建议');
+      refreshStudioOverview(targetCid);
+    } catch (err) {
+      if (state.selectedId === targetCid) state.actionError = formatWriteError(err);
+    } finally {
+      state.opusDismissBusy = false;
+      syncComposerControls();
+    }
+  }
+
+  async function triggerReview(prop, reviewerModel = 'carbon') {
+    const wsClient = getWsClient();
+    if (!wsClient || !state.selectedId || !canSteer() || state.opusDismissBusy || !prop?.id) return;
+    const targetCid = state.selectedId;
+    const needTurbo = requiresTurboAck(state.globalPreset);
+    const confirmed = Boolean(needTurbo && state.turboWriteConfirmed);
+    if (needTurbo && !confirmed) {
+      state.actionError = '请先勾选 TURBO / 未知权限高危确认框后再发起审查';
+      state.actionNotice = '';
+      syncComposerControls();
+      return;
+    }
+    state.opusDismissBusy = true;
+    state.actionError = '';
+    state.actionNotice = '';
+    syncComposerControls();
+    try {
+      const prompt = buildPrompt(prop, reviewerModel);
+      await wsClient.sendMessage(targetCid, {
+        text: prompt,
+        turboWriteConfirmed: confirmed,
+        idempotencyKey: createIdempotencyKey(),
+      });
+      await wsClient.dismissOpusProposal(targetCid, prop.id, { ts: prop.ts }).catch(() => {});
+      if (state.selectedId === targetCid) {
+        setActionNotice(reviewerModel === 'opus' ? '已发起 Opus High 审查' : '已发起 Carbon High 审查');
+      }
+      refreshAllData();
+    } catch (err) {
+      if (state.selectedId === targetCid) state.actionError = formatWriteError(err);
+    } finally {
+      state.opusDismissBusy = false;
+      syncComposerControls();
+    }
+  }
+
+  return { dismiss, triggerReview };
 }
 
 export function createMoreMenuController({
@@ -755,6 +847,13 @@ export function createMoreMenuController({
         render();
         refreshAllData();
       },
+      onOpenNativeSettings: isNativeAndroidApp()
+        ? () => {
+            state.moreMenuOpen = false;
+            render();
+            openNativeSettingsDialog();
+          }
+        : null,
       onUnpair: () => handleUnpairDevice(),
     });
   }

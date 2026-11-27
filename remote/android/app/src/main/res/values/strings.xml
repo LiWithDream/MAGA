@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">AGY Remote</string>
+    <string name="channel_approvals_name">审批与提问提醒</string>
+    <string name="channel_approvals_desc">桌面端等待命令审批或问答选择时的即时提醒</string>
+    <string name="channel_completed_name">任务完成提醒</string>
+    <string name="channel_completed_desc">远程对话任务执行完毕时的静默/轻震提醒</string>
+</resources>

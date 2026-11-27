@@ -1343,18 +1343,21 @@ test('Phase 2 Composer Footer V2: models.list/select, convo.send image attachmen
     medBtn.click();
     assert.equal(selectedPayload?.model, 102);
 
-    // Streaming metrics micro-pill
+    // Quota micro-pill replaces streaming timer in footer and shows pool remaining % + weekly details
     composerBarMod.renderComposerFooterBar(refs, {
-      catalog: null,
+      catalog: { selected: { baseName: 'Gemini 4 Carbon', effort: 'High', displayEffort: 'High', value: 101 }, families: [] },
       modelPopoverOpen: false,
-      isStreaming: true,
-      streamElapsedSec: 4,
-      streamChars: 320,
+      quota: {
+        gemini: { fiveHourRemainingPct: 92, weeklyRemainingPct: 84 },
+        claude: { fiveHourRemainingPct: 68, weeklyRemainingPct: 55 },
+      },
       canWrite: true,
       online: true,
       hasSelection: true,
     });
-    assert.match(refs.composerFooter.textContent, /生成中 4s · 320字/);
+    assert.match(refs.composerFooter.textContent, /G 5h 92%/);
+    assert.match(refs.composerFooter.textContent, /周 84%/);
+    assert.doesNotMatch(refs.composerFooter.textContent, /生成中/);
 
     // Clicking .rc-model-capsule detaches target via clearNode(footer) but must NOT auto-close during document bubble
     const cardHost = doc.createElement('div');
@@ -2226,24 +2229,50 @@ test('Remote Mobile Polish V2: stale worktree branch cleanup, Markdown tables, a
     assert.ok(liveThemeMeta && /^#(ffffff|212120)$/i.test(liveThemeMeta.getAttribute('content') || ''), 'bindViewportHeightSync must sync live theme-color meta');
     unbindVp();
 
-    // 9. Long-running streaming elapsed time formats cleanly as XmYYs for >= 60s
+    // 9. Footer quota pill adapts to Claude model & Opus Gate banner includes both Review + Dismiss buttons
     const composerMod = await import(pathToFileURL(path.join(PWA_DIR, 'src', 'composer-bar.mjs')).href);
-    const longStreamFooter = doc.createElement('div');
-    const longStreamPop = doc.createElement('div');
-    const longStreamCtxPop = doc.createElement('div');
+    const studioPanelMod2 = await import(pathToFileURL(path.join(PWA_DIR, 'src', 'studio-panel.mjs')).href);
+    const quotaFooter = doc.createElement('div');
+    const quotaPop = doc.createElement('div');
+    const quotaCtxPop = doc.createElement('div');
     composerMod.renderComposerFooterBar(
-      { composerFooter: longStreamFooter, modelPopover: longStreamPop, contextPopover: longStreamCtxPop },
+      { composerFooter: quotaFooter, modelPopover: quotaPop, contextPopover: quotaCtxPop },
       {
-        catalog: { families: [], selected: null },
-        isStreaming: true,
-        streamElapsedSec: 125,
-        streamChars: 80,
+        catalog: { families: [], selected: { baseName: 'Claude Opus 5.5', effort: 'High', displayEffort: 'High', value: 201 } },
+        contextPopoverOpen: true,
+        quota: {
+          claude: { fiveHourRemainingPct: 22, weeklyRemainingPct: 48 },
+          gemini: { fiveHourRemainingPct: 96, weeklyRemainingPct: 90 },
+        },
         canWrite: true,
         online: true,
         hasSelection: true,
       }
     );
-    assert.match(longStreamFooter.textContent, /生成中 2m05s/);
+    assert.match(quotaFooter.textContent, /C 5h 22%/);
+    assert.equal(quotaFooter.querySelector('.rc-quota-pill')?.getAttribute('data-tone'), 'warn');
+    assert.match(quotaCtxPop.textContent, /Claude 剩余限额/);
+    assert.match(quotaCtxPop.textContent, /Gemini 剩余限额/);
+
+    const opusHost = doc.createElement('div');
+    let reviewTriggered = null;
+    let dismissTriggered = null;
+    studioPanelMod2.renderOpusGateBanner(opusHost, {
+      opusGate: { proposal: { id: 'p-risk-1', kind: 'risk', recommendedTier: 'high', summary: 'Pre-merge high-risk changes' } },
+      canWrite: true,
+      online: true,
+      reviewerModel: 'carbon',
+      onReview: (p, m) => { reviewTriggered = { id: p.id, model: m }; },
+      onDismiss: (p) => { dismissTriggered = p.id; },
+    });
+    const revBtn = opusHost.querySelector('.rc-opus-review-btn');
+    const disBtn = opusHost.querySelector('.rc-opus-dismiss-btn');
+    assert.ok(revBtn && disBtn, 'Opus Gate banner must expose both Review and Dismiss buttons');
+    assert.match(revBtn.textContent, /发起 Carbon 审查/);
+    revBtn.click();
+    disBtn.click();
+    assert.deepEqual(reviewTriggered, { id: 'p-risk-1', model: 'carbon' });
+    assert.equal(dismissTriggered, 'p-risk-1');
 
     // 10. Interactive askQuestion waiting card: renders single/multi options, recommended badge, write-in & submits structured answers
     const diskFallbackMod = await import(pathToFileURL(path.join(REPO, 'core', 'daemon', 'remote', 'disk-fallback.mjs')).href);
@@ -2310,6 +2339,70 @@ test('Remote Mobile Polish V2: stale worktree branch cleanup, Markdown tables, a
         { selectedOptionIds: ['1', '2'], writeInResponse: '', skipped: false },
       ],
     });
+
+    // 11. Native Android shell bridge: insets, back gesture, shared images, focus conversation & native alerts
+    const nativeBridgeMod = await import(pathToFileURL(path.join(PWA_DIR, 'src', 'native-bridge.mjs')).href);
+    const nativeNotifs = [];
+    const nativeVibs = [];
+    let nativeSettingsOpened = 0;
+    dom.window.__agyNative = {
+      isNative: () => true,
+      notify: (title, body, tag, category, cascadeId) => nativeNotifs.push({ title, body, tag, category, cascadeId }),
+      vibrate: (patternJson) => nativeVibs.push(patternJson),
+      requestNotificationPermission: () => {},
+      openNativeSettings: () => { nativeSettingsOpened += 1; },
+    };
+    const bridgeState = {
+      mobileView: 'detail',
+      modelPopoverOpen: true,
+      contextPopoverOpen: false,
+      moreMenuOpen: false,
+      newChatOpen: false,
+      newChatBusy: false,
+      draftMedia: [],
+      draftIdempotencyKey: '',
+      actionError: '',
+    };
+    let bridgeFocusedCid = '';
+    let bridgeListNavs = 0;
+    const unbindNative = nativeBridgeMod.bindNativeAndroidBridge({
+      state: bridgeState,
+      canSteer: () => true,
+      createIdempotencyKey: () => 'key-share-1',
+      uuidRe: /^[0-9a-f-]{36}$/i,
+      selectConversation: (id) => { bridgeFocusedCid = id; },
+      syncComposerControls: () => {},
+      setActionNotice: () => {},
+      onCloseOverlays: () => { bridgeState.modelPopoverOpen = false; },
+      onCloseModal: () => { bridgeState.newChatOpen = false; },
+      onNavigateToList: () => { bridgeState.mobileView = 'list'; bridgeListNavs += 1; },
+    });
+    dom.window.__agyApplyNativeInsets({ top: 34, bottom: 24, left: 0, right: 0 });
+    assert.equal(doc.documentElement.style.getPropertyValue('--rc-inset-top'), '34px');
+    assert.equal(doc.documentElement.style.getPropertyValue('--rc-inset-bottom'), '24px');
+    assert.equal(dom.window.__agyNativeBack(), true, 'first back closes open popover');
+    assert.equal(bridgeState.modelPopoverOpen, false);
+    assert.equal(dom.window.__agyNativeBack(), true, 'second back returns to list');
+    assert.equal(bridgeListNavs, 1);
+    assert.equal(dom.window.__agyNativeBack(), false, 'third back on list delegates exit to Android');
+    assert.equal(dom.window.__agyFocusConversation(liveCid), true);
+    assert.equal(bridgeFocusedCid, liveCid);
+    const receivedCount = dom.window.__agyReceiveSharedMedia([
+      { name: 'shot.jpg', dataUrl: 'data:image/jpeg;base64,/9j/4AAQSkZJRg==' },
+    ]);
+    assert.equal(receivedCount, 1);
+    assert.equal(bridgeState.draftMedia.length, 1);
+    const nativeAlerts = mobileEnhMod.createAlertManager({ baseTitle: 'AGY Native' });
+    nativeAlerts.observeConversations([{ id: liveCid, title: 'Build APK', status: 'RUNNING', waitingSteps: [] }]);
+    nativeAlerts.observeConversations([{ id: liveCid, title: 'Build APK', status: 'WAITING_FOR_USER', waitingSteps: [{ stepIndex: 1 }] }]);
+    assert.equal(nativeNotifs.length, 1);
+    assert.equal(nativeNotifs[0].category, 'approval');
+    assert.equal(nativeNotifs[0].cascadeId, liveCid);
+    assert.ok(nativeVibs.length >= 1);
+    nativeBridgeMod.openNativeSettingsDialog();
+    assert.equal(nativeSettingsOpened, 1);
+    unbindNative();
+    delete dom.window.__agyNative;
   } finally {
     dom.window.close();
     if (prevDoc) Object.defineProperty(globalThis, 'document', prevDoc);

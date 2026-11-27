@@ -2074,22 +2074,49 @@ test('Remote Mobile Polish V2: stale worktree branch cleanup, Markdown tables, a
     assert.match(turboSpan.textContent, /已确认/);
 
     const modalHost = doc.createElement('div');
+    doc.body.appendChild(modalHost);
     let newChatSubmitted = 0;
+    let promptDraft = '排查登录问题';
     mobileEnhMod.renderNewChatModal(modalHost, {
       open: true,
       projects: [{ id: 'proj-maga', name: 'MAGA' }],
       selectedProjectId: 'proj-maga',
-      promptText: '排查登录问题',
+      promptText: promptDraft,
       needTurboConfirm: true,
       turboConfirmed: true,
       online: true,
+      onPromptChange: (val) => { promptDraft = val; },
       onSubmit: () => { newChatSubmitted += 1; },
     });
     assert.equal(modalHost.classList.contains('rc-hidden'), false);
+    const firstTextarea = modalHost.querySelector('.rc-modal-textarea');
+    const firstSelect = modalHost.querySelector('.rc-select');
+    assert.ok(firstTextarea && firstSelect);
+    firstTextarea.focus();
+    assert.equal(doc.activeElement, firstTextarea);
+    // Repeated background re-renders (e.g. 1s stream tick / WS delta calling syncComposerControls)
+    // must patch in-place without recreating textarea or stealing focus/dismissing mobile keyboard
+    mobileEnhMod.renderNewChatModal(modalHost, {
+      open: true,
+      projects: [{ id: 'proj-maga', name: 'MAGA' }],
+      selectedProjectId: 'proj-maga',
+      promptText: promptDraft,
+      needTurboConfirm: true,
+      turboConfirmed: true,
+      online: true,
+      onPromptChange: (val) => { promptDraft = val; },
+      onSubmit: () => { newChatSubmitted += 1; },
+    });
+    assert.equal(modalHost.querySelector('.rc-modal-textarea'), firstTextarea, 'textarea node must stay mounted across re-renders');
+    assert.equal(modalHost.querySelector('.rc-select'), firstSelect, 'select node must stay mounted across re-renders');
+    assert.equal(doc.activeElement, firstTextarea, 'textarea focus must survive background re-renders');
     const submitBtn = modalHost.querySelector('.rc-new-chat-submit');
     assert.ok(submitBtn && submitBtn.disabled === false);
     submitBtn.click();
     assert.equal(newChatSubmitted, 1);
+    mobileEnhMod.renderNewChatModal(modalHost, { open: false });
+    assert.equal(modalHost.classList.contains('rc-hidden'), true);
+    assert.equal(modalHost.childNodes.length, 0);
 
     const alerts = mobileEnhMod.createAlertManager({ baseTitle: 'AGY Test' });
     // First call seeds baseline
@@ -2185,13 +2212,38 @@ test('Remote Mobile Polish V2: stale worktree branch cleanup, Markdown tables, a
     assert.equal(navListCount, 1);
     assert.equal(navState.mobileView, 'list');
 
-    // 8. Standalone PWA viewport height sync (no 100dvh overflow clipping bottom composer bar)
+    // 8. Standalone PWA viewport height sync & edge-to-edge gesture bar theme alignment
     assert.equal(cssSrc.includes('height: 100dvh'), false, 'styles.css must avoid 100dvh which clips bottom dock in Android standalone WebAPK');
     assert.ok(cssSrc.includes('height: var(--rc-app-h, 100%)'), 'styles.css must bind .rc-app height to --rc-app-h');
+    assert.ok(cssSrc.includes('color-scheme: light dark'), 'styles.css must declare color-scheme: light dark for Android edge-to-edge gesture bar');
     assert.ok(bootHtml.includes('interactive-widget=resizes-content'), 'index.html must enable interactive-widget=resizes-content');
+    assert.ok(bootHtml.includes('name="color-scheme" content="light dark"'), 'index.html must declare color-scheme meta');
+    assert.equal(manifestJson.background_color, '#ffffff', 'manifest background_color should match light default to avoid black gesture bar');
+    assert.equal(manifestJson.theme_color, '#ffffff', 'manifest theme_color should match light default to avoid black gesture bar');
     const unbindVp = mobileEnhMod.bindViewportHeightSync();
     assert.match(doc.documentElement.style.getPropertyValue('--rc-app-h'), /^\d+px$/);
+    const liveThemeMeta = doc.getElementById('rc-theme-color-live');
+    assert.ok(liveThemeMeta && /^#(ffffff|212120)$/i.test(liveThemeMeta.getAttribute('content') || ''), 'bindViewportHeightSync must sync live theme-color meta');
     unbindVp();
+
+    // 9. Long-running streaming elapsed time formats cleanly as XmYYs for >= 60s
+    const composerMod = await import(pathToFileURL(path.join(PWA_DIR, 'src', 'composer-bar.mjs')).href);
+    const longStreamFooter = doc.createElement('div');
+    const longStreamPop = doc.createElement('div');
+    const longStreamCtxPop = doc.createElement('div');
+    composerMod.renderComposerFooterBar(
+      { composerFooter: longStreamFooter, modelPopover: longStreamPop, contextPopover: longStreamCtxPop },
+      {
+        catalog: { families: [], selected: null },
+        isStreaming: true,
+        streamElapsedSec: 125,
+        streamChars: 80,
+        canWrite: true,
+        online: true,
+        hasSelection: true,
+      }
+    );
+    assert.match(longStreamFooter.textContent, /生成中 2m05s/);
   } finally {
     dom.window.close();
     if (prevDoc) Object.defineProperty(globalThis, 'document', prevDoc);

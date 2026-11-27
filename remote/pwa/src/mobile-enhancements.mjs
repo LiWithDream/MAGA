@@ -58,15 +58,38 @@ export function bindViewportHeightSync() {
       apply();
     }
   };
+  const darkMql =
+    typeof window.matchMedia === 'function' ? window.matchMedia('(prefers-color-scheme: dark)') : null;
+  const syncThemeMeta = () => {
+    try {
+      const dark = Boolean(darkMql?.matches);
+      const color = dark ? '#212120' : '#ffffff';
+      let liveMeta = document.getElementById('rc-theme-color-live');
+      if (!liveMeta && document.head) {
+        liveMeta = document.createElement('meta');
+        liveMeta.id = 'rc-theme-color-live';
+        liveMeta.setAttribute('name', 'theme-color');
+        document.head.appendChild(liveMeta);
+      }
+      if (liveMeta) liveMeta.setAttribute('content', color);
+    } catch {}
+  };
   apply();
+  syncThemeMeta();
   window.addEventListener('resize', schedule);
   window.addEventListener('orientationchange', schedule);
+  if (darkMql && typeof darkMql.addEventListener === 'function') {
+    darkMql.addEventListener('change', syncThemeMeta);
+  }
   if (window.visualViewport && typeof window.visualViewport.addEventListener === 'function') {
     window.visualViewport.addEventListener('resize', schedule);
   }
   return () => {
     window.removeEventListener('resize', schedule);
     window.removeEventListener('orientationchange', schedule);
+    if (darkMql && typeof darkMql.removeEventListener === 'function') {
+      darkMql.removeEventListener('change', syncThemeMeta);
+    }
     if (window.visualViewport && typeof window.visualViewport.removeEventListener === 'function') {
       window.visualViewport.removeEventListener('resize', schedule);
     }
@@ -241,6 +264,8 @@ export function syncTurboConfirmBar(labelEl, checkboxEl, textEl, { writable = fa
   }
 }
 
+const newChatModalDom = new WeakMap();
+
 export function renderNewChatModal(
   container,
   {
@@ -261,132 +286,183 @@ export function renderNewChatModal(
   } = {}
 ) {
   if (!container) return;
-  clearNode(container);
   if (!open) {
+    if (newChatModalDom.has(container) || container.childNodes.length > 0) {
+      clearNode(container);
+      newChatModalDom.delete(container);
+    }
     container.classList.add('rc-hidden');
     return;
   }
   container.classList.remove('rc-hidden');
 
-  const selectEl = el(
-    'select',
-    {
+  let dom = newChatModalDom.get(container);
+  if (!dom || !dom.backdrop || dom.backdrop.parentNode !== container) {
+    const handlers = {
+      busy: false,
+      onProjectChange: null,
+      onPromptChange: null,
+      onTurboChange: null,
+      onSubmit: null,
+      onClose: null,
+    };
+
+    const selectEl = el('select', {
       className: 'rc-select',
-      disabled: busy,
-      onChange: (ev) => onProjectChange?.(ev.target.value),
-    },
-    el('option', { value: '', text: '默认独立会话（不绑定项目）' }),
-    ...(Array.isArray(projects)
-      ? projects.map((p) =>
-          el('option', {
-            value: String(p.id || ''),
-            text: p.name || p.shortPath || p.id || 'Project',
-          })
-        )
-      : [])
-  );
-  selectEl.value = String(selectedProjectId || '');
+      onChange: (ev) => handlers.onProjectChange?.(ev.target.value),
+    });
 
-  const textareaEl = el('textarea', {
-    className: 'rc-modal-textarea',
-    rows: '4',
-    placeholder: '输入首条指令，直接启动新会话…',
-    disabled: busy,
-    value: promptText,
-    onInput: (ev) => onPromptChange?.(ev.target.value),
-  });
-  textareaEl.addEventListener('keydown', (ev) => {
-    if ((ev.metaKey || ev.ctrlKey) && ev.key === 'Enter') {
-      ev.preventDefault();
-      onSubmit?.();
-    }
-  });
+    const textareaEl = el('textarea', {
+      className: 'rc-modal-textarea',
+      rows: '4',
+      placeholder: '输入首条指令，直接启动新会话…',
+      onInput: (ev) => handlers.onPromptChange?.(ev.target.value),
+    });
+    textareaEl.addEventListener('keydown', (ev) => {
+      if ((ev.metaKey || ev.ctrlKey) && ev.key === 'Enter') {
+        ev.preventDefault();
+        handlers.onSubmit?.();
+      }
+    });
 
-  const submitDisabled =
-    !online || busy || !String(promptText || '').trim() || (needTurboConfirm && !turboConfirmed);
+    const turboCheckbox = el('input', {
+      type: 'checkbox',
+      onChange: (ev) => handlers.onTurboChange?.(Boolean(ev.target.checked)),
+    });
+    const turboText = el('span');
+    const turboRow = el('label', { className: 'rc-turbo-inline rc-hidden' }, turboCheckbox, turboText);
 
-  const turboRow = needTurboConfirm
-    ? el(
-        'label',
-        { className: 'rc-turbo-inline', 'data-confirmed': turboConfirmed ? 'true' : 'false' },
-        el('input', {
-          type: 'checkbox',
-          checked: turboConfirmed,
-          disabled: busy,
-          onChange: (ev) => onTurboChange?.(Boolean(ev.target.checked)),
-        }),
-        el('span', {
-          text: turboConfirmed
-            ? 'TURBO 新会话已确认'
-            : 'TURBO 自动执行确认（启动新会话将直接执行本机操作）',
+    const errorEl = el('div', { className: 'rc-action-banner rc-hidden', 'data-tone': 'danger' });
+
+    const closeBtn = el('button', {
+      type: 'button',
+      className: 'rc-btn is-sm is-ghost',
+      text: '关闭',
+      onClick: () => handlers.onClose?.(),
+    });
+    const cancelBtn = el('button', {
+      type: 'button',
+      className: 'rc-btn is-sm',
+      text: '取消',
+      onClick: () => handlers.onClose?.(),
+    });
+    const submitBtn = el('button', {
+      type: 'button',
+      className: 'rc-btn is-sm is-primary rc-new-chat-submit',
+      text: '开始对话',
+      onClick: () => handlers.onSubmit?.(),
+    });
+
+    const card = el(
+      'div',
+      {
+        className: 'rc-modal-card',
+        onClick: (ev) => ev?.stopPropagation?.(),
+      },
+      el('div', { className: 'rc-model-pop-head' }, el('strong', { text: '新建会话' }), closeBtn),
+      el('div', { className: 'rc-modal-field' }, el('label', { className: 'rc-modal-label', text: '所属项目' }), selectEl),
+      el('div', { className: 'rc-modal-field' }, el('label', { className: 'rc-modal-label', text: '首条指令' }), textareaEl),
+      turboRow,
+      errorEl,
+      el('div', { className: 'rc-modal-actions' }, cancelBtn, submitBtn)
+    );
+
+    const backdrop = el(
+      'div',
+      {
+        className: 'rc-modal-backdrop',
+        onClick: () => {
+          if (!handlers.busy) handlers.onClose?.();
+        },
+      },
+      card
+    );
+
+    clearNode(container);
+    appendNodes(container, backdrop);
+    dom = {
+      handlers,
+      backdrop,
+      selectEl,
+      textareaEl,
+      turboRow,
+      turboCheckbox,
+      turboText,
+      errorEl,
+      closeBtn,
+      cancelBtn,
+      submitBtn,
+      projectsSig: null,
+    };
+    newChatModalDom.set(container, dom);
+  }
+
+  dom.handlers.busy = Boolean(busy);
+  dom.handlers.onProjectChange = onProjectChange;
+  dom.handlers.onPromptChange = onPromptChange;
+  dom.handlers.onTurboChange = onTurboChange;
+  dom.handlers.onSubmit = onSubmit;
+  dom.handlers.onClose = onClose;
+
+  const doc = container.ownerDocument;
+  const activeEl = doc?.activeElement || null;
+
+  const projectList = Array.isArray(projects) ? projects : [];
+  const projectsSig = projectList
+    .map((p) => `${String(p?.id || '')}\u0000${String(p?.name || p?.shortPath || p?.id || 'Project')}`)
+    .join('\u0001');
+  if (dom.projectsSig !== projectsSig && activeEl !== dom.selectEl) {
+    clearNode(dom.selectEl);
+    appendNodes(
+      dom.selectEl,
+      el('option', { value: '', text: '默认独立会话（不绑定项目）' }),
+      ...projectList.map((p) =>
+        el('option', {
+          value: String(p.id || ''),
+          text: p.name || p.shortPath || p.id || 'Project',
         })
       )
-    : null;
+    );
+    dom.projectsSig = projectsSig;
+  }
+  const nextProjectId = String(selectedProjectId || '');
+  dom.selectEl.disabled = Boolean(busy);
+  if (dom.selectEl.value !== nextProjectId && activeEl !== dom.selectEl) {
+    dom.selectEl.value = nextProjectId;
+  }
 
-  const card = el(
-    'div',
-    {
-      className: 'rc-modal-card',
-      onClick: (ev) => ev?.stopPropagation?.(),
-    },
-    el(
-      'div',
-      { className: 'rc-model-pop-head' },
-      el('strong', { text: '新建会话' }),
-      el('button', {
-        type: 'button',
-        className: 'rc-btn is-sm is-ghost',
-        disabled: busy,
-        text: '关闭',
-        onClick: () => onClose?.(),
-      })
-    ),
-    el(
-      'div',
-      { className: 'rc-modal-field' },
-      el('label', { className: 'rc-modal-label', text: '所属项目' }),
-      selectEl
-    ),
-    el(
-      'div',
-      { className: 'rc-modal-field' },
-      el('label', { className: 'rc-modal-label', text: '首条指令' }),
-      textareaEl
-    ),
-    turboRow,
-    errorText ? el('div', { className: 'rc-action-banner', 'data-tone': 'danger', text: errorText }) : null,
-    el(
-      'div',
-      { className: 'rc-modal-actions' },
-      el('button', {
-        type: 'button',
-        className: 'rc-btn is-sm',
-        disabled: busy,
-        text: '取消',
-        onClick: () => onClose?.(),
-      }),
-      el('button', {
-        type: 'button',
-        className: 'rc-btn is-sm is-primary rc-new-chat-submit',
-        disabled: submitDisabled,
-        text: busy ? '创建中…' : '开始对话',
-        onClick: () => onSubmit?.(),
-      })
-    )
-  );
+  const nextPrompt = String(promptText || '');
+  dom.textareaEl.disabled = Boolean(busy);
+  if (dom.textareaEl.value !== nextPrompt && (activeEl !== dom.textareaEl || nextPrompt === '')) {
+    dom.textareaEl.value = nextPrompt;
+  }
 
-  const backdrop = el(
-    'div',
-    {
-      className: 'rc-modal-backdrop',
-      onClick: () => {
-        if (!busy) onClose?.();
-      },
-    },
-    card
-  );
+  dom.turboRow.classList.toggle('rc-hidden', !needTurboConfirm);
+  dom.turboRow.setAttribute('data-confirmed', turboConfirmed ? 'true' : 'false');
+  dom.turboCheckbox.checked = Boolean(needTurboConfirm && turboConfirmed);
+  dom.turboCheckbox.disabled = Boolean(busy);
+  const nextTurboText = turboConfirmed
+    ? 'TURBO 新会话已确认'
+    : 'TURBO 自动执行确认（启动新会话将直接执行本机操作）';
+  if (dom.turboText.textContent !== nextTurboText) {
+    dom.turboText.textContent = nextTurboText;
+  }
 
-  appendNodes(container, backdrop);
+  const nextError = String(errorText || '');
+  dom.errorEl.classList.toggle('rc-hidden', !nextError);
+  if (dom.errorEl.textContent !== nextError) {
+    dom.errorEl.textContent = nextError;
+  }
+
+  const submitDisabled =
+    !online || busy || !nextPrompt.trim() || (needTurboConfirm && !turboConfirmed);
+  dom.closeBtn.disabled = Boolean(busy);
+  dom.cancelBtn.disabled = Boolean(busy);
+  dom.submitBtn.disabled = submitDisabled;
+  const nextSubmitText = busy ? '创建中…' : '开始对话';
+  if (dom.submitBtn.textContent !== nextSubmitText) {
+    dom.submitBtn.textContent = nextSubmitText;
+  }
 }
 
 export function formatWriteError(err) {
@@ -448,8 +524,9 @@ export function createNewChatController({
         state.newChatError = '';
         const btn = refs.newChatModal.querySelector('.rc-new-chat-submit');
         if (btn) {
+          const isOnline = Boolean(state.hostAttached && state.wsStatus === 'connected');
           btn.disabled =
-            !online ||
+            !isOnline ||
             state.newChatBusy ||
             !String(txt || '').trim() ||
             (isTurboPreset(state.globalPreset) && !state.newChatTurboConfirmed);

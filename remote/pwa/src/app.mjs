@@ -1120,11 +1120,16 @@ function syncComposerControls() {
 
   const activeConvo = hasSelection ? state.conversations.find((c) => c.id === state.selectedId) || null : null;
   const activeSnap = hasSelection ? state.snapshots.get(state.selectedId) || null : null;
-  const streamEntry = hasSelection ? state.streams.get(state.selectedId) || null : null;
+  const authStatus = activeSnap?.status ?? activeConvo?.status;
+  let streamEntry = hasSelection ? state.streams.get(state.selectedId) || null : null;
+  if (streamEntry && typeof streamEntry === 'object' && authStatus && !isRunningStatus(authStatus) && streamEntry.updatedAt && Date.now() - streamEntry.updatedAt > 15_000) {
+    state.streams.delete(state.selectedId);
+    streamEntry = null;
+  }
   const streamText = typeof streamEntry === 'string' ? streamEntry : streamEntry?.text ?? '';
   const isStreaming = Boolean(
     hasSelection &&
-      (isRunningStatus(activeSnap?.status ?? activeConvo?.status) ||
+      (isRunningStatus(authStatus) ||
         (typeof streamEntry === 'object' && streamEntry && isRunningStatus(streamEntry.status)))
   );
   const showCancelControl = Boolean(
@@ -1645,6 +1650,7 @@ function applySnapshot(cascadeId, snap) {
       thinkingText: '',
       status: snap.status || '',
       stepCount: steps.length,
+      updatedAt: Date.now(),
     });
   } else {
     state.streams.delete(cascadeId);
@@ -1668,6 +1674,7 @@ async function fetchAndRenderSnapshot(cascadeId) {
       state.snapshotLoading = false;
       renderDetailTimeline();
       renderStudioPanels();
+      syncComposerControls();
     }
   }
 }
@@ -1682,7 +1689,10 @@ function scheduleSelectedSnapshotRefresh() {
         .fetchSnapshot(targetId)
         .then((snap) => {
           applySnapshot(targetId, snap);
-          if (state.selectedId === targetId) renderDetailTimeline();
+          if (state.selectedId === targetId) {
+            renderDetailTimeline();
+            syncComposerControls();
+          }
         })
         .catch(() => {});
     }
@@ -1833,11 +1843,13 @@ function handleTapDelta(delta) {
         thinkingText: nextThinking,
         status: data.status || '',
         stepCount: Number.isFinite(Number(data.stepCount)) ? Number(data.stepCount) : null,
+        updatedAt: Date.now(),
       });
     }
     if (cid === state.selectedId) {
       const snap = state.snapshots.get(cid);
       const stepAdvanced = Number.isFinite(Number(data.stepCount)) && snap && data.stepCount > (snap.steps?.length || 0);
+      if (isFinished) syncComposerControls();
       if (gapDetected || isFinished || stepAdvanced) {
         scheduleSelectedSnapshotRefresh();
       } else {

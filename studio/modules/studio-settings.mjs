@@ -8,7 +8,7 @@
 
 import { markOwn, setAttr, setLeafText } from '../core/dom.mjs';
 import { getActiveRouteCid, isZhUi } from '../core/env.mjs';
-import { DRAWER_ID, NAV_WRAP_ID, PANEL_ID, ROOT_ID, SVG_BACK, SVG_CLOSE, SVG_GEAR, TRIGGER_ID, buildDefaultPreviewSelectionMap, esc } from './settings/constants.mjs';
+import { DRAWER_ID, NAV_WRAP_ID, PANEL_ID, ROOT_ID, SVG_BACK, SVG_CLOSE, SVG_GEAR, TRIGGER_ID, buildDefaultPreviewSelectionMap, computeSettingsDrawerTopInset, esc } from './settings/constants.mjs';
 import { bindSettingsRootEvents, loadAiSuggestionsConfigIfNeeded, loadGitWorkflowStatusIfNeeded, loadRemoteControlStatusIfNeeded } from './settings/events.mjs';
 import { createFxPreviewController } from './settings/preview.mjs';
 import { renderL2Remote } from './settings/remote-view.mjs';
@@ -186,20 +186,7 @@ export function createStudioSettingsRuntime({
 
   function syncDrawerTopInset(el = drawerEl) {
     if (!el || typeof document === 'undefined') return;
-    let topPx = 48;
-    const hr = document.querySelector?.('[data-testid="overview-panel-host"]')?.getBoundingClientRect?.();
-    const br = (getOvToggleBtn() || getAuxToggleBtn())?.getBoundingClientRect?.();
-    if (hr && hr.top >= 32 && hr.top <= 140) topPx = Math.max(48, Math.round(hr.top + 8));
-    else if (br && br.bottom >= 32 && br.bottom <= 130) topPx = Math.max(48, Math.round(br.bottom + 14));
-    else {
-      const winW = typeof window !== 'undefined' && window.innerWidth ? window.innerWidth : 0;
-      const bar = Array.from(document.querySelectorAll?.('.bg-sidebar') || []).find((n) => {
-        const r = n?.getBoundingClientRect?.();
-        return r && r.top >= -1 && r.top <= 4 && r.height >= 16 && r.height <= 56 && winW > 200 && r.width >= winW - 160;
-      });
-      if (bar) topPx = Math.max(48, Math.round(bar.getBoundingClientRect().bottom + 48));
-    }
-    el.style?.setProperty?.('--agy-drawer-top', `${topPx}px`);
+    el.style?.setProperty?.('--agy-drawer-top', `${computeSettingsDrawerTopInset(getOvToggleBtn(), getAuxToggleBtn())}px`);
   }
 
   function openDrawer() {

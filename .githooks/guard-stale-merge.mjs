@@ -76,6 +76,63 @@ function collectBranchesForMergeSha(cwd, mergeSha, isPrimary, mergeMsgPath, { ex
   return Array.from(branches);
 }
 
+function normalizeCandidateBranch(rawLabel) {
+  const s = String(rawLabel || '').trim();
+  if (!s || s === 'HEAD') return '';
+  if (s.startsWith('refs/heads/')) return s.slice('refs/heads/'.length);
+  if (s.startsWith('refs/remotes/origin/')) {
+    const b = s.slice('refs/remotes/origin/'.length);
+    return b && b !== 'HEAD' ? b : '';
+  }
+  if (s.startsWith('origin/')) {
+    const b = s.slice('origin/'.length);
+    return b && b !== 'HEAD' ? b : '';
+  }
+  if (/^[0-9a-f]{4,40}$/i.test(s)) return '';
+  return s;
+}
+
+function collectMergeTargets(cwd, effectiveEnv, { execFile, childEnv }) {
+  const targets = new Map(); // mergeSha -> Set(rawBranchLabel)
+  const addTarget = (sha, branchLabel) => {
+    const cleanSha = String(sha || '').trim().toLowerCase();
+    if (!SHA40_RE.test(cleanSha)) return;
+    if (!targets.has(cleanSha)) targets.set(cleanSha, new Set());
+    const branch = normalizeCandidateBranch(branchLabel);
+    if (branch) targets.get(cleanSha).add(branch);
+  };
+
+  // Source 1: During `pre-merge-commit`, Git exports each merged head as `GITHEAD_<40hex>=<ref>` before writing MERGE_HEAD.
+  for (const [key, val] of Object.entries(effectiveEnv || {})) {
+    const m = key.match(/^GITHEAD_([0-9a-f]{40})$/i);
+    if (m) {
+      addTarget(m[1], val);
+    }
+  }
+
+  // Source 2: During `pre-commit` with MERGE_HEAD (after `--no-commit`, conflicts, or aborted pre-merge-commit).
+  const mergeHeadPath = resolveGitPath(cwd, 'MERGE_HEAD', { execFile, childEnv });
+  if (mergeHeadPath && fs.existsSync(mergeHeadPath)) {
+    for (const line of fs.readFileSync(mergeHeadPath, 'utf8').split(/\r?\n/)) {
+      const sha = line.trim();
+      if (SHA40_RE.test(sha)) addTarget(sha, '');
+    }
+  }
+
+  if (targets.size === 0) {
+    return targets;
+  }
+
+  const mergeMsgPath = resolveGitPath(cwd, 'MERGE_MSG', { execFile, childEnv });
+  const shas = Array.from(targets.keys());
+  shas.forEach((mergeSha, idx) => {
+    for (const branch of collectBranchesForMergeSha(cwd, mergeSha, idx === 0, mergeMsgPath, { execFile, childEnv })) {
+      targets.get(mergeSha).add(branch);
+    }
+  });
+  return targets;
+}
+
 export function checkStaleMerge({ cwd = process.cwd(), env = process.env, execFile = execFileSync } = {}) {
   const effectiveEnv = { ...process.env, ...(env || {}) };
   if (effectiveEnv.MAGA_ALLOW_STALE_MERGE === '1') {
@@ -83,18 +140,8 @@ export function checkStaleMerge({ cwd = process.cwd(), env = process.env, execFi
   }
 
   const childEnv = buildChildEnv(effectiveEnv);
-  const mergeHeadPath = resolveGitPath(cwd, 'MERGE_HEAD', { execFile, childEnv });
-  if (!mergeHeadPath || !fs.existsSync(mergeHeadPath)) {
-    return { allowed: true, reason: 'no_merge_head' };
-  }
-
-  const mergeShas = fs
-    .readFileSync(mergeHeadPath, 'utf8')
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => SHA40_RE.test(line))
-    .map((line) => line.toLowerCase());
-  if (mergeShas.length === 0) {
+  const targets = collectMergeTargets(cwd, effectiveEnv, { execFile, childEnv });
+  if (targets.size === 0) {
     return { allowed: true, reason: 'no_merge_head' };
   }
 
@@ -112,15 +159,13 @@ export function checkStaleMerge({ cwd = process.cwd(), env = process.env, execFi
     return { allowed: true, reason: 'no_origin' };
   }
 
-  const mergeMsgPath = resolveGitPath(cwd, 'MERGE_MSG', { execFile, childEnv });
   const branchToMergeShas = new Map();
-  mergeShas.forEach((mergeSha, idx) => {
-    const candidates = collectBranchesForMergeSha(cwd, mergeSha, idx === 0, mergeMsgPath, { execFile, childEnv });
+  for (const [mergeSha, candidates] of targets.entries()) {
     for (const branch of candidates) {
       if (!branchToMergeShas.has(branch)) branchToMergeShas.set(branch, new Set());
       branchToMergeShas.get(branch).add(mergeSha);
     }
-  });
+  }
 
   const candidateBranches = Array.from(branchToMergeShas.keys());
   if (candidateBranches.length === 0) {

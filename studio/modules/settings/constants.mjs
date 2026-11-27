@@ -148,3 +148,17 @@ export function buildDefaultPreviewSelectionMap(tierOverrides) {
   }
   return out;
 }
+
+export function computeSettingsDrawerTopInset(ovBtn = null, auxBtn = null) {
+  if (typeof document === 'undefined') return 48;
+  const hr = document.querySelector?.('[data-testid="overview-panel-host"]')?.getBoundingClientRect?.();
+  if (hr && hr.top >= 32 && hr.top <= 140) return Math.max(48, Math.round(hr.top + 8));
+  const br = (ovBtn || auxBtn)?.getBoundingClientRect?.();
+  if (br && br.bottom >= 32 && br.bottom <= 130) return Math.max(48, Math.round(br.bottom + 14));
+  const winW = typeof window !== 'undefined' && window.innerWidth ? window.innerWidth : 0;
+  const bar = Array.from(document.querySelectorAll?.('.bg-sidebar') || []).find((n) => {
+    const r = n?.getBoundingClientRect?.();
+    return r && r.top >= -1 && r.top <= 4 && r.height >= 16 && r.height <= 56 && winW > 200 && r.width >= winW - 160;
+  });
+  return bar ? Math.max(48, Math.round(bar.getBoundingClientRect().bottom + 48)) : 48;
+}

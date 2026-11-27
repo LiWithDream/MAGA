@@ -15,12 +15,14 @@
     "doctor": "node studio/cli.mjs doctor",
     "sync-rules": "node studio/cli.mjs sync-rules",
     "rollback": "node studio/cli.mjs rollback",
-    "setup:hooks": "git config core.hooksPath .githooks && chmod +x .githooks/pre-commit .githooks/pre-push .githooks/guard-main-branch.mjs",
+    "setup:hooks": "node studio/setup-hooks.mjs",
     "wt:list": "node studio/wt-cli.mjs list",
     "wt:new": "node studio/wt-cli.mjs new",
     "wt:clean": "node studio/wt-cli.mjs clean",
     "release:pack": "node studio/pack-release.mjs",
-    "test": "npm run build:user && node --test 'test/*.test.mjs'"
+    "release:pack:win": "node studio/pack-release.mjs --platform windows",
+    "release:pack:all": "node studio/pack-release.mjs --platform all",
+    "test": "npm run build:user && node --test \"test/*.test.mjs\""
   },
   "devDependencies": {
     "esbuild": "^0.28.2",

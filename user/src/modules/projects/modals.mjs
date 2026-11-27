@@ -2,7 +2,7 @@
  * Project Context/Instructions Modal & Scheduled Task Editor Modal.
  */
 export function createProjectModals(ctx) {
-  const { FEAT, L, rtState, later, escapeHtml, invalidateOverviewSnapshotCache, pState, ICONS, pHooks, modelApi } = ctx;
+  const { FEAT, L, FILE_MANAGER_ZH, FILE_MANAGER_EN, rtState, later, escapeHtml, invalidateOverviewSnapshotCache, pState, ICONS, pHooks, modelApi } = ctx;
   const { SVG_CLAUDE_PROJECTS_ICON } = ICONS;
   const {
     displayEffortLabel,
@@ -91,7 +91,7 @@ export function createProjectModals(ctx) {
         <div class="ag-pm-footer${st.hasAgentsMd ? ' ag-pm-footer-split' : ''}">
           ${
             st.hasAgentsMd
-              ? `<button type="button" class="ag-pm-reveal-link" data-ag-pm-reveal-agents="true">${L('在 Finder 中定位 AGENTS.md', 'Reveal AGENTS.md in Finder')}</button>`
+              ? `<button type="button" class="ag-pm-reveal-link" data-ag-pm-reveal-agents="true">${L(`在 ${FILE_MANAGER_ZH} 中定位 AGENTS.md`, `Reveal AGENTS.md in ${FILE_MANAGER_EN}`)}</button>`
               : ''
           }
           <div class="ag-pm-footer-actions">
@@ -181,8 +181,8 @@ export function createProjectModals(ctx) {
         if (matched) applyModelSelectionOption(api, matched);
       }
     }
-    const normProj = String(project.dirPath || '').replace(/\/+$/, '');
-    const normTaskDir = String(task.folderPath || '').replace(/\/+$/, '');
+    const normProj = String(project.dirPath || '').replace(/[\\/]+$/, '');
+    const normTaskDir = String(task.folderPath || '').replace(/[\\/]+$/, '');
     const finalPrompt =
       normTaskDir && normTaskDir !== normProj
         ? `[${L('关联文件夹', 'Linked folder')}: ${normTaskDir}]\n${raw}`
@@ -329,7 +329,7 @@ export function createProjectModals(ctx) {
       ...extraFolders.map((f) => ({ absPath: f.absPath, label: f.name || f.absPath }))
     ];
     if (st.folderPath && !folderOptions.some((o) => o.absPath === st.folderPath)) {
-      const segs = st.folderPath.split('/').filter(Boolean);
+      const segs = st.folderPath.split(/[\\/]+/).filter(Boolean);
       folderOptions.push({ absPath: st.folderPath, label: segs[segs.length - 1] || st.folderPath });
     }
 

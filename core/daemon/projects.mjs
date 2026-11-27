@@ -555,7 +555,7 @@ export function openExternalUrl(rawUrl) {
     return { ok: true, url: href };
   }
   if (process.platform === 'win32') {
-    execFile('rundll32.exe', ['url.dll,FileProtocolHandler', href], () => {});
+    execFile('rundll32.exe', ['url.dll,FileProtocolHandler', href], { windowsHide: true }, () => {});
     return { ok: true, url: href };
   }
   execFile('xdg-open', [href], () => {});
@@ -1122,19 +1122,25 @@ export function pickLocalFilesNative() {
     }
     if (process.platform === 'win32') {
       const ps = [
+        '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8',
         'Add-Type -AssemblyName System.Windows.Forms',
         '$dlg = New-Object System.Windows.Forms.OpenFileDialog',
         '$dlg.Multiselect = $true',
         'if ($dlg.ShowDialog() -eq "OK") { $dlg.FileNames -join "`n" }'
       ].join('; ');
-      execFile('powershell', ['-NoProfile', '-STA', '-Command', ps], { timeout: 120000 }, (err, stdout) => {
-        if (err || !stdout) return resolve({ ok: true, canceled: true, paths: [] });
-        const paths = String(stdout)
-          .split(/\r?\n/)
-          .map((s) => s.trim())
-          .filter((s) => s && fs.existsSync(s));
-        resolve({ ok: true, canceled: paths.length === 0, paths });
-      });
+      execFile(
+        'powershell',
+        ['-NoProfile', '-STA', '-Command', ps],
+        { timeout: 120000, windowsHide: true, encoding: 'utf8' },
+        (err, stdout) => {
+          if (err || !stdout) return resolve({ ok: true, canceled: true, paths: [] });
+          const paths = String(stdout)
+            .split(/\r?\n/)
+            .map((s) => s.trim())
+            .filter((s) => s && fs.existsSync(s));
+          resolve({ ok: true, canceled: paths.length === 0, paths });
+        }
+      );
       return;
     }
     resolve({ ok: false, error: 'unsupported_platform', paths: [] });
@@ -1167,16 +1173,22 @@ export function pickLocalFolderNative() {
     }
     if (process.platform === 'win32') {
       const ps = [
+        '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8',
         'Add-Type -AssemblyName System.Windows.Forms',
         '$dlg = New-Object System.Windows.Forms.FolderBrowserDialog',
         'if ($dlg.ShowDialog() -eq "OK") { $dlg.SelectedPath }'
       ].join('; ');
-      execFile('powershell', ['-NoProfile', '-STA', '-Command', ps], { timeout: 120000 }, (err, stdout) => {
-        if (err || !stdout) return resolve({ ok: true, canceled: true, folderPath: '' });
-        const folderPath = String(stdout).trim();
-        if (!folderPath || !fs.existsSync(folderPath)) return resolve({ ok: true, canceled: true, folderPath: '' });
-        resolve({ ok: true, canceled: false, folderPath, name: path.basename(folderPath) || folderPath });
-      });
+      execFile(
+        'powershell',
+        ['-NoProfile', '-STA', '-Command', ps],
+        { timeout: 120000, windowsHide: true, encoding: 'utf8' },
+        (err, stdout) => {
+          if (err || !stdout) return resolve({ ok: true, canceled: true, folderPath: '' });
+          const folderPath = String(stdout).trim();
+          if (!folderPath || !fs.existsSync(folderPath)) return resolve({ ok: true, canceled: true, folderPath: '' });
+          resolve({ ok: true, canceled: false, folderPath, name: path.basename(folderPath) || folderPath });
+        }
+      );
       return;
     }
     resolve({ ok: false, error: 'unsupported_platform', folderPath: '' });
@@ -1194,7 +1206,7 @@ export function revealLocalPath(rawPath, { openFolderContents = false } = {}) {
     return { ok: true };
   }
   if (process.platform === 'win32') {
-    execFile('explorer', openInside ? [abs] : [`/select,${abs}`], () => {});
+    execFile('explorer', openInside ? [abs] : [`/select,${abs}`], { windowsHide: true }, () => {});
     return { ok: true };
   }
   execFile('xdg-open', [openInside ? abs : path.dirname(abs)], () => {});

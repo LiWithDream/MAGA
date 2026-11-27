@@ -10,7 +10,7 @@
 
 [![GitHub Stars](https://img.shields.io/github/stars/LiWithDream/agy-studio?style=flat-square&logo=github)](https://github.com/LiWithDream/agy-studio/stargazers)
 [![Latest Release](https://img.shields.io/github/v/release/LiWithDream/agy-studio?style=flat-square&color=4285F4)](https://github.com/LiWithDream/agy-studio/releases)
-[![macOS](https://img.shields.io/badge/macOS-Apple%20Silicon%20%2F%20Intel-1f2328?style=flat-square&logo=apple&logoColor=white)](#limitations--platform-support)
+[![macOS & Windows](https://img.shields.io/badge/Platform-macOS%20%7C%20Windows-1f2328?style=flat-square&logo=apple&logoColor=white)](#limitations--platform-support)
 [![Antigravity](https://img.shields.io/badge/Antigravity-Desktop%202.0-4285F4?style=flat-square)](#core-capabilities)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue?style=flat-square)](./LICENSE)
 
@@ -174,46 +174,62 @@ Antigravity Desktop 2.0 is built around **one agent in one chat**. Once you jugg
 
 ## Quick Start
 
-**Requirements**: macOS (Apple Silicon or Intel) · Node.js `>= 22` · Google Antigravity Desktop 2.0
+**Requirements**: macOS (Apple Silicon or Intel) or Windows 10/11 (x64/ARM64) · Node.js `>= 22` · Google Antigravity Desktop 2.0
 
 ### Recommended: Let Antigravity or Claude Code Install It for You
 
 Paste this prompt directly into Antigravity or Claude Code:
 
 ```text
-Check Node.js >= 22 (`node -v`). If ~/Developer/agy-studio/.git exists, run `git -C ~/Developer/agy-studio pull --ff-only --autostash`; otherwise clone https://github.com/LiWithDream/agy-studio.git to ~/Developer/agy-studio. Read docs/INSTALL_AGENT.md, run bash ./install.sh, and verify with node studio/cli.mjs doctor. Do NOT modify /Applications/Antigravity.app, delete existing chats, or quit/relaunch Antigravity from inside an active Antigravity session (if doctor reports pending_restart, ask me to restart Antigravity manually).
+Check Node.js >= 22 (`node -v`). On macOS, if ~/Developer/agy-studio/.git exists run `git -C ~/Developer/agy-studio pull --ff-only --autostash`, else clone https://github.com/LiWithDream/agy-studio.git to ~/Developer/agy-studio, and run `bash ./install.sh`. On Windows 10/11 (PowerShell), if %LOCALAPPDATA%\agy-studio\.git exists run `git -C "$env:LOCALAPPDATA\agy-studio" pull --ff-only --autostash`, else clone there, and run `powershell -ExecutionPolicy Bypass -File .\install.ps1`. Read docs/INSTALL_AGENT.md first and verify with `node studio/cli.mjs doctor`. Do NOT modify Antigravity app binaries, delete existing chats, or quit/relaunch Antigravity from inside an active Antigravity session (if doctor reports pending_restart, ask me to restart Antigravity manually).
 ```
 
-> **Safe by design**: Never modifies `/Applications/Antigravity.app`, keeps all data local, and reverts cleanly at any time with `bash ./uninstall.sh` → [See how it works](#safe-fast). *(macOS only in `v1.4.x` — do not run `bash ./install.sh` on Windows; native Windows 10/11 support lands in `v1.5.0`.)*
+> **Safe by design**: Never modifies `/Applications/Antigravity.app` or Windows `Antigravity.exe` / `app.asar`, keeps all data local, and reverts cleanly at any time with `bash ./uninstall.sh` (macOS) or `.\uninstall.ps1` (Windows) → [See how it works](#safe-fast). *(Note: `install.ps1` via `irm ... | iex` cannot trust `$PWD` and clones to `%LOCALAPPDATA%\agy-studio`; PowerShell 5.1 requires `-ExecutionPolicy Bypass`.)*
 
 <details>
-<summary><b>Alternative install methods (Prebuilt tarball / From source / Uninstall &amp; Diagnostics)</b></summary>
+<summary><b>Alternative install methods (Prebuilt archives / From source / Uninstall &amp; Diagnostics)</b></summary>
 
-#### Prebuilt Release Tarball (No `npm install` Required)
+#### Prebuilt Release Archive (No `npm install` Required)
 
-Download the latest `agy-studio-v*-macos.tar.gz` from [Releases](https://github.com/LiWithDream/agy-studio/releases) and run:
+Download `agy-studio-v*-macos.tar.gz` (macOS) or `agy-studio-v*-windows.zip` (Windows) from [Releases](https://github.com/LiWithDream/agy-studio/releases):
 
 ```bash
+# macOS
 tar -xzf agy-studio-v*-macos.tar.gz && cd agy-studio-v*-macos
 bash ./install.sh
+```
+
+```powershell
+# Windows (PowerShell)
+Expand-Archive .\agy-studio-v*-windows.zip -DestinationPath .
+cd .\agy-studio-v*-windows
+powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
 #### Install from Source
 
 ```bash
+# macOS
 git clone https://github.com/LiWithDream/agy-studio.git ~/Developer/agy-studio
 cd ~/Developer/agy-studio
 bash ./install.sh
 ```
 
-Pass `--no-rules` if you prefer not to sync the optional `fast-io` rules into `~/.gemini/AGENTS.md`.
+```powershell
+# Windows (PowerShell)
+git clone https://github.com/LiWithDream/agy-studio.git "$env:LOCALAPPDATA\agy-studio"
+cd "$env:LOCALAPPDATA\agy-studio"
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+Pass `--no-rules` (or `-NoRules` on Windows) if you prefer not to sync the optional `fast-io` rules into `~/.gemini/AGENTS.md`.
 
 #### Everyday Commands
 
 | Command | What It Does |
 | :--- | :--- |
-| `node studio/cli.mjs doctor` | Verify daemon health, CDP attachment, plugin status, usage scanner, and proxy forwarding |
-| `bash ./uninstall.sh` | Cleanly remove the UI layer, background daemon, and synced rules while keeping all chats & preferences |
+| `node studio/cli.mjs doctor` | Verify daemon health, CDP attachment, plugin status, usage scanner, and proxy diagnostics |
+| `bash ./uninstall.sh` / `.\uninstall.ps1` | Cleanly remove the UI layer, background daemon, and synced rules while keeping all chats & preferences |
 
 </details>
 
@@ -249,18 +265,18 @@ Small daily friction adds up when you live inside Antigravity all day — every 
 
 **Will this break Antigravity updates, slow down streaming, or send my data anywhere?** No.
 
-- **Zero `.app` Modifications**: Runs purely through a single local macOS `LaunchAgent` and Chrome DevTools Protocol (CDP) runtime layer. `/Applications/Antigravity.app` stays completely untouched — macOS code signature and auto-updates continue working normally.
-- **100% Local & Reversible**: Token analytics query Antigravity's local SQLite state read-only (`immutable=1`). Nothing is uploaded to external servers (optional AI suggestions only call Google AI Studio if you explicitly provide your own key). Run `bash ./uninstall.sh` anytime to revert cleanly.
+- **Zero Binary Modifications**: Runs purely through a single local background daemon (macOS `LaunchAgent` or Windows headless Task Scheduler / Startup fallback) and Chrome DevTools Protocol (CDP) runtime layer. `/Applications/Antigravity.app` and Windows `Antigravity.exe` / `app.asar` stay completely untouched — code signatures and auto-updates continue working normally.
+- **100% Local & Reversible**: Token analytics query Antigravity's local SQLite state read-only (`immutable=1`). Nothing is uploaded to external servers (optional AI suggestions only call Google AI Studio if you explicitly provide your own key). Run `bash ./uninstall.sh` or `.\uninstall.ps1` anytime to revert cleanly.
 - **Engineered for Zero UI Lag**: Built around a single shared DOM observer with self-mutation isolation, leaf-only telemetry updates, and automated CSS/DOM regression guards.
 
 | Verified Engineering & Safety Metrics | Measured Baseline |
 | :--- | :--- |
-| Changes to `/Applications/Antigravity.app` | **`0 bytes`** (signature & auto-updates intact) |
+| Changes to Antigravity app binaries | **`0 bytes`** (signature & auto-updates intact) |
 | Root DOM observers (`MagaKernel`) | **`1`** shared `MutationObserver` (`data-maga-own` filtered) |
 | Frame flush cost (Apple Silicon local CDP check) | **`1.5–3.6 ms`** with leaf-only telemetry slots (`MetricsBus`) |
 | Global CSS `:has()` selectors | **`0`** (enforced by automated test guards) |
 | Automated regression & invariant suite (`npm test`) | **`215+`** passing tests, **`0`** skipped |
-| Background footprint | **`1`** local macOS `LaunchAgent` |
+| Background footprint | **`1`** local `LaunchAgent` (macOS) / Scheduled Task (Windows) |
 
 ---
 
@@ -280,7 +296,7 @@ Running other Antigravity plugins? Here is how **AGY Studio** behaves alongside 
 
 ## Limitations & Platform Support
 
-- **macOS-only for now**: Daemon lifecycle and CDP bootstrap currently rely on macOS `LaunchAgent` and `/usr/bin/open`. Windows and Linux support are tracked on GitHub Issues — upvote to help prioritize.
+- **macOS & Windows 10/11 supported; Linux tracked**: macOS uses `LaunchAgent` + `/usr/bin/open` (including full shell proxy env forwarding), while Windows uses a headless user-level Task Scheduler task (`AGYStudioDaemon` with Startup `.vbs` fallback), an opt-in Start Menu launcher (`Antigravity (AGY Studio)`), and graceful `WM_CLOSE` CDP bootstrap (note: Windows cannot inspect environment variables of an already-running process, so configure System Proxy or TUN mode if needed). Linux support is tracked on GitHub Issues.
 - **Agent rules are guidance, not hard locks**: Optional `fast-io` rules in `~/.gemini/AGENTS.md` significantly reduce wasted tool turns, though models may occasionally deviate.
 - **No multi-account OAuth relay**: AGY Studio focuses on single-workspace engineering ergonomics, Git worktree isolation, cross-model review, and usage clarity — it does not proxy APIs or rotate multiple Google accounts.
 
@@ -352,15 +368,17 @@ This comes from Antigravity's native `language_server` when its TLS/proxy connec
 │   └── pack-release.mjs   # Zero-npm-install Release tarball packager
 ├── test/                  # Automated regression & invariant suite (215+ tests)
 ├── install.sh             # One-line macOS installer (--dry-run, prebuilt & source modes)
-└── uninstall.sh           # Clean rollback & uninstaller (--dry-run supported)
+├── uninstall.sh           # Clean macOS rollback & uninstaller (--dry-run supported)
+├── install.ps1            # One-line Windows PowerShell installer (-DryRun, -NoRules, -NoShortcut)
+└── uninstall.ps1          # Clean Windows rollback & uninstaller (-DryRun, -Purge)
 ```
 
 | Contributor Command | Purpose |
 | :--- | :--- |
-| `npm run wt:new -- feat/slug` | Create an isolated sibling Git worktree with symlinked `node_modules` |
+| `npm run wt:new -- feat/slug` | Create an isolated sibling Git worktree with symlinked/junctioned `node_modules` |
 | `npm test` | Compile `user/custom.js` and run the full 215+ test & invariant suite |
 | `npm run deploy` | Hot-reload UI changes into running Antigravity from clean `main` (no app restart) |
-| `npm run release:pack` | Build a zero-`npm-install` macOS tarball + SHA-256 checksum in `dist/` |
+| `npm run release:pack:all` | Build zero-`npm-install` macOS `.tar.gz` and Windows `.zip` archives + SHA-256 in `dist/` |
 
 </details>
 

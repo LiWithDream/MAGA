@@ -22,10 +22,12 @@ export const ACTIVE_CID_TTL_MS = 10 * 60 * 1000;
 export const CASE_INSENSITIVE_FS = process.platform === 'darwin' || process.platform === 'win32';
 export const DEFAULT_PROTECTED_BRANCHES = new Set(['main', 'master']);
 
+const realpathNative = fs.realpathSync.native || fs.realpathSync;
+
 export function getRealPathPreserveCase(p) {
   const resolved = path.resolve(String(p || ''));
   try {
-    return fs.realpathSync(resolved);
+    return realpathNative(resolved);
   } catch {
     return resolved;
   }
@@ -104,7 +106,26 @@ export function writeAtomicUtf8(filePath, content) {
   const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
   try {
     fs.writeFileSync(tmp, content, 'utf8');
-    fs.renameSync(tmp, filePath);
+    if (process.platform === 'win32') {
+      for (let attempt = 0; attempt < 6; attempt += 1) {
+        try {
+          fs.renameSync(tmp, filePath);
+          break;
+        } catch (err) {
+          const code = err?.code;
+          if ((code !== 'EPERM' && code !== 'EBUSY' && code !== 'EACCES') || attempt === 5) {
+            throw err;
+          }
+          if (LOCK_SLEEP_BUF) {
+            try {
+              Atomics.wait(LOCK_SLEEP_BUF, 0, 0, 20);
+            } catch {}
+          }
+        }
+      }
+    } else {
+      fs.renameSync(tmp, filePath);
+    }
   } catch (err) {
     try {
       fs.rmSync(tmp, { force: true });
@@ -122,6 +143,7 @@ export function execGitAsyncWithRaw(absDir, args, timeoutMs = 4000) {
         timeout: timeoutMs,
         maxBuffer: 256 * 1024,
         encoding: 'utf8',
+        windowsHide: true,
         env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
       },
       (err, stdout, stderr) => {
@@ -332,7 +354,7 @@ export async function ensureNodeModulesExcludedIfNeededAsync(mainReal, targetWor
     const destNodeModules = path.join(targetWorktreeDir, 'node_modules');
     if (!fs.lstatSync(destNodeModules, { throwIfNoEntry: false })) {
       try {
-        fs.symlinkSync(srcNodeModules, destNodeModules);
+        fs.symlinkSync(srcNodeModules, destNodeModules, process.platform === 'win32' ? 'junction' : 'dir');
       } catch {}
     }
   }
@@ -517,8 +539,28 @@ export async function removeRepoWorktreeCore(
 
   await ensureNodeModulesExcludedIfNeededAsync(mainReal, entry.realPath);
 
+  const wtNodeModules = path.join(entry.realPath, 'node_modules');
+  const mainNodeModules = path.join(mainReal, 'node_modules');
+  let unlinkedNodeModules = false;
+  try {
+    const nmStat = fs.lstatSync(wtNodeModules, { throwIfNoEntry: false });
+    if (nmStat && nmStat.isSymbolicLink()) {
+      try {
+        fs.unlinkSync(wtNodeModules);
+      } catch {
+        fs.rmdirSync(wtNodeModules);
+      }
+      unlinkedNodeModules = true;
+    }
+  } catch {}
+
   const rmRes = await execGitWithStatusAsync(mainReal, ['worktree', 'remove', '--', entry.realPath], 8000);
   if (!rmRes.ok) {
+    if (unlinkedNodeModules && fs.existsSync(mainNodeModules) && !fs.lstatSync(wtNodeModules, { throwIfNoEntry: false })) {
+      try {
+        fs.symlinkSync(mainNodeModules, wtNodeModules, process.platform === 'win32' ? 'junction' : 'dir');
+      } catch {}
+    }
     return {
       ok: false,
       error: 'git_worktree_remove_failed',

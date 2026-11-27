@@ -42,6 +42,9 @@ export const USER_DIR = path.resolve(
   resolveArgValue('--user-dir') || process.env.ANTI_CLAUDE_USER_DIR || path.join(STATE_DIR, 'user')
 );
 export const PID_FILE = path.join(STATE_DIR, 'daemon.pid');
+export const STOP_SIGNAL_FILE = path.join(STATE_DIR, 'daemon-stop.signal');
+export const DAEMON_LOG_FILE = path.join(STATE_DIR, 'daemon.log');
+export const WIN_DAEMON_META_FILE = path.join(STATE_DIR, 'win-daemon-meta.json');
 export const RELAUNCH_INTENT_FILE = path.join(STATE_DIR, 'relaunch-intent.json');
 export const UI_PREFS_FILE = path.join(STATE_DIR, 'ui-prefs.json');
 export const STUDIO_PREFS_FILE = path.join(STATE_DIR, 'studio-prefs.json');
@@ -179,6 +182,85 @@ export function resolveAtomicWriteTarget(filePath) {
   return filePath;
 }
 
+const WIN_RETRY_SLEEP_BUF =
+  typeof SharedArrayBuffer === 'function' ? new Int32Array(new SharedArrayBuffer(4)) : null;
+
+export function renameWithWinRetry(
+  src,
+  dst,
+  { platform = process.platform, maxAttempts = 10, backoffMs = 20, renameFn = fs.renameSync } = {}
+) {
+  if (platform !== 'win32') {
+    renameFn(src, dst);
+    return;
+  }
+  const attempts = Math.max(1, Number(maxAttempts) || 1);
+  for (let i = 0; i < attempts; i += 1) {
+    try {
+      renameFn(src, dst);
+      return;
+    } catch (err) {
+      const code = err?.code;
+      const retryable = code === 'EPERM' || code === 'EBUSY' || code === 'EACCES';
+      if (!retryable || i === attempts - 1) throw err;
+      if (WIN_RETRY_SLEEP_BUF) {
+        try {
+          const delayMs = Math.min(200, Math.round(backoffMs * Math.pow(1.6, i)));
+          Atomics.wait(WIN_RETRY_SLEEP_BUF, 0, 0, delayMs);
+        } catch {}
+      }
+    }
+  }
+}
+
+let logTeeInstalled = false;
+
+/** Tee console output to STATE_DIR/daemon.log when running headless on Windows without a TTY. */
+export function installWinHeadlessLogTee({
+  platform = process.platform,
+  isTTY = Boolean(process.stdout?.isTTY),
+  logFile = DAEMON_LOG_FILE,
+  maxBytes = 512 * 1024,
+} = {}) {
+  if (logTeeInstalled || platform !== 'win32' || isTTY) return false;
+  logTeeInstalled = true;
+  try {
+    fs.mkdirSync(path.dirname(logFile), { recursive: true });
+    if (fs.existsSync(logFile)) {
+      const st = fs.statSync(logFile);
+      if (st.size > maxBytes) {
+        const prev = `${logFile}.prev`;
+        try {
+          fs.rmSync(prev, { force: true });
+        } catch {}
+        renameWithWinRetry(logFile, prev, { platform });
+      }
+    }
+  } catch {}
+
+  const appendLine = (level, args) => {
+    try {
+      const msg = args
+        .map((a) => (a instanceof Error ? a.stack || a.message : typeof a === 'string' ? a : JSON.stringify(a)))
+        .join(' ');
+      fs.appendFileSync(logFile, `[${new Date().toISOString()}] [${level}] ${msg}\n`, 'utf8');
+    } catch {}
+  };
+
+  for (const [method, level] of [
+    ['log', 'INFO'],
+    ['warn', 'WARN'],
+    ['error', 'ERROR'],
+  ]) {
+    const orig = console[method].bind(console);
+    console[method] = (...args) => {
+      appendLine(level, args);
+      return orig(...args);
+    };
+  }
+  return true;
+}
+
 export function writeAtomicUtf8(filePath, content) {
   const target = resolveAtomicWriteTarget(filePath);
   fs.mkdirSync(path.dirname(target), { recursive: true });
@@ -195,7 +277,7 @@ export function writeAtomicUtf8(filePath, content) {
         fs.chmodSync(tmp, prevMode);
       } catch {}
     }
-    fs.renameSync(tmp, target);
+    renameWithWinRetry(tmp, target);
   } catch (err) {
     try {
       fs.rmSync(tmp, { force: true });

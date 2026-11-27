@@ -14,7 +14,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   CSS_BEGIN,
   JS_BEGIN,
@@ -47,6 +47,7 @@ import {
   syncGitWorkflowPlugin,
   verifyGitWorkflowHookNodeRuntime,
 } from './daemon/git-workflow-service.mjs';
+import { collectWinProxyDiagnostics, inspectWinCoreDaemon } from '../core/daemon/win-service.mjs';
 import { evaluateDeployGuard, readDeployMeta } from './deploy-meta.mjs';
 import { collectRemoteControlDiagnostics, handleRemoteCommand } from './remote-cli.mjs';
 
@@ -109,7 +110,7 @@ async function applyCollapsedStepsPreference() {
     }
   }
   try {
-    const { cdpPrefs } = await import(path.join(REPO_ROOT, 'install.mjs'));
+    const { cdpPrefs } = await import(pathToFileURL(path.join(REPO_ROOT, 'install.mjs')).href);
     if (typeof cdpPrefs === 'function') {
       await cdpPrefs({ project4kMode: 1, verboseConversationSteps: false });
     }
@@ -120,7 +121,7 @@ async function applyDefaultOrchestratorModelPreference() {
   // Default Orchestrator planner to Gemini 4 Neon (High) only when unset, preserving explicit user overrides.
   let cdpHandled = false;
   try {
-    const { cdpPrefs } = await import(path.join(REPO_ROOT, 'install.mjs'));
+    const { cdpPrefs } = await import(pathToFileURL(path.join(REPO_ROOT, 'install.mjs')).href);
     if (typeof cdpPrefs === 'function') {
       const live = await cdpPrefs(null, ['orchestratorModel']);
       if (live?.ok) {
@@ -145,18 +146,29 @@ async function applyDefaultOrchestratorModelPreference() {
   }
 }
 
-async function runAntiClaudeInstall() {
+async function runAntiClaudeInstall({ noShortcut = false } = {}) {
   await buildUserCustomJs({ writeToRepo: true, allowPrebuilt: true });
   // Strip studio blocks before base install so base custom.{js,css} installs cleanly
   stripStudioBlocksOnly();
   const installScript = path.join(REPO_ROOT, 'install.mjs');
-  execFileSync(
-    process.execPath,
-    [installScript, 'install', '--no-auto-update', '--no-agents-rule', '--no-step-unlock'],
-    { stdio: 'inherit', cwd: REPO_ROOT }
-  );
+  const args = [installScript, 'install', '--no-auto-update', '--no-agents-rule', '--no-step-unlock'];
+  if (noShortcut) args.push('--no-shortcut');
+  execFileSync(process.execPath, args, { stdio: 'inherit', cwd: REPO_ROOT });
   await applyCollapsedStepsPreference();
   await applyDefaultOrchestratorModelPreference();
+}
+
+function sameNormalizedPath(aPath, bPath) {
+  if (!aPath || !bPath) return false;
+  try {
+    const a = realpathSync(aPath);
+    const b = realpathSync(bPath);
+    return process.platform === 'darwin' || process.platform === 'win32'
+      ? a.toLowerCase() === b.toLowerCase()
+      : a === b;
+  } catch {
+    return path.resolve(aPath).toLowerCase() === path.resolve(bPath).toLowerCase();
+  }
 }
 
 export async function runDoctor() {
@@ -171,10 +183,29 @@ export async function runDoctor() {
     baseDoctor = { ok: false, error: String(err?.message || err) };
   }
 
-  const plistText = existsSync(DAEMON_PLIST) ? readFileSync(DAEMON_PLIST, 'utf8') : '';
-  const pointsToStudio = plistText.includes(path.join(REPO_ROOT, 'core', 'daemon.mjs'));
-  const plistDaemonMatch = plistText.match(/<string>([^<]*[\\/]core[\\/]daemon\.mjs)<\/string>/);
-  const daemonRepoDir = plistDaemonMatch ? path.dirname(path.dirname(plistDaemonMatch[1].trim())) : null;
+  const expectedDaemonScript = path.join(REPO_ROOT, 'core', 'daemon.mjs');
+  let pointsToStudio = false;
+  let daemonRepoDir = null;
+
+  if (process.platform === 'darwin') {
+    const plistText = existsSync(DAEMON_PLIST) ? readFileSync(DAEMON_PLIST, 'utf8') : '';
+    pointsToStudio = plistText.includes(expectedDaemonScript);
+    const plistDaemonMatch = plistText.match(/<string>([^<]*[\\/]core[\\/]daemon\.mjs)<\/string>/);
+    daemonRepoDir = plistDaemonMatch ? path.dirname(path.dirname(plistDaemonMatch[1].trim())) : null;
+  } else if (process.platform === 'win32') {
+    const winDaemon = baseDoctor?.coreEngine?.daemon || inspectWinCoreDaemon();
+    const daemonScriptPath = winDaemon?.scriptPath || null;
+    pointsToStudio = Boolean(daemonScriptPath && sameNormalizedPath(daemonScriptPath, expectedDaemonScript));
+    daemonRepoDir = winDaemon?.daemonRepoDir || (daemonScriptPath ? path.dirname(path.dirname(daemonScriptPath)) : null);
+  } else {
+    const unitPath = path.join(HOME, '.config', 'systemd', 'user', 'anti-claude-daemon.service');
+    const unitText = existsSync(unitPath) ? readFileSync(unitPath, 'utf8') : '';
+    const unitMatch = unitText.match(/ExecStart="[^"]+"\s+"([^"]+[\\/]core[\\/]daemon\.mjs)"/);
+    const daemonScriptPath = unitMatch ? unitMatch[1].trim() : null;
+    pointsToStudio = Boolean(daemonScriptPath && sameNormalizedPath(daemonScriptPath, expectedDaemonScript));
+    daemonRepoDir = daemonScriptPath ? path.dirname(path.dirname(daemonScriptPath)) : null;
+  }
+
   const hasJsMarker = existsSync(TARGET_CUSTOM_JS) && readFileSync(TARGET_CUSTOM_JS, 'utf8').includes(JS_BEGIN);
   const hasCssMarker = existsSync(TARGET_CUSTOM_CSS) && readFileSync(TARGET_CUSTOM_CSS, 'utf8').includes(CSS_BEGIN);
   const agyCfg = readJsonSafe(AGY_CONFIG_JSON);
@@ -195,19 +226,17 @@ export async function runDoctor() {
 
   let daemonAlignedWithDeploy = true;
   if (daemonRepoDir && deployMeta.present && deployMeta.meta?.worktreePath) {
-    try {
-      const a = realpathSync(deployMeta.meta.worktreePath);
-      const b = realpathSync(daemonRepoDir);
-      daemonAlignedWithDeploy = process.platform === 'darwin' || process.platform === 'win32'
-        ? a.toLowerCase() === b.toLowerCase()
-        : a === b;
-    } catch {
-      daemonAlignedWithDeploy = deployMeta.meta.worktreePath === daemonRepoDir;
-    }
+    daemonAlignedWithDeploy = sameNormalizedPath(deployMeta.meta.worktreePath, daemonRepoDir);
   }
+  const daemonLabel =
+    process.platform === 'darwin'
+      ? 'LaunchAgent daemon'
+      : process.platform === 'win32'
+        ? 'Windows daemon'
+        : 'systemd daemon';
   const daemonSplitBrainWarning =
     !daemonAlignedWithDeploy && deployMeta.meta
-      ? `UI/daemon split-brain: live bundle deployed from '${deployMeta.meta.branch || 'unknown'}' (${deployMeta.meta.worktreePath}), while LaunchAgent daemon runs core/daemon.mjs from '${daemonRepoDir}'.`
+      ? `UI/daemon split-brain: live bundle deployed from '${deployMeta.meta.branch || 'unknown'}' (${deployMeta.meta.worktreePath}), while ${daemonLabel} runs core/daemon.mjs from '${daemonRepoDir}'.`
       : null;
 
   return {
@@ -229,6 +258,7 @@ export async function runDoctor() {
     deployedFrom: deployMeta.meta,
     ...(deployMeta.nonMainWarning ? { deployedFromWarning: deployMeta.nonMainWarning } : {}),
     daemonPointsToStudio: pointsToStudio,
+    ...(baseDoctor?.antigravityAppExe ? { antigravityAppExe: baseDoctor.antigravityAppExe } : {}),
     studioBundle: { jsInjected: hasJsMarker, cssInjected: hasCssMarker },
     remoteControlEnabled: agyCfg?.userSettings?.remoteControlEnabled ?? agyCfg?.remoteControlEnabled ?? null,
     remoteControl,
@@ -278,6 +308,14 @@ function collectProxyDiagnostics() {
     } catch {
       systemProxy = null;
     }
+  } else if (process.platform === 'win32') {
+    systemProxy = collectWinProxyDiagnostics();
+    if (systemProxy) {
+      const anySysProxy = systemProxy.httpEnabled || systemProxy.httpsEnabled || systemProxy.socksEnabled || systemProxy.pacEnabled;
+      if (shellProxyEnvKeys.length > 0 && !anySysProxy) {
+        hint = 'Shell proxy env vars detected while Windows System Proxy is disabled; enabling System Proxy or TUN mode is recommended if Antigravity language_server reports loadCodeAssist: EOF.';
+      }
+    }
   }
   return { shellProxyEnvKeys, systemProxy, hint };
 }
@@ -297,6 +335,7 @@ if (isMainModule) {
     cliArgs.includes('--force') ||
     process.env.MAGA_DEPLOY_ALLOW_NON_MAIN === '1';
   const skipRulesSync = cliArgs.includes('--no-rules');
+  const skipShortcut = cliArgs.includes('--no-shortcut');
 
   try {
     if (cmd === 'install') {
@@ -304,7 +343,7 @@ if (isMainModule) {
       if (!installGuard.allowed) {
         throw new Error(installGuard.reason);
       }
-      await runAntiClaudeInstall();
+      await runAntiClaudeInstall({ noShortcut: skipShortcut });
       const deployRes = await deployStudio({ allowNonMain: allowNonMainDeploy, mode: 'install' });
       const rulesRes = skipRulesSync
         ? { ok: true, skipped: true, reason: '--no-rules' }

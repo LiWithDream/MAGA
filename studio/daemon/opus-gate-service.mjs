@@ -87,6 +87,7 @@ function sanitizeInlineText(str, maxLen = 220) {
 
 function sanitizePathSafe(str) {
   return String(str || '')
+    .replace(/\\/g, '/')
     .replace(/[`'"\r\n\t\u0000-\u001F\u007F]/g, '')
     .replace(/[^\w./@:+-]/g, '_')
     .slice(0, 220);
@@ -306,6 +307,7 @@ function execGitBriefAsync(absDir, args) {
       {
         timeout: 1500,
         maxBuffer: 192 * 1024,
+        windowsHide: true,
         env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
         encoding: 'utf8',
       },

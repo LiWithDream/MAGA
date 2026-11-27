@@ -915,8 +915,8 @@ test('guard-release-tag blocks v* tag pushes when unmerged remote branches exist
     });
     assert.equal(skipSmoke.allowed, true);
 
-    // gh api failure warns offline, blocks when MAGA_STRICT_REMOTE=1
-    const offlineWarn = checkReleaseTagPush({
+    // gh api failure fails closed by default on GitHub remotes (use MAGA_SKIP_SMOKE=1 to override)
+    const ghFailClosed = checkReleaseTagPush({
       cwd: devB,
       remoteName: 'origin',
       remoteUrl: 'https://github.com/Acme/agy-studio.git',
@@ -924,19 +924,19 @@ test('guard-release-tag blocks v* tag pushes when unmerged remote branches exist
       env: {},
       execFile: makeMockExec({ ghError: 'gh not logged in' }),
     });
-    assert.equal(offlineWarn.allowed, true);
-    assert.equal(offlineWarn.warnings.length, 1);
+    assert.equal(ghFailClosed.allowed, false);
+    assert.equal(ghFailClosed.reason, 'smoke_check_unreachable');
+    assert.match(ghFailClosed.message, /MAGA_SKIP_SMOKE=1/);
 
-    const strictFail = checkReleaseTagPush({
+    const ghFailOverride = checkReleaseTagPush({
       cwd: devB,
       remoteName: 'origin',
       remoteUrl: 'https://github.com/Acme/agy-studio.git',
       pushedRefs: parsedLines,
-      env: { MAGA_STRICT_REMOTE: '1' },
+      env: { MAGA_SKIP_SMOKE: '1' },
       execFile: makeMockExec({ ghError: 'gh not logged in' }),
     });
-    assert.equal(strictFail.allowed, false);
-    assert.equal(strictFail.reason, 'smoke_check_unreachable');
+    assert.equal(ghFailOverride.allowed, true);
   } finally {
     fs.rmSync(bareOrigin, { recursive: true, force: true });
     fs.rmSync(devA, { recursive: true, force: true });
@@ -1005,6 +1005,41 @@ test('studio/smoke-live evaluates doctor + CDP invariants across OSes and format
   });
   assert.equal(shaMismatch.ok, false);
   assert.ok(shaMismatch.failures.some((f) => f.includes('deployed_sha_mismatch')));
+
+  // Missing deploy-meta SHA fails closed unless allowShaMismatch=true
+  const shaMissing = evaluateLiveSmokeResult({
+    platform: 'darwin',
+    targetSha: sha,
+    doctorReport: {
+      ok: true,
+      cdpStatus: 'ready',
+      daemonAlignedWithDeploy: true,
+      deployedFrom: null,
+    },
+    cdpResult: {
+      ok: true,
+      value: { observerCount: 1, isUsingKernel: true, ownHasCount: 0, detectedTopBarPx: 0, winTopBarCssPx: 0 },
+    },
+  });
+  assert.equal(shaMissing.ok, false);
+  assert.ok(shaMissing.failures.includes('deployed_sha_missing'));
+
+  const shaMissingAllowed = evaluateLiveSmokeResult({
+    platform: 'darwin',
+    targetSha: sha,
+    allowShaMismatch: true,
+    doctorReport: {
+      ok: true,
+      cdpStatus: 'ready',
+      daemonAlignedWithDeploy: true,
+      deployedFrom: null,
+    },
+    cdpResult: {
+      ok: true,
+      value: { observerCount: 1, isUsingKernel: true, ownHasCount: 0, detectedTopBarPx: 0, winTopBarCssPx: 0 },
+    },
+  });
+  assert.equal(shaMissingAllowed.ok, true);
 
   // postGitHubCommitStatus truncates description <= 140 chars
   let capturedArgs = null;

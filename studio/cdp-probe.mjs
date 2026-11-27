@@ -185,14 +185,24 @@ export async function evaluateOnAntigravityPage(
       });
     };
 
+    const onClose = () => {
+      finish({
+        ok: false,
+        port: targetPort,
+        error: 'CDP WebSocket closed before Runtime.evaluate completed',
+      });
+    };
+
     if (typeof ws.addEventListener === 'function') {
       ws.addEventListener('open', onOpen);
       ws.addEventListener('message', onMessage);
       ws.addEventListener('error', onError);
+      ws.addEventListener('close', onClose);
     } else {
       ws.onopen = onOpen;
       ws.onmessage = onMessage;
       ws.onerror = onError;
+      ws.onclose = onClose;
     }
   });
 }

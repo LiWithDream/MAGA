@@ -4,13 +4,19 @@
  * Captures ONLY anonymous layout rectangles, structural CSS overflow/transition hints,
  * and studio geometry CSS variables — zero conversation titles, text content, or user paths.
  */
-import { mkdirSync, realpathSync, writeFileSync } from 'node:fs';
+import fs, { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { evaluateOnAntigravityPage } from './cdp-probe.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const REPO_ROOT = path.resolve(path.dirname(__filename), '..');
+const realpathNative = fs.realpathSync.native || fs.realpathSync;
+
+function normExecPath(p) {
+  const s = String(p || '');
+  return process.platform === 'win32' ? s.toLowerCase() : s;
+}
 
 const SAFE_TEST_IDS = new Set([
   'conversation-list-sidebar',
@@ -249,8 +255,10 @@ function parseArgs(argv) {
 }
 
 const isMain = (() => {
+  if (!process.argv[1]) return false;
   try {
-    return Boolean(process.argv[1]) && realpathSync(process.argv[1]) === realpathSync(__filename);
+    if (import.meta.url === pathToFileURL(process.argv[1]).href) return true;
+    return normExecPath(realpathNative(path.resolve(process.argv[1]))) === normExecPath(realpathNative(__filename));
   } catch {
     return false;
   }

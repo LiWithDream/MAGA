@@ -6,14 +6,20 @@
  * optionally stamps `smoke/darwin` or `smoke/win32` Commit Status on GitHub via `gh api`.
  */
 import { execFileSync } from 'node:child_process';
-import { realpathSync } from 'node:fs';
+import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { evaluateOnAntigravityPage } from './cdp-probe.mjs';
 import { runDoctor } from './cli.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const REPO_ROOT = path.resolve(path.dirname(__filename), '..');
+const realpathNative = fs.realpathSync.native || fs.realpathSync;
+
+function normExecPath(p) {
+  const s = String(p || '');
+  return process.platform === 'win32' ? s.toLowerCase() : s;
+}
 
 export const SMOKE_CDP_EXPRESSION = `(() => {
   const observerCount = window.__agyMagaKernel?.getStats?.()?.observerCount ?? null;
@@ -78,8 +84,9 @@ export function evaluateLiveSmokeResult({
   const deployMatchesSha =
     allowShaMismatch ||
     !targetSha ||
-    !deployedSha ||
-    (deployedSha.toLowerCase() === String(targetSha).trim().toLowerCase() && !deployedDirty);
+    (Boolean(deployedSha) &&
+      deployedSha.toLowerCase() === String(targetSha).trim().toLowerCase() &&
+      !deployedDirty);
 
   const val = cdpResult?.ok && cdpResult.value && typeof cdpResult.value === 'object' ? cdpResult.value : null;
   const detectedTopBarPx = Number(val?.detectedTopBarPx || 0);
@@ -105,9 +112,11 @@ export function evaluateLiveSmokeResult({
   if (!checks.daemonAligned) failures.push('daemon_split_brain');
   if (!checks.deployMatchesSha) {
     failures.push(
-      deployedDirty
-        ? 'deployed_from_dirty_tree'
-        : `deployed_sha_mismatch(${deployedSha.slice(0, 7)}!=${String(targetSha).slice(0, 7)})`
+      !deployedSha
+        ? 'deployed_sha_missing'
+        : deployedDirty
+          ? 'deployed_from_dirty_tree'
+          : `deployed_sha_mismatch(${deployedSha.slice(0, 7)}!=${String(targetSha).slice(0, 7)})`
     );
   }
   if (!checks.cdpConnected) failures.push(`cdp_probe_failed(${cdpResult?.error || 'unknown'})`);
@@ -285,8 +294,10 @@ function parseArgs(argv) {
 }
 
 const isMain = (() => {
+  if (!process.argv[1]) return false;
   try {
-    return Boolean(process.argv[1]) && realpathSync(process.argv[1]) === realpathSync(__filename);
+    if (import.meta.url === pathToFileURL(process.argv[1]).href) return true;
+    return normExecPath(realpathNative(path.resolve(process.argv[1]))) === normExecPath(realpathNative(__filename));
   } catch {
     return false;
   }

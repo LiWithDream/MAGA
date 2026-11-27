@@ -155,7 +155,7 @@ function checkStrandedBranchesForCommit({ cwd, remoteName, tagName, targetCommit
   return { ok: true };
 }
 
-function checkSmokeStatusesForCommit({ slug, tagName, targetCommitSha, strictRemote, execFile, childEnv }) {
+function checkSmokeStatusesForCommit({ slug, remoteName, tagName, targetCommitSha, execFile, childEnv }) {
   let rawJson = '';
   try {
     rawJson = execFile('gh', ['api', `repos/${slug}/commits/${targetCommitSha}/status`], {
@@ -166,16 +166,14 @@ function checkSmokeStatusesForCommit({ slug, tagName, targetCommitSha, strictRem
     });
   } catch (err) {
     const errMsg = String(err?.stderr || err?.message || err || 'gh api failed').trim();
-    if (strictRemote) {
-      return {
-        ok: false,
-        reason: 'smoke_check_unreachable',
-        message: `[MAGA release-tag guard] Failed to query GitHub smoke statuses for ${slug}@${targetCommitSha.slice(0, 7)} while MAGA_STRICT_REMOTE=1 (${errMsg}).`,
-      };
-    }
     return {
-      ok: true,
-      warning: `[MAGA release-tag guard] Warning: could not verify GitHub smoke statuses via 'gh api' (${errMsg}); set MAGA_STRICT_REMOTE=1 to fail closed.`,
+      ok: false,
+      reason: 'smoke_check_unreachable',
+      message: [
+        `[MAGA release-tag guard] Failed to query GitHub smoke statuses for ${slug}@${targetCommitSha.slice(0, 7)} (${errMsg}).`,
+        `Ensure commit ${targetCommitSha.slice(0, 7)} is pushed to '${remoteName}', check \`gh auth status\`, and run \`npm run smoke:live\` on macOS & Windows.`,
+        `To override intentionally: MAGA_SKIP_SMOKE=1 git push ${remoteName} ${tagName}`,
+      ].join('\n'),
     };
   }
 
@@ -220,7 +218,7 @@ function checkSmokeStatusesForCommit({ slug, tagName, targetCommitSha, strictRem
         `[MAGA release-tag guard] Refusing to push release tag '${tagName}' (${targetCommitSha.slice(0, 7)}) until both macOS and Windows live smoke checks pass:`,
         ...lines,
         `Run \`npm run smoke:live\` on each missing platform after deploying ${targetCommitSha.slice(0, 7)}.`,
-        `To override intentionally: MAGA_SKIP_SMOKE=1 git push origin ${tagName}`,
+        `To override intentionally: MAGA_SKIP_SMOKE=1 git push ${remoteName} ${tagName}`,
       ].join('\n'),
     };
   }
@@ -286,9 +284,9 @@ export function checkReleaseTagPush({
     if (slug && effectiveEnv.MAGA_SKIP_SMOKE !== '1') {
       const smokeRes = checkSmokeStatusesForCommit({
         slug,
+        remoteName,
         tagName,
         targetCommitSha,
-        strictRemote,
         execFile,
         childEnv,
       });

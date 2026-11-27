@@ -8,7 +8,8 @@ import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const HERMETIC_STATE = fs.mkdtempSync(path.join(os.tmpdir(), 'maga-opus-gate-test-'));
+const realpathNative = fs.realpathSync.native || fs.realpathSync;
+const HERMETIC_STATE = realpathNative(fs.mkdtempSync(path.join(os.tmpdir(), 'maga-opus-gate-test-')));
 process.env.ANTI_CLAUDE_STATE_DIR = HERMETIC_STATE;
 process.on('exit', () => {
   try {
@@ -50,7 +51,7 @@ try {
 const skipDom = JSDOM ? false : 'jsdom not installed';
 
 function makeTempDirs(prefix = 'og-unit-') {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  const root = realpathNative(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
   const stateDir = path.join(root, 'state');
   const pluginsDir = path.join(root, 'plugins');
   const pluginDataDir = path.join(root, 'plugin-data');
@@ -732,7 +733,7 @@ test('gate-check sentinel enforces self-skip, error streak, risk/stop dedup, aut
 
 test('per-conversation attribution, linked worktree .git file detection, parallel touch log & --clear baseline', () => {
   const dirs = makeTempDirs('og-attr-');
-  const wtRoot = fs.realpathSync(fs.mkdtempSync(path.join(dirs.root, 'linked-wt-')));
+  const wtRoot = realpathNative(fs.mkdtempSync(path.join(dirs.root, 'linked-wt-')));
   fs.writeFileSync(path.join(wtRoot, '.git'), 'gitdir: /tmp/fake-main/.git/worktrees/wt1\n');
   fs.mkdirSync(path.join(wtRoot, 'studio', 'core'), { recursive: true });
   fs.mkdirSync(path.join(wtRoot, 'src', '..foo'), { recursive: true });
@@ -1390,13 +1391,13 @@ test('detectLandingAction identifies git merge/push/deploy while ignoring safe a
   });
   assert.deepEqual(detectLandingAction('cd /tmp/repo-main && git merge -m "Merge feat" feat/y', REPO), {
     action: 'merge',
-    repoDir: '/tmp/repo-main',
+    repoDir: path.resolve('/tmp/repo-main'),
     sourceRef: 'feat/y',
     label: 'git merge',
   });
   assert.deepEqual(detectLandingAction('git -C /tmp/repo-c merge feat/z', REPO), {
     action: 'merge',
-    repoDir: '/tmp/repo-c',
+    repoDir: path.resolve('/tmp/repo-c'),
     sourceRef: 'feat/z',
     label: 'git merge',
   });

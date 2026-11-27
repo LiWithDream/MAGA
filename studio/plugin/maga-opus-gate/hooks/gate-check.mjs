@@ -16,6 +16,7 @@ import {
   findGitRootSync,
   getGitCommonDirNoSpawn,
   inspectGitSummary,
+  normFsPathKey,
   realpathSafe,
   resolveAbsPath,
   resolveEffectiveGitRoot,
@@ -26,7 +27,7 @@ import {
 export { detectLandingAction };
 
 const PLAN_PATH_RE =
-  /(?:^|\/)(?:implementation_plan|plan|design|architecture|rfc|spec)(?:[._-][^/]*)?\.md$/i;
+  /(?:^|[\\/])(?:implementation_plan|plan|design|architecture|rfc|spec)(?:[._-][^\\/]*)?\.md$/i;
 const SAFE_CID_RE = /^[A-Za-z0-9_-]{4,128}$/;
 const MAX_DIR_FILES = 32;
 const MAX_DIR_AGE_MS = 24 * 60 * 60 * 1000;
@@ -392,8 +393,13 @@ export function computeAttributionHash(attr) {
 function computeAttribution(conv, git, { injectedSummary = false } = {}) {
   const root = git.gitRoot || '';
   if (Array.isArray(git.changedAbsFiles)) {
-    const gitSet = new Set(git.changedAbsFiles.map((p) => realpathSafe(p)));
-    const gitCommonDir = root ? getGitCommonDirNoSpawn(root) : '';
+    const gitMap = new Map(
+      git.changedAbsFiles.map((p) => {
+        const r = realpathSafe(p);
+        return [normFsPathKey(r), r];
+      })
+    );
+    const gitCommonDir = normFsPathKey(root ? getGitCommonDirNoSpawn(root) : '');
     const changedRelMap = new Map();
     for (const abs of git.changedAbsFiles) {
       const rAbs = realpathSafe(abs);
@@ -411,7 +417,7 @@ function computeAttribution(conv, git, { injectedSummary = false } = {}) {
 
     for (const rawAbs of conv.touchedAbsFiles) {
       const abs = realpathSafe(rawAbs);
-      let matchedAbs = gitSet.has(abs) ? abs : '';
+      let matchedAbs = gitMap.get(normFsPathKey(abs)) || '';
       let rel = '';
       if (matchedAbs) {
         rel = sanitizePathDisplay(
@@ -423,7 +429,7 @@ function computeAttribution(conv, git, { injectedSummary = false } = {}) {
         const touchedRoot = findGitRootSync(abs) || root;
         const touchedRel = normalizeRelPath(abs, touchedRoot);
         if (touchedRel && changedRelMap.has(touchedRel)) {
-          const touchedCommon = getGitCommonDirNoSpawn(touchedRoot);
+          const touchedCommon = normFsPathKey(getGitCommonDirNoSpawn(touchedRoot));
           if (!gitCommonDir || !touchedCommon || gitCommonDir === touchedCommon) {
             matchedAbs = changedRelMap.get(touchedRel);
             rel = sanitizePathDisplay(touchedRel);

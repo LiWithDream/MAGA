@@ -3040,7 +3040,9 @@ test('[Audit-2026-11-21 · Projects UI] aborts save when readContext fails, rend
       };
     }
     if (action === 'readContext') {
-      if (readShouldFail || payload?.dirPath === '/tmp/proj-timeout-case') return { ok: false, error: 'timeout' };
+      if (readShouldFail || String(payload?.dirPath || '').replace(/\\/g, '/').endsWith('/tmp/proj-timeout-case')) {
+        return { ok: false, error: 'timeout' };
+      }
       return {
         ok: true,
         dirPath: projDir,

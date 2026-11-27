@@ -10,8 +10,14 @@ import os from 'node:os';
 import path from 'node:path';
 
 export const HIGH_RISK_PATH_RE =
-  /(?:^|\/)(?:kernel|dom|cdp-[^/]+|daemon|prefs-bundle|build|cli|auth|security|migration|schema)\.(?:m?js|ts|sql)$|package\.json$|hooks\.json$/i;
+  /(?:^|[\\/])(?:kernel|dom|cdp-[^\\/]+|daemon|prefs-bundle|build|cli|auth|security|migration|schema)\.(?:m?js|ts|sql)$|package\.json$|hooks\.json$/i;
 const GIT_DEADLINE_MS = 3000;
+const realpathNative = fs.realpathSync.native || fs.realpathSync;
+
+export function normFsPathKey(p) {
+  const s = String(p || '');
+  return process.platform === 'win32' ? s.toLowerCase() : s;
+}
 
 export function sha1Short(text) {
   return crypto.createHash('sha1').update(String(text || '')).digest('hex').slice(0, 16);
@@ -20,7 +26,7 @@ export function sha1Short(text) {
 export function realpathSafe(p) {
   if (!p) return '';
   try {
-    return fs.realpathSync(p);
+    return realpathNative(p);
   } catch {
     return path.resolve(p);
   }
@@ -31,13 +37,13 @@ export function resolveAbsPath(rawPath, cwd = '') {
   if (!s) return '';
   const candidate = path.isAbsolute(s) ? path.normalize(s) : path.resolve(cwd || process.cwd(), s);
   try {
-    if (fs.existsSync(candidate)) return fs.realpathSync(candidate);
+    if (fs.existsSync(candidate)) return realpathNative(candidate);
   } catch {}
   let cur = path.dirname(candidate);
   const tail = [path.basename(candidate)];
   while (cur) {
     try {
-      if (fs.existsSync(cur)) return path.join(fs.realpathSync(cur), ...tail);
+      if (fs.existsSync(cur)) return path.join(realpathNative(cur), ...tail);
     } catch {}
     const parent = path.dirname(cur);
     if (parent === cur) break;
@@ -458,13 +464,13 @@ export function resolveEffectiveGitRoot(touchedAbsFiles, fallbackCwd = '') {
 export function resolveLandingGitRoot(touchedAbsFiles, landingRepoDir, fallbackCwd = '') {
   const landingRoot = findGitRootSync(landingRepoDir || fallbackCwd || '');
   if (landingRoot) {
-    const landingCommon = getGitCommonDirNoSpawn(landingRoot);
+    const landingCommon = normFsPathKey(getGitCommonDirNoSpawn(landingRoot));
     if (landingCommon && Array.isArray(touchedAbsFiles)) {
       for (let i = touchedAbsFiles.length - 1; i >= 0; i--) {
         const p = touchedAbsFiles[i];
         if (!p) continue;
         const root = findGitRootSync(p);
-        if (root && getGitCommonDirNoSpawn(root) === landingCommon) return root;
+        if (root && normFsPathKey(getGitCommonDirNoSpawn(root)) === landingCommon) return root;
       }
     }
     return landingRoot;

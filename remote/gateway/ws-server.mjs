@@ -33,7 +33,7 @@ const IDEMPOTENCY_KEY_RE = /^[a-zA-Z0-9._:-]{8,128}$/;
 const WAITING_HASH_RE = /^[0-9a-f]{16}$/i;
 const PROPOSAL_ID_RE = /^[A-Za-z0-9._:-]{4,128}$/;
 const READ_METHODS = new Set(['convo.list', 'convo.snapshot', 'convo.watch', 'convo.resumeState', 'studio.overview', 'models.list']);
-const WRITE_METHODS = new Set(['convo.send', 'convo.approve', 'convo.cancel', 'convo.resume', 'convo.compact', 'opus.dismiss', 'models.select']);
+const WRITE_METHODS = new Set(['convo.create', 'convo.send', 'convo.approve', 'convo.cancel', 'convo.resume', 'convo.compact', 'opus.dismiss', 'models.select']);
 const ROLE_RANK = Object.freeze({ observe: 0, steer: 1, admin: 2 });
 
 function isSafeNonTurboPreset(preset) {
@@ -517,7 +517,7 @@ export function createWsServer({
 
   function validateAndBuildWriteSpec(method, params) {
     const cascadeId = typeof params.cascadeId === 'string' ? params.cascadeId.trim() : '';
-    if (method === 'models.select') {
+    if (method === 'models.select' || method === 'convo.create') {
       if (cascadeId && !UUID_RE.test(cascadeId)) {
         return { ok: false, error: 'invalid_cascade_id' };
       }
@@ -526,6 +526,7 @@ export function createWsServer({
     }
     const rawKey = typeof params.idempotencyKey === 'string' ? params.idempotencyKey.trim() : '';
     if (
+      method === 'convo.create' ||
       method === 'convo.send' ||
       method === 'convo.approve' ||
       method === 'convo.resume' ||
@@ -538,6 +539,34 @@ export function createWsServer({
       }
     } else if (rawKey && !IDEMPOTENCY_KEY_RE.test(rawKey)) {
       return { ok: false, error: 'invalid_idempotency_key' };
+    }
+
+    if (method === 'convo.create') {
+      if (typeof params.text !== 'string') return { ok: false, error: 'invalid_text' };
+      const text = params.text;
+      if (!text.trim() || text.length > MAX_WRITE_TEXT_CHARS) {
+        return { ok: false, error: 'invalid_text_length' };
+      }
+      const projectId = typeof params.projectId === 'string' ? params.projectId.trim() : '';
+      if (projectId && !PROPOSAL_ID_RE.test(projectId) && !/^[A-Za-z0-9._:-]{1,128}$/.test(projectId)) {
+        return { ok: false, error: 'invalid_project_id' };
+      }
+      return {
+        ok: true,
+        cascadeId: '',
+        idempotencyKey: rawKey,
+        payloadHash: sha256Hex(JSON.stringify(['convo.create', projectId, text])),
+        rpcParams: {
+          text,
+          ...(projectId ? { projectId } : {}),
+          turboWriteConfirmed: Boolean(params.turboWriteConfirmed),
+        },
+        auditMeta: {
+          projectId,
+          textSha256: sha256Hex(text),
+          textLen: text.length,
+        },
+      };
     }
 
     if (method === 'convo.send') {
@@ -785,7 +814,7 @@ export function createWsServer({
     inFlightWritesByDevice.set(deviceId, currentInFlight + 1);
     const execPromise = (async () => {
       try {
-        if (method === 'convo.send' || method === 'convo.resume') {
+        if (method === 'convo.create' || method === 'convo.send' || method === 'convo.resume') {
           const health = await udsClient.request('bridge.health', {}, { timeoutMs: 2000 }).catch(() => null);
           const stillLive = verifyClientDeviceLive(client);
           if (!stillLive) {
@@ -808,7 +837,7 @@ export function createWsServer({
         }
 
         const timeoutMs =
-          method === 'convo.send' || method === 'convo.resume'
+          method === 'convo.create' || method === 'convo.send' || method === 'convo.resume'
             ? 20_000
             : method === 'convo.approve'
               ? 18_000

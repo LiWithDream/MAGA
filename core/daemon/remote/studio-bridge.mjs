@@ -215,6 +215,8 @@ export async function collectStudioOverview(params = {}, opts = {}) {
   const [wtResults, usageRes] = await Promise.all([wtPromise, usagePromise]);
 
   const repoMetaByNorm = new Map();
+  const scannedRepoNorms = new Set();
+  const liveWorktreeByNorm = new Map();
   const projects = [];
   for (let i = 0; i < wtResults.length; i++) {
     const dirPath = targetDirs[i];
@@ -237,13 +239,22 @@ export async function collectStudioOverview(params = {}, opts = {}) {
       .slice(0, 16)
       .map((w) => {
         const wtReal = String(w.realPath || w.path || '');
+        const wtNorm = wtReal ? normalizeRealPath(wtReal) : '';
+        const wtBranch = String(w.branch || (w.detached ? 'detached' : ''));
+        const wtName = w.isMain ? 'main' : path.basename(wtReal) || 'worktree';
+        if (wtNorm) {
+          liveWorktreeByNorm.set(wtNorm, { branch: wtBranch, name: wtName, isMain: Boolean(w.isMain) });
+        }
         return {
-          name: w.isMain ? 'main' : path.basename(wtReal) || 'worktree',
-          branch: String(w.branch || (w.detached ? 'detached' : '')),
+          name: wtName,
+          branch: wtBranch,
           isMain: Boolean(w.isMain),
           shortPath: formatShortPath(wtReal),
         };
       });
+    if (wtRes?.ok && worktrees.length > 0 && normDir) {
+      scannedRepoNorms.add(normDir);
+    }
 
     projects.push({
       id: projId,
@@ -259,11 +270,18 @@ export async function collectStudioOverview(params = {}, opts = {}) {
   for (const [cid, rec] of Object.entries(convWtMap.entries || {})) {
     if (!rec || typeof rec !== 'object') continue;
     const wtPath = String(rec.worktreePath || '');
+    const wtNorm = wtPath ? normalizeRealPath(wtPath) : '';
     const repoNorm = rec.repoRoot ? normalizeRealPath(rec.repoRoot) : '';
     const repoMeta = repoNorm ? repoMetaByNorm.get(repoNorm) : null;
+    const repoScanned = Boolean(repoNorm && scannedRepoNorms.has(repoNorm));
+    const liveWt = wtNorm ? liveWorktreeByNorm.get(wtNorm) : null;
+    // If repo was scanned and the bound worktree no longer exists (e.g. cleaned via wt:clean),
+    // keep project association but clear the stale branch badge.
+    const branch = repoScanned ? (liveWt ? liveWt.branch : '') : String(rec.branch || '');
+    const worktreeName = repoScanned ? (liveWt ? liveWt.name : '') : wtPath ? path.basename(wtPath) : '';
     worktreeByCid[cid] = {
-      branch: String(rec.branch || ''),
-      worktreeName: wtPath ? path.basename(wtPath) : '',
+      branch,
+      worktreeName,
       repoName: repoMeta?.name || (rec.repoRoot ? path.basename(rec.repoRoot) : ''),
       projectId: repoMeta?.id || '',
     };

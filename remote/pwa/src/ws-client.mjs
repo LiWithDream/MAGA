@@ -686,6 +686,22 @@ export function createRemoteWsClient(identity, handlers = {}) {
     );
   }
 
+  function createConversation({ projectId = '', text = '', idempotencyKey = '', turboWriteConfirmed = false } = {}) {
+    if (!text || !String(text).trim()) {
+      return Promise.reject(new Error('invalid_text_length'));
+    }
+    return request(
+      'convo.create',
+      {
+        text: String(text),
+        ...(projectId ? { projectId: String(projectId) } : {}),
+        idempotencyKey: idempotencyKey || `create-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+        turboWriteConfirmed: Boolean(turboWriteConfirmed),
+      },
+      20_000
+    );
+  }
+
   function dispose() {
     disposed = true;
     clearTimers();
@@ -725,6 +741,7 @@ export function createRemoteWsClient(identity, handlers = {}) {
     watchConversation,
     refreshList,
     fetchSnapshot,
+    createConversation,
     sendMessage,
     approveWaitingStep,
     cancelConversation,

@@ -1961,3 +1961,166 @@ test('Remote Desktop Parity: synced studioPrefs, elemental model capsule/picker 
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   }
 });
+
+test('Remote Mobile Polish V2: stale worktree branch cleanup, Markdown tables, assistant copy, mobile tok/s pill, PWA icons, alerts & convo.create', async () => {
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'maga-rem-polish2-'));
+  const projDir = path.join(tmpRoot, 'repo');
+  const nativeProjectsDir = path.join(tmpRoot, 'projects');
+  const convWtDir = path.join(tmpRoot, 'conv-wt');
+  const distOut = path.join(tmpRoot, 'dist');
+  fs.mkdirSync(projDir, { recursive: true });
+  fs.mkdirSync(nativeProjectsDir, { recursive: true });
+  fs.mkdirSync(convWtDir, { recursive: true });
+
+  const { JSDOM } = await import('jsdom');
+  const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://127.0.0.1/' });
+  const prevDoc = Object.getOwnPropertyDescriptor(globalThis, 'document');
+  const prevWin = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  Object.defineProperty(globalThis, 'document', { value: dom.window.document, configurable: true, writable: true });
+  Object.defineProperty(globalThis, 'window', { value: dom.window, configurable: true, writable: true });
+
+  try {
+    // 1. Deleted worktree clears stale branch badge while preserving repo/project metadata
+    const liveCid = '33333333-3333-4333-8333-333333333331';
+    const staleCid = '33333333-3333-4333-8333-333333333332';
+    fs.writeFileSync(
+      path.join(nativeProjectsDir, 'proj-maga.json'),
+      JSON.stringify({ id: 'proj-maga', name: 'MAGA', folderUris: [`file://${projDir}`] })
+    );
+    fs.writeFileSync(
+      path.join(convWtDir, `${liveCid}.json`),
+      JSON.stringify({ worktreePath: path.join(tmpRoot, 'MAGA-wt', 'active-wt'), branch: 'feat/old-name', repoRoot: projDir, updatedAt: Date.now() })
+    );
+    fs.writeFileSync(
+      path.join(convWtDir, `${staleCid}.json`),
+      JSON.stringify({ worktreePath: path.join(tmpRoot, 'MAGA-wt', 'deleted-wt'), branch: 'feat/deleted-branch', repoRoot: projDir, updatedAt: Date.now() })
+    );
+    const ov = await studioBridgeMod.collectStudioOverview(
+      {},
+      {
+        authorizedDirs: [projDir],
+        nativeProjectsDir,
+        convWtDir,
+        listRepoWorktreesAsync: async () => ({
+          ok: true,
+          worktrees: [
+            { realPath: projDir, branch: 'main', isMain: true },
+            { realPath: path.join(tmpRoot, 'MAGA-wt', 'active-wt'), branch: 'feat/live-branch', isMain: false },
+          ],
+        }),
+        collectUsageStatsAsync: async () => ({ ok: true, days: [] }),
+      }
+    );
+    assert.equal(ov.worktreeByCid[liveCid].branch, 'feat/live-branch', 'active worktree must reflect live branch');
+    assert.equal(ov.worktreeByCid[staleCid].branch, '', 'deleted worktree must clear stale branch badge');
+    assert.equal(ov.worktreeByCid[staleCid].projectId, 'proj-maga', 'deleted worktree must keep project association');
+
+    // 2. Markdown tables, italic/strikethrough, and one-tap assistant reply copy button
+    const timelineMod = await import(pathToFileURL(path.join(PWA_DIR, 'src', 'timeline-view.mjs')).href);
+    const mdEl = timelineMod.renderSafeMarkdown(
+      '结果如下：*斜体* 与 ~~废弃~~\n\n| 指标 | 状态 | 耗时 |\n| :--- | :---: | ---: |\n| 构建 | **通过** | `1.2s` |\n| 测试 | 208/208 | 14.5s |'
+    );
+    assert.ok(mdEl.querySelector('em')?.textContent === '斜体');
+    assert.ok(mdEl.querySelector('del.rc-md-del')?.textContent === '废弃');
+    const tbl = mdEl.querySelector('.rc-md-table-wrap table.rc-md-table');
+    assert.ok(tbl, 'Markdown table must render inside scrollable wrapper');
+    assert.equal(tbl.querySelectorAll('thead th').length, 3);
+    assert.equal(tbl.querySelectorAll('tbody tr').length, 2);
+    assert.equal(tbl.querySelectorAll('thead th')[1].getAttribute('data-align'), 'center');
+    assert.equal(tbl.querySelectorAll('thead th')[2].getAttribute('data-align'), 'right');
+
+    const botBubble = timelineMod.renderStepCard(
+      { idx: 9, type: 'PLANNER_RESPONSE', status: 'DONE', text: '整条回复内容', createdAt: '2026-11-27T09:00:00+08:00' },
+      { compact: true }
+    );
+    assert.ok(botBubble.querySelector('.rc-step-foot button.rc-step-copy'), 'compact assistant bubble must include one-tap copy button');
+
+    // 3. Mobile tok/s-only metrics pill + TTFT inside context popover
+    const composerBarMod = await import(pathToFileURL(path.join(PWA_DIR, 'src', 'composer-bar.mjs')).href);
+    const doc = dom.window.document;
+    const refs = {
+      modelPopover: doc.createElement('div'),
+      contextPopover: doc.createElement('div'),
+      composerFooter: doc.createElement('div'),
+    };
+    composerBarMod.renderComposerFooterBar(refs, {
+      catalog: null,
+      contextPopoverOpen: true,
+      metrics: { ctxPct: 33, ctxRatioStr: '85k / 256k', ctxLimit: 256000, displayTps: 144.4, useStream: true, ttft: 4.0, lastCacheRate: 92, sessionCacheRate: 89, turns: 3, calls: 6 },
+      canWrite: true,
+      online: true,
+      hasSelection: true,
+    });
+    assert.equal(refs.composerFooter.querySelector('.rc-metrics-tps')?.textContent, '144 tok/s');
+    assert.equal(refs.composerFooter.querySelector('.rc-metrics-ttft')?.textContent, ' · TTFT 4.0s');
+    assert.match(refs.contextPopover.textContent, /首字延迟 \(TTFT\)/);
+    assert.match(refs.contextPopover.textContent, /4\.0s/);
+    const cssSrc = fs.readFileSync(path.join(PWA_DIR, 'src', 'styles.css'), 'utf8');
+    assert.ok(cssSrc.includes('.rc-app[data-layout-mode="mobile"] .rc-metrics-ttft'));
+    assert.equal(cssSrc.includes(':has('), false);
+
+    // 4. Mobile enhancements: TURBO collapsible bar, New Chat modal, Alert Manager
+    const mobileEnhMod = await import(pathToFileURL(path.join(PWA_DIR, 'src', 'mobile-enhancements.mjs')).href);
+    const turboLabel = doc.createElement('label');
+    const turboCb = doc.createElement('input');
+    const turboSpan = doc.createElement('span');
+    mobileEnhMod.syncTurboConfirmBar(turboLabel, turboCb, turboSpan, {
+      writable: true,
+      needTurboConfirm: true,
+      confirmed: true,
+      busy: false,
+    });
+    assert.equal(turboLabel.getAttribute('data-confirmed'), 'true');
+    assert.match(turboSpan.textContent, /已确认/);
+
+    const modalHost = doc.createElement('div');
+    let newChatSubmitted = 0;
+    mobileEnhMod.renderNewChatModal(modalHost, {
+      open: true,
+      projects: [{ id: 'proj-maga', name: 'MAGA' }],
+      selectedProjectId: 'proj-maga',
+      promptText: '排查登录问题',
+      needTurboConfirm: true,
+      turboConfirmed: true,
+      online: true,
+      onSubmit: () => { newChatSubmitted += 1; },
+    });
+    assert.equal(modalHost.classList.contains('rc-hidden'), false);
+    const submitBtn = modalHost.querySelector('.rc-new-chat-submit');
+    assert.ok(submitBtn && submitBtn.disabled === false);
+    submitBtn.click();
+    assert.equal(newChatSubmitted, 1);
+
+    const alerts = mobileEnhMod.createAlertManager({ baseTitle: 'AGY Test' });
+    // First call seeds baseline
+    const seedRes = alerts.observeConversations([{ id: liveCid, title: 'Build Task', status: 'RUNNING', waitingSteps: [] }]);
+    assert.equal(seedRes.completed.length, 0);
+    // Transition RUNNING -> IDLE emits completion
+    const doneRes = alerts.observeConversations([{ id: liveCid, title: 'Build Task', status: 'IDLE', waitingSteps: [] }]);
+    assert.equal(doneRes.completed.length, 1);
+    // New waiting step emits approval alert
+    const waitRes = alerts.observeConversations([{ id: liveCid, title: 'Build Task', status: 'WAITING_FOR_USER', waitingSteps: [{ stepIndex: 1 }] }]);
+    assert.equal(waitRes.approvals.length, 1);
+
+    // 5. PWA build copies real PNG icons & manifest points to /icon-192.png & /icon-512.png
+    const buildMod = await import(pathToFileURL(path.join(REPO, 'studio', 'build.mjs')).href);
+    const built = await buildMod.buildRemotePwa({ outDir: distOut, allowPrebuilt: false });
+    assert.equal(built.ok, true);
+    for (const icon of ['icon-192.png', 'icon-512.png', 'apple-touch-icon.png']) {
+      assert.ok(fs.existsSync(path.join(distOut, icon)), `${icon} must exist in built dist`);
+      assert.ok(built.files[icon] > 500, `${icon} must be non-empty PNG`);
+    }
+    const manifestJson = JSON.parse(fs.readFileSync(path.join(distOut, 'manifest.webmanifest'), 'utf8'));
+    assert.deepEqual(
+      manifestJson.icons.map((i) => i.src),
+      ['/icon-192.png', '/icon-512.png']
+    );
+  } finally {
+    dom.window.close();
+    if (prevDoc) Object.defineProperty(globalThis, 'document', prevDoc);
+    else delete globalThis.document;
+    if (prevWin) Object.defineProperty(globalThis, 'window', prevWin);
+    else delete globalThis.window;
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});

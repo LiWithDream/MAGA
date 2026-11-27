@@ -274,6 +274,8 @@ export function renderMobileMoreMenu(
     role = 'observe',
     presetLabel = '',
     layoutLabel = '',
+    alertLabel = '',
+    onToggleAlerts = null,
     onCycleLayout = null,
     onOpenOverview = null,
     onRefreshAll = null,
@@ -295,6 +297,17 @@ export function renderMobileMoreMenu(
       el('div', { className: 'rc-more-meta-line', text: `${hostLine} · ${String(role || 'observe').toUpperCase()}` }),
       el('div', { className: 'rc-more-meta-sub', text: `权限策略：${presetLabel || '--'}` })
     ),
+    alertLabel && onToggleAlerts
+      ? el('button', {
+          type: 'button',
+          className: 'rc-more-item',
+          text: alertLabel,
+          onClick: (ev) => {
+            ev?.stopPropagation?.();
+            onToggleAlerts?.();
+          },
+        })
+      : null,
     el('button', {
       type: 'button',
       className: 'rc-more-item',

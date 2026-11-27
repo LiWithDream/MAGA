@@ -25,6 +25,12 @@ import {
   renderOpusGateBanner,
   renderResumeBanner,
 } from './studio-panel.mjs';
+import {
+  createAlertManager,
+  createNewChatController,
+  formatWriteError,
+  syncTurboConfirmBar,
+} from './mobile-enhancements.mjs';
 import { renderDetailTimeline as renderTimelineView } from './timeline-view.mjs';
 import {
   DESKTOP_BREAKPOINT_PX,
@@ -135,7 +141,15 @@ const state = {
   approvingHash: '',
   actionError: '',
   actionNotice: '',
+  newChatOpen: false,
+  newChatBusy: false,
+  newChatProjectId: '',
+  newChatPrompt: '',
+  newChatTurboConfirmed: false,
+  newChatError: '',
 };
+
+const alertManager = createAlertManager();
 
 let wsClient = null;
 let snapshotRefreshTimer = null;
@@ -248,11 +262,13 @@ function ensureGlobalUiListeners() {
     });
   });
   window.addEventListener('keydown', (ev) => {
-    if (ev.key === 'Escape' && (state.modelPopoverOpen || state.contextPopoverOpen || state.moreMenuOpen)) {
+    if (ev.key === 'Escape' && (state.modelPopoverOpen || state.contextPopoverOpen || state.moreMenuOpen || state.newChatOpen)) {
       state.modelPopoverOpen = false;
       state.contextPopoverOpen = false;
       state.moreMenuOpen = false;
+      if (!state.newChatBusy) state.newChatOpen = false;
       renderMoreMenu();
+      renderNewChatOverlay();
       syncComposerControls();
       return;
     }
@@ -352,6 +368,10 @@ async function handleUnpairDevice() {
   state.modelCatalog = null;
   state.modelPopoverOpen = false;
   state.contextPopoverOpen = false;
+  state.newChatOpen = false;
+  state.newChatBusy = false;
+  state.newChatTurboConfirmed = false;
+  alertManager.reset();
   state.showHiddenModels = false;
   state.modelSelectBusy = false;
   state.streamStartedAt = 0;
@@ -370,6 +390,12 @@ function renderMoreMenu() {
     role: state.identity?.role || 'observe',
     presetLabel: formatPresetBadge(state.globalPreset).label,
     layoutLabel: layoutButtonLabel(state.layoutPref),
+    alertLabel: alertManager.getAlertLabel(),
+    onToggleAlerts: () => {
+      const next = alertManager.toggleAlerts();
+      renderMoreMenu();
+      setActionNotice(next ? '已开启完成与审批提醒' : '已关闭完成与审批提醒');
+    },
     onCycleLayout: () => {
       const order = ['auto', 'desktop', 'mobile'];
       const next = order[(order.indexOf(state.layoutPref) + 1) % order.length];
@@ -532,6 +558,20 @@ function ensureWorkspaceShell() {
     },
   });
 
+  const newChatBtn = el('button', {
+    type: 'button',
+    className: 'rc-btn is-sm is-primary rc-new-chat-btn',
+    title: '新建会话',
+    text: '+ 新会话',
+    onClick: () => {
+      state.newChatOpen = true;
+      state.newChatProjectId = state.selectedProjectId || '';
+      state.newChatError = '';
+      state.newChatTurboConfirmed = false;
+      renderNewChatOverlay();
+    },
+  });
+  const searchRow = el('div', { className: 'rc-search-row' }, searchInput, newChatBtn);
   const filterRow = el('div', { className: 'rc-filter-row' });
   const groupRow = el('div', { className: 'rc-group-row' });
   const sidebarList = el('div', { className: 'rc-scroll-list' });
@@ -539,7 +579,7 @@ function ensureWorkspaceShell() {
   const sidebar = el(
     'aside',
     { className: 'rc-sidebar' },
-    el('div', { className: 'rc-sidebar-head' }, searchInput, filterRow, groupRow),
+    el('div', { className: 'rc-sidebar-head' }, searchRow, filterRow, groupRow),
     sidebarList,
     sidebarProjects
   );
@@ -643,11 +683,12 @@ function ensureWorkspaceShell() {
       syncComposerControls();
     },
   });
+  const turboWriteText = el('span', { text: 'TURBO 自动执行确认（远程发送将直接执行本机操作）' });
   const turboWriteLabel = el(
     'label',
     { className: 'rc-turbo-inline rc-hidden', for: 'rc-turbo-write-ack' },
     turboWriteCheckbox,
-    el('span', { text: 'TURBO 自动执行确认（远程发送将直接执行本机操作）' })
+    turboWriteText
   );
 
   const draftInput = el('textarea', {
@@ -790,8 +831,9 @@ function ensureWorkspaceShell() {
     navOverviewBtn
   );
 
+  const newChatModal = el('div', { className: 'rc-new-chat-host rc-hidden' });
   const main = el('main', { className: 'rc-main' }, sidebar, detail, overviewPane);
-  rootEl.append(topbar, moreMenu, noticeBar, studioStrip, projectsDrawer, main, mobileNav);
+  rootEl.append(topbar, moreMenu, noticeBar, studioStrip, projectsDrawer, main, mobileNav, newChatModal);
 
   workspaceRefs = {
     topbar,
@@ -820,12 +862,15 @@ function ensureWorkspaceShell() {
     mediaFileInput,
     composerFooter,
     turboWriteLabel,
+    turboWriteText,
     turboWriteCheckbox,
     composerRow,
     draftInput,
     sendBtn,
     cancelBtn,
     searchInput,
+    newChatBtn,
+    newChatModal,
     filterRow,
     groupRow,
     sidebarList,
@@ -850,27 +895,19 @@ function canSteer() {
   return role === 'steer' || role === 'admin';
 }
 
-function formatWriteError(err) {
-  const code = String(err?.code || err?.message || '操作失败');
-  if (code === 'forbidden_role_observe') return '当前设备为只读角色 (observe)，无法执行远程写操作';
-  if (code === 'host_not_attached') return 'Antigravity 桌面宿主未连接，无法执行写操作';
-  if (code === 'turbo_write_confirmation_required') return '本机处于 TURBO 或未知权限模式，请先勾选高危确认框后再发送';
-  if (code === 'waiting_step_mismatch') return '目标审批步骤已变化或已失效，已自动刷新最新状态';
-  if (code === 'write_rate_limited') return '写操作过于频繁，请稍后再试';
-  if (code === 'too_many_concurrent_writes') return '并发写请求过多，请等待当前操作完成';
-  if (code === 'idempotency_key_conflict') return '请求幂等键冲突，已重置请求标识，请重新确认后发送';
-  if (code === 'outcome_unknown') return '远端执行结果未知（请求超时或连接中断），已自动刷新会话状态，请确认是否已生效后再决定是否重发';
-  if (code === 'cascade_write_busy') return '桌面端或另一请求正在操作该会话，请稍后再试';
-  if (code === 'resume_state_changed') return '会话状态已更新，当前无需续跑，已自动刷新状态';
-  if (code === 'compact_requires_active_pane') return '请先在桌面端激活对应会话窗口，或使用发送框触发压缩';
-  if (code === 'compact_rejected_or_busy') return '当前无法执行上下文压缩（可能正在运行、已压缩或输入框仍有草稿）';
-  if (code === 'compact_unavailable') return '当前宿主版本暂不支持远程触发 /compact';
-  if (code === 'model_not_found' || code === 'invalid_model') return '未找到目标模型选项，已保持当前模型';
-  if (code === 'unsupported_media_mime') return '仅支持 PNG / JPEG / WebP / GIF 格式图片';
-  if (code === 'media_payload_too_large' || code === 'image_too_large') return '图片附件体积过大，请减少张数或换小尺寸截图';
-  if (code === 'too_many_media_items') return '单次最多附带 4 张图片';
-  return code;
-}
+const newChatCtrl = createNewChatController({
+  state,
+  getRefs: () => workspaceRefs,
+  getWsClient: () => wsClient,
+  canSteer,
+  isTurboPreset,
+  createIdempotencyKey,
+  uuidRe: UUID_RE,
+  setActionNotice,
+  selectConversation,
+  refreshAllData,
+});
+const renderNewChatOverlay = () => newChatCtrl.render();
 
 async function attachImageFiles(files) {
   if (!canSteer()) return;
@@ -1036,13 +1073,17 @@ function syncComposerControls() {
     refs.composerRow.classList.add('rc-hidden');
   }
 
-  refs.turboWriteCheckbox.checked = Boolean(needTurboConfirm && state.turboWriteConfirmed);
-  if (writable && needTurboConfirm) {
-    refs.turboWriteLabel.classList.remove('rc-hidden');
-    refs.turboWriteCheckbox.disabled = state.sendBusy || state.resumeBusy;
-  } else {
-    refs.turboWriteLabel.classList.add('rc-hidden');
+  syncTurboConfirmBar(refs.turboWriteLabel, refs.turboWriteCheckbox, refs.turboWriteText, {
+    writable,
+    needTurboConfirm,
+    confirmed: state.turboWriteConfirmed,
+    busy: state.sendBusy || state.resumeBusy,
+  });
+  if (refs.newChatBtn) {
+    refs.newChatBtn.classList.toggle('rc-hidden', !writable);
+    refs.newChatBtn.disabled = !online || state.newChatBusy;
   }
+  renderNewChatOverlay();
 
   renderResumeBanner(refs.resumeBanner, {
     resumeState: getEffectiveResumeState(state.selectedId),
@@ -1235,11 +1276,13 @@ async function handleSendDraft() {
         fetchAndRenderSnapshot(targetCid);
       }
     }
+    if (err?.code === 'turbo_write_confirmation_required') {
+      state.turboWriteConfirmed = false;
+    }
     if (state.selectedId === targetCid) {
       state.actionError = formatWriteError(err);
     }
   } finally {
-    state.turboWriteConfirmed = false;
     state.sendBusy = false;
     syncComposerControls();
   }
@@ -1383,7 +1426,6 @@ async function handleResumeConvo(rs) {
       state.actionError = formatWriteError(err);
     }
   } finally {
-    state.turboWriteConfirmed = false;
     state.resumeBusy = false;
     syncComposerControls();
   }
@@ -1565,6 +1607,7 @@ function applyConvoListResult(result) {
   if (result.globalPreset !== undefined) updateGlobalPreset(result.globalPreset);
   if (Array.isArray(result.conversations)) {
     state.conversations = result.conversations;
+    alertManager.observeConversations(state.conversations);
     if (!state.selectedId && result.conversations.length > 0 && getResolvedLayoutMode() === 'desktop') {
       const firstTop = result.conversations.find((c) => !c.parentConversationId) || result.conversations[0];
       if (firstTop && UUID_RE.test(firstTop.id)) {
@@ -1748,6 +1791,7 @@ function handleTapDelta(delta) {
     if (data.globalPreset !== undefined) updateGlobalPreset(data.globalPreset);
     if (data.source) state.source = data.source;
     state.conversations = mergeSummariesDelta(state.conversations, data);
+    alertManager.observeConversations(state.conversations);
     renderTopStatus();
     renderFilterChips();
     renderSidebarList();

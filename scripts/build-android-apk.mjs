@@ -19,6 +19,18 @@ const STATE_DIR = path.join(os.homedir(), '.gemini', 'antigravity', 'anti-claude
 const KEYSTORE_PATH = path.join(STATE_DIR, 'android-release.jks');
 const KEYSTORE_META_PATH = path.join(STATE_DIR, 'android-release.json');
 const OUTPUT_APK_PATH = path.join(STATE_DIR, 'AGY-Studio-Remote.apk');
+const OUTPUT_META_PATH = path.join(STATE_DIR, 'android-latest.json');
+
+function readGradleVersionInfo() {
+  const gradlePath = path.join(ANDROID_DIR, 'app', 'build.gradle.kts');
+  const src = fs.readFileSync(gradlePath, 'utf8');
+  const codeMatch = /versionCode\s*=\s*(\d+)/.exec(src);
+  const nameMatch = /versionName\s*=\s*"([^"]+)"/.exec(src);
+  return {
+    versionCode: codeMatch ? Number(codeMatch[1]) : 1,
+    versionName: nameMatch ? nameMatch[1] : '0.0.0',
+  };
+}
 
 function resolveJavaHome() {
   const candidates = [
@@ -148,16 +160,38 @@ function main() {
 
   fs.mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 });
   const destPath = isDebug ? path.join(STATE_DIR, 'AGY-Studio-Remote-debug.apk') : OUTPUT_APK_PATH;
-  fs.copyFileSync(builtApk, destPath);
+  const tmpApkPath = `${destPath}.tmp.${process.pid}`;
+  fs.copyFileSync(builtApk, tmpApkPath);
+  fs.chmodSync(tmpApkPath, 0o600);
+  fs.renameSync(tmpApkPath, destPath);
   const buf = fs.readFileSync(destPath);
   const sha256 = crypto.createHash('sha256').update(buf).digest('hex');
+  const { versionCode, versionName } = readGradleVersionInfo();
+
+  if (!isDebug) {
+    const meta = {
+      schema: 1,
+      versionCode,
+      versionName,
+      filename: 'AGY-Studio-Remote.apk',
+      bytes: buf.length,
+      sha256,
+      builtAt: new Date().toISOString(),
+    };
+    const tmpMeta = `${OUTPUT_META_PATH}.tmp.${process.pid}`;
+    fs.writeFileSync(tmpMeta, `${JSON.stringify(meta, null, 2)}\n`, { mode: 0o600 });
+    fs.renameSync(tmpMeta, OUTPUT_META_PATH);
+  }
 
   console.log(
     JSON.stringify(
       {
         ok: true,
         variant: isDebug ? 'debug' : 'release',
+        versionCode,
+        versionName,
         apkPath: destPath,
+        metaPath: isDebug ? null : OUTPUT_META_PATH,
         bytes: buf.length,
         mb: Number((buf.length / (1024 * 1024)).toFixed(2)),
         sha256,

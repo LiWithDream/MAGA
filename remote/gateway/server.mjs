@@ -6,6 +6,7 @@
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
+import { pipeline } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 
 import { createAuditLogger } from './audit.mjs';
@@ -28,6 +29,39 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const DEFAULT_PWA_DIST_DIR = path.resolve(__dirname, '..', 'pwa', 'dist');
 const MAX_JSON_BODY_BYTES = 16 * 1024;
+const ANDROID_APK_FILENAME = 'AGY-Studio-Remote.apk';
+const ANDROID_META_FILENAME = 'android-latest.json';
+
+function readAndroidLatestInfo(remoteDir) {
+  try {
+    const metaPath = path.join(remoteDir, ANDROID_META_FILENAME);
+    const apkPath = path.join(remoteDir, ANDROID_APK_FILENAME);
+    if (!fs.existsSync(metaPath) || !fs.existsSync(apkPath)) return null;
+    const metaStat = fs.lstatSync(metaPath);
+    const apkStat = fs.lstatSync(apkPath);
+    if (!metaStat.isFile() || metaStat.isSymbolicLink() || !apkStat.isFile() || apkStat.isSymbolicLink()) {
+      return null;
+    }
+    const raw = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+    const versionCode = Number(raw?.versionCode);
+    const versionName = typeof raw?.versionName === 'string' ? raw.versionName.trim().slice(0, 32) : '';
+    const sha256 =
+      typeof raw?.sha256 === 'string' && /^[0-9a-f]{64}$/i.test(raw.sha256) ? raw.sha256.toLowerCase() : '';
+    if (!Number.isInteger(versionCode) || versionCode <= 0 || !versionName || !sha256) return null;
+    if (Number(raw?.bytes) !== apkStat.size) return null;
+    return {
+      versionCode,
+      versionName,
+      filename: ANDROID_APK_FILENAME,
+      bytes: apkStat.size,
+      sha256,
+      builtAt: typeof raw?.builtAt === 'string' ? raw.builtAt : '',
+      apkPath,
+    };
+  } catch {
+    return null;
+  }
+}
 
 function sendJson(res, status, data) {
   applySecurityHeaders(res);
@@ -268,6 +302,60 @@ export async function createGatewayServer(options = {}) {
           deviceId: result.deviceId,
           role: result.role,
           gatewayFingerprint: result.gatewayFingerprint,
+        });
+        return;
+      }
+
+      if (url.pathname === '/api/android/latest') {
+        if (method !== 'GET') {
+          sendJson(res, 405, { ok: false, error: 'method_not_allowed' });
+          return;
+        }
+        const info = readAndroidLatestInfo(paths.remoteDir);
+        if (!info) {
+          sendJson(res, 200, { ok: true, available: false });
+          return;
+        }
+        sendJson(res, 200, {
+          ok: true,
+          available: true,
+          versionCode: info.versionCode,
+          versionName: info.versionName,
+          filename: info.filename,
+          bytes: info.bytes,
+          sha256: info.sha256,
+          builtAt: info.builtAt,
+          downloadPath: '/api/android/apk',
+        });
+        return;
+      }
+
+      if (url.pathname === '/api/android/apk') {
+        if (method !== 'GET' && method !== 'HEAD') {
+          sendJson(res, 405, { ok: false, error: 'method_not_allowed' });
+          return;
+        }
+        const info = readAndroidLatestInfo(paths.remoteDir);
+        if (!info) {
+          sendJson(res, 404, { ok: false, error: 'apk_not_available' });
+          return;
+        }
+        applySecurityHeaders(res);
+        res.statusCode = 200;
+        res.setHeader('Content-Type', 'application/vnd.android.package-archive');
+        res.setHeader('Content-Disposition', `attachment; filename="${info.filename}"`);
+        res.setHeader('Content-Length', info.bytes);
+        res.setHeader('Cache-Control', 'no-store');
+        res.setHeader('X-APK-SHA256', info.sha256);
+        if (method === 'HEAD') {
+          res.end();
+          return;
+        }
+        const apkStream = fs.createReadStream(info.apkPath);
+        pipeline(apkStream, res, (err) => {
+          if (err && !res.headersSent) {
+            sendJson(res, 500, { ok: false, error: 'apk_read_error' });
+          }
         });
         return;
       }

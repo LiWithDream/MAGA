@@ -65,6 +65,68 @@ export function openNativeSettingsDialog() {
   }
 }
 
+export function getNativeAppVersion() {
+  const b = getNativeBridge();
+  if (!b || typeof b.getAppVersion !== 'function') return '';
+  try {
+    return String(b.getAppVersion() || '').trim();
+  } catch {
+    return '';
+  }
+}
+
+export function isNativeKeepAliveEnabled() {
+  const b = getNativeBridge();
+  if (!b || typeof b.isKeepAliveEnabled !== 'function') return false;
+  try {
+    return Boolean(b.isKeepAliveEnabled());
+  } catch {
+    return false;
+  }
+}
+
+export function setNativeKeepAliveEnabled(enabled) {
+  const b = getNativeBridge();
+  lastKeepAliveStatusText = '';
+  if (!b || typeof b.setKeepAliveEnabled !== 'function') return false;
+  try {
+    return Boolean(b.setKeepAliveEnabled(Boolean(enabled)));
+  } catch {
+    return false;
+  }
+}
+
+let lastKeepAliveBridgeRef = null;
+let lastKeepAliveStatusText = '';
+
+export function updateNativeKeepAliveStatus(text) {
+  const b = getNativeBridge();
+  if (!b || typeof b.updateKeepAliveStatus !== 'function') return false;
+  const clean = String(text || '').trim().slice(0, 120);
+  if (!clean) return false;
+  if (!isNativeKeepAliveEnabled()) return false;
+  if (b === lastKeepAliveBridgeRef && clean === lastKeepAliveStatusText) return false;
+  lastKeepAliveBridgeRef = b;
+  lastKeepAliveStatusText = clean;
+  try {
+    b.updateKeepAliveStatus(clean);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function checkNativeAppUpdate(silent = false) {
+  const b = getNativeBridge();
+  if (!b || typeof b.checkForUpdate !== 'function') return false;
+  try {
+    b.checkForUpdate(Boolean(silent));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function applyNativeInsets(insets) {
   if (typeof document === 'undefined' || !insets || typeof insets !== 'object') return;
   const root = document.documentElement;

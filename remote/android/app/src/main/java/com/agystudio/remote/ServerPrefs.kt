@@ -6,6 +6,17 @@ import android.net.Uri
 object ServerPrefs {
     private const val PREF_NAME = "agy_remote_native"
     private const val KEY_SERVER_URL = "server_url"
+    private const val KEY_KEEPALIVE_ENABLED = "keepalive_enabled"
+
+    fun isKeepAliveEnabled(context: Context): Boolean {
+        val prefs = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+        return prefs.getBoolean(KEY_KEEPALIVE_ENABLED, false)
+    }
+
+    fun setKeepAliveEnabled(context: Context, enabled: Boolean) {
+        val prefs = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+        prefs.edit().putBoolean(KEY_KEEPALIVE_ENABLED, enabled).apply()
+    }
 
     fun getServerUrl(context: Context): String {
         val prefs = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)

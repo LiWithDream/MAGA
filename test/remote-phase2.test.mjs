@@ -2074,22 +2074,49 @@ test('Remote Mobile Polish V2: stale worktree branch cleanup, Markdown tables, a
     assert.match(turboSpan.textContent, /已确认/);
 
     const modalHost = doc.createElement('div');
+    doc.body.appendChild(modalHost);
     let newChatSubmitted = 0;
+    let promptDraft = '排查登录问题';
     mobileEnhMod.renderNewChatModal(modalHost, {
       open: true,
       projects: [{ id: 'proj-maga', name: 'MAGA' }],
       selectedProjectId: 'proj-maga',
-      promptText: '排查登录问题',
+      promptText: promptDraft,
       needTurboConfirm: true,
       turboConfirmed: true,
       online: true,
+      onPromptChange: (val) => { promptDraft = val; },
       onSubmit: () => { newChatSubmitted += 1; },
     });
     assert.equal(modalHost.classList.contains('rc-hidden'), false);
+    const firstTextarea = modalHost.querySelector('.rc-modal-textarea');
+    const firstSelect = modalHost.querySelector('.rc-select');
+    assert.ok(firstTextarea && firstSelect);
+    firstTextarea.focus();
+    assert.equal(doc.activeElement, firstTextarea);
+    // Repeated background re-renders (e.g. 1s stream tick / WS delta calling syncComposerControls)
+    // must patch in-place without recreating textarea or stealing focus/dismissing mobile keyboard
+    mobileEnhMod.renderNewChatModal(modalHost, {
+      open: true,
+      projects: [{ id: 'proj-maga', name: 'MAGA' }],
+      selectedProjectId: 'proj-maga',
+      promptText: promptDraft,
+      needTurboConfirm: true,
+      turboConfirmed: true,
+      online: true,
+      onPromptChange: (val) => { promptDraft = val; },
+      onSubmit: () => { newChatSubmitted += 1; },
+    });
+    assert.equal(modalHost.querySelector('.rc-modal-textarea'), firstTextarea, 'textarea node must stay mounted across re-renders');
+    assert.equal(modalHost.querySelector('.rc-select'), firstSelect, 'select node must stay mounted across re-renders');
+    assert.equal(doc.activeElement, firstTextarea, 'textarea focus must survive background re-renders');
     const submitBtn = modalHost.querySelector('.rc-new-chat-submit');
     assert.ok(submitBtn && submitBtn.disabled === false);
     submitBtn.click();
     assert.equal(newChatSubmitted, 1);
+    mobileEnhMod.renderNewChatModal(modalHost, { open: false });
+    assert.equal(modalHost.classList.contains('rc-hidden'), true);
+    assert.equal(modalHost.childNodes.length, 0);
 
     const alerts = mobileEnhMod.createAlertManager({ baseTitle: 'AGY Test' });
     // First call seeds baseline

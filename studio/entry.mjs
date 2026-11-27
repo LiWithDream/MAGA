@@ -10,6 +10,7 @@ import { createFooterUnifiedRuntime } from './modules/footer-unified.mjs';
 import { createOverviewUsageRuntime } from './modules/overview-usage.mjs';
 import { createOpusGatePillRuntime } from './modules/opus-gate-pill.mjs';
 import { createAutoCompactRuntime } from './modules/auto-compact.mjs';
+import { createAnchorsPillRuntime } from './modules/anchors-pill.mjs';
 import { createProjectUsageRuntime } from './modules/project-usage.mjs';
 import { createResumeBannerRuntime } from './modules/resume-banner.mjs';
 import { createScrollbarClampRuntime } from './modules/scrollbar-clamp.mjs';
@@ -80,6 +81,7 @@ import { motionThemes } from '../vendor/agy-capsule/motion_themes.mjs';
     isSubagentOpen: subagentFooter.isSubagentOpen,
   });
   const autoCompact = createAutoCompactRuntime({ studioPrefs });
+  const anchorsPill = createAnchorsPillRuntime({ studioPrefs });
   const scrollbarClamp = createScrollbarClampRuntime();
   const studioSettings = createStudioSettingsRuntime({
     studioPrefs,
@@ -117,6 +119,7 @@ import { motionThemes } from '../vendor/agy-capsule/motion_themes.mjs';
   kernel.register({ id: 'resume-banner', ...resumeBanner });
   kernel.register({ id: 'opus-gate-pill', ...opusGatePill });
   kernel.register({ id: 'auto-compact', ...autoCompact });
+  kernel.register({ id: 'anchors-pill', ...anchorsPill });
   kernel.register({ id: 'scrollbar-clamp', ...scrollbarClamp });
   kernel.register({
     id: 'capsule-picker',

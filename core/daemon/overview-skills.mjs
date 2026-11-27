@@ -794,6 +794,17 @@ export async function handleProjectRpcRequest(rawPayload, callerEntry = null) {
       return { reqId, result: await handleAutoCompactRpc(action, payload) };
     }
     if (
+      action === 'getAnchorsStatus' ||
+      action === 'acceptAnchorProposal' ||
+      action === 'rejectAnchorProposal' ||
+      action === 'removeActiveAnchor' ||
+      action === 'createMilestoneHandoff' ||
+      action === 'syncAnchorsPlugin'
+    ) {
+      const { handleAnchorsRpc } = await import('../../studio/daemon/anchors-service.mjs');
+      return { reqId, result: await handleAnchorsRpc(action, payload) };
+    }
+    if (
       action === 'getGitWorkflowPolicy' ||
       action === 'setGitWorkflowPolicy' ||
       action === 'syncGitWorkflowPlugin'

@@ -205,7 +205,6 @@ test('studio/host/contracts.mjs & probe-host.mjs stay out of custom.js bundle an
     assert.ok(HOST_CONTRACT_TIERS.includes(c.tier), `invalid tier on ${c.id}`);
     assert.ok(Array.isArray(c.modulePaths) && c.modulePaths.length >= 1, `missing modulePaths on ${c.id}`);
     for (const rel of c.modulePaths) {
-      if (rel === 'studio/daemon/anchors-service.mjs') continue; // landing in Step 5
       assert.equal(fs.existsSync(path.join(REPO_ROOT, rel)), true, `contract ${c.id} references missing file ${rel}`);
     }
     if (c.tier === 'host_dispatch' || c.tier === 'hand_encoded_wire') {

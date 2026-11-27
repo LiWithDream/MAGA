@@ -47,6 +47,11 @@ import {
   syncGitWorkflowPlugin,
   verifyGitWorkflowHookNodeRuntime,
 } from './daemon/git-workflow-service.mjs';
+import {
+  isAnchorsPluginInstalled,
+  syncAnchorsPlugin,
+  verifyAnchorsHookNodeRuntime,
+} from './daemon/anchors-service.mjs';
 import { collectWinProxyDiagnostics, inspectWinCoreDaemon } from '../core/daemon/win-service.mjs';
 import { evaluateDeployGuard, readDeployMeta } from './deploy-meta.mjs';
 import { collectRemoteControlDiagnostics, handleRemoteCommand } from './remote-cli.mjs';
@@ -273,6 +278,8 @@ export async function runDoctor() {
     autoCompactDecoder: verifyLiveScheduleStepDecoder(),
     gitWorkflowPluginInstalled: isGitWorkflowPluginInstalled(),
     gitWorkflowHookNode: verifyGitWorkflowHookNodeRuntime(),
+    anchorsPluginInstalled: isAnchorsPluginInstalled(),
+    anchorsHookNode: verifyAnchorsHookNodeRuntime(),
     gitWorkflowStaleProjects: findStalePolicyProjects(loadGitWorkflowPolicy()),
     proxyDiagnostics: collectProxyDiagnostics(),
     usageSummary: {
@@ -351,7 +358,8 @@ if (isMainModule) {
       const pluginRes = syncOpusGatePlugin();
       const compactPluginRes = syncAutoCompactPlugin();
       const gitWorkflowPluginRes = syncGitWorkflowPlugin();
-      console.log(JSON.stringify({ ok: true, command: 'install', deploy: deployRes, rules: rulesRes, opusGatePlugin: pluginRes, autoCompactPlugin: compactPluginRes, gitWorkflowPlugin: gitWorkflowPluginRes }, null, 2));
+      const anchorsPluginRes = syncAnchorsPlugin();
+      console.log(JSON.stringify({ ok: true, command: 'install', deploy: deployRes, rules: rulesRes, opusGatePlugin: pluginRes, autoCompactPlugin: compactPluginRes, gitWorkflowPlugin: gitWorkflowPluginRes, anchorsPlugin: anchorsPluginRes }, null, 2));
     } else if (cmd === 'deploy') {
       const res = await deployStudio({ allowNonMain: allowNonMainDeploy });
       await applyDefaultOrchestratorModelPreference();
@@ -365,13 +373,17 @@ if (isMainModule) {
       const gitWorkflowPluginRes = shouldSyncPlugins
         ? syncGitWorkflowPlugin()
         : { ok: true, skipped: true, reason: 'preview_deploy' };
-      console.log(JSON.stringify({ ...res, opusGatePlugin: opusGatePluginRes, autoCompactPlugin: compactPluginRes, gitWorkflowPlugin: gitWorkflowPluginRes }, null, 2));
+      const anchorsPluginRes = shouldSyncPlugins
+        ? syncAnchorsPlugin()
+        : { ok: true, skipped: true, reason: 'preview_deploy' };
+      console.log(JSON.stringify({ ...res, opusGatePlugin: opusGatePluginRes, autoCompactPlugin: compactPluginRes, gitWorkflowPlugin: gitWorkflowPluginRes, anchorsPlugin: anchorsPluginRes }, null, 2));
     } else if (cmd === 'sync-rules') {
       const rulesRes = syncFastIoRules();
       const pluginRes = syncOpusGatePlugin();
       const compactPluginRes = syncAutoCompactPlugin();
       const gitWorkflowPluginRes = syncGitWorkflowPlugin();
-      console.log(JSON.stringify({ ...rulesRes, opusGatePlugin: pluginRes, autoCompactPlugin: compactPluginRes, gitWorkflowPlugin: gitWorkflowPluginRes }, null, 2));
+      const anchorsPluginRes = syncAnchorsPlugin();
+      console.log(JSON.stringify({ ...rulesRes, opusGatePlugin: pluginRes, autoCompactPlugin: compactPluginRes, gitWorkflowPlugin: gitWorkflowPluginRes, anchorsPlugin: anchorsPluginRes }, null, 2));
     } else if (cmd === 'doctor') {
       const report = await runDoctor();
       console.log(JSON.stringify(report, null, 2));
@@ -382,7 +394,8 @@ if (isMainModule) {
       const pluginRes = syncOpusGatePlugin({ remove: true });
       const compactPluginRes = syncAutoCompactPlugin({ remove: true });
       const gitWorkflowPluginRes = syncGitWorkflowPlugin({ remove: true });
-      console.log(JSON.stringify({ ...rollbackRes, rules: rulesRes, opusGatePlugin: pluginRes, autoCompactPlugin: compactPluginRes, gitWorkflowPlugin: gitWorkflowPluginRes }, null, 2));
+      const anchorsPluginRes = syncAnchorsPlugin({ remove: true });
+      console.log(JSON.stringify({ ...rollbackRes, rules: rulesRes, opusGatePlugin: pluginRes, autoCompactPlugin: compactPluginRes, gitWorkflowPlugin: gitWorkflowPluginRes, anchorsPlugin: anchorsPluginRes }, null, 2));
     } else if (cmd === 'remote') {
       const res = await handleRemoteCommand(cliArgs);
       console.log(JSON.stringify(res, null, 2));

@@ -324,6 +324,13 @@ export function createFooterUnifiedRuntime({ onTierChange, kernel } = {}) {
     const tier = isCompacting || cState === 'compacted'
       ? null
       : (!Number.isFinite(pct) || pct < 60 ? 'cool' : pct >= 75 ? 'crit' : 'warn');
+    const metricsPayload = snapshot ? snapshot.metrics : (typeof window !== 'undefined' ? window.__ag_last_metrics || null : null);
+    const activeCid = snapshot ? snapshot.cid : getActiveRouteCid();
+    const validGenPayload =
+      metricsPayload && metricsPayload.hasData && (!activeCid || !metricsPayload.cascadeId || metricsPayload.cascadeId === activeCid)
+        ? metricsPayload
+        : null;
+    const compactionCount = Math.max(0, Number(validGenPayload?.metrics?.compactionCount || validGenPayload?.stats?.compactions || 0));
 
     return {
       ring,
@@ -337,12 +344,13 @@ export function createFooterUnifiedRuntime({ onTierChange, kernel } = {}) {
       hasRatio,
       hasTight,
       tier,
+      compactionCount,
     };
   }
 
   function writeContextData(ctx) {
     if (!ctx || !ctx.ring) return;
-    const { ring, pop, ovCtxCard, ratioText, isCompacting, compactingAttr, fullText, tightText, hasRatio, hasTight, tier } = ctx;
+    const { ring, pop, ovCtxCard, ratioText, isCompacting, compactingAttr, fullText, tightText, hasRatio, hasTight, tier, compactionCount } = ctx;
     markOwn(ring);
     lastRatioText = ratioText;
 
@@ -364,10 +372,27 @@ export function createFooterUnifiedRuntime({ onTierChange, kernel } = {}) {
       tightSpan.className = 'agy-ctx-tight';
       ratioSpan.appendChild(tightSpan);
     }
+    let genSpan = ring.querySelector('.agy-ctx-gen-badge');
+    if (!genSpan) {
+      genSpan = document.createElement('span');
+      genSpan.className = 'agy-ctx-gen-badge';
+      genSpan.hidden = true;
+      ring.appendChild(genSpan);
+    }
 
     setAttr(ring, 'data-agy-ctx-compacting', compactingAttr);
     setLeafText(fullSpan, fullText);
     setLeafText(tightSpan, tightText);
+
+    const showGen = !isCompacting && compactionCount >= 1;
+    if (showGen) {
+      setLeafText(genSpan, `G${compactionCount}`);
+      if (genSpan.hidden) genSpan.hidden = false;
+      setAttr(ring, 'data-agy-gen-warn', compactionCount >= 3 ? '1' : null);
+    } else {
+      if (!genSpan.hidden) genSpan.hidden = true;
+      setAttr(ring, 'data-agy-gen-warn', null);
+    }
 
     if (ratioSpan.hidden !== !hasRatio) ratioSpan.hidden = !hasRatio;
     setAttr(ring, 'data-agy-has-ratio', hasRatio ? 'true' : null);

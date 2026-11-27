@@ -529,7 +529,7 @@ export async function materializeLocalGovernanceAsync(mainReal, targetWorktreeDi
   return { materialized: recordedFiles.map((r) => r.rel) };
 }
 
-async function cleanupLocalGovernanceBeforeRemoveAsync(worktreeRealPath) {
+async function cleanupLocalGovernanceBeforeRemoveAsync(worktreeRealPath, mainReal = '') {
   const removedBackups = [];
   const skippedModified = [];
   const gitDirRes = await execGitAsyncWithRaw(worktreeRealPath, ['rev-parse', '--git-dir'], 1000);
@@ -538,17 +538,17 @@ async function cleanupLocalGovernanceBeforeRemoveAsync(worktreeRealPath) {
   }
   const wtGitDir = path.resolve(worktreeRealPath, gitDirRes.stdout.trim());
   const manifestPath = path.join(wtGitDir, LOCAL_GOVERNANCE_MANIFEST_FILE);
-  if (!fs.existsSync(manifestPath)) {
-    return { restore: () => {}, skippedModified };
-  }
+  const manifest = fs.existsSync(manifestPath)
+    ? (() => {
+        try {
+          return JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+        } catch {
+          return null;
+        }
+      })()
+    : null;
 
-  let manifest = null;
-  try {
-    manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-  } catch {
-    return { restore: () => {}, skippedModified };
-  }
-
+  const canonicalMain = mainReal || manifest?.mainDirPath || '';
   const files = Array.isArray(manifest?.files) ? manifest.files : [];
   const recordedRelSet = new Set();
   for (const item of files) {
@@ -561,7 +561,15 @@ async function cleanupLocalGovernanceBeforeRemoveAsync(worktreeRealPath) {
     if (!lst || lst.isSymbolicLink() || !lst.isFile()) continue;
     try {
       const buf = fs.readFileSync(targetAbs);
-      if (sha256Buffer(buf) !== expectedSha) {
+      const curSha = sha256Buffer(buf);
+      let safeToClean = curSha === expectedSha;
+      if (!safeToClean && canonicalMain) {
+        const mainCopy = path.join(canonicalMain, ...rel.split('/'));
+        if (fs.lstatSync(mainCopy, { throwIfNoEntry: false })?.isFile()) {
+          safeToClean = sha256Buffer(fs.readFileSync(mainCopy)) === curSha;
+        }
+      }
+      if (!safeToClean) {
         skippedModified.push(rel);
         continue;
       }
@@ -570,12 +578,28 @@ async function cleanupLocalGovernanceBeforeRemoveAsync(worktreeRealPath) {
     } catch {}
   }
 
-  // Detect any newly authored unmanifested files inside excluded `.agents/skills` or `.agents/rules` so `git worktree remove` never silently deletes them
+  // Detect any newly authored unmanifested files inside excluded `.agents/skills` or `.agents/rules`:
+  // if `canonicalMain` already holds a byte-identical copy (e.g. `anchors.local.md` synced to both mainRoot & wt), clean safely; otherwise refuse!
   for (const govDir of ['.agents/skills', '.agents/rules']) {
     const leftover = [];
     collectSafeGovernanceDirFiles(path.join(worktreeRealPath, ...govDir.split('/')), govDir, leftover);
     for (const f of leftover) {
-      if (!recordedRelSet.has(f.rel) && !skippedModified.includes(f.rel)) {
+      if (recordedRelSet.has(f.rel)) continue;
+      let syncedInMain = false;
+      if (canonicalMain) {
+        const mainCopy = path.join(canonicalMain, ...f.rel.split('/'));
+        try {
+          if (fs.lstatSync(mainCopy, { throwIfNoEntry: false })?.isFile()) {
+            const wtBuf = fs.readFileSync(f.abs);
+            if (sha256Buffer(fs.readFileSync(mainCopy)) === sha256Buffer(wtBuf)) {
+              fs.rmSync(f.abs, { force: true });
+              removedBackups.push({ targetAbs: f.abs, buf: wtBuf, mode: f.mode });
+              syncedInMain = true;
+            }
+          }
+        } catch {}
+      }
+      if (!syncedInMain && !skippedModified.includes(f.rel)) {
         skippedModified.push(f.rel);
       }
     }
@@ -801,7 +825,7 @@ export async function removeRepoWorktreeCore(
   }
 
   await ensureNodeModulesExcludedIfNeededAsync(mainReal, entry.realPath);
-  const govCleanup = await cleanupLocalGovernanceBeforeRemoveAsync(entry.realPath);
+  const govCleanup = await cleanupLocalGovernanceBeforeRemoveAsync(entry.realPath, mainReal);
   if (govCleanup.skippedModified.length > 0) {
     govCleanup.restore();
     return {

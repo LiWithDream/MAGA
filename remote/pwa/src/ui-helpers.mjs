@@ -11,8 +11,15 @@ export function resolveLayoutMode(pref, viewportWidth = 1024) {
   return Number.isFinite(w) && w >= DESKTOP_BREAKPOINT_PX ? 'desktop' : 'mobile';
 }
 
-export function formatResetCountdown(sec) {
-  const total = Number(sec);
+export function formatResetCountdown(sec, nowMs = Date.now()) {
+  const raw = Number(sec);
+  if (!Number.isFinite(raw) || raw <= 0) return '';
+  let total = raw;
+  if (raw > 1e12) {
+    total = Math.floor(raw / 1000) - Math.floor(nowMs / 1000);
+  } else if (raw > 1e9) {
+    total = Math.floor(raw) - Math.floor(nowMs / 1000);
+  }
   if (!Number.isFinite(total) || total <= 0) return '';
   const mins = Math.ceil(total / 60);
   if (mins < 60) return `${mins}m`;
@@ -66,6 +73,25 @@ export function el(tag, props = {}, ...children) {
       node.value = String(val);
     } else if (key === 'open') {
       node.open = Boolean(val);
+    } else if (key === 'style') {
+      if (typeof val === 'object') {
+        for (const [cssProp, cssVal] of Object.entries(val)) {
+          if (cssVal === undefined || cssVal === null || cssVal === false) continue;
+          if (cssProp.startsWith('--') || cssProp.includes('-')) {
+            node.style.setProperty(cssProp, String(cssVal));
+          } else {
+            node.style[cssProp] = String(cssVal);
+          }
+        }
+      } else if (typeof val === 'string') {
+        for (const decl of val.split(';')) {
+          const idx = decl.indexOf(':');
+          if (idx <= 0) continue;
+          const prop = decl.slice(0, idx).trim();
+          const v = decl.slice(idx + 1).trim();
+          if (prop && v) node.style.setProperty(prop, v);
+        }
+      }
     } else {
       node.setAttribute(key, String(val));
     }

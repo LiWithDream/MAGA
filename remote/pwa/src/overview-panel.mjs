@@ -37,7 +37,7 @@ function buildMeterRow(label, pct, { resetSec = null, tone = 'blue' } = {}) {
       el('div', {
         className: 'rc-meter-fill',
         'data-tone': validPct && clamped <= 15 ? 'warn' : tone,
-        style: `width: ${clamped}%;`,
+        style: { width: `${clamped}%` },
       })
     )
   );
@@ -141,9 +141,9 @@ function renderUsageCard(todayUsage) {
     el(
       'div',
       { className: 'rc-usage-bar' },
-      el('div', { className: 'rc-usage-seg is-cache', style: `width: ${totalTokens > 0 ? cacheWidth : 0}%;` }),
-      el('div', { className: 'rc-usage-seg is-uncached', style: `width: ${totalTokens > 0 ? uncachedWidth : 0}%;` }),
-      el('div', { className: 'rc-usage-seg is-output', style: `width: ${totalTokens > 0 ? outputWidth : 0}%;` })
+      el('div', { className: 'rc-usage-seg is-cache', style: { width: `${totalTokens > 0 ? cacheWidth : 0}%` } }),
+      el('div', { className: 'rc-usage-seg is-uncached', style: { width: `${totalTokens > 0 ? uncachedWidth : 0}%` } }),
+      el('div', { className: 'rc-usage-seg is-output', style: { width: `${totalTokens > 0 ? outputWidth : 0}%` } })
     ),
     el(
       'div',

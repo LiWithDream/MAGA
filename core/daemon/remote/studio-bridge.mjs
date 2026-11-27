@@ -155,7 +155,7 @@ function sanitizeQuotaSnapshot(raw) {
     tierName: typeof raw.tierName === 'string' ? raw.tierName.slice(0, 64) : '',
     updatedAt: Number(raw.updatedAt || 0),
     claude: pickPool(raw.claude, true),
-    gemini: pickPool(raw.gemini, false),
+    gemini: pickPool(raw.gemini, true),
   };
 }
 

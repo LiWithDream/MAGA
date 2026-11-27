@@ -15,6 +15,7 @@ import {
   splitShellSegments,
   tokenizeSegment,
 } from '../.githooks/guard-main-branch.mjs';
+import { checkStaleMerge } from '../.githooks/guard-stale-merge.mjs';
 
 const TEST_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(TEST_DIR, '..');
@@ -488,7 +489,7 @@ test('Git .githooks pre-commit and pre-push enforce branch, merge, force-push, a
 });
 
 test('repository guardrail scripts, permissions, package script, and .gitignore are properly configured', () => {
-  for (const name of ['guard-main-branch.mjs', 'pre-commit', 'pre-push']) {
+  for (const name of ['guard-main-branch.mjs', 'guard-stale-merge.mjs', 'pre-commit', 'pre-merge-commit', 'pre-push']) {
     const filePath = path.join(GITHOOKS_DIR, name);
     assert.equal(fs.existsSync(filePath), true, `${name} must exist in .githooks/`);
     if (process.platform !== 'win32') {
@@ -680,5 +681,112 @@ test('PreToolUse hook expands $VAR/${VAR} safely across standalone assignments, 
     fs.rmSync(wtParent, { recursive: true, force: true });
     fs.rmSync(mainRepo, { recursive: true, force: true });
     fs.rmSync(fakeHome, { recursive: true, force: true });
+  }
+});
+
+test('guard-stale-merge blocks stale or diverged origin refs while allowing synced, ahead, local-only, and overridden merges', () => {
+  const bareOrigin = realpathNative(fs.mkdtempSync(path.join(os.tmpdir(), 'maga-stale-origin-')));
+  const devA = realpathNative(fs.mkdtempSync(path.join(os.tmpdir(), 'maga-stale-deva-')));
+  const devB = realpathNative(fs.mkdtempSync(path.join(os.tmpdir(), 'maga-stale-devb-')));
+
+  const setupClone = (dir) => {
+    git(dir, ['config', 'user.name', 'MAGA Test']);
+    git(dir, ['config', 'user.email', 'test@maga.local']);
+    git(dir, ['config', 'core.hooksPath', GITHOOKS_DIR]);
+  };
+
+  try {
+    execFileSync('git', ['init', '--bare', '-b', 'main', bareOrigin], { stdio: 'ignore' });
+    execFileSync('git', ['clone', bareOrigin, devA], { stdio: 'ignore' });
+    setupClone(devA);
+    git(devA, ['checkout', '-B', 'main']);
+    fs.writeFileSync(path.join(devA, 'README.md'), '# origin\n', 'utf8');
+    git(devA, ['add', 'README.md']);
+    git(devA, ['commit', '-m', 'init main'], { MAGA_ALLOW_MAIN_COMMIT: '1' });
+    git(devA, ['push', '-u', 'origin', 'main']);
+
+    // devA pushes feat/shared v1
+    git(devA, ['checkout', '-b', 'feat/shared']);
+    fs.writeFileSync(path.join(devA, 'shared.txt'), 'v1\n', 'utf8');
+    git(devA, ['add', 'shared.txt']);
+    git(devA, ['commit', '-m', 'shared v1']);
+    git(devA, ['push', '-u', 'origin', 'feat/shared']);
+
+    // devB clones and tracks feat/shared at v1
+    execFileSync('git', ['clone', bareOrigin, devB], { stdio: 'ignore' });
+    setupClone(devB);
+    git(devB, ['checkout', '-b', 'feat/shared', 'origin/feat/shared']);
+    git(devB, ['checkout', 'main']);
+
+    // 3. Local branch matches remote -> ALLOWED
+    const syncedMerge = gitResult(devB, ['merge', '--no-ff', '-m', 'merge synced feat/shared', 'feat/shared']);
+    assert.equal(syncedMerge.status, 0, syncedMerge.stderr);
+    git(devB, ['reset', '--hard', 'origin/main']);
+
+    // devA pushes v2 to origin/feat/shared while devB remains stale at v1
+    fs.writeFileSync(path.join(devA, 'shared.txt'), 'v1\nv2\n', 'utf8');
+    git(devA, ['add', 'shared.txt']);
+    git(devA, ['commit', '-m', 'shared v2']);
+    git(devA, ['push', 'origin', 'feat/shared']);
+
+    // 1. Remote branch ahead & unfetched locally -> BLOCKED (pre-merge-commit & pre-commit w/ MERGE_HEAD)
+    const staleMerge = gitResult(devB, ['merge', '--no-ff', '-m', 'merge stale feat/shared', 'feat/shared']);
+    assert.notEqual(staleMerge.status, 0);
+    assert.match(staleMerge.stderr, /Blocked stale merge/);
+    assert.match(staleMerge.stderr, /feat\/shared/);
+
+    const directUnitBlock = checkStaleMerge({ cwd: devB });
+    assert.equal(directUnitBlock.allowed, false);
+    assert.equal(directUnitBlock.reason, 'stale_merge');
+
+    const staleCommitRetry = gitResult(devB, ['commit', '-m', 'commit stale merge']);
+    assert.notEqual(staleCommitRetry.status, 0);
+    assert.match(staleCommitRetry.stderr, /Blocked stale merge/);
+
+    // 6. MAGA_ALLOW_STALE_MERGE=1 override -> ALLOWED
+    const overrideMergeCommit = gitResult(devB, ['commit', '-m', 'override stale merge'], {
+      MAGA_ALLOW_STALE_MERGE: '1',
+    });
+    assert.equal(overrideMergeCommit.status, 0, overrideMergeCommit.stderr);
+    git(devB, ['reset', '--hard', 'origin/main']);
+
+    // 2. Remote branch diverged -> BLOCKED
+    git(devB, ['checkout', 'feat/shared']);
+    fs.writeFileSync(path.join(devB, 'diverged.txt'), 'div\n', 'utf8');
+    git(devB, ['add', 'diverged.txt']);
+    git(devB, ['commit', '-m', 'diverged local commit']);
+    git(devB, ['checkout', 'main']);
+
+    const divergedMerge = gitResult(devB, ['merge', '--no-ff', '-m', 'merge diverged', 'feat/shared']);
+    assert.notEqual(divergedMerge.status, 0);
+    assert.match(divergedMerge.stderr, /Blocked stale merge/);
+    git(devB, ['merge', '--abort']);
+
+    // 4. Local branch strictly ahead of remote -> ALLOWED
+    git(devB, ['fetch', 'origin']);
+    git(devB, ['checkout', 'feat/shared']);
+    git(devB, ['reset', '--hard', 'origin/feat/shared']);
+    fs.writeFileSync(path.join(devB, 'ahead.txt'), 'v3\n', 'utf8');
+    git(devB, ['add', 'ahead.txt']);
+    git(devB, ['commit', '-m', 'shared v3 ahead']);
+    git(devB, ['checkout', 'main']);
+
+    const aheadMerge = gitResult(devB, ['merge', '--no-ff', '-m', 'merge ahead feat/shared', 'feat/shared']);
+    assert.equal(aheadMerge.status, 0, aheadMerge.stderr);
+    git(devB, ['reset', '--hard', 'origin/main']);
+
+    // 5. Local-only branch absent from origin -> ALLOWED
+    git(devB, ['checkout', '-b', 'feat/local-only']);
+    fs.writeFileSync(path.join(devB, 'local.txt'), 'local\n', 'utf8');
+    git(devB, ['add', 'local.txt']);
+    git(devB, ['commit', '-m', 'local only commit']);
+    git(devB, ['checkout', 'main']);
+
+    const localOnlyMerge = gitResult(devB, ['merge', '--no-ff', '-m', 'merge local-only', 'feat/local-only']);
+    assert.equal(localOnlyMerge.status, 0, localOnlyMerge.stderr);
+  } finally {
+    fs.rmSync(bareOrigin, { recursive: true, force: true });
+    fs.rmSync(devA, { recursive: true, force: true });
+    fs.rmSync(devB, { recursive: true, force: true });
   }
 });

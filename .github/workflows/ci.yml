@@ -3,10 +3,43 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
 jobs:
+  stranded-branches:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch all remote branches and verify no unmerged branches are stranded
+        shell: bash
+        run: |
+          git fetch origin --prune '+refs/heads/*:refs/remotes/origin/*'
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            TARGET_REF="HEAD"
+          else
+            TARGET_REF="origin/main"
+          fi
+          stranded="$(git branch -r --no-merged "$TARGET_REF" | grep -vE '^\s*origin/(HEAD|main)$' | sed 's/^[[:space:]]*//' || true)"
+          if [[ -n "$stranded" ]]; then
+            list="$(printf '%s' "$stranded" | tr '\n' ',' | sed 's/,$//')"
+            if [[ "${{ github.ref_type }}" == "tag" ]]; then
+              echo "::error::Refusing release tag while unmerged remote branches exist outside ${TARGET_REF}: ${list}"
+              echo "$stranded"
+              exit 1
+            else
+              echo "::warning::Unmerged remote branches exist outside ${TARGET_REF}: ${list}"
+              echo "$stranded"
+            fi
+          else
+            echo "No stranded unmerged remote branches outside ${TARGET_REF}."
+          fi
+
   test:
     strategy:
       fail-fast: false

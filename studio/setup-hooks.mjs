@@ -17,7 +17,7 @@ execFileSync('git', ['config', 'core.hooksPath', '.githooks'], {
 });
 
 if (process.platform !== 'win32') {
-  for (const rel of ['pre-commit', 'pre-push', 'guard-main-branch.mjs']) {
+  for (const rel of ['pre-commit', 'pre-merge-commit', 'pre-push', 'guard-main-branch.mjs', 'guard-stale-merge.mjs']) {
     const abs = path.join(REPO_ROOT, '.githooks', rel);
     if (fs.existsSync(abs)) {
       fs.chmodSync(abs, 0o755);

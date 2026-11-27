@@ -27,8 +27,8 @@ android {
         applicationId = "com.agystudio.remote"
         minSdk = 26
         targetSdk = 35
-        versionCode = 10500
-        versionName = "1.5.0"
+        versionCode = 10501
+        versionName = "1.5.1"
         buildConfigField("String", "DEFAULT_SERVER_URL", "\"${defaultServerUrlProp.replace("\"", "\\\"")}\"")
         manifestPlaceholders["agyServerHost"] = defaultServerHost
     }

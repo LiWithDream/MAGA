@@ -1,13 +1,14 @@
 #!/bin/sh
 set -eu
 
+git_dir=$(git rev-parse --git-dir)
+if [ -f "$git_dir/MERGE_HEAD" ]; then
+  exec node "$(dirname "$0")/guard-stale-merge.mjs"
+fi
+
 branch=$(git symbolic-ref --short HEAD 2>/dev/null || true)
 case "$branch" in
   main|master)
-    git_dir=$(git rev-parse --git-dir)
-    if [ -f "$git_dir/MERGE_HEAD" ]; then
-      exit 0
-    fi
     if [ "${MAGA_ALLOW_MAIN_COMMIT:-0}" = "1" ]; then
       exit 0
     fi

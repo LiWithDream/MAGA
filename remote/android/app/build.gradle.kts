@@ -16,8 +16,8 @@ android {
         applicationId = "com.agystudio.remote"
         minSdk = 26
         targetSdk = 35
-        versionCode = 10400
-        versionName = "1.4.0"
+        versionCode = 10401
+        versionName = "1.4.1"
         buildConfigField("String", "DEFAULT_SERVER_URL", "\"https://agy.miracleli.com\"")
     }
 

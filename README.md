@@ -398,5 +398,5 @@ AGY Studio builds on and integrates ideas and MIT-licensed code from these commu
 ---
 
 <div align="center">
-  <sub>MIT Licensed · If AGY Studio helps you ship faster on Antigravity Desktop 2.0, consider leaving a ⭐ — or upvote Windows support in Issues.</sub>
+  <sub>MIT Licensed · Built natively for macOS &amp; Windows 10/11 on Antigravity Desktop 2.0 — if AGY Studio helps you ship faster, consider leaving a ⭐.</sub>
 </div>

@@ -403,8 +403,21 @@ function isPrimaryLocalOnlyPath(absPath, mainRoot, localOnlyPaths = []) {
   const realTarget = resolveExistingPrefixRealpath(absPath);
   const realMain = resolveExistingPrefixRealpath(mainRoot);
   for (const rel of localOnlyPaths) {
-    if (typeof rel !== 'string' || !rel.trim()) continue;
-    const targetCandidate = path.join(realMain, rel.trim());
+    if (typeof rel !== 'string') continue;
+    const rawTrimmed = rel.trim();
+    if (!rawTrimmed || path.posix.isAbsolute(rawTrimmed) || path.win32.isAbsolute(rawTrimmed) || rawTrimmed.startsWith('\\')) {
+      continue;
+    }
+    const cleanRel = rawTrimmed.replace(/\\/g, '/').replace(/^\.\/+/, '').replace(/\/+$/g, '');
+    if (!cleanRel || cleanRel === '.' || cleanRel === '*' || cleanRel === '**') continue;
+    const segs = cleanRel.split('/');
+    if (segs.some((s) => !s || s === '.' || s === '..' || s === '*' || s === '**')) continue;
+    if (cleanRel === '.agents/hooks' || cleanRel === '.agents/hooks.json' || cleanRel.startsWith('.agents/hooks/')) continue;
+    const targetCandidate = path.join(realMain, cleanRel);
+    if (!isInsideDir(targetCandidate, realMain)) continue;
+    const mainCmp = CASE_INSENSITIVE_FS ? realMain.toLowerCase() : realMain;
+    const candCmp = CASE_INSENSITIVE_FS ? targetCandidate.toLowerCase() : targetCandidate;
+    if (candCmp === mainCmp) continue;
     if (isInsideDir(realTarget, targetCandidate)) return true;
   }
   return false;

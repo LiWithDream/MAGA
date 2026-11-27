@@ -433,6 +433,50 @@ HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settin
       },
     });
     assert.equal(renameTries, 8);
+
+    // fsImpl injection allows testing raw Win32 paths without touching host disk, while uninjected POSIX calls reject C:\ paths
+    const memFiles = new Map();
+    const mockFs = {
+      existsSync: (p) => memFiles.has(p),
+      mkdirSync: () => {},
+      writeFileSync: (p, c) => memFiles.set(p, c),
+      readFileSync: (p) => memFiles.get(p) || '',
+      rmSync: (p) => memFiles.delete(p),
+      readdirSync: () => [],
+    };
+    const mockRes = ensureWinCoreDaemon({
+      nodePath,
+      daemonScript,
+      userDir,
+      stateDir: 'C:\\Users\\张三\\.gemini\\antigravity\\anti-claude',
+      pidFile: 'C:\\Users\\张三\\.gemini\\antigravity\\anti-claude\\daemon.pid',
+      stopFile: 'C:\\Users\\张三\\.gemini\\antigravity\\anti-claude\\daemon-stop.signal',
+      metaFile: 'C:\\Users\\张三\\.gemini\\antigravity\\anti-claude\\win-daemon-meta.json',
+      vbsPath: 'C:\\Users\\张三\\Startup\\Daemon.vbs',
+      shortcutPath: 'C:\\Users\\张三\\Start Menu\\AGY.lnk',
+      createShortcut: false,
+      waitPidTimeoutMs: 0,
+      sleepFn: () => {},
+      execFileSyncFn: () => {},
+      spawnDetachedFn: () => 5555,
+      fsImpl: mockFs,
+    });
+    assert.equal(mockRes.ok, true);
+    assert.equal(mockRes.pid, 5555);
+    assert.equal(memFiles.has('C:\\Users\\张三\\.gemini\\antigravity\\anti-claude\\win-daemon-meta.json'), true);
+
+    if (process.platform !== 'win32') {
+      assert.throws(
+        () =>
+          ensureWinCoreDaemon({
+            nodePath,
+            daemonScript,
+            userDir,
+            stateDir: 'C:\\Users\\张三\\.gemini\\antigravity\\anti-claude',
+          }),
+        /Refusing to write Windows path/
+      );
+    }
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

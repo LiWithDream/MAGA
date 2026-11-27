@@ -399,5 +399,5 @@ AGY Studio 基于以下开源项目构建并集成其 MIT 核心模块：
 ---
 
 <div align="center">
-  <sub>MIT License · 如果 AGY Studio 帮你在 Antigravity Desktop 2.0 上开发更顺手，欢迎点一颗 ⭐，也欢迎到 Issues 给 Windows 支持投票。</sub>
+  <sub>MIT License · 原生支持 macOS 与 Windows 10/11 — 如果 AGY Studio 帮你在 Antigravity Desktop 2.0 上开发更顺手，欢迎点一颗 ⭐。</sub>
 </div>

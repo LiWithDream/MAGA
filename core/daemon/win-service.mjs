@@ -26,6 +26,23 @@ function usesWinStylePath(p) {
   return /^[A-Za-z]:[\\/]/.test(s) || s.includes('\\');
 }
 
+function assertSafeHostFsPath(targetPath, fsImpl) {
+  if (process.platform !== 'win32' && fsImpl === fs && usesWinStylePath(targetPath)) {
+    throw new Error(`Refusing to write Windows path on ${process.platform} without injected fsImpl: ${targetPath}`);
+  }
+}
+
+function writeTextViaFs(targetPath, content, fsImpl) {
+  assertSafeHostFsPath(targetPath, fsImpl);
+  if (fsImpl === fs) {
+    writeAtomicUtf8(targetPath, content);
+    return;
+  }
+  const dir = usesWinStylePath(targetPath) ? path.win32.dirname(targetPath) : path.dirname(targetPath);
+  fsImpl.mkdirSync(dir, { recursive: true });
+  fsImpl.writeFileSync(targetPath, content, 'utf8');
+}
+
 function dirnameSameStyle(p) {
   return usesWinStylePath(p) ? path.win32.dirname(p) : path.dirname(p);
 }
@@ -506,15 +523,17 @@ export function stopWinDaemonGracefully({
   isMatchingPidFn = isOwnDaemonProcess,
   killFn = process.kill,
   sleepFn = sleepSync,
+  fsImpl = fs,
 } = {}) {
   let stopped = false;
-  if (fs.existsSync(pidFile)) {
-    const pid = parseInt(fs.readFileSync(pidFile, 'utf8').trim(), 10);
+  if (fsImpl.existsSync(pidFile)) {
+    const pid = parseInt(fsImpl.readFileSync(pidFile, 'utf8').trim(), 10);
     if (pid > 0 && isMatchingPidFn(pid)) {
       stopped = true;
       if (!noKill) {
         try {
-          requestCooperativeStop(pid, { stopFile });
+          if (fsImpl === fs) requestCooperativeStop(pid, { stopFile });
+          else writeTextViaFs(stopFile, `${JSON.stringify({ targetPid: pid, requestedAt: Date.now() })}\n`, fsImpl);
         } catch {}
         const deadline = Date.now() + Math.max(200, timeoutMs);
         while (Date.now() < deadline) {
@@ -529,11 +548,11 @@ export function stopWinDaemonGracefully({
       }
     }
     try {
-      fs.rmSync(pidFile, { force: true });
+      fsImpl.rmSync(pidFile, { force: true });
     } catch {}
   }
   try {
-    fs.rmSync(stopFile, { force: true });
+    fsImpl.rmSync(stopFile, { force: true });
   } catch {}
   return { stopped };
 }
@@ -543,8 +562,10 @@ export function ensureWinStudioShortcut({
   shortcutPath = getWinShortcutPath(),
   enabled = true,
   execFileSyncFn = execFileSync,
+  fsImpl = fs,
 } = {}) {
   if (!enabled || !exePath) return { ok: false, skipped: 'disabled_or_missing_exe' };
+  assertSafeHostFsPath(shortcutPath, fsImpl);
   const appDir = dirnameSameStyle(exePath);
   const ps = [
     `$ws = New-Object -ComObject WScript.Shell`,
@@ -557,7 +578,7 @@ export function ensureWinStudioShortcut({
     `$sc.Save()`,
   ].join('; ');
   try {
-    fs.mkdirSync(path.dirname(shortcutPath), { recursive: true });
+    fsImpl.mkdirSync(dirnameSameStyle(shortcutPath), { recursive: true });
     execFileSyncFn(
       'powershell',
       ['-NoProfile', '-EncodedCommand', encodePowerShellBase64(ps)],
@@ -569,10 +590,10 @@ export function ensureWinStudioShortcut({
   }
 }
 
-export function removeWinStudioShortcut({ shortcutPath = getWinShortcutPath() } = {}) {
+export function removeWinStudioShortcut({ shortcutPath = getWinShortcutPath(), fsImpl = fs } = {}) {
   try {
-    if (fs.existsSync(shortcutPath)) {
-      fs.rmSync(shortcutPath, { force: true });
+    if (fsImpl.existsSync(shortcutPath)) {
+      fsImpl.rmSync(shortcutPath, { force: true });
       return { removed: true, shortcutPath };
     }
   } catch {}
@@ -597,12 +618,15 @@ export function ensureWinCoreDaemon({
   execFileSyncFn = execFileSync,
   sleepFn = sleepSync,
   waitPidTimeoutMs = 3000,
+  fsImpl = fs,
 } = {}) {
   if (noLaunchd) return { ok: true, skipped: 'launchd_disabled' };
-  fs.mkdirSync(stateDir, { recursive: true });
-  fs.mkdirSync(userDir, { recursive: true });
+  assertSafeHostFsPath(stateDir, fsImpl);
+  assertSafeHostFsPath(userDir, fsImpl);
+  fsImpl.mkdirSync(stateDir, { recursive: true });
+  fsImpl.mkdirSync(userDir, { recursive: true });
 
-  stopWinDaemonGracefully({ pidFile, stopFile, isMatchingPidFn, sleepFn });
+  stopWinDaemonGracefully({ pidFile, stopFile, isMatchingPidFn, sleepFn, fsImpl });
 
   const userId = getCurrentWinUserId();
   const xml = buildWinScheduledTaskXml({ nodePath, daemonScript, userDir, userId });
@@ -611,7 +635,7 @@ export function ensureWinCoreDaemon({
   let schtasksErr = '';
 
   try {
-    fs.writeFileSync(tmpXml, encodeUtf16LeWithBom(xml));
+    fsImpl.writeFileSync(tmpXml, encodeUtf16LeWithBom(xml));
     execFileSyncFn('schtasks', ['/Create', '/F', '/TN', taskName, '/XML', tmpXml], {
       windowsHide: true,
       timeout: 8000,
@@ -622,14 +646,14 @@ export function ensureWinCoreDaemon({
     schtasksErr = String(err?.stderr || err?.message || err).trim();
   } finally {
     try {
-      fs.rmSync(tmpXml, { force: true });
+      fsImpl.rmSync(tmpXml, { force: true });
     } catch {}
   }
 
   let pid = null;
   if (mode === 'schtasks') {
     try {
-      if (fs.existsSync(vbsPath)) fs.rmSync(vbsPath, { force: true });
+      if (fsImpl.existsSync(vbsPath)) fsImpl.rmSync(vbsPath, { force: true });
     } catch {}
     // Ensure a lingering Running task instance does not swallow /Run under IgnoreNew policy.
     try {
@@ -655,8 +679,8 @@ export function ensureWinCoreDaemon({
       const deadline = Date.now() + Math.max(0, Number(waitPidTimeoutMs) || 0);
       while (true) {
         try {
-          if (fs.existsSync(pidFile)) {
-            const curPid = parseInt(fs.readFileSync(pidFile, 'utf8').trim(), 10);
+          if (fsImpl.existsSync(pidFile)) {
+            const curPid = parseInt(fsImpl.readFileSync(pidFile, 'utf8').trim(), 10);
             if (curPid > 0 && isMatchingPidFn(curPid)) {
               pid = curPid;
               break;
@@ -673,16 +697,19 @@ export function ensureWinCoreDaemon({
   } else {
     const vbs = buildWinStartupVbs(nodePath, daemonScript, userDir);
     try {
-      writeAtomicUtf8(vbsPath, vbs);
+      writeTextViaFs(vbsPath, vbs, fsImpl);
     } catch {}
     pid = spawnDetachedFn(nodePath);
   }
 
   let shortcutRes = { skipped: true };
   if (createShortcut) {
-    const exePath = findWinAntigravityDesktopExe();
+    const exePath = findWinAntigravityDesktopExe({
+      existsSync: (p) => fsImpl.existsSync(p),
+      readdirSync: (p, o) => fsImpl.readdirSync(p, o),
+    });
     if (exePath) {
-      shortcutRes = ensureWinStudioShortcut({ exePath, shortcutPath, enabled: true, execFileSyncFn });
+      shortcutRes = ensureWinStudioShortcut({ exePath, shortcutPath, enabled: true, execFileSyncFn, fsImpl });
     }
   }
 
@@ -699,7 +726,7 @@ export function ensureWinCoreDaemon({
     updatedAt: Date.now(),
   };
   try {
-    writeAtomicUtf8(metaFile, `${JSON.stringify(meta, null, 2)}\n`);
+    writeTextViaFs(metaFile, `${JSON.stringify(meta, null, 2)}\n`, fsImpl);
   } catch {}
 
   return {
@@ -722,8 +749,9 @@ export function disableWinCoreDaemon({
   noLaunchd = false,
   isMatchingPidFn = isOwnDaemonProcess,
   execFileSyncFn = execFileSync,
+  fsImpl = fs,
 } = {}) {
-  const stopRes = stopWinDaemonGracefully({ pidFile, stopFile, noKill: noLaunchd, isMatchingPidFn });
+  const stopRes = stopWinDaemonGracefully({ pidFile, stopFile, noKill: noLaunchd, isMatchingPidFn, fsImpl });
   let stopped = stopRes.stopped;
 
   if (!noLaunchd) {
@@ -736,16 +764,16 @@ export function disableWinCoreDaemon({
     } catch {}
   }
 
-  if (fs.existsSync(vbsPath)) {
+  if (fsImpl.existsSync(vbsPath)) {
     try {
-      fs.rmSync(vbsPath, { force: true });
+      fsImpl.rmSync(vbsPath, { force: true });
       stopped = true;
     } catch {}
   }
-  removeWinStudioShortcut({ shortcutPath });
-  if (fs.existsSync(metaFile)) {
+  removeWinStudioShortcut({ shortcutPath, fsImpl });
+  if (fsImpl.existsSync(metaFile)) {
     try {
-      fs.rmSync(metaFile, { force: true });
+      fsImpl.rmSync(metaFile, { force: true });
     } catch {}
   }
   return { stopped };
@@ -758,12 +786,13 @@ export function inspectWinCoreDaemon({
   vbsPath = getWinStartupVbsPath(),
   isMatchingPidFn = isOwnDaemonProcess,
   execFileSyncFn = execFileSync,
-  existsSyncFn = fs.existsSync,
+  fsImpl = fs,
+  existsSyncFn = (p) => fsImpl.existsSync(p),
 } = {}) {
   let pidAlive = false;
   let pid = null;
   if (existsSyncFn(pidFile)) {
-    const parsed = parseInt(fs.readFileSync(pidFile, 'utf8').trim(), 10);
+    const parsed = parseInt(fsImpl.readFileSync(pidFile, 'utf8').trim(), 10);
     if (parsed > 0) {
       pid = parsed;
       pidAlive = isMatchingPidFn(parsed);
@@ -792,12 +821,19 @@ export function inspectWinCoreDaemon({
     installed = true;
     mode = 'vbs';
     try {
-      parsed = parseWinStartupVbs(fs.readFileSync(vbsPath, 'utf8'));
+      parsed = parseWinStartupVbs(fsImpl.readFileSync(vbsPath, 'utf8'));
     } catch {}
   }
 
   // schtasks /Query /XML outputs in the active Windows OEM codepage; non-ASCII usernames can arrive with \uFFFD.
-  const meta = readJsonOrFallback(metaFile, null);
+  let meta = null;
+  if (fsImpl === fs) {
+    meta = readJsonOrFallback(metaFile, null);
+  } else if (existsSyncFn(metaFile)) {
+    try {
+      meta = JSON.parse(fsImpl.readFileSync(metaFile, 'utf8'));
+    } catch {}
+  }
   const pickValidPath = (raw, metaVal) => {
     if (!metaVal) return raw;
     if (!raw || raw.includes('\uFFFD')) return metaVal;

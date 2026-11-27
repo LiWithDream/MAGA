@@ -749,12 +749,10 @@ test('[Audit #11 & R2-M6] validateSourceRoot rejects missing/corrupt JSON and un
     fs.mkdirSync(path.join(fakeRoot, 'core'), { recursive: true });
     fs.mkdirSync(path.join(fakeRoot, 'user'), { recursive: true });
     fs.mkdirSync(path.join(fakeRoot, 'cli'), { recursive: true });
-    fs.mkdirSync(path.join(fakeRoot, 'rules'), { recursive: true });
     for (const rel of ['install.mjs', 'core/daemon.mjs', 'core/runtime.js', 'user/custom.js', 'cli/statusline.mjs']) {
       fs.writeFileSync(path.join(fakeRoot, rel), 'export const ok = 1;\n');
     }
     fs.writeFileSync(path.join(fakeRoot, 'core', 'base.css'), '/* css */\n');
-    fs.writeFileSync(path.join(fakeRoot, 'rules', 'claude-execution-sync.md'), '# rule\n');
     /* 1 invalid JSON + 2 missing JSON files */
     fs.writeFileSync(path.join(fakeRoot, 'core', 'i18n.json'), '{corrupt json');
 

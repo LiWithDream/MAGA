@@ -89,10 +89,7 @@ test('fresh install deploys standalone user layer and uninstall removes state cl
     assert.match(h.readUser('custom.js'), /__agClaudeUxDispose/);
     assert.match(h.read('.gemini/antigravity/antigravity_state.pbtxt'), /PRODUCT_SKIN_DEVELOPER/);
     assert.equal(JSON.parse(h.read('.gemini/config/config.json')).userSettings.verboseConversationSteps, true);
-    assert.match(h.read('.gemini/AGENTS.md'), /BEGIN anti-claude/);
-    assert.match(h.read('.gemini/AGENTS.md'), /Execution Progress Sync/);
-    assert.match(h.read('.gemini/AGENTS.md'), /same language the user is speaking/);
-    assert.match(h.read('.gemini/AGENTS.md'), /ask_question/);
+    assert.equal(h.read('.gemini/AGENTS.md'), before.agents, 'install.mjs leaves ~/.gemini/AGENTS.md untouched (fast-io synced via studio/cli.mjs)');
 
     const un = run(h, ['uninstall']);
     assert.equal(un.status, 0, un.stderr);
@@ -297,8 +294,8 @@ test('legacy claude-ux v2 installs migrate automatically to anti-claude and upgr
     assert.equal(s.status, 0, s.stderr);
     assert.equal(h.exists('.gemini/antigravity/claude-ux'), false, 'old claude-ux state dir migrated away');
     assert.equal(h.exists('.gemini/antigravity/anti-claude/install-state.json'), true, 'new anti-claude state dir created');
-    assert.match(h.read('.gemini/AGENTS.md'), /BEGIN anti-claude/);
-    assert.doesNotMatch(h.read('.gemini/AGENTS.md'), /BEGIN antigravity-claude-ux/);
+    assert.equal(s.out.ruleStatus, 'retired_legacy_block');
+    assert.doesNotMatch(h.read('.gemini/AGENTS.md'), /BEGIN anti-claude|BEGIN antigravity-claude-ux/);
     assert.match(h.read('.gemini/AGENTS.md'), /# my rules/);
 
     const un = run(h, ['uninstall']);

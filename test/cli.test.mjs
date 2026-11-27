@@ -143,7 +143,7 @@ test('--cli-only installs without Desktop app, configures statusLine + AGENTS.md
     assert.equal(settings.toolPermission, 'always-proceed', 'unrelated settings preserved');
     assert.equal(settings.statusLine.enabled, true);
     assert.match(settings.statusLine.command, /anti-claude-statusline\.mjs/);
-    assert.match(h.read('.gemini/AGENTS.md'), /BEGIN anti-claude/);
+    assert.equal(h.read('.gemini/AGENTS.md'), beforeAgents, 'install --cli-only leaves ~/.gemini/AGENTS.md untouched');
 
     const doc = run(h, ['doctor']);
     assert.equal(doc.status, 0);

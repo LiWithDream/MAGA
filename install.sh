@@ -9,6 +9,8 @@ set -euo pipefail
 
 DRY_RUN=0
 NO_RULES=0
+PREVIEW=0
+FORCE=0
 INSTALL_DIR="${AGY_STUDIO_INSTALL_DIR:-${MAGA_INSTALL_DIR:-$HOME/.local/share/agy-studio}}"
 REPO_URL="${AGY_STUDIO_REPO_URL:-${MAGA_REPO_URL:-https://github.com/LiWithDream/agy-studio.git}}"
 
@@ -20,6 +22,8 @@ Options:
   --dry-run        Print resolved Node binary, mode, and commands without modifying files
   --dir <path>     Target directory when cloning via curl | bash (default: ~/.local/share/agy-studio)
   --no-rules       Skip syncing 7-line phase-sync rules into ~/.gemini/AGENTS.md
+  --preview        Allow preview install from a non-main branch or linked worktree
+  --force          Allow install from a dirty working tree
   -h, --help       Show this help message
 EOF
 }
@@ -32,6 +36,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --no-rules)
       NO_RULES=1
+      shift
+      ;;
+    --preview)
+      PREVIEW=1
+      shift
+      ;;
+    --force)
+      FORCE=1
       shift
       ;;
     --dir)
@@ -137,6 +149,12 @@ fi
 CLI_ARGS=("install")
 if [[ "$NO_RULES" -eq 1 ]]; then
   CLI_ARGS+=("--no-rules")
+fi
+if [[ "$PREVIEW" -eq 1 ]]; then
+  CLI_ARGS+=("--preview")
+fi
+if [[ "$FORCE" -eq 1 ]]; then
+  CLI_ARGS+=("--force")
 fi
 
 if [[ "$DRY_RUN" -eq 1 ]]; then

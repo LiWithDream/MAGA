@@ -215,15 +215,17 @@ export function renameWithWinRetry(
 
 let logTeeInstalled = false;
 
-/** Tee console output to STATE_DIR/daemon.log when running headless on Windows without a TTY. */
+/** Tee console output to STATE_DIR/daemon.log on Windows (conhost --headless sets stdout.isTTY=true). */
 export function installWinHeadlessLogTee({
   platform = process.platform,
-  isTTY = Boolean(process.stdout?.isTTY),
   logFile = DAEMON_LOG_FILE,
   maxBytes = 512 * 1024,
+  targetConsole = console,
+  force = false,
 } = {}) {
-  if (logTeeInstalled || platform !== 'win32' || isTTY) return false;
-  logTeeInstalled = true;
+  const useGlobal = targetConsole === console;
+  if ((!force && useGlobal && logTeeInstalled) || platform !== 'win32') return false;
+  if (useGlobal) logTeeInstalled = true;
   try {
     fs.mkdirSync(path.dirname(logFile), { recursive: true });
     if (fs.existsSync(logFile)) {
@@ -252,8 +254,8 @@ export function installWinHeadlessLogTee({
     ['warn', 'WARN'],
     ['error', 'ERROR'],
   ]) {
-    const orig = console[method].bind(console);
-    console[method] = (...args) => {
+    const orig = typeof targetConsole[method] === 'function' ? targetConsole[method].bind(targetConsole) : () => {};
+    targetConsole[method] = (...args) => {
       appendLine(level, args);
       return orig(...args);
     };

@@ -8,7 +8,7 @@
 
 import { markOwn, setAttr, setLeafText } from '../core/dom.mjs';
 import { getActiveRouteCid, isZhUi } from '../core/env.mjs';
-import { DRAWER_ID, NAV_WRAP_ID, PANEL_ID, ROOT_ID, SVG_BACK, SVG_CLOSE, SVG_GEAR, TRIGGER_ID, buildDefaultPreviewSelectionMap, esc } from './settings/constants.mjs';
+import { DRAWER_ID, NAV_WRAP_ID, PANEL_ID, ROOT_ID, SVG_BACK, SVG_CLOSE, SVG_GEAR, TRIGGER_ID, buildDefaultPreviewSelectionMap, computeSettingsDrawerTopInset, esc } from './settings/constants.mjs';
 import { bindSettingsRootEvents, loadAiSuggestionsConfigIfNeeded, loadGitWorkflowStatusIfNeeded, loadRemoteControlStatusIfNeeded } from './settings/events.mjs';
 import { createFxPreviewController } from './settings/preview.mjs';
 import { renderL2Remote } from './settings/remote-view.mjs';
@@ -184,6 +184,11 @@ export function createStudioSettingsRuntime({
     if (btn.title !== lbl) btn.title = lbl;
   }
 
+  function syncDrawerTopInset(el = drawerEl) {
+    if (!el || typeof document === 'undefined') return;
+    el.style?.setProperty?.('--agy-drawer-top', `${computeSettingsDrawerTopInset(getOvToggleBtn(), getAuxToggleBtn())}px`);
+  }
+
   function openDrawer() {
     if (disposed || drawerOpen) return;
     if (restoreTimer) {
@@ -206,6 +211,7 @@ export function createStudioSettingsRuntime({
     navDir = '';
     state.resetArmed = false;
     const el = ensureDrawerEl();
+    syncDrawerTopInset(el);
     renderInto(el, 'drawer', false);
     try { void el.offsetWidth; } catch {}
     el.setAttribute('data-open', '1');
@@ -482,6 +488,7 @@ export function createStudioSettingsRuntime({
       lastRoutePath = plan.curPath;
       if (drawerOpen) closeDrawer({ restore: false });
     }
+    if (drawerOpen && drawerEl) syncDrawerTopInset(drawerEl);
     if (plan.customizeBtn) syncOverviewTrigger();
     if (plan.navWrap || plan.activePanel) syncNativeSettingsHost();
   }

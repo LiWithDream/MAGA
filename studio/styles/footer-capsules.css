@@ -103,6 +103,11 @@ html[data-agy-panel-handoff="ov-to-aux-closing"] [data-testid="overview-panel-ho
   --overview-panel-gutter-reserve: var(--agy-hold-ov-gutter, 0px) !important;
 }
 
+html[data-agy-panel-handoff="aux-to-ov-closing"] [data-testid="overview-panel-host"] {
+  --overview-panel-reserve: var(--agy-hold-ov-reserve, 0px) !important;
+  --overview-panel-gutter-reserve: var(--agy-hold-ov-gutter, 0px) !important;
+}
+
 /* Phase 2 (120..640ms): keep unmounting Overview invisible while reserve releases in lockstep with Aux opening */
 html[data-agy-panel-handoff="ov-to-aux-opening"] .animate-overview-panel {
   opacity: 0 !important;
@@ -169,7 +174,7 @@ html[data-agy-motion="reduced"] [data-testid="aux-pane-split"][data-split-transi
   animation-duration: 120ms !important;
 }
 html[data-agy-motion="reduced"] [data-testid="aux-pane-split"][data-split-transition="closing"] > div:last-child > div:first-child,
-html[data-agy-motion="reduced"] html[data-agy-panel-handoff="ov-to-aux-closing"] .animate-overview-panel,
+html[data-agy-motion="reduced"][data-agy-panel-handoff="ov-to-aux-closing"] .animate-overview-panel,
 html[data-agy-motion="reduced"] .agy-composer-footer * {
   transition-duration: 80ms !important;
 }

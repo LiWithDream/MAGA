@@ -9,6 +9,13 @@ import { createProjectWorkspaceUi } from './workspace-ui.mjs';
 import { createConvProjectTopbar } from './conv-topbar.mjs';
 import { createWorktreeUiController } from './worktree-ui.mjs';
 import { createProjectSuggestionsController } from './suggestions-ui.mjs';
+import {
+  computeProjectsOverlayMetrics,
+  findLeftSidebarEl,
+  findLeftSidebarTrackEl,
+  measureTopMenuBarHeight,
+  syncWinTopBarCssVar,
+} from './chrome-geometry.mjs';
 
 export function createProjectsModule(rt, modelApi) {
   const ctx = createProjectSharedContext(rt, modelApi);
@@ -131,35 +138,46 @@ export function createProjectsModule(rt, modelApi) {
   } = workspaceUi;
 
   function positionProjectsOverlay() {
+    const topBarPx = measureTopMenuBarHeight();
+    syncWinTopBarCssVar(topBarPx);
     if (!pState.projectsViewEl || !rtState.projectsViewOpen) return;
-    const sidebar = document.querySelector('.bg-sidebar');
-    let leftPx = 0;
-    if (sidebar) {
-      const r = sidebar.getBoundingClientRect();
-      if (r.width > 20 && r.right > 0 && r.right < window.innerWidth - 160) {
-        leftPx = Math.round(r.right);
-      }
-    }
-    const collapsed = leftPx < 220;
-    const safeLeftPad = collapsed ? Math.max(24, 224 - leftPx) : 24;
+    const sidebar = findLeftSidebarEl();
+    const track = sidebar ? findLeftSidebarTrackEl(sidebar) : null;
+    const winW = typeof window !== 'undefined' && window.innerWidth ? window.innerWidth : 0;
+    const sidebarRect = sidebar && typeof sidebar.getBoundingClientRect === 'function' ? sidebar.getBoundingClientRect() : null;
+    const trackRect =
+      track && track !== sidebar && typeof track.getBoundingClientRect === 'function'
+        ? track.getBoundingClientRect()
+        : null;
+    const { leftPx, topPx, collapsed, safeLeftPad } = computeProjectsOverlayMetrics({
+      sidebarRect,
+      trackRect,
+      topBarPx,
+      winW,
+    });
+    if (topPx > 0) syncWinTopBarCssVar(topPx);
     pState.projectsViewEl.style.left = `${leftPx}px`;
+    pState.projectsViewEl.style.setProperty('--ag-proj-top', `${topPx}px`);
     pState.projectsViewEl.setAttribute('data-sidebar-collapsed', collapsed ? 'true' : 'false');
     pState.projectsViewEl.style.setProperty('--ag-proj-topbar-pl', `${safeLeftPad}px`);
   }
 
   function ensureProjectsSidebarObserver() {
     if (typeof ResizeObserver === 'undefined') return;
-    const sb = document.querySelector('.bg-sidebar');
-    if (!sb || pState.projectsSidebarRoTarget === sb) return;
+    const sb = findLeftSidebarEl();
+    const track = sb ? findLeftSidebarTrackEl(sb) : null;
+    if (!sb || (pState.projectsSidebarRoTarget === sb && pState.projectsSidebarRoTrack === track)) return;
     if (pState.projectsSidebarRo) {
       try {
         pState.projectsSidebarRo.disconnect();
       } catch {}
     }
     pState.projectsSidebarRoTarget = sb;
+    pState.projectsSidebarRoTrack = track;
     pState.projectsSidebarRo = new ResizeObserver(() => positionProjectsOverlay());
     try {
       pState.projectsSidebarRo.observe(sb);
+      if (track && track !== sb) pState.projectsSidebarRo.observe(track);
     } catch {}
   }
 
@@ -1769,7 +1787,9 @@ export function createProjectsModule(rt, modelApi) {
       } catch {}
       pState.projectsSidebarRo = null;
       pState.projectsSidebarRoTarget = null;
+      pState.projectsSidebarRoTrack = null;
     }
+    document.documentElement?.style?.removeProperty?.('--ag-win-top-bar');
     if (pState.projectsDocListenerBound) {
       document.removeEventListener('click', onProjectsGlobalClick, true);
       document.removeEventListener('keydown', onProjectsGlobalKeyDown, true);
@@ -1803,6 +1823,7 @@ export function createProjectsModule(rt, modelApi) {
       }
       return;
     }
+    syncWinTopBarCssVar();
     if (rtState.projectsViewOpen) {
       onProjectsNavRouteChange();
     }

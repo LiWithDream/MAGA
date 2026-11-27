@@ -5,6 +5,19 @@ All notable changes to **AGY Studio (`agy-studio`, formerly MAGA)** will be docu
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.1] - 2026-11-27
+
+Restored all Windows UI, centering, daemon, and guardrail fixes from `origin/feat/windows-support` (`8b6f126`, `4c3a575`) that were omitted during the `v1.5.0` merge, extracted dual-OS Projects chrome geometry helpers, and added mechanical stale-merge and CI stranded-branch guardrails.
+
+### Fixed
+- **`[cross]` Wide-Gutter Chat Centering & Panel Transitions (`studio/styles/overview-usage.css`, `studio/modules/subagent/panel-handoff.mjs`, `studio/styles/footer-capsules.css`)**: Restored `--maga-ov-effective-reserve` CSS custom-property bridge so composer, messages, scroll-to-bottom button, and overlay scrollbar stay centered when Overview is open on wide screens, along with `aux-to-ov-closing` panel transition handoff and fixed `data-agy-motion="reduced"` selector.
+- **`[win]` Projects Overlay, Modal & Settings Drawer Chrome Positioning (`user/src/modules/projects/index.mjs`, `user/custom.css`, `studio/modules/studio-settings.mjs`, `studio/styles/studio-settings.css`, `opus-gate-pill.mjs`, `resume-banner.mjs`, `projects/{mentions-media,native-store}.mjs`)**: Filtered out Windows' full-width `.bg-sidebar` top menu bar (`--ag-win-top-bar`, `--ag-proj-top`, `--agy-drawer-top`), tracked the width-animating sidebar shell track, prioritized `[data-testid="conversation-list-sidebar"]` for React fiber lookup, and showed `Alt` instead of `⌥`/`Option` in Windows revert tooltips (`inline-undo.mjs`).
+- **`[win]` Headless Log Tee, ASAR Version Read & PowerShell Directory Guardrails (`core/daemon/env.mjs`, `core/daemon/win-service.mjs`, `install.ps1`, `install.sh`, `studio/deploy-meta.mjs`, `studio/plugin/maga-git-workflow/`)**: Restored unconditional Windows headless log tee (`daemon.log`), non-Squirrel `readVersionFromAsar` Electron version detection, `-Preview`/`-Force` (`--preview`/`--force`) installer passthrough, platform-specific daemon messaging in `evaluateDeployGuard`, `resolveDirectoryChange` (`cd /d`, `Set-Location`, `sl`, `Push-Location`), and no-workspace plugin `cwd` tamper false-positive fix.
+
+### Changed & Added
+- **`[cross]` Modular Chrome Geometry (`user/src/modules/projects/chrome-geometry.mjs`, `test/windows.test.mjs`)**: Extracted pure sidebar/top-bar geometry functions out of `user/src/modules/projects/index.mjs` (`1,990` -> `1,926` lines) with dual-OS Darwin/Win32 rect unit tests.
+- **`[cross]` Anti-Stale-Merge & CI Stranded-Branch Guardrails (`.githooks/guard-stale-merge.mjs`, `.githooks/pre-merge-commit`, `.githooks/pre-commit`, `studio/setup-hooks.mjs`, `.github/workflows/ci.yml`, `test/git-guardrails.test.mjs`)**: Added pre-merge live `git ls-remote` verification blocking merges of locally outdated or diverged remote branch refs, and added CI `stranded-branches` checks (`::warning::` on `main`, hard fail on `v*` release tags).
+
 ## [1.5.0] - 2026-11-27
 
 Added full **Windows 10/11** support (parity across desktop daemon, CDP bootstrap, installers, Release `.zip` packager, Remote Control Named Pipes & dual-platform GitHub Actions CI), consolidated Remote filesystem/process primitives into a shared zero-dependency module, and modularized the Opus Gate hook sentinel.

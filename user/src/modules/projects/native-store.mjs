@@ -151,6 +151,7 @@ export function createProjectNativeStore(ctx) {
       const anchors = [
         document.querySelector('[data-testid="project-header"]'),
         document.querySelector('[data-testid="automations-button"]'),
+        document.querySelector('[data-testid="conversation-list-sidebar"]'),
         document.querySelector('.bg-sidebar'),
         rootEl && rootEl.firstElementChild
       ];
@@ -255,9 +256,10 @@ export function createProjectNativeStore(ctx) {
     }
     const rootEl = document.getElementById('root');
     const anchors = [
-      document.querySelector('.bg-sidebar'),
+      document.querySelector('[data-testid="conversation-list-sidebar"]'),
       document.querySelector('[data-testid="automations-button"]'),
       document.querySelector('[data-testid="project-header"]'),
+      document.querySelector('.bg-sidebar'),
       rootEl && rootEl.firstElementChild
     ];
     const pickSvc = (val) => {

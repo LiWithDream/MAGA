@@ -32,10 +32,11 @@ const {
   parseWinInternetSettingsReg,
   parseWinScheduledTaskXml,
   parseWinStartupVbs,
+  readVersionFromAsar,
   stableWinNodePath,
 } = await import(pathToFileURL(path.join(REPO, 'core', 'daemon', 'win-service.mjs')).href);
 
-const { renameWithWinRetry } = await import(
+const { installWinHeadlessLogTee, renameWithWinRetry } = await import(
   pathToFileURL(path.join(REPO, 'core', 'daemon', 'env.mjs')).href
 );
 
@@ -50,6 +51,7 @@ const {
   extractWriteRedirectTargets,
   getShellSegmentWriteInfo,
   isGitBinary,
+  resolveDirectoryChange,
   splitShellSegments,
   tokenizeSegment,
 } = await import(
@@ -72,6 +74,12 @@ const {
 const { buildPinnedOpusGateHooksJson } = await import(
   pathToFileURL(path.join(REPO, 'studio', 'daemon', 'opus-gate-service.mjs')).href
 );
+
+const { evaluateHookEvent } = await import(
+  pathToFileURL(path.join(REPO, 'studio', 'plugin', 'maga-opus-gate', 'hooks', 'gate-check.mjs')).href
+);
+
+const { evaluateDeployGuard } = await import(pathToFileURL(path.join(REPO, 'studio', 'deploy-meta.mjs')).href);
 
 const { packRelease } = await import(pathToFileURL(path.join(REPO, 'studio', 'pack-release.mjs')).href);
 
@@ -371,7 +379,7 @@ HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settin
     const res = ensureWinCoreDaemon({
       nodePath,
       daemonScript,
-      userDir,
+      userDir: path.join(dir, 'user'),
       stateDir: dir,
       pidFile: path.join(dir, 'daemon.pid'),
       stopFile: path.join(dir, 'daemon-stop.signal'),
@@ -632,6 +640,8 @@ test('install.ps1 and uninstall.ps1 isolate scope via & { } and guard exit for i
   assert.match(installPs1, /\[switch\]\$DryRun/);
   assert.match(installPs1, /\[switch\]\$NoRules/);
   assert.match(installPs1, /\[switch\]\$NoShortcut/);
+  assert.match(installPs1, /\[switch\]\$Preview/);
+  assert.match(installPs1, /\[switch\]\$Force/);
   assert.match(installPs1, /\[dry-run\] os=Windows/);
   assert.match(installPs1, /MAGA_USE_PREBUILT = '1'/);
   assert.match(installPs1, /\$ScriptSource = \$PSCommandPath/);
@@ -642,4 +652,234 @@ test('install.ps1 and uninstall.ps1 isolate scope via & { } and guard exit for i
   assert.match(uninstallPs1, /install\.mjs uninstall/);
   assert.match(uninstallPs1, /\$ScriptSource = \$PSCommandPath/);
   assert.match(uninstallPs1, /&\s*\{/);
+
+  const tmpRepo = createTempGitRepo('feat/win-preview-msg');
+  const tmpState = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-deploy-msg-'));
+  try {
+    const metaPath = path.join(tmpState, 'deploy-meta.json');
+    const winGuard = evaluateDeployGuard(tmpRepo, { platform: 'win32', metaPath });
+    assert.equal(winGuard.allowed, false);
+    assert.match(winGuard.reason || '', /Windows daemon/);
+
+    const macGuard = evaluateDeployGuard(tmpRepo, { platform: 'darwin', metaPath });
+    assert.equal(macGuard.allowed, false);
+    assert.match(macGuard.reason || '', /LaunchAgent daemon/);
+  } finally {
+    fs.rmSync(tmpRepo, { recursive: true, force: true });
+    fs.rmSync(tmpState, { recursive: true, force: true });
+  }
+});
+
+test('installWinHeadlessLogTee writes and rotates daemon.log on win32 without mutating global console', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-win-logtee-'));
+  const logFile = path.join(dir, 'daemon.log');
+  try {
+    const fakeConsole = { log: () => {}, warn: () => {}, error: () => {} };
+    assert.equal(
+      installWinHeadlessLogTee({ platform: 'darwin', logFile, targetConsole: fakeConsole }),
+      false
+    );
+    assert.equal(fs.existsSync(logFile), false);
+
+    const installed = installWinHeadlessLogTee({
+      platform: 'win32',
+      logFile,
+      maxBytes: 64,
+      targetConsole: fakeConsole,
+    });
+    assert.equal(installed, true);
+    fakeConsole.log('[win-logtee-test]', 'hello');
+    fakeConsole.warn('[win-logtee-test]', 'careful');
+    fakeConsole.error('[win-logtee-test]', new Error('boom'));
+    const content = fs.readFileSync(logFile, 'utf8');
+    assert.match(content, /\[INFO\] \[win-logtee-test\] hello/);
+    assert.match(content, /\[WARN\] \[win-logtee-test\] careful/);
+    assert.match(content, /\[ERROR\] \[win-logtee-test\] .*boom/);
+
+    // Exceeding maxBytes triggers rotation to daemon.log.prev on next install call
+    fakeConsole.log('padding-line-to-exceed-64-bytes-threshold-for-rotation-check');
+    const rotated = installWinHeadlessLogTee({
+      platform: 'win32',
+      logFile,
+      maxBytes: 64,
+      targetConsole: fakeConsole,
+    });
+    assert.equal(rotated, true);
+    assert.equal(fs.existsSync(`${logFile}.prev`), true);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('readVersionFromAsar and getWinAntigravityFingerprint extract version from non-Squirrel app.asar safely', () => {
+  const buildTestAsar = (filesMap) => {
+    const chunks = [];
+    let offset = 0;
+    const files = {};
+    for (const [name, content] of Object.entries(filesMap)) {
+      const buf = Buffer.from(content, 'utf8');
+      files[name] = { size: buf.length, offset: String(offset) };
+      chunks.push(buf);
+      offset += buf.length;
+    }
+    const headerJson = Buffer.from(JSON.stringify({ files }), 'utf8');
+    const alignedLen = Math.ceil(headerJson.length / 4) * 4;
+    const headerPickleSize = 8 + alignedLen;
+    const hdr = Buffer.alloc(16);
+    hdr.writeUInt32LE(4, 0);
+    hdr.writeUInt32LE(headerPickleSize, 4);
+    hdr.writeUInt32LE(headerPickleSize - 4, 8);
+    hdr.writeUInt32LE(headerJson.length, 12);
+    return Buffer.concat([hdr, headerJson, Buffer.alloc(alignedLen - headerJson.length), ...chunks]);
+  };
+
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-win-asar-'));
+  try {
+    const appDir = path.join(tmp, 'Local', 'Programs', 'Antigravity');
+    const exePath = path.join(appDir, 'Antigravity.exe');
+    const resDir = path.join(appDir, 'resources');
+    const asarPath = path.join(resDir, 'app.asar');
+    fs.mkdirSync(resDir, { recursive: true });
+    fs.writeFileSync(exePath, 'mz', 'utf8');
+    fs.writeFileSync(path.join(resDir, 'app-update.yml'), 'provider: generic\nurl: https://example.com\n', 'utf8');
+    fs.writeFileSync(asarPath, buildTestAsar({ 'package.json': JSON.stringify({ name: 'antigravity', version: '2.34.0' }) }));
+
+    const fp = getWinAntigravityFingerprint({
+      home: tmp,
+      env: { LOCALAPPDATA: path.join(tmp, 'Local'), ProgramFiles: path.join(tmp, 'PF') },
+    });
+    assert.equal(fp.version, '2.34.0');
+    assert.match(fp.sig, /^2\.34\.0\|\d+:\d+$/);
+
+    const badAsar = path.join(tmp, 'corrupt.asar');
+    fs.writeFileSync(badAsar, 'asar', 'utf8');
+    assert.equal(readVersionFromAsar(badAsar), null);
+    assert.equal(readVersionFromAsar(path.join(tmp, 'missing.asar')), null);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('maga-opus-gate matches Windows backslash plan and high-risk paths', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-win-opus-'));
+  const stateDir = path.join(root, 'state');
+  const proposalsDir = path.join(stateDir, 'opus-gate-proposals');
+  const pluginDataDir = path.join(stateDir, 'opus-gate-data');
+  const studioPrefsFile = path.join(stateDir, 'studio-prefs.json');
+  const quotaStateFile = path.join(stateDir, 'quota-state.json');
+  try {
+    fs.mkdirSync(proposalsDir, { recursive: true });
+    fs.mkdirSync(pluginDataDir, { recursive: true });
+    fs.writeFileSync(studioPrefsFile, JSON.stringify({ opusGateMode: 'semi' }), 'utf8');
+    fs.writeFileSync(
+      quotaStateFile,
+      JSON.stringify({ schema: 1, updatedAt: 500_000, claude: { fiveHourRemainingPct: 80, weeklyRemainingPct: 80 } }),
+      'utf8'
+    );
+    const opts = { stateDir, proposalsDir, pluginDataDir, studioPrefsFile, quotaStateFile, now: 1_000_000 };
+
+    const planCid = 'win_plan_gate_01';
+    evaluateHookEvent(
+      {
+        hookEventName: 'PostToolUse',
+        conversationId: planCid,
+        cwd: root,
+        toolCall: {
+          name: 'write_file',
+          args: { Path: 'C:\\workspace\\proj\\implementation_plan.md', Content: '# Windows Plan' },
+        },
+      },
+      opts
+    );
+    const planProp = JSON.parse(fs.readFileSync(path.join(proposalsDir, `${planCid}.json`), 'utf8'));
+    assert.equal(planProp.kind, 'plan');
+    assert.ok(planProp.planFiles.some((p) => p.includes('implementation_plan.md')));
+
+    const riskCid = 'win_risk_gate_02';
+    evaluateHookEvent(
+      {
+        hookEventName: 'PostToolUse',
+        conversationId: riskCid,
+        cwd: root,
+        toolCall: {
+          name: 'write_file',
+          args: { Path: 'C:\\workspace\\proj\\core\\daemon.mjs', Content: 'export const ok = true;\n' },
+        },
+      },
+      opts
+    );
+    evaluateHookEvent(
+      { hookEventName: 'Stop', conversationId: riskCid, terminationReason: 'NO_TOOL_CALL' },
+      { ...opts, gitSummary: { changedFiles: 1, changedLines: 12, gitHighRisk: [], diffHash: 'win-risk-1' } }
+    );
+    const riskProp = JSON.parse(fs.readFileSync(path.join(proposalsDir, `${riskCid}.json`), 'utf8'));
+    assert.equal(riskProp.kind, 'risk');
+    assert.ok(riskProp.highRiskFiles.some((f) => f.endsWith('daemon.mjs')));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('shell-parser resolveDirectoryChange handles cd /d, Set-Location -Path, sl -LiteralPath, and Push-Location on win32', () => {
+  assert.deepEqual(
+    resolveDirectoryChange(['cd', '/d', 'D:\\Work\\repo'], 'C:\\Users\\alice', 'C:\\Prev', { platform: 'win32' }),
+    { nextDir: 'D:\\Work\\repo', prevDir: 'C:\\Users\\alice' }
+  );
+  assert.deepEqual(
+    resolveDirectoryChange(['Set-Location', '-Path', 'D:'], 'C:\\Users\\alice', 'C:\\Prev', { platform: 'win32' }),
+    { nextDir: 'D:\\', prevDir: 'C:\\Users\\alice' }
+  );
+  assert.deepEqual(
+    resolveDirectoryChange(['sl', '-LiteralPath', 'C:\\Temp\\proj\\..'], 'C:\\Users\\alice', 'C:\\Prev', {
+      platform: 'win32',
+    }),
+    { nextDir: 'C:\\Temp', prevDir: 'C:\\Users\\alice' }
+  );
+  assert.deepEqual(
+    resolveDirectoryChange(['Push-Location', 'C:\\Repo\\sub'], 'C:\\Users\\alice', 'C:\\Prev', { platform: 'win32' }),
+    { nextDir: 'C:\\Repo\\sub', prevDir: 'C:\\Users\\alice' }
+  );
+
+  const psInv = extractGitInvocations(
+    'Set-Location -Path "C:\\Users\\alice\\repo"; git status',
+    'C:\\Users\\alice',
+    'win32'
+  );
+  assert.equal(psInv.length, 1);
+  assert.equal(psInv[0].targetDir, 'C:\\Users\\alice\\repo');
+  assert.equal(psInv[0].subcommand, 'status');
+});
+
+test('projects chrome-geometry pure helpers distinguish Windows top menu bar and track sliver vs macOS layout', async () => {
+  const { isTopMenuBarRect, isTopMenuBarAnchorRect, computeProjectsOverlayMetrics } = await import(
+    pathToFileURL(path.join(REPO, 'user', 'src', 'modules', 'projects', 'chrome-geometry.mjs')).href
+  );
+
+  // Win32 full-width top menu bar (.bg-sidebar) vs left sidebar
+  const winTopBar = { left: 0, top: 0, width: 1920, height: 30, right: 1920, bottom: 30 };
+  const winSidebar = { left: 0, top: 30, width: 256, height: 1002, right: 256, bottom: 1032 };
+  assert.equal(isTopMenuBarRect(winTopBar, 1920), true);
+  assert.equal(isTopMenuBarAnchorRect(winTopBar, 1920), true);
+  assert.equal(isTopMenuBarRect(winSidebar, 1920), false);
+  assert.equal(isTopMenuBarAnchorRect(winSidebar, 1920), false);
+
+  // macOS: no full-width top bar, full-height sidebar starts at top=0
+  const macSidebar = { left: 0, top: 0, width: 260, height: 1000, right: 260, bottom: 1000 };
+  assert.deepEqual(
+    computeProjectsOverlayMetrics({ sidebarRect: macSidebar, topBarPx: 0, winW: 1440 }),
+    { leftPx: 260, topPx: 0, collapsed: false, safeLeftPad: 24 }
+  );
+
+  // Win32 expanded: topPx=30, leftPx=256
+  assert.deepEqual(
+    computeProjectsOverlayMetrics({ sidebarRect: winSidebar, trackRect: winSidebar, topBarPx: 30, winW: 1920 }),
+    { leftPx: 256, topPx: 30, collapsed: false, safeLeftPad: 24 }
+  );
+
+  // Win32 collapsing/collapsed sliver (track width <= 8px while inner sidebar still 256px) snaps cleanly to leftPx=0
+  const winCollapsedTrack = { left: 0, top: 30, width: 3, height: 1002, right: 3, bottom: 1032 };
+  assert.deepEqual(
+    computeProjectsOverlayMetrics({ sidebarRect: winSidebar, trackRect: winCollapsedTrack, topBarPx: 30, winW: 1920 }),
+    { leftPx: 0, topPx: 30, collapsed: true, safeLeftPad: 224 }
+  );
 });

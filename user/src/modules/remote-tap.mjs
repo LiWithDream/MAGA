@@ -267,6 +267,66 @@ export function createRemoteTapModule(rt, modelApi = null) {
     }
   }
 
+  function normalizeAskQuestionList(rawQuestions) {
+    if (!Array.isArray(rawQuestions)) return [];
+    const list = [];
+    for (const q of rawQuestions) {
+      if (!q || typeof q !== 'object') continue;
+      const question = String(q.question || q.Question || '').trim();
+      if (!question) continue;
+      const isMultiSelect = Boolean(q.isMultiSelect || q.is_multi_select || q.IsMultiSelect);
+      const rawOpts = Array.isArray(q.options) ? q.options : Array.isArray(q.Options) ? q.Options : [];
+      const options = [];
+      for (let idx = 0; idx < rawOpts.length; idx++) {
+        const opt = rawOpts[idx];
+        if (typeof opt === 'string') {
+          if (opt.trim()) options.push({ id: String(idx + 1), text: opt });
+        } else if (opt && typeof opt === 'object') {
+          const text = String(opt.text || opt.Text || opt.id || opt.Id || '').trim();
+          if (text) options.push({ id: String(opt.id || opt.Id || idx + 1), text });
+        }
+      }
+      list.push({ question, isMultiSelect, options });
+      if (list.length >= 12) break;
+    }
+    return list;
+  }
+
+  function extractAskQuestionsFromStep(step) {
+    if (!step || typeof step !== 'object') return [];
+    const reqInt = step?.requestedInteraction?.interaction;
+    if (reqInt?.case === 'askQuestion' && Array.isArray(reqInt.value?.questions)) {
+      const parsed = normalizeAskQuestionList(reqInt.value.questions);
+      if (parsed.length > 0) return parsed;
+    }
+    if (step?.step?.case === 'askQuestion' && Array.isArray(step.step.value?.questions)) {
+      const parsed = normalizeAskQuestionList(step.step.value.questions);
+      if (parsed.length > 0) return parsed;
+    }
+    const tc = step?.metadata?.toolCall || {};
+    const rawTool = String(tc.name || step?.step?.case || '');
+    const shortTool = rawTool.includes(':') ? rawTool.split(':').pop() : rawTool;
+    const isAskTool = shortTool === 'ask_question' || shortTool === 'askQuestion' || reqInt?.case === 'askQuestion';
+    if (!isAskTool) return [];
+    const sources = [];
+    if (typeof tc.argumentsJson === 'string' && tc.argumentsJson) sources.push(tc.argumentsJson);
+    const args = step?.step?.value?.args;
+    if (args && typeof args === 'object') {
+      for (const k of ['questions', 'Questions', 'Arguments', 'ArgumentsJson']) {
+        if (args[k] !== undefined) sources.push(args[k]);
+      }
+    }
+    for (const src of sources) {
+      try {
+        const obj = typeof src === 'string' ? JSON.parse(src) : src;
+        const arr = Array.isArray(obj) ? obj : Array.isArray(obj?.questions) ? obj.questions : null;
+        const parsed = normalizeAskQuestionList(arr);
+        if (parsed.length > 0) return parsed;
+      } catch {}
+    }
+    return [];
+  }
+
   function normalizeWaitingSteps(cid, rawList) {
     if (!Array.isArray(rawList) || rawList.length === 0) return [];
     const out = [];
@@ -303,14 +363,19 @@ export function createRemoteTapModule(rt, modelApi = null) {
           permRes?.target ||
           ''
       );
-      out.push({
+      const questions = extractAskQuestionsFromStep(step);
+      const effectiveCase =
+        interactionCase || (questions.length > 0 || toolName === 'ask_question' || toolName === 'askQuestion' ? 'askQuestion' : '');
+      const item = {
         stepIndex,
         toolName,
         action,
         commandLine,
         trajectoryId,
-        interactionCase,
-      });
+        interactionCase: effectiveCase,
+      };
+      if (questions.length > 0) item.questions = questions;
+      out.push(item);
     }
     return out;
   }
@@ -495,8 +560,31 @@ export function createRemoteTapModule(rt, modelApi = null) {
       const tc = s?.metadata?.toolCall || {};
       const rawName = String(tc.name || stepCase || '');
       const name = rawName.includes(':') ? rawName.split(':').pop() : rawName;
-      const outText =
+      const askQuestions = extractAskQuestionsFromStep(s);
+      let outText =
         val?.combinedOutput?.full || val?.stdout || val?.result?.output || val?.result?.text || val?.commandLine || '';
+      if (!outText && askQuestions.length > 0) {
+        const completed = s?.completedInteraction?.interaction;
+        const responses = completed?.case === 'askQuestion' && Array.isArray(completed.value?.responses)
+          ? completed.value.responses
+          : [];
+        const lines = askQuestions.map((q, qIdx) => {
+          const r = responses[qIdx];
+          let ansText = '';
+          if (r) {
+            if (r.skipped) {
+              ansText = '（已跳过）';
+            } else {
+              const selIds = Array.isArray(r.selectedOptionIds) ? r.selectedOptionIds.map(String) : [];
+              const selLabels = selIds.map((id) => q.options.find((o) => o.id === id)?.text || id);
+              if (r.writeInResponse) selLabels.push(String(r.writeInResponse));
+              ansText = selLabels.join(' / ');
+            }
+          }
+          return `${qIdx + 1}. ${q.question}${ansText ? `\n→ ${ansText}` : ''}`;
+        });
+        outText = lines.join('\n\n');
+      }
       if (name || tc.id || outText) {
         toolCalls.push({
           id: String(tc.id || ''),
@@ -1402,7 +1490,9 @@ export function createRemoteTapModule(rt, modelApi = null) {
     const cid = typeof payload?.cascadeId === 'string' ? payload.cascadeId.trim() : '';
     if (!UUID_RE.test(cid)) return { ok: false, error: 'invalid_cascade_id' };
     const decision = payload?.decision;
-    if (decision !== 'allow_once' && decision !== 'deny') return { ok: false, error: 'invalid_decision' };
+    const isPermDecision = decision === 'allow_once' || decision === 'deny';
+    const isAskDecision = decision === 'answer_question' || decision === 'cancel_question';
+    if (!isPermDecision && !isAskDecision) return { ok: false, error: 'invalid_decision' };
     const stepIndex = payload?.stepIndex;
     if (!Number.isInteger(stepIndex) || stepIndex < 0) return { ok: false, error: 'invalid_step_index' };
     const expectedHash = typeof payload?.waitingStepHash === 'string' ? payload.waitingStepHash.trim().toLowerCase() : '';
@@ -1433,6 +1523,71 @@ export function createRemoteTapModule(rt, modelApi = null) {
     }
     if (!matched) {
       return { ok: false, error: 'waiting_step_mismatch' };
+    }
+
+    const isAskStep = matched.interactionCase === 'askQuestion';
+    if (isAskStep) {
+      if (!isAskDecision) {
+        return { ok: false, error: 'invalid_decision' };
+      }
+      const questions = Array.isArray(matched.questions) ? matched.questions : [];
+      const cancelled = decision === 'cancel_question';
+      const rawAnswers = Array.isArray(payload?.answers) ? payload.answers : [];
+      const responses = questions.map((q, idx) => {
+        if (cancelled) {
+          return {
+            question: q.question,
+            options: q.options,
+            isMultiSelect: Boolean(q.isMultiSelect),
+            selectedOptionIds: [],
+            writeInResponse: '',
+            skipped: true,
+          };
+        }
+        const ans = rawAnswers[idx] && typeof rawAnswers[idx] === 'object' ? rawAnswers[idx] : {};
+        const validIds = new Set((q.options || []).map((o) => String(o.id)));
+        const selIds = Array.isArray(ans.selectedOptionIds)
+          ? ans.selectedOptionIds.map((x) => String(x)).filter((id) => (validIds.size > 0 ? validIds.has(id) : Boolean(id)))
+          : [];
+        const normalizedSel = q.isMultiSelect ? Array.from(new Set(selIds)) : selIds.slice(0, 1);
+        const rawWriteIn = typeof ans.writeInResponse === 'string' ? ans.writeInResponse.trim().slice(0, 2000) : '';
+        const writeIn = !q.isMultiSelect && normalizedSel.length > 0 ? '' : rawWriteIn;
+        const skipped = Boolean(ans.skipped) || (normalizedSel.length === 0 && !writeIn);
+        return {
+          question: q.question,
+          options: q.options,
+          isMultiSelect: Boolean(q.isMultiSelect),
+          selectedOptionIds: skipped ? [] : normalizedSel,
+          writeInResponse: skipped ? '' : writeIn,
+          skipped,
+        };
+      });
+      try {
+        await lsClient.handleCascadeUserInteraction(cid, {
+          trajectoryId: matched.trajectoryId || '',
+          stepIndex: matched.stepIndex,
+          interaction: {
+            case: 'askQuestion',
+            value: {
+              responses,
+              cancelled,
+            },
+          },
+        });
+        return {
+          ok: true,
+          cascadeId: cid,
+          stepIndex: matched.stepIndex,
+          waitingStepHash: expectedHash,
+          decision,
+        };
+      } catch (err) {
+        return { ok: false, error: String(err?.message || err || 'approve_failed') };
+      }
+    }
+
+    if (!isPermDecision) {
+      return { ok: false, error: 'invalid_decision' };
     }
     if (matched.interactionCase && matched.interactionCase !== 'permission') {
       return {

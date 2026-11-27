@@ -587,6 +587,185 @@ export function renderStepCard(step, { hideThinkingProse = false, compact = fals
   return card;
 }
 
+const askQuestionDrafts = new Map(); // key -> Array<{ selectedIds: Set<string>, writeIn: string }>
+
+function getAskQuestionDraft(draftKey, count) {
+  let arr = askQuestionDrafts.get(draftKey);
+  if (!Array.isArray(arr) || arr.length !== count) {
+    arr = Array.from({ length: count }, () => ({ selectedIds: new Set(), writeIn: '' }));
+    askQuestionDrafts.set(draftKey, arr);
+    if (askQuestionDrafts.size > 24) {
+      const oldest = askQuestionDrafts.keys().next().value;
+      if (oldest !== undefined) askQuestionDrafts.delete(oldest);
+    }
+  }
+  return arr;
+}
+
+function renderAskQuestionCard(w, { canWrite = false, hostAttached = false, isBusy = false, onApprove = null } = {}) {
+  const hash = String(w.waitingStepHash || '');
+  const questions = Array.isArray(w.questions) ? w.questions : [];
+  const draftKey = hash || `step:${w.stepIndex ?? 0}:${questions.length}`;
+  const draft = getAskQuestionDraft(draftKey, questions.length);
+  const interactive = Boolean(canWrite && hostAttached && !isBusy && hash);
+
+  const buildAnswersPayload = () =>
+    questions.map((q, idx) => {
+      const d = draft[idx] || { selectedIds: new Set(), writeIn: '' };
+      const selIds = Array.from(d.selectedIds);
+      const writeIn = !q.isMultiSelect && selIds.length > 0 ? '' : String(d.writeIn || '').trim();
+      const skipped = selIds.length === 0 && !writeIn;
+      return {
+        selectedOptionIds: skipped ? [] : selIds,
+        writeInResponse: skipped ? '' : writeIn,
+        skipped,
+      };
+    });
+
+  const hasAnyAnswer = () =>
+    draft.some((d) => (d.selectedIds && d.selectedIds.size > 0) || Boolean(String(d.writeIn || '').trim()));
+
+  const submitBtn = el('button', {
+    type: 'button',
+    className: 'rc-btn is-sm is-primary rc-ask-submit',
+    disabled: !interactive || !hasAnyAnswer(),
+    text: isBusy ? '提交中…' : '提交回答',
+    onClick: () => {
+      if (!interactive || !hasAnyAnswer()) return;
+      onApprove?.(w, 'answer_question', { answers: buildAnswersPayload() });
+    },
+  });
+
+  const cancelBtn = el('button', {
+    type: 'button',
+    className: 'rc-btn is-sm',
+    disabled: !interactive,
+    text: '取消',
+    onClick: () => {
+      if (!interactive) return;
+      onApprove?.(w, 'cancel_question');
+    },
+  });
+
+  const syncSubmitState = () => {
+    submitBtn.disabled = !interactive || !hasAnyAnswer();
+  };
+
+  const questionNodes = questions.map((q, qIdx) => {
+    const qDraft = draft[qIdx];
+    const optButtons = [];
+    const writeInInput = el('input', {
+      type: 'text',
+      className: 'rc-ask-writein',
+      placeholder: '其他（输入自定义回答…）',
+      value: qDraft.writeIn || '',
+      disabled: !interactive,
+      onInput: (ev) => {
+        const val = String(ev.target.value || '');
+        qDraft.writeIn = val;
+        if (!q.isMultiSelect && val.trim()) {
+          qDraft.selectedIds.clear();
+          for (const b of optButtons) {
+            b.classList.remove('is-selected');
+            b.setAttribute('aria-pressed', 'false');
+          }
+        }
+        syncSubmitState();
+      },
+    });
+
+    const opts = Array.isArray(q.options) ? q.options : [];
+    for (const opt of opts) {
+      const optId = String(opt.id || '');
+      const rawText = String(opt.text || '');
+      const isRec = /^\(Recommended\)\s*/i.test(rawText);
+      const displayText = isRec ? rawText.replace(/^\(Recommended\)\s*/i, '') : rawText;
+      const selected = qDraft.selectedIds.has(optId);
+      const btn = el(
+        'button',
+        {
+          type: 'button',
+          className: `rc-ask-option${selected ? ' is-selected' : ''}`,
+          'data-option-id': optId,
+          'aria-pressed': selected ? 'true' : 'false',
+          disabled: !interactive,
+          onClick: () => {
+            if (!interactive) return;
+            if (q.isMultiSelect) {
+              if (qDraft.selectedIds.has(optId)) qDraft.selectedIds.delete(optId);
+              else qDraft.selectedIds.add(optId);
+              const nowSel = qDraft.selectedIds.has(optId);
+              btn.classList.toggle('is-selected', nowSel);
+              btn.setAttribute('aria-pressed', nowSel ? 'true' : 'false');
+            } else {
+              qDraft.selectedIds.clear();
+              qDraft.selectedIds.add(optId);
+              qDraft.writeIn = '';
+              writeInInput.value = '';
+              for (const b of optButtons) {
+                const match = b === btn;
+                b.classList.toggle('is-selected', match);
+                b.setAttribute('aria-pressed', match ? 'true' : 'false');
+              }
+            }
+            syncSubmitState();
+          },
+        },
+        el('span', { className: `rc-ask-indicator${q.isMultiSelect ? ' is-multi' : ''}` }),
+        el(
+          'span',
+          { className: 'rc-ask-option-text' },
+          isRec ? el('span', { className: 'rc-ask-rec-badge', text: '推荐' }) : null,
+          displayText
+        )
+      );
+      optButtons.push(btn);
+    }
+
+    return el(
+      'div',
+      { className: 'rc-ask-q' },
+      el(
+        'div',
+        { className: 'rc-ask-q-head' },
+        el('span', { className: 'rc-ask-q-title', text: `${questions.length > 1 ? `${qIdx + 1}. ` : ''}${q.question}` }),
+        el('span', {
+          className: 'rc-pill',
+          'data-tone': q.isMultiSelect ? 'info' : 'neutral',
+          text: q.isMultiSelect ? '多选' : '单选',
+        })
+      ),
+      el('div', { className: 'rc-ask-options' }, ...optButtons),
+      writeInInput
+    );
+  });
+
+  let footerEl;
+  if (!canWrite) {
+    footerEl = el('div', {
+      className: 'rc-convo-meta',
+      text: '只读观察模式 (observe)：如需直接在手机端选择提交，请在 Mac 桌面端将此设备升为协作 (steer)。',
+    });
+  } else if (!hostAttached) {
+    footerEl = el('div', { className: 'rc-convo-meta', text: '宿主离线，暂无法提交回答' });
+  } else {
+    footerEl = el('div', { className: 'rc-waiting-actions' }, submitBtn, cancelBtn);
+  }
+
+  return el(
+    'div',
+    { className: 'rc-waiting-card rc-ask-card', 'data-waiting-hash': hash },
+    el(
+      'div',
+      { className: 'rc-waiting-head' },
+      el('span', { text: `❓ 请选择方案（${questions.length} 题）` }),
+      el('span', { className: 'rc-pill', 'data-tone': 'info', text: `step #${w.stepIndex ?? '?'}` })
+    ),
+    ...questionNodes,
+    footerEl
+  );
+}
+
 export function renderWaitingCards(
   waitingSteps,
   { canWrite = false, hostAttached = false, busyHash = '', onApprove = null } = {}
@@ -595,6 +774,9 @@ export function renderWaitingCards(
   return waitingSteps.map((w) => {
     const hash = String(w.waitingStepHash || '');
     const isBusy = Boolean(busyHash && hash && busyHash === hash);
+    if (w.interactionCase === 'askQuestion' && Array.isArray(w.questions) && w.questions.length > 0) {
+      return renderAskQuestionCard(w, { canWrite, hostAttached, isBusy, onApprove });
+    }
     const isPermission = !w.interactionCase || w.interactionCase === 'permission';
 
     let footerEl;
@@ -701,6 +883,16 @@ export function renderDetailTimeline({
   const wasNearBottom =
     refs.timeline.scrollHeight - refs.timeline.scrollTop - refs.timeline.clientHeight < 110;
 
+  const activeEl = refs.timeline.ownerDocument?.activeElement || null;
+  if (
+    activeEl &&
+    activeEl.classList?.contains('rc-ask-writein') &&
+    refs.timeline.contains(activeEl) &&
+    refs.timeline.getAttribute('data-rendered-cid') === cid
+  ) {
+    return;
+  }
+  refs.timeline.setAttribute('data-rendered-cid', cid);
   clearNode(refs.timeline);
 
   if (state.snapshotLoading && !snap) {
@@ -716,49 +908,13 @@ export function renderDetailTimeline({
   const role = state.identity?.role || 'observe';
   const canWrite = role === 'steer' || role === 'admin';
   const waiting = snap?.waitingSteps?.length ? snap.waitingSteps : convo?.waitingSteps || [];
-  for (const card of renderWaitingCards(waiting, {
-    canWrite,
-    hostAttached: Boolean(state.hostAttached && state.wsStatus === 'connected'),
-    busyHash: state.approvingHash || '',
-    onApprove,
-  })) {
-    refs.timeline.appendChild(card);
-  }
-
   const subWaitingList = Array.isArray(convo?.waitingSubagents) ? convo.waitingSubagents : [];
-  for (const sub of subWaitingList) {
-    if (!sub || !sub.id || !Array.isArray(sub.waitingSteps) || sub.waitingSteps.length === 0) continue;
-    const firstW = sub.waitingSteps[0];
-    refs.timeline.appendChild(
-      el(
-        'div',
-        { className: 'rc-waiting-card' },
-        el(
-          'div',
-          { className: 'rc-waiting-head' },
-          el('span', { text: `⏳ 子代理等待审批 · ${sub.title || sub.summary || sub.id.slice(0, 8)}` }),
-          el('span', { className: 'rc-pill', 'data-tone': 'warn', text: `${sub.waitingSteps.length} 项` })
-        ),
-        firstW?.commandLine ? el('pre', { className: 'rc-pre', text: String(firstW.commandLine) }) : null,
-        el(
-          'div',
-          { className: 'rc-dock-group' },
-          el('button', {
-            type: 'button',
-            className: 'rc-btn is-sm',
-            text: '查看并实时跟踪该子代理',
-            onClick: () => onSelectConversation(sub.id),
-          })
-        )
-      )
-    );
-  }
 
   const studioPrefs = state.studioOverview?.studioPrefs || state.modelCatalog?.studioPrefs || {};
   const hideThinkingProse = studioPrefs.hideThinkingProse !== false;
 
   const steps = Array.isArray(snap?.steps) ? snap.steps : [];
-  if (steps.length === 0 && !streamText) {
+  if (steps.length === 0 && !streamText && waiting.length === 0 && subWaitingList.length === 0) {
     refs.timeline.appendChild(el('div', { className: 'rc-empty', text: '该会话暂无可显示步骤。' }));
   } else {
     let activityBatch = [];
@@ -818,6 +974,43 @@ export function renderDetailTimeline({
             )
           : null,
         streamText ? renderSafeMarkdown(String(streamText)) : null
+      )
+    );
+  }
+
+  for (const card of renderWaitingCards(waiting, {
+    canWrite,
+    hostAttached: Boolean(state.hostAttached && state.wsStatus === 'connected'),
+    busyHash: state.approvingHash || '',
+    onApprove,
+  })) {
+    refs.timeline.appendChild(card);
+  }
+
+  for (const sub of subWaitingList) {
+    if (!sub || !sub.id || !Array.isArray(sub.waitingSteps) || sub.waitingSteps.length === 0) continue;
+    const firstW = sub.waitingSteps[0];
+    refs.timeline.appendChild(
+      el(
+        'div',
+        { className: 'rc-waiting-card' },
+        el(
+          'div',
+          { className: 'rc-waiting-head' },
+          el('span', { text: `⏳ 子代理等待审批 · ${sub.title || sub.summary || sub.id.slice(0, 8)}` }),
+          el('span', { className: 'rc-pill', 'data-tone': 'warn', text: `${sub.waitingSteps.length} 项` })
+        ),
+        firstW?.commandLine ? el('pre', { className: 'rc-pre', text: String(firstW.commandLine) }) : null,
+        el(
+          'div',
+          { className: 'rc-dock-group' },
+          el('button', {
+            type: 'button',
+            className: 'rc-btn is-sm',
+            text: '查看并实时跟踪该子代理',
+            onClick: () => onSelectConversation(sub.id),
+          })
+        )
       )
     );
   }

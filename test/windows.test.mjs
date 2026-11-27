@@ -849,3 +849,37 @@ test('shell-parser resolveDirectoryChange handles cd /d, Set-Location -Path, sl 
   assert.equal(psInv[0].targetDir, 'C:\\Users\\alice\\repo');
   assert.equal(psInv[0].subcommand, 'status');
 });
+
+test('projects chrome-geometry pure helpers distinguish Windows top menu bar and track sliver vs macOS layout', async () => {
+  const { isTopMenuBarRect, isTopMenuBarAnchorRect, computeProjectsOverlayMetrics } = await import(
+    pathToFileURL(path.join(REPO, 'user', 'src', 'modules', 'projects', 'chrome-geometry.mjs')).href
+  );
+
+  // Win32 full-width top menu bar (.bg-sidebar) vs left sidebar
+  const winTopBar = { left: 0, top: 0, width: 1920, height: 30, right: 1920, bottom: 30 };
+  const winSidebar = { left: 0, top: 30, width: 256, height: 1002, right: 256, bottom: 1032 };
+  assert.equal(isTopMenuBarRect(winTopBar, 1920), true);
+  assert.equal(isTopMenuBarAnchorRect(winTopBar, 1920), true);
+  assert.equal(isTopMenuBarRect(winSidebar, 1920), false);
+  assert.equal(isTopMenuBarAnchorRect(winSidebar, 1920), false);
+
+  // macOS: no full-width top bar, full-height sidebar starts at top=0
+  const macSidebar = { left: 0, top: 0, width: 260, height: 1000, right: 260, bottom: 1000 };
+  assert.deepEqual(
+    computeProjectsOverlayMetrics({ sidebarRect: macSidebar, topBarPx: 0, winW: 1440 }),
+    { leftPx: 260, topPx: 0, collapsed: false, safeLeftPad: 24 }
+  );
+
+  // Win32 expanded: topPx=30, leftPx=256
+  assert.deepEqual(
+    computeProjectsOverlayMetrics({ sidebarRect: winSidebar, trackRect: winSidebar, topBarPx: 30, winW: 1920 }),
+    { leftPx: 256, topPx: 30, collapsed: false, safeLeftPad: 24 }
+  );
+
+  // Win32 collapsing/collapsed sliver (track width <= 8px while inner sidebar still 256px) snaps cleanly to leftPx=0
+  const winCollapsedTrack = { left: 0, top: 30, width: 3, height: 1002, right: 3, bottom: 1032 };
+  assert.deepEqual(
+    computeProjectsOverlayMetrics({ sidebarRect: winSidebar, trackRect: winCollapsedTrack, topBarPx: 30, winW: 1920 }),
+    { leftPx: 0, topPx: 30, collapsed: true, safeLeftPad: 224 }
+  );
+});

@@ -9,6 +9,13 @@ import { createProjectWorkspaceUi } from './workspace-ui.mjs';
 import { createConvProjectTopbar } from './conv-topbar.mjs';
 import { createWorktreeUiController } from './worktree-ui.mjs';
 import { createProjectSuggestionsController } from './suggestions-ui.mjs';
+import {
+  computeProjectsOverlayMetrics,
+  findLeftSidebarEl,
+  findLeftSidebarTrackEl,
+  measureTopMenuBarHeight,
+  syncWinTopBarCssVar,
+} from './chrome-geometry.mjs';
 
 export function createProjectsModule(rt, modelApi) {
   const ctx = createProjectSharedContext(rt, modelApi);
@@ -130,74 +137,6 @@ export function createProjectsModule(rt, modelApi) {
     buildFolderMenuHtml,
   } = workspaceUi;
 
-  function isTopMenuBarBgSidebar(el) {
-    if (!el || typeof el.getBoundingClientRect !== 'function') return false;
-    const r = el.getBoundingClientRect();
-    const winW = typeof window !== 'undefined' && window.innerWidth ? window.innerWidth : 0;
-    return Boolean(r.height > 0 && r.height <= 64 && winW > 200 && r.width >= winW - 160);
-  }
-
-  function findLeftSidebarEl() {
-    const anchors = [
-      document.getElementById('ag-claude-projects-nav-btn'),
-      document.querySelector('[data-testid="automations-button"]'),
-      document.querySelector('[data-testid="project-header"]'),
-    ];
-    for (const anchor of anchors) {
-      const sb = anchor && typeof anchor.closest === 'function' ? anchor.closest('.bg-sidebar') : null;
-      if (sb && !isTopMenuBarBgSidebar(sb)) return sb;
-    }
-    const cands = document.querySelectorAll('.bg-sidebar');
-    const winW = typeof window !== 'undefined' && window.innerWidth ? window.innerWidth : 0;
-    for (let i = 0; i < cands.length; i += 1) {
-      const sb = cands[i];
-      const r = sb.getBoundingClientRect();
-      if (r.width > 20 && r.height > 80 && r.right > 0 && (!winW || r.right < winW - 160)) {
-        return sb;
-      }
-    }
-    for (let i = 0; i < cands.length; i += 1) {
-      const sb = cands[i];
-      if (sb.tagName === 'ASIDE' || (sb.classList && sb.classList.contains('flex-col'))) return sb;
-    }
-    return cands[0] || null;
-  }
-
-  function findLeftSidebarTrackEl(sb) {
-    if (!sb || typeof document === 'undefined' || typeof getComputedStyle !== 'function') return sb || null;
-    const winW = typeof window !== 'undefined' && window.innerWidth ? window.innerWidth : 0;
-    let cur = sb.parentElement;
-    for (let i = 0; i < 4 && cur && cur !== document.body; i += 1, cur = cur.parentElement) {
-      let cs = null;
-      try { cs = getComputedStyle(cur); } catch {}
-      const clip = cs && (cs.overflow === 'hidden' || cs.overflowX === 'hidden' || String(cs.transition || '').includes('width'));
-      if (clip && typeof cur.getBoundingClientRect === 'function') {
-        const r = cur.getBoundingClientRect();
-        if (r.height > 80 && (!winW || r.width < winW - 160)) return cur;
-      }
-    }
-    return sb;
-  }
-
-  function measureTopMenuBarHeight() {
-    const cands = document.querySelectorAll('.bg-sidebar');
-    const winW = typeof window !== 'undefined' && window.innerWidth ? window.innerWidth : 0;
-    for (let i = 0; i < cands.length; i += 1) {
-      const r = cands[i].getBoundingClientRect();
-      if (r.top >= -1 && r.top <= 4 && r.height >= 16 && r.height <= 56 && winW > 200 && r.width >= winW - 160) {
-        return Math.round(r.bottom);
-      }
-    }
-    return 0;
-  }
-
-  function syncWinTopBarCssVar(topPx = measureTopMenuBarHeight()) {
-    const root = typeof document !== 'undefined' ? document.documentElement : null;
-    if (!root || !root.style) return;
-    if (topPx > 0) root.style.setProperty('--ag-win-top-bar', `${topPx}px`);
-    else root.style.removeProperty('--ag-win-top-bar');
-  }
-
   function positionProjectsOverlay() {
     const topBarPx = measureTopMenuBarHeight();
     syncWinTopBarCssVar(topBarPx);
@@ -205,21 +144,18 @@ export function createProjectsModule(rt, modelApi) {
     const sidebar = findLeftSidebarEl();
     const track = sidebar ? findLeftSidebarTrackEl(sidebar) : null;
     const winW = typeof window !== 'undefined' && window.innerWidth ? window.innerWidth : 0;
-    let leftPx = 0;
-    let topPx = 0;
-    let r = sidebar ? sidebar.getBoundingClientRect() : null;
-    if (track && track !== sidebar && typeof track.getBoundingClientRect === 'function') {
-      const tr = track.getBoundingClientRect();
-      if (tr.height > 80 && (!winW || tr.width < winW - 160)) r = tr;
-    }
-    if (r) {
-      if (r.width > 8 && r.right > 8 && (!winW || r.right < winW - 160)) leftPx = Math.round(r.right);
-      if (r.height > 80 && r.top >= 16 && r.top <= 56) topPx = Math.round(r.top);
-    }
-    if (!topPx) topPx = topBarPx;
+    const sidebarRect = sidebar && typeof sidebar.getBoundingClientRect === 'function' ? sidebar.getBoundingClientRect() : null;
+    const trackRect =
+      track && track !== sidebar && typeof track.getBoundingClientRect === 'function'
+        ? track.getBoundingClientRect()
+        : null;
+    const { leftPx, topPx, collapsed, safeLeftPad } = computeProjectsOverlayMetrics({
+      sidebarRect,
+      trackRect,
+      topBarPx,
+      winW,
+    });
     if (topPx > 0) syncWinTopBarCssVar(topPx);
-    const collapsed = leftPx < 220;
-    const safeLeftPad = collapsed ? Math.max(24, 224 - leftPx) : 24;
     pState.projectsViewEl.style.left = `${leftPx}px`;
     pState.projectsViewEl.style.setProperty('--ag-proj-top', `${topPx}px`);
     pState.projectsViewEl.setAttribute('data-sidebar-collapsed', collapsed ? 'true' : 'false');

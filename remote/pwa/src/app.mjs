@@ -26,10 +26,16 @@ import {
   renderResumeBanner,
 } from './studio-panel.mjs';
 import {
+  STORAGE_KEYS,
   createAlertManager,
+  createMobileHistoryController,
+  createMoreMenuController,
   createNewChatController,
+  defaultOverviewCollapsed,
   formatWriteError,
+  readStoredPref,
   syncTurboConfirmBar,
+  writeStoredPref,
 } from './mobile-enhancements.mjs';
 import { renderDetailTimeline as renderTimelineView } from './timeline-view.mjs';
 import {
@@ -46,35 +52,6 @@ import {
   resolveLayoutMode,
 } from './ui-helpers.mjs';
 import { createIdempotencyKey, createRemoteWsClient } from './ws-client.mjs';
-
-const STORAGE_KEYS = {
-  layoutPref: 'agy_remote_layout_mode',
-  sidebarCollapsed: 'agy_remote_sidebar_collapsed',
-  overviewCollapsed: 'agy_remote_overview_collapsed',
-  sidebarGroupBy: 'agy_remote_sidebar_group',
-};
-
-function readStoredPref(key, fallback) {
-  try {
-    if (typeof window === 'undefined' || !window.localStorage) return fallback;
-    const val = window.localStorage.getItem(key);
-    return val === null ? fallback : val;
-  } catch {
-    return fallback;
-  }
-}
-
-function writeStoredPref(key, value) {
-  try {
-    if (typeof window === 'undefined' || !window.localStorage) return;
-    window.localStorage.setItem(key, String(value));
-  } catch {}
-}
-
-function defaultOverviewCollapsed() {
-  if (typeof window === 'undefined') return false;
-  return window.innerWidth < 1180;
-}
 
 const storedLayoutPref = readStoredPref(STORAGE_KEYS.layoutPref, 'auto');
 const initialLayoutPref =
@@ -383,43 +360,22 @@ async function handleUnpairDevice() {
   pairView.loadHealthForPairing();
 }
 
-function renderMoreMenu() {
-  renderMobileMoreMenu(workspaceRefs?.moreMenu, {
-    open: state.moreMenuOpen,
-    hostLine: state.hostAttached ? `CDP 在线 (${state.source || 'cdp'})` : '宿主离线 · 只读',
-    role: state.identity?.role || 'observe',
-    presetLabel: formatPresetBadge(state.globalPreset).label,
-    layoutLabel: layoutButtonLabel(state.layoutPref),
-    alertLabel: alertManager.getAlertLabel(),
-    onToggleAlerts: () => {
-      const next = alertManager.toggleAlerts();
-      renderMoreMenu();
-      setActionNotice(next ? '已开启完成与审批提醒' : '已关闭完成与审批提醒');
-    },
-    onCycleLayout: () => {
-      const order = ['auto', 'desktop', 'mobile'];
-      const next = order[(order.indexOf(state.layoutPref) + 1) % order.length];
-      state.layoutPref = next;
-      writeStoredPref(STORAGE_KEYS.layoutPref, next);
-      state.moreMenuOpen = false;
-      applyLayoutAttrs();
-      renderSidebarList();
-    },
-    onOpenOverview: () => {
-      state.moreMenuOpen = false;
-      state.mobileTab = 'overview';
-      state.mobileView = 'list';
-      applyLayoutAttrs();
-      renderStudioPanels();
-    },
-    onRefreshAll: () => {
-      state.moreMenuOpen = false;
-      renderMoreMenu();
-      refreshAllData();
-    },
-    onUnpair: () => handleUnpairDevice(),
-  });
-}
+const moreMenuCtrl = createMoreMenuController({
+  state,
+  getMenuEl: () => workspaceRefs?.moreMenu,
+  renderMenu: renderMobileMoreMenu,
+  formatPresetBadge,
+  layoutButtonLabel,
+  alertManager,
+  setActionNotice,
+  writeLayoutPref: (v) => writeStoredPref(STORAGE_KEYS.layoutPref, v),
+  applyLayoutAttrs,
+  renderSidebarList,
+  renderStudioPanels,
+  refreshAllData,
+  handleUnpairDevice,
+});
+const renderMoreMenu = () => moreMenuCtrl.render();
 
 function ensureWorkspaceShell() {
   if (workspaceRefs && rootEl.contains(workspaceRefs.topbar)) {
@@ -568,6 +524,7 @@ function ensureWorkspaceShell() {
       state.newChatProjectId = state.selectedProjectId || '';
       state.newChatError = '';
       state.newChatTurboConfirmed = false;
+      mobileHistory.enterModal();
       renderNewChatOverlay();
     },
   });
@@ -592,11 +549,7 @@ function ensureWorkspaceShell() {
     'aria-label': '返回会话列表',
     title: '返回会话列表',
     text: '‹',
-    onClick: () => {
-      state.mobileView = 'list';
-      state.moreMenuOpen = false;
-      applyLayoutAttrs();
-    },
+    onClick: () => mobileHistory.leaveDetail(),
   });
 
   const detailHead = el(
@@ -906,8 +859,34 @@ const newChatCtrl = createNewChatController({
   setActionNotice,
   selectConversation,
   refreshAllData,
+  onRequestClose: () => mobileHistory.leaveModal(),
 });
 const renderNewChatOverlay = () => newChatCtrl.render();
+const mobileHistory = createMobileHistoryController({
+  state,
+  getLayoutMode: getResolvedLayoutMode,
+  onNavigateToList: () => {
+    state.mobileView = 'list';
+    state.moreMenuOpen = state.modelPopoverOpen = state.contextPopoverOpen = false;
+    renderMoreMenu();
+    applyLayoutAttrs();
+    syncComposerControls();
+  },
+  onNavigateToDetail: (cid) => {
+    if (cid && UUID_RE.test(cid)) selectConversation(cid, { skipHistoryPush: true });
+  },
+  onCloseOverlays: () => {
+    state.moreMenuOpen = state.modelPopoverOpen = state.contextPopoverOpen = false;
+    renderMoreMenu();
+    syncComposerControls();
+  },
+  onCloseModal: () => {
+    if (state.newChatBusy) return;
+    state.newChatOpen = false;
+    state.newChatError = '';
+    renderNewChatOverlay();
+  },
+});
 
 async function attachImageFiles(files) {
   if (!canSteer()) return;
@@ -1709,7 +1688,7 @@ function scheduleSelectedSnapshotRefresh() {
   }, 450);
 }
 
-async function selectConversation(cascadeId) {
+async function selectConversation(cascadeId, { skipHistoryPush = false } = {}) {
   if (!cascadeId || !UUID_RE.test(cascadeId)) return;
   if (state.selectedId !== cascadeId) {
     state.draftIdempotencyKey = createIdempotencyKey();
@@ -1726,6 +1705,7 @@ async function selectConversation(cascadeId) {
   }
   state.selectedId = cascadeId;
   state.mobileView = 'detail';
+  if (!skipHistoryPush) mobileHistory.enterDetail(cascadeId);
   state.snapshotError = '';
   state.snapshotLoading = !state.snapshots.has(cascadeId);
   renderWorkspace();
@@ -1868,6 +1848,7 @@ function handleTapDelta(delta) {
 
 function startWorkspaceSession() {
   ensureGlobalUiListeners();
+  mobileHistory.bind();
   clearStudioOverviewRetry();
   if (wsClient) {
     wsClient.dispose();

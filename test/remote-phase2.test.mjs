@@ -2138,6 +2138,52 @@ test('Remote Mobile Polish V2: stale worktree branch cleanup, Markdown tables, a
     } finally {
       bootDom.window.close();
     }
+
+    // 7. Android back-gesture History API controller: detail -> popstate returns to list; open popover closes first without leaving detail
+    const navState = {
+      mobileView: 'list',
+      selectedId: liveCid,
+      modelPopoverOpen: false,
+      contextPopoverOpen: false,
+      moreMenuOpen: false,
+      newChatOpen: false,
+      newChatBusy: false,
+    };
+    let navListCount = 0;
+    let overlayCloseCount = 0;
+    const histCtrl = mobileEnhMod.createMobileHistoryController({
+      state: navState,
+      getLayoutMode: () => 'mobile',
+      onNavigateToList: () => {
+        navState.mobileView = 'list';
+        navListCount += 1;
+      },
+      onNavigateToDetail: () => {
+        navState.mobileView = 'detail';
+      },
+      onCloseOverlays: () => {
+        navState.modelPopoverOpen = false;
+        overlayCloseCount += 1;
+      },
+      onCloseModal: () => {
+        navState.newChatOpen = false;
+      },
+    });
+    histCtrl.bind();
+    navState.mobileView = 'detail';
+    histCtrl.enterDetail(liveCid);
+    assert.equal(dom.window.history.state?.rcView, 'detail');
+    assert.equal(dom.window.history.state?.cid, liveCid);
+    // Back gesture while popover is open closes popover and keeps detail active
+    navState.modelPopoverOpen = true;
+    histCtrl.handlePopState({ state: { rcView: 'list' } });
+    assert.equal(overlayCloseCount, 1);
+    assert.equal(navState.modelPopoverOpen, false);
+    assert.equal(navState.mobileView, 'detail');
+    // Second back gesture returns to conversation list instead of exiting PWA
+    histCtrl.handlePopState({ state: { rcView: 'list' } });
+    assert.equal(navListCount, 1);
+    assert.equal(navState.mobileView, 'list');
   } finally {
     dom.window.close();
     if (prevDoc) Object.defineProperty(globalThis, 'document', prevDoc);

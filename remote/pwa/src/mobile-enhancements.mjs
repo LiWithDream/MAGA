@@ -9,6 +9,35 @@ import { appendNodes, clearNode, el, isRunningStatus } from './ui-helpers.mjs';
 
 const ALERTS_STORAGE_KEY = 'rc:alertsEnabled';
 
+export const STORAGE_KEYS = {
+  layoutPref: 'agy_remote_layout_mode',
+  sidebarCollapsed: 'agy_remote_sidebar_collapsed',
+  overviewCollapsed: 'agy_remote_overview_collapsed',
+  sidebarGroupBy: 'agy_remote_sidebar_group',
+};
+
+export function readStoredPref(key, fallback) {
+  try {
+    if (typeof window === 'undefined' || !window.localStorage) return fallback;
+    const val = window.localStorage.getItem(key);
+    return val === null ? fallback : val;
+  } catch {
+    return fallback;
+  }
+}
+
+export function writeStoredPref(key, value) {
+  try {
+    if (typeof window === 'undefined' || !window.localStorage) return;
+    window.localStorage.setItem(key, String(value));
+  } catch {}
+}
+
+export function defaultOverviewCollapsed() {
+  if (typeof window === 'undefined') return false;
+  return window.innerWidth < 1180;
+}
+
 function readAlertsPref() {
   try {
     const raw = window.localStorage.getItem(ALERTS_STORAGE_KEY);
@@ -360,6 +389,7 @@ export function createNewChatController({
   setActionNotice,
   selectConversation,
   refreshAllData,
+  onRequestClose,
 }) {
   function render() {
     const refs = getRefs();
@@ -397,6 +427,10 @@ export function createNewChatController({
       onSubmit: submit,
       onClose: () => {
         if (state.newChatBusy) return;
+        if (typeof onRequestClose === 'function') {
+          onRequestClose();
+          return;
+        }
         state.newChatOpen = false;
         state.newChatError = '';
         render();
@@ -438,4 +472,179 @@ export function createNewChatController({
   }
 
   return { render, submit };
+}
+
+export function createMobileHistoryController({
+  state,
+  getLayoutMode,
+  onNavigateToList,
+  onNavigateToDetail,
+  onCloseOverlays,
+  onCloseModal,
+}) {
+  let bound = false;
+
+  const isMobile = () => getLayoutMode() === 'mobile';
+  const hasHistory = () => typeof window !== 'undefined' && window.history && typeof window.history.pushState === 'function';
+
+  function ensureBaseState() {
+    if (!hasHistory()) return;
+    try {
+      const cur = window.history.state;
+      if (!cur || !cur.rcView) {
+        window.history.replaceState({ rcView: 'list' }, '');
+      }
+    } catch {}
+  }
+
+  function enterDetail(cid) {
+    if (!isMobile() || !hasHistory() || !cid) return;
+    try {
+      ensureBaseState();
+      const cur = window.history.state;
+      if (cur && cur.rcView === 'detail') {
+        window.history.replaceState({ rcView: 'detail', cid }, '');
+      } else {
+        window.history.pushState({ rcView: 'detail', cid }, '');
+      }
+    } catch {}
+  }
+
+  function leaveDetail() {
+    if (isMobile() && hasHistory() && window.history.state?.rcView === 'detail') {
+      try {
+        window.history.back();
+        return;
+      } catch {}
+    }
+    onNavigateToList?.();
+  }
+
+  function enterModal() {
+    if (!isMobile() || !hasHistory()) return;
+    try {
+      ensureBaseState();
+      if (window.history.state?.rcView !== 'modal') {
+        window.history.pushState(
+          { rcView: 'modal', fromView: state.mobileView || 'list', cid: state.selectedId || '' },
+          ''
+        );
+      }
+    } catch {}
+  }
+
+  function leaveModal() {
+    if (isMobile() && hasHistory() && window.history.state?.rcView === 'modal') {
+      try {
+        window.history.back();
+        return;
+      } catch {}
+    }
+    onCloseModal?.();
+  }
+
+  function handlePopState(ev) {
+    if (!isMobile()) return;
+    const nextState = ev?.state || {};
+    const hadOverlay = Boolean(state.modelPopoverOpen || state.contextPopoverOpen || state.moreMenuOpen);
+
+    // 1. If a bottom popover or overflow menu is open, back gesture closes it first without leaving detail view
+    if (hadOverlay) {
+      onCloseOverlays?.();
+      if (state.mobileView === 'detail' && state.selectedId && nextState.rcView !== 'detail') {
+        try {
+          window.history.pushState({ rcView: 'detail', cid: state.selectedId }, '');
+        } catch {}
+      }
+      return;
+    }
+
+    // 2. If new-chat modal is open, back gesture closes the modal cleanly
+    if (state.newChatOpen && nextState.rcView !== 'modal') {
+      onCloseModal?.();
+      return;
+    }
+
+    // 3. Forward/restore into detail view
+    if (nextState.rcView === 'detail' && nextState.cid) {
+      onNavigateToDetail?.(nextState.cid);
+      return;
+    }
+
+    // 4. Back from detail view -> return to conversation list instead of exiting PWA
+    if (state.mobileView === 'detail') {
+      onNavigateToList?.();
+    }
+  }
+
+  function bind() {
+    if (bound || typeof window === 'undefined') return;
+    bound = true;
+    ensureBaseState();
+    window.addEventListener('popstate', handlePopState);
+  }
+
+  return {
+    bind,
+    enterDetail,
+    leaveDetail,
+    enterModal,
+    leaveModal,
+    handlePopState,
+  };
+}
+
+export function createMoreMenuController({
+  state,
+  getMenuEl,
+  renderMenu,
+  formatPresetBadge,
+  layoutButtonLabel,
+  alertManager,
+  setActionNotice,
+  writeLayoutPref,
+  applyLayoutAttrs,
+  renderSidebarList,
+  renderStudioPanels,
+  refreshAllData,
+  handleUnpairDevice,
+}) {
+  function render() {
+    renderMenu(getMenuEl(), {
+      open: state.moreMenuOpen,
+      hostLine: state.hostAttached ? `CDP 在线 (${state.source || 'cdp'})` : '宿主离线 · 只读',
+      role: state.identity?.role || 'observe',
+      presetLabel: formatPresetBadge(state.globalPreset).label,
+      layoutLabel: layoutButtonLabel(state.layoutPref),
+      alertLabel: alertManager.getAlertLabel(),
+      onToggleAlerts: () => {
+        const next = alertManager.toggleAlerts();
+        render();
+        setActionNotice(next ? '已开启完成与审批提醒' : '已关闭完成与审批提醒');
+      },
+      onCycleLayout: () => {
+        const order = ['auto', 'desktop', 'mobile'];
+        const next = order[(order.indexOf(state.layoutPref) + 1) % order.length];
+        state.layoutPref = next;
+        writeLayoutPref(next);
+        state.moreMenuOpen = false;
+        applyLayoutAttrs();
+        renderSidebarList();
+      },
+      onOpenOverview: () => {
+        state.moreMenuOpen = false;
+        state.mobileTab = 'overview';
+        state.mobileView = 'list';
+        applyLayoutAttrs();
+        renderStudioPanels();
+      },
+      onRefreshAll: () => {
+        state.moreMenuOpen = false;
+        render();
+        refreshAllData();
+      },
+      onUnpair: () => handleUnpairDevice(),
+    });
+  }
+  return { render };
 }

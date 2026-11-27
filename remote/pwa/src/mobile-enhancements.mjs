@@ -8,10 +8,15 @@
 import { appendNodes, clearNode, el, isRunningStatus } from './ui-helpers.mjs';
 import {
   bindNativeAndroidBridge,
+  checkNativeAppUpdate,
+  getNativeAppVersion,
   isNativeAndroidApp,
+  isNativeKeepAliveEnabled,
   openNativeSettingsDialog,
   requestNativeNotificationPermission,
   sendNativeNotification,
+  setNativeKeepAliveEnabled,
+  updateNativeKeepAliveStatus,
   vibrateNative,
 } from './native-bridge.mjs';
 export { bindNativeAndroidBridge };
@@ -869,7 +874,34 @@ export function triggerGuardedAuthReload({ hasUnsentDraft = false } = {}) {
   }
 }
 
+function buildKeepAliveStatusLine(state) {
+  if (!state) return '';
+  const list = Array.isArray(state.conversations) ? state.conversations : [];
+  let waitingTotal = 0;
+  for (const c of list) {
+    if (Array.isArray(c?.waitingSteps)) waitingTotal += c.waitingSteps.length;
+    if (Array.isArray(c?.waitingSubagents)) {
+      for (const s of c.waitingSubagents) {
+        if (Array.isArray(s?.waitingSteps)) waitingTotal += s.waitingSteps.length;
+      }
+    }
+  }
+  if (waitingTotal > 0) return `⏳ ${waitingTotal} 项待审批 · 点击立即查看`;
+  if (state.wsStatus === 'connected') {
+    const rtt = state.wsRttMs > 0 ? `${state.wsRttMs}ms` : '实时监听中';
+    return state.hostAttached ? `已连接 · ${rtt}` : `已连接 (只读历史) · ${rtt}`;
+  }
+  if (state.wsStatus === 'offline') return '网络已断开 · 等待恢复后重连';
+  if (state.wsStatus === 'auth_expired') return '登录态已过期 · 请打开 App 重新登录';
+  if (state.wsStatus === 'reconnecting') return `重连中 (${state.wsDetail || '自动恢复'})`;
+  if (state.wsStatus === 'revoked') return '设备已吊销 · 请重新配对';
+  return '等待连接网关…';
+}
+
 export function renderConnectionNoticeBar(noticeBar, { state, onRepair, onReconnect, onRelogin } = {}) {
+  if (state && isNativeAndroidApp()) {
+    updateNativeKeepAliveStatus(buildKeepAliveStatusLine(state));
+  }
   if (!noticeBar || !state) return;
   clearNode(noticeBar);
   if (state.wsStatus === 'revoked') {
@@ -988,6 +1020,9 @@ export function createMoreMenuController({
   function render() {
     const rttSuffix = state.wsStatus === 'connected' && state.wsRttMs > 0 ? ` · ${state.wsRttMs}ms` : '';
     const baseHostLine = state.hostAttached ? `CDP 在线 (${state.source || 'cdp'})` : '宿主离线 · 只读';
+    const nativeMode = isNativeAndroidApp();
+    const nativeVer = nativeMode ? getNativeAppVersion() : '';
+    const keepAliveOn = nativeMode ? isNativeKeepAliveEnabled() : false;
     renderMenu(getMenuEl(), {
       open: state.moreMenuOpen,
       hostLine: `${baseHostLine}${rttSuffix}`,
@@ -995,6 +1030,12 @@ export function createMoreMenuController({
       presetLabel: formatPresetBadge(state.globalPreset).label,
       layoutLabel: layoutButtonLabel(state.layoutPref),
       alertLabel: alertManager.getAlertLabel(),
+      keepAliveLabel: nativeMode
+        ? keepAliveOn
+          ? '后台常驻监听：已开启'
+          : '后台常驻监听：已关闭'
+        : '',
+      updateLabel: nativeMode ? (nativeVer ? `检查 App 更新 (v${nativeVer})` : '检查 App 更新') : '',
       onReconnectNow:
         state.wsStatus !== 'connected'
           ? () => {
@@ -1009,6 +1050,21 @@ export function createMoreMenuController({
               }
             }
           : null,
+      onToggleKeepAlive: nativeMode
+        ? () => {
+            const next = !isNativeKeepAliveEnabled();
+            setNativeKeepAliveEnabled(next);
+            render();
+            setActionNotice(next ? '已开启后台常驻监听（通知栏可查看状态）' : '已关闭后台常驻监听');
+          }
+        : null,
+      onCheckForUpdate: nativeMode
+        ? () => {
+            state.moreMenuOpen = false;
+            render();
+            checkNativeAppUpdate(false);
+          }
+        : null,
       onToggleAlerts: () => {
         const next = alertManager.toggleAlerts();
         render();

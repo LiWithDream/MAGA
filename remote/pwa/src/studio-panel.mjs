@@ -296,7 +296,11 @@ export function renderMobileMoreMenu(
     presetLabel = '',
     layoutLabel = '',
     alertLabel = '',
+    keepAliveLabel = '',
+    updateLabel = '',
     onReconnectNow = null,
+    onToggleKeepAlive = null,
+    onCheckForUpdate = null,
     onToggleAlerts = null,
     onCycleLayout = null,
     onOpenOverview = null,
@@ -331,6 +335,17 @@ export function renderMobileMoreMenu(
           },
         })
       : null,
+    keepAliveLabel && onToggleKeepAlive
+      ? el('button', {
+          type: 'button',
+          className: 'rc-more-item',
+          text: keepAliveLabel,
+          onClick: (ev) => {
+            ev?.stopPropagation?.();
+            onToggleKeepAlive?.();
+          },
+        })
+      : null,
     onOpenNativeSettings
       ? el('button', {
           type: 'button',
@@ -339,6 +354,17 @@ export function renderMobileMoreMenu(
           onClick: (ev) => {
             ev?.stopPropagation?.();
             onOpenNativeSettings?.();
+          },
+        })
+      : null,
+    updateLabel && onCheckForUpdate
+      ? el('button', {
+          type: 'button',
+          className: 'rc-more-item',
+          text: updateLabel,
+          onClick: (ev) => {
+            ev?.stopPropagation?.();
+            onCheckForUpdate?.();
           },
         })
       : null,

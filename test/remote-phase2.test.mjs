@@ -2538,3 +2538,182 @@ test('Remote Mobile Polish V2: stale worktree branch cleanup, Markdown tables, a
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   }
 });
+
+test('Android OTA Gateway Endpoints & Native Keep-Alive / Update Bridge', async () => {
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'maga-rem-ota-'));
+  const remoteDir = path.join(tmpRoot, 'remote');
+  const distDir = path.join(tmpRoot, 'dist');
+  fs.mkdirSync(remoteDir, { recursive: true });
+  fs.mkdirSync(distDir, { recursive: true });
+  fs.writeFileSync(path.join(distDir, 'index.html'), '<!doctype html><html><body>ok</body></html>');
+
+  const { JSDOM } = await import('jsdom');
+  const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://127.0.0.1/' });
+  const prevDoc = Object.getOwnPropertyDescriptor(globalThis, 'document');
+  const prevWin = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  Object.defineProperty(globalThis, 'document', { value: dom.window.document, configurable: true, writable: true });
+  Object.defineProperty(globalThis, 'window', { value: dom.window, configurable: true, writable: true });
+
+  let gw = null;
+  try {
+    const mockUds = {
+      onTap: () => () => {},
+      onConnect: () => () => {},
+      request: async (method) => (method === 'bridge.health' ? { ok: true, hostAttached: true, globalPreset: 2 } : { ok: true }),
+      close: () => {},
+    };
+    gw = await serverMod.createGatewayServer({
+      remoteDir,
+      pwaDistDir: distDir,
+      udsClient: mockUds,
+      port: 0,
+      writePid: false,
+    });
+    const baseUrl = `http://127.0.0.1:${gw.port}`;
+
+    // 1. Absent metadata/APK -> available: false and 404
+    const missMeta = await (await fetch(`${baseUrl}/api/android/latest`)).json();
+    assert.deepEqual(missMeta, { ok: true, available: false });
+    const missApk = await fetch(`${baseUrl}/api/android/apk`);
+    assert.equal(missApk.status, 404);
+    const badMethod = await fetch(`${baseUrl}/api/android/latest`, { method: 'POST' });
+    assert.equal(badMethod.status, 405);
+
+    // 2. Valid APK + android-latest.json -> serves metadata, HEAD headers, and exact APK bytes
+    const fakeApkBytes = Buffer.from('PK\x03\x04-fake-signed-android-apk-payload-1.4.0');
+    const apkSha = crypto.createHash('sha256').update(fakeApkBytes).digest('hex');
+    const apkPath = path.join(remoteDir, 'AGY-Studio-Remote.apk');
+    const metaPath = path.join(remoteDir, 'android-latest.json');
+    fs.writeFileSync(apkPath, fakeApkBytes);
+    fs.writeFileSync(
+      metaPath,
+      JSON.stringify({
+        schema: 1,
+        versionCode: 10400,
+        versionName: '1.4.0',
+        filename: 'AGY-Studio-Remote.apk',
+        bytes: fakeApkBytes.length,
+        sha256: apkSha,
+        builtAt: '2026-11-27T14:40:00.000Z',
+      })
+    );
+
+    const latestRes = await (await fetch(`${baseUrl}/api/android/latest`)).json();
+    assert.equal(latestRes.ok, true);
+    assert.equal(latestRes.available, true);
+    assert.equal(latestRes.versionCode, 10400);
+    assert.equal(latestRes.versionName, '1.4.0');
+    assert.equal(latestRes.bytes, fakeApkBytes.length);
+    assert.equal(latestRes.sha256, apkSha);
+    assert.equal(latestRes.downloadPath, '/api/android/apk');
+
+    const headRes = await fetch(`${baseUrl}/api/android/apk`, { method: 'HEAD' });
+    assert.equal(headRes.status, 200);
+    assert.equal(headRes.headers.get('content-type'), 'application/vnd.android.package-archive');
+    assert.equal(headRes.headers.get('x-apk-sha256'), apkSha);
+
+    const dlRes = await fetch(`${baseUrl}/api/android/apk`);
+    assert.equal(dlRes.status, 200);
+    const dlBuf = Buffer.from(await dlRes.arrayBuffer());
+    assert.equal(Buffer.compare(dlBuf, fakeApkBytes), 0);
+
+    // 3. Size mismatch or symlink must fail closed
+    fs.writeFileSync(
+      metaPath,
+      JSON.stringify({ versionCode: 10400, versionName: '1.4.0', bytes: fakeApkBytes.length + 10, sha256: apkSha })
+    );
+    const mismatchRes = await (await fetch(`${baseUrl}/api/android/latest`)).json();
+    assert.deepEqual(mismatchRes, { ok: true, available: false });
+    assert.equal((await fetch(`${baseUrl}/api/android/apk`)).status, 404);
+
+    // 4. PWA Native Bridge keep-alive & update helpers + deduplicated notice status + More menu
+    let keepAliveFlag = false;
+    const statusUpdates = [];
+    const updateChecks = [];
+    dom.window.__agyNative = {
+      isNative: () => true,
+      getAppVersion: () => '1.4.0',
+      isKeepAliveEnabled: () => keepAliveFlag,
+      setKeepAliveEnabled: (v) => { keepAliveFlag = Boolean(v); return keepAliveFlag; },
+      updateKeepAliveStatus: (txt) => statusUpdates.push(txt),
+      checkForUpdate: (silent) => updateChecks.push(Boolean(silent)),
+      openNativeSettings: () => {},
+    };
+
+    const nativeBridgeMod = await import(pathToFileURL(path.join(PWA_DIR, 'src', 'native-bridge.mjs')).href);
+    const mobileEnhMod = await import(pathToFileURL(path.join(PWA_DIR, 'src', 'mobile-enhancements.mjs')).href);
+    const studioPanelMod = await import(pathToFileURL(path.join(PWA_DIR, 'src', 'studio-panel.mjs')).href);
+
+    assert.equal(nativeBridgeMod.getNativeAppVersion(), '1.4.0');
+    assert.equal(nativeBridgeMod.isNativeKeepAliveEnabled(), false);
+    assert.equal(nativeBridgeMod.setNativeKeepAliveEnabled(true), true);
+    assert.equal(nativeBridgeMod.isNativeKeepAliveEnabled(), true);
+    nativeBridgeMod.checkNativeAppUpdate(false);
+    assert.deepEqual(updateChecks, [false]);
+
+    const noticeHost = dom.window.document.createElement('div');
+    const connState = { wsStatus: 'connected', wsRttMs: 28, hostAttached: true, conversations: [] };
+    mobileEnhMod.renderConnectionNoticeBar(noticeHost, { state: connState });
+    mobileEnhMod.renderConnectionNoticeBar(noticeHost, { state: connState });
+    assert.equal(statusUpdates.length, 1, 'identical keep-alive status must be deduplicated');
+    assert.match(statusUpdates[0], /已连接.*28ms/);
+
+    mobileEnhMod.renderConnectionNoticeBar(noticeHost, {
+      state: {
+        wsStatus: 'connected',
+        wsRttMs: 28,
+        hostAttached: true,
+        conversations: [{ id: 'c1', waitingSteps: [{ stepIndex: 1 }, { stepIndex: 2 }] }],
+      },
+    });
+    assert.equal(statusUpdates.length, 2);
+    assert.match(statusUpdates[1], /2 项待审批/);
+
+    const menuEl = dom.window.document.createElement('div');
+    let menuUpdates = 0;
+    const menuCtrl = mobileEnhMod.createMoreMenuController({
+      state: {
+        moreMenuOpen: true,
+        wsStatus: 'connected',
+        wsRttMs: 28,
+        hostAttached: true,
+        source: 'cdp',
+        identity: { role: 'steer' },
+        globalPreset: 2,
+        layoutPref: 'auto',
+      },
+      getMenuEl: () => menuEl,
+      getWsClient: () => null,
+      renderMenu: studioPanelMod.renderMobileMoreMenu,
+      formatPresetBadge: () => ({ label: 'REVIEW (2)' }),
+      layoutButtonLabel: () => '视图: 自动',
+      alertManager: { getAlertLabel: () => '提醒：开', toggleAlerts: () => true },
+      setActionNotice: () => {},
+      writeLayoutPref: () => {},
+      applyLayoutAttrs: () => {},
+      renderSidebarList: () => {},
+      renderStudioPanels: () => {},
+      refreshAllData: () => {},
+      handleUnpairDevice: () => {},
+    });
+    menuCtrl.render();
+    const btns = Array.from(menuEl.querySelectorAll('button.rc-more-item'));
+    const kaBtn = btns.find((b) => /后台常驻监听：已开启/.test(b.textContent || ''));
+    const updBtn = btns.find((b) => /检查 App 更新 \(v1\.4\.0\)/.test(b.textContent || ''));
+    assert.ok(kaBtn, 'more menu must show keep-alive toggle inside native APK');
+    assert.ok(updBtn, 'more menu must show check-update button with current version');
+    kaBtn.click();
+    assert.equal(keepAliveFlag, false);
+    updBtn.click();
+    assert.deepEqual(updateChecks, [false, false]);
+    delete dom.window.__agyNative;
+  } finally {
+    await gw?.close().catch(() => {});
+    dom.window.close();
+    if (prevDoc) Object.defineProperty(globalThis, 'document', prevDoc);
+    else delete globalThis.document;
+    if (prevWin) Object.defineProperty(globalThis, 'window', prevWin);
+    else delete globalThis.window;
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});

@@ -64,6 +64,7 @@ class MainActivity : AppCompatActivity(), NativeBridge.HostActions {
     private var lastResumeDispatchMs: Long = 0L
     private var pageLoadedOnce: Boolean = false
     private var webReady: Boolean = false
+    private var hasAutoCheckedUpdate: Boolean = false
     private var pendingSharedMediaJson: String? = null
     private var pendingFocusCascadeId: String? = null
     private var pendingLaunchUrl: String? = null
@@ -133,6 +134,14 @@ class MainActivity : AppCompatActivity(), NativeBridge.HostActions {
         super.onCreate(savedInstanceState)
 
         NotificationHelper.ensureChannels(this)
+        KeepAliveService.onStoppedListener = {
+            runOnUiThread {
+                Toast.makeText(this, "已停止后台常驻监听", Toast.LENGTH_SHORT).show()
+            }
+        }
+        if (ServerPrefs.isKeepAliveEnabled(this)) {
+            KeepAliveService.start(this, "正在恢复后台连接…")
+        }
         buildContentView()
         configureWebView(webView)
         bindWindowInsets()
@@ -727,6 +736,7 @@ class MainActivity : AppCompatActivity(), NativeBridge.HostActions {
     }
 
     override fun onDestroy() {
+        KeepAliveService.onStoppedListener = null
         unregisterNetworkMonitor()
         ioExecutor.shutdownNow()
         webView.destroy()
@@ -738,7 +748,9 @@ class MainActivity : AppCompatActivity(), NativeBridge.HostActions {
             SettingsDialog.show(
                 context = this,
                 onServerUrlUpdated = { _ -> loadCurrentServer(clearCache = false) },
-                onForceReload = { clear -> loadCurrentServer(clearCache = clear) }
+                onForceReload = { clear -> loadCurrentServer(clearCache = clear) },
+                onKeepAliveToggled = { enabled -> onSetKeepAliveEnabled(enabled) },
+                onCheckForUpdate = { onCheckForUpdate(false) }
             )
         }
     }
@@ -777,8 +789,43 @@ class MainActivity : AppCompatActivity(), NativeBridge.HostActions {
             pushLastInsetsToWeb()
             pushLastNetworkToWeb()
             flushPendingDispatches()
+            if (!hasAutoCheckedUpdate) {
+                hasAutoCheckedUpdate = true
+                mainHandler.postDelayed({
+                    if (!isFinishing && !isDestroyed) {
+                        AppUpdater.checkForUpdate(this, silent = true)
+                    }
+                }, 3500L)
+            }
         }
     }
 
     override fun getCurrentServerUrl(): String = ServerPrefs.getServerUrl(this)
+
+    override fun isKeepAliveEnabled(): Boolean = ServerPrefs.isKeepAliveEnabled(this)
+
+    override fun onSetKeepAliveEnabled(enabled: Boolean): Boolean {
+        ServerPrefs.setKeepAliveEnabled(this, enabled)
+        runOnUiThread {
+            if (enabled) {
+                if (!NotificationHelper.hasNotificationPermission(this)) {
+                    onRequestNotificationPermission()
+                }
+                KeepAliveService.start(this, "后台实时监听已开启")
+            } else {
+                KeepAliveService.stop(this)
+            }
+        }
+        return enabled
+    }
+
+    override fun onUpdateKeepAliveStatus(statusText: String) {
+        if (KeepAliveService.isRunning) {
+            KeepAliveService.updateStatus(this, statusText)
+        }
+    }
+
+    override fun onCheckForUpdate(silent: Boolean) {
+        AppUpdater.checkForUpdate(this, silent)
+    }
 }

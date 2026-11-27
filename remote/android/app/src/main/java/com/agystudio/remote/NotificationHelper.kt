@@ -18,6 +18,7 @@ import androidx.core.content.ContextCompat
 object NotificationHelper {
     const val CHANNEL_APPROVALS = "agy_approvals"
     const val CHANNEL_COMPLETED = "agy_completed"
+    const val CHANNEL_KEEPALIVE = "agy_keepalive"
     const val EXTRA_CASCADE_ID = "com.agystudio.remote.EXTRA_CASCADE_ID"
 
     fun ensureChannels(context: Context) {
@@ -40,8 +41,19 @@ object NotificationHelper {
             enableVibration(true)
             vibrationPattern = longArrayOf(0, 35, 50, 35)
         }
+        val keepAliveChannel = NotificationChannel(
+            CHANNEL_KEEPALIVE,
+            context.getString(R.string.channel_keepalive_name),
+            NotificationManager.IMPORTANCE_LOW
+        ).apply {
+            description = context.getString(R.string.channel_keepalive_desc)
+            setShowBadge(false)
+            enableVibration(false)
+            setSound(null, null)
+        }
         nm.createNotificationChannel(approvalChannel)
         nm.createNotificationChannel(completedChannel)
+        nm.createNotificationChannel(keepAliveChannel)
     }
 
     fun hasNotificationPermission(context: Context): Boolean {

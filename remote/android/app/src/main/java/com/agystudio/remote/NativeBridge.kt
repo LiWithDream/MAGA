@@ -14,6 +14,10 @@ class NativeBridge(
         fun onReloadPage(clearCache: Boolean)
         fun onWebReady()
         fun getCurrentServerUrl(): String
+        fun isKeepAliveEnabled(): Boolean
+        fun onSetKeepAliveEnabled(enabled: Boolean): Boolean
+        fun onUpdateKeepAliveStatus(statusText: String)
+        fun onCheckForUpdate(silent: Boolean)
     }
 
     @JavascriptInterface
@@ -29,6 +33,22 @@ class NativeBridge(
 
     @JavascriptInterface
     fun getServerUrl(): String = host.getCurrentServerUrl()
+
+    @JavascriptInterface
+    fun isKeepAliveEnabled(): Boolean = host.isKeepAliveEnabled()
+
+    @JavascriptInterface
+    fun setKeepAliveEnabled(enabled: Boolean): Boolean = host.onSetKeepAliveEnabled(enabled)
+
+    @JavascriptInterface
+    fun updateKeepAliveStatus(statusText: String?) {
+        host.onUpdateKeepAliveStatus(statusText.orEmpty())
+    }
+
+    @JavascriptInterface
+    fun checkForUpdate(silent: Boolean) {
+        host.onCheckForUpdate(silent)
+    }
 
     @JavascriptInterface
     fun openNativeSettings() {

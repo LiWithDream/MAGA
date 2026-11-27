@@ -2878,7 +2878,8 @@ button.rc-footer-pill:disabled {
 .rc-app[data-layout-mode="mobile"] .rc-model-name-full,
 .rc-app[data-layout-mode="mobile"] .rc-effort-full,
 .rc-app[data-layout-mode="mobile"] .rc-attach-label,
-.rc-app[data-layout-mode="mobile"] .rc-metrics-ttft {
+.rc-app[data-layout-mode="mobile"] .rc-metrics-ttft,
+.rc-app[data-layout-mode="mobile"] .rc-stream-chars {
   display: none;
 }
 

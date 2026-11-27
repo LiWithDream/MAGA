@@ -900,13 +900,13 @@ export function renderComposerFooterBar(
   // 4. Live Speed / TTFT micro-pill
   if (isStreaming) {
     const secs = Math.max(0, Math.floor(Number(streamElapsedSec || 0)));
-    const streamLabel = streamChars > 0 ? `生成中 ${secs}s · ${streamChars}字` : `生成中 ${secs}s`;
     leftCluster.appendChild(
       el(
         'span',
         { className: 'rc-footer-pill rc-metrics-pill is-streaming' },
         el('span', { className: 'rc-pulse' }),
-        el('span', { text: streamLabel })
+        el('span', { className: 'rc-stream-sec', text: `生成中 ${secs}s` }),
+        streamChars > 0 ? el('span', { className: 'rc-stream-chars', text: ` · ${streamChars}字` }) : null
       )
     );
   } else if (metrics && (Number(metrics.displayTps) > 0 || Number(metrics.ttft) > 0)) {

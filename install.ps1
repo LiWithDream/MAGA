@@ -3,6 +3,8 @@ param(
   [switch]$DryRun,
   [switch]$NoRules,
   [switch]$NoShortcut,
+  [switch]$Preview,
+  [switch]$Force,
   [string]$Dir = "",
   [string]$RepoUrl = "",
   [switch]$Help
@@ -17,6 +19,8 @@ try {
       [bool]$DryRunArg,
       [bool]$NoRulesArg,
       [bool]$NoShortcutArg,
+      [bool]$PreviewArg,
+      [bool]$ForceArg,
       [string]$DirArg,
       [string]$RepoUrlArg,
       [bool]$HelpArg,
@@ -35,6 +39,8 @@ Options:
   -Dir <path>      Target directory when cloning via irm | iex (default: %LOCALAPPDATA%\agy-studio)
   -NoRules         Skip syncing 7-line phase-sync rules into ~\.gemini\AGENTS.md
   -NoShortcut      Skip creating the Start Menu "Antigravity (AGY Studio)" shortcut
+  -Preview         Allow preview install from a non-main branch or linked worktree (--preview)
+  -Force           Allow install from a dirty working tree (--force)
   -RepoUrl <url>   Override repository clone URL
   -Help            Show this help message
 "@
@@ -186,6 +192,8 @@ Options:
     $CliArgs.Add('install')
     if ($NoRulesArg) { $CliArgs.Add('--no-rules') }
     if ($NoShortcutArg) { $CliArgs.Add('--no-shortcut') }
+    if ($PreviewArg) { $CliArgs.Add('--preview') }
+    if ($ForceArg) { $CliArgs.Add('--force') }
     $CliArgStr = ($CliArgs.ToArray()) -join ' '
 
     if ($DryRunArg) {
@@ -274,7 +282,7 @@ Options:
     }
 
     Write-Output "Done. Run 'node `"$TargetDir\studio\cli.mjs`" doctor' to verify live status."
-  } ([bool]$DryRun) ([bool]$NoRules) ([bool]$NoShortcut) $Dir $RepoUrl ([bool]$Help) $ScriptSource $ExitState
+  } ([bool]$DryRun) ([bool]$NoRules) ([bool]$NoShortcut) ([bool]$Preview) ([bool]$Force) $Dir $RepoUrl ([bool]$Help) $ScriptSource $ExitState
 } catch {
   if ($ScriptSource) {
     [Console]::Error.WriteLine($_.Exception.Message)

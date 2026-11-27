@@ -206,6 +206,7 @@ export function createDomFlagsFeature() {
         }
       }
     }
+
     return { reviewDetailBtns };
   }
 

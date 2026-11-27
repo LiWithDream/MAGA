@@ -31,6 +31,7 @@ import {
   getShellSegmentWriteInfo,
   isGitBinary,
   parseCommandWrapper,
+  resolveDirectoryChange,
   splitShellSegments,
   splitShellSegmentsWithOps,
   stripUnquotedGroupDelimiters,
@@ -733,7 +734,7 @@ function shouldDeferToLocalGuardrail(ctx, opts) {
   return hasValidLocalGuardrail(ctx.mainRoot);
 }
 
-function resolvePayloadCwd(payload, args = {}) {
+function resolvePayloadCwd(payload, args = {}, opts = {}) {
   const candidates = [
     args?.Cwd,
     args?.cwd,
@@ -745,10 +746,12 @@ function resolvePayloadCwd(payload, args = {}) {
       return path.resolve(expandHome(c.trim()));
     }
   }
-  return process.cwd();
+  const fallback = process.cwd();
+  // Installed plugin hooks run with cwd = pluginsDir/maga-git-workflow; never treat that as agent cwd in no-workspace chats.
+  return isPolicyOrPluginTamperPath(fallback, opts) ? os.homedir() : fallback;
 }
 
-function resolveEditTargetPath(rawPath, payload, args = {}) {
+function resolveEditTargetPath(rawPath, payload, args = {}, opts = {}) {
   const expanded = expandHome(rawPath);
   if (path.isAbsolute(expanded)) return path.resolve(expanded);
 
@@ -764,7 +767,10 @@ function resolveEditTargetPath(rawPath, payload, args = {}) {
       if (!bases.includes(absBase)) bases.push(absBase);
     }
   }
-  if (bases.length === 0) bases.push(process.cwd());
+  if (bases.length === 0) {
+    const fallback = process.cwd();
+    bases.push(isPolicyOrPluginTamperPath(fallback, opts) ? os.homedir() : fallback);
+  }
 
   for (const b of bases) {
     const candidate = path.resolve(b, expanded);
@@ -799,8 +805,9 @@ function expandShellArg(raw, shellVars, opts = {}) {
   return expandHome(s);
 }
 
-function evaluateShellTamperCommand(commandLine, initialCwd, payload, policy, opts, depth = 0) {
-  const segments = splitShellSegmentsWithOps(commandLine);
+function evaluateShellTamperCommand(commandLine, initialCwd, payload, policy, opts = {}, depth = 0) {
+  const platform = opts.platform || process.platform;
+  const segments = splitShellSegmentsWithOps(commandLine, platform);
   const shellVars = new Map();
   let currentDir = path.resolve(expandHome(initialCwd) || process.cwd());
   let prevDir = currentDir;
@@ -808,7 +815,7 @@ function evaluateShellTamperCommand(commandLine, initialCwd, payload, policy, op
   for (const seg of segments) {
     const inPipeline = seg.sepBefore === '|' || seg.sepAfter === '|';
     const cleanedSegText = stripUnquotedGroupDelimiters(seg.text);
-    const rawTokens = tokenizeSegment(cleanedSegText, shellVars);
+    const rawTokens = tokenizeSegment(cleanedSegText, shellVars, platform);
     if (rawTokens.length === 0) continue;
 
     if (rawTokens[0] === 'export' && rawTokens.length > 1) {
@@ -821,37 +828,34 @@ function evaluateShellTamperCommand(commandLine, initialCwd, payload, policy, op
       continue;
     }
 
-    const { env, cmdTokens } = parseCommandWrapper(rawTokens);
+    const { env, cmdTokens } = parseCommandWrapper(rawTokens, platform);
     for (const [k, v] of Object.entries(env)) {
       if (!shellVars.has(k) && !inPipeline && cmdTokens.length === 0) shellVars.set(k, v);
     }
     if (cmdTokens.length === 0) continue;
 
-    if (cmdTokens[0] === 'cd') {
+    const dirChange = resolveDirectoryChange(cmdTokens, currentDir, prevDir, {
+      platform,
+      expandTarget: (raw) => expandShellArg(raw, shellVars, opts),
+    });
+    if (dirChange) {
       if (!inPipeline) {
-        let argIdx = 1;
-        if (cmdTokens[argIdx] === '--') argIdx += 1;
-        const rawTarget = cmdTokens[argIdx];
-        let nextDir = currentDir;
-        if (!rawTarget) nextDir = os.homedir();
-        else if (rawTarget === '-') nextDir = prevDir;
-        else nextDir = path.resolve(currentDir, expandShellArg(rawTarget, shellVars, opts));
-        prevDir = currentDir;
-        currentDir = nextDir;
+        prevDir = dirChange.prevDir;
+        currentDir = dirChange.nextDir;
       }
       continue;
     }
 
     if (depth === 0) {
-      const inlineShell = extractInlineShellString(cmdTokens);
+      const inlineShell = extractInlineShellString(cmdTokens, platform);
       if (inlineShell) {
         const nestedDeny = evaluateShellTamperCommand(inlineShell, currentDir, payload, policy, opts, depth + 1);
         if (nestedDeny) return nestedDeny;
       }
     }
 
-    const redirectTargets = extractWriteRedirectTargets(cleanedSegText);
-    const { mutating, inlineScript } = getShellSegmentWriteInfo(cmdTokens, cleanedSegText);
+    const redirectTargets = extractWriteRedirectTargets(cleanedSegText, platform);
+    const { mutating, inlineScript } = getShellSegmentWriteInfo(cmdTokens, cleanedSegText, platform);
     if (!mutating && redirectTargets.length === 0) continue;
 
     const expandedText = expandShellArg(cleanedSegText, shellVars, opts);
@@ -920,9 +924,10 @@ function evaluateShellTamperCommand(commandLine, initialCwd, payload, policy, op
   return null;
 }
 
-function evaluateRunCommandDetailed(commandLine, payload, policy, opts) {
+function evaluateRunCommandDetailed(commandLine, payload, policy, opts = {}) {
+  const platform = opts.platform || process.platform;
   const args = payload?.toolCall?.args && typeof payload.toolCall.args === 'object' ? payload.toolCall.args : {};
-  const initialCwd = resolvePayloadCwd(payload, args);
+  const initialCwd = resolvePayloadCwd(payload, args, opts);
 
   if (SHELL_TAMPER_SUSPECT_RE.test(commandLine) || isPolicyOrPluginTamperPath(initialCwd, opts)) {
     const tamperDeny = evaluateShellTamperCommand(commandLine, initialCwd, payload, policy, opts);
@@ -940,7 +945,7 @@ function evaluateRunCommandDetailed(commandLine, payload, policy, opts) {
     };
   }
 
-  const { invocations, finalDir } = extractGitInvocationsDetailed(commandLine, initialCwd);
+  const { invocations, finalDir } = extractGitInvocationsDetailed(commandLine, initialCwd, 0, platform);
   let lastTrackedCtx = null;
   let lastTrackedProtected = null;
 
@@ -1077,7 +1082,7 @@ export function evaluateHookPayloadDetailed(payload, opts = {}) {
   const policy = opts.forcedPolicy ? null : readWorkflowPolicy({ stateDir: opts.stateDir });
   const eventName = String(payload.hookEventName || '');
   const args = payload.toolCall?.args && typeof payload.toolCall.args === 'object' ? payload.toolCall.args : {};
-  const baseCwd = resolvePayloadCwd(payload, args);
+  const baseCwd = resolvePayloadCwd(payload, args, opts);
 
   if (eventName === 'SessionStart') {
     const detailed = resolveGitContextDetailed(baseCwd);
@@ -1142,7 +1147,7 @@ export function evaluateHookPayloadDetailed(payload, opts = {}) {
       return { result: allowResult, resolvedCtx: null, recordCandidateDir: '', recordProtectedBranches: null, denyEvent: null };
     }
 
-    const absPath = resolveEditTargetPath(rawPath, payload, args);
+    const absPath = resolveEditTargetPath(rawPath, payload, args, opts);
 
     // Self-tamper protection in ALL tiers (policy file & live installed plugin dir)
     if (isPolicyOrPluginTamperPath(absPath, opts)) {

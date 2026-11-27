@@ -89,6 +89,7 @@ export function createProjectSharedContext(rt, modelApi) {
     },
     projectsSidebarRo: null,
     projectsSidebarRoTarget: null,
+    projectsSidebarRoTrack: null,
     projectsViewEl: null,
     projectsDocListenerBound: false,
     projectsContextBusy: false,

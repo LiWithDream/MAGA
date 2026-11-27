@@ -165,6 +165,60 @@ export function findWinAntigravityDesktopExe({
   return null;
 }
 
+/** Read `package.json`'s version directly from an Electron ASAR archive without spawning child processes. */
+export function readVersionFromAsar(asarPath, { existsSync = fs.existsSync, readFileSync = fs.readFileSync } = {}) {
+  if (!asarPath || !existsSync(asarPath)) return null;
+  let fd = null;
+  try {
+    fd = fs.openSync(asarPath, 'r');
+    const hdr = Buffer.alloc(16);
+    if (fs.readSync(fd, hdr, 0, 16, 0) < 16) return null;
+    if (hdr.readUInt32LE(0) !== 4) return null;
+    const headerPickleSize = hdr.readUInt32LE(4);
+    const headerJsonLen = hdr.readUInt32LE(12);
+    if (
+      headerPickleSize < 8 ||
+      headerJsonLen <= 0 ||
+      headerJsonLen > 32 * 1024 * 1024 ||
+      headerJsonLen > headerPickleSize
+    ) {
+      return null;
+    }
+    const jsonBuf = Buffer.alloc(headerJsonLen);
+    if (fs.readSync(fd, jsonBuf, 0, headerJsonLen, 16) < headerJsonLen) return null;
+    const idx = JSON.parse(jsonBuf.toString('utf8'));
+    const pkg = idx?.files?.['package.json'];
+    if (!pkg || typeof pkg !== 'object') return null;
+
+    if (pkg.unpacked === true) {
+      const unpackedPkg = joinSameStyle(`${asarPath}.unpacked`, 'package.json');
+      if (!existsSync(unpackedPkg)) return null;
+      const parsed = JSON.parse(readFileSync(unpackedPkg, 'utf8'));
+      const ver = typeof parsed?.version === 'string' ? parsed.version.trim() : '';
+      return ver || null;
+    }
+
+    const pkgOffset = Number(pkg.offset);
+    const pkgSize = Number(pkg.size);
+    if (!Number.isFinite(pkgOffset) || pkgOffset < 0 || !Number.isFinite(pkgSize) || pkgSize <= 0 || pkgSize > 256 * 1024) {
+      return null;
+    }
+    const pkgBuf = Buffer.alloc(pkgSize);
+    if (fs.readSync(fd, pkgBuf, 0, pkgSize, 8 + headerPickleSize + pkgOffset) < pkgSize) return null;
+    const parsed = JSON.parse(pkgBuf.toString('utf8'));
+    const ver = typeof parsed?.version === 'string' ? parsed.version.trim() : '';
+    return ver || null;
+  } catch {
+    return null;
+  } finally {
+    if (fd !== null) {
+      try {
+        fs.closeSync(fd);
+      } catch {}
+    }
+  }
+}
+
 export function getWinAntigravityFingerprint(opts = {}) {
   const existsSync = opts.existsSync || fs.existsSync;
   const statSync = opts.statSync || fs.statSync;
@@ -197,6 +251,10 @@ export function getWinAntigravityFingerprint(opts = {}) {
         if (vm) version = vm[1].trim();
       }
     } catch {}
+  }
+  if (version === 'unknown' && existsSync(asarPath)) {
+    const asarVer = readVersionFromAsar(asarPath, { existsSync, readFileSync });
+    if (asarVer) version = asarVer;
   }
   return {
     version,

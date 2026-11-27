@@ -909,7 +909,10 @@ test('footer-capsules.css scopes aux min-width outside active split transitions 
   assert.ok(css.includes('@keyframes agyAuxReveal'));
   assert.ok(css.includes('@keyframes agySubSwapIn'));
   assert.ok(css.includes('html[data-agy-panel-handoff="ov-to-aux-closing"] .animate-overview-panel'));
+  assert.ok(css.includes('html[data-agy-panel-handoff="aux-to-ov-closing"] [data-testid="overview-panel-host"]'));
   assert.ok(css.includes('html[data-agy-panel-handoff="ov-to-aux-opening"] .animate-overview-panel'));
+  assert.ok(css.includes('html[data-agy-motion="reduced"][data-agy-panel-handoff="ov-to-aux-closing"] .animate-overview-panel'));
+  assert.equal(css.includes('html[data-agy-motion="reduced"] html['), false);
   assert.ok(css.includes('--agy-hold-ov-reserve'));
   assert.ok(css.includes('@media (prefers-reduced-motion: reduce)'));
 });
@@ -1050,17 +1053,21 @@ test('subagent-footer choreographs Overview <-> Aux transitions and pre-arms 50/
       await new Promise((r) => setTimeout(r, 530));
       assert.equal(env.doc.documentElement.getAttribute('data-agy-panel-handoff'), null);
 
-      // Scenario B: Aux is open -> user clicks Overview toggle -> capture intercepts and closes Aux first
+      // Scenario B: Aux is open -> user clicks Overview toggle -> capture intercepts and closes Aux first while holding reserve
       const ovClicksBefore = ovClicks;
       const auxClicksBefore = auxClicks;
       dispatchUserClick(ovBtn);
       assert.equal(ovClicks, ovClicksBefore, 'Overview click must be intercepted while Aux is open');
+      assert.equal(env.doc.documentElement.getAttribute('data-agy-panel-handoff'), 'aux-to-ov-closing');
+      assert.equal(env.doc.documentElement.style.getPropertyValue('--agy-hold-ov-reserve'), '336px');
       assert.equal(auxClicks, auxClicksBefore + 1, 'Aux must start closing immediately');
       assert.equal(auxBtn.getAttribute('aria-expanded'), 'false');
 
       await new Promise((r) => setTimeout(r, 270));
       assert.equal(ovClicks, ovClicksBefore + 1, 'Overview click replays smoothly after Aux exits');
       assert.equal(ovBtn.getAttribute('aria-pressed'), 'true');
+      await new Promise((r) => setTimeout(r, 310));
+      assert.equal(env.doc.documentElement.getAttribute('data-agy-panel-handoff'), null);
 
       rt.dispose();
 
@@ -1463,6 +1470,56 @@ test('buildStudioBundle includes unified MAGA settings runtime & non-nested CSS'
   assert.ok(jsBlock.includes('createStudioSettingsRuntime'));
   assert.ok(cssBlock.includes('/* --- studio/styles/studio-settings.css --- */'));
   assert.equal(hasNestedHasSelector(cssBlock), false);
+});
+
+test('studio-settings drawer clears Windows topbar using --agy-drawer-top without affecting macOS 48px', async () => {
+  const settingsCss = readFileSync(path.join(REPO, 'studio', 'styles', 'studio-settings.css'), 'utf8');
+  assert.match(
+    settingsCss,
+    /#agy-maga-settings-drawer\s*\{[\s\S]*?top:\s*var\(--agy-drawer-top,\s*calc\(var\(--ag-win-top-bar,\s*0px\)\s*\+\s*48px\)\);/,
+    'drawer top must defer to dynamic --agy-drawer-top / --ag-win-top-bar'
+  );
+  const { createStudioSettingsRuntime } = await import(
+    pathToFileURL(path.join(REPO, 'studio', 'modules', 'studio-settings.mjs')).href
+  );
+  const { JSDOM } = await import('jsdom');
+  const dom = new JSDOM('<!doctype html><html><body><div data-testid="overview-panel-host"></div></body></html>', {
+    url: 'http://127.0.0.1/c/conv-drawer-top',
+  });
+  const keys = ['window', 'document', 'location'];
+  const prev = new Map(keys.map((k) => [k, Object.getOwnPropertyDescriptor(globalThis, k)]));
+  globalThis.window = dom.window;
+  globalThis.document = dom.window.document;
+  globalThis.location = dom.window.location;
+  try {
+    const doc = dom.window.document;
+    const host = doc.querySelector('[data-testid="overview-panel-host"]');
+    host.getBoundingClientRect = () => ({ left: 257, top: 70, right: 1912, bottom: 1024, width: 1655, height: 954 });
+    const studioPrefs = {
+      get: () => ({ motionLevel: 'off', defaultTierByFamily: {}, hiddenModels: [] }),
+      getBaseState: () => ({ modules: {} }),
+      getModelCatalog: () => ({ executors: [], planners: [], families: [] }),
+      getHostPref: () => 0,
+      getStepStreamMode: () => 'compact',
+      subscribe: () => () => {},
+    };
+    const rt = createStudioSettingsRuntime({ studioPrefs });
+    rt.openDrawer();
+    const drawer = doc.getElementById('agy-maga-settings-drawer');
+    assert.equal(drawer.style.getPropertyValue('--agy-drawer-top'), '78px');
+    rt.closeDrawer({ restore: false });
+    host.getBoundingClientRect = () => ({ left: 257, top: 40, right: 1912, bottom: 1024, width: 1655, height: 984 });
+    rt.openDrawer();
+    assert.equal(drawer.style.getPropertyValue('--agy-drawer-top'), '48px');
+    rt.dispose();
+  } finally {
+    for (const k of keys) {
+      const desc = prev.get(k);
+      if (desc) Object.defineProperty(globalThis, k, desc);
+      else delete globalThis[k];
+    }
+    dom.window.close();
+  }
 });
 
 test('studio-settings & capsule-picker enforce symmetrical centering, merge capsule/theme 3-tab workbench & show all Gemini 4 elements', () => {
@@ -2015,6 +2072,41 @@ test('Stage 3: eliminates all global CSS :has() rules and applies safe containme
     }
     dom.window.close();
   }
+});
+
+test('overview-usage.css promotes gutter reserve onto conversation-view via two-level CSS bridge with motion overrides and zero :has()', () => {
+  const usageCss = readFileSync(path.join(REPO, 'studio', 'styles', 'overview-usage.css'), 'utf8');
+  const domFlagsSrc = readFileSync(path.join(REPO, 'studio', 'core', 'dom-flags.mjs'), 'utf8');
+
+  assert.equal(usageCss.includes(':has('), false, 'overview-usage.css must contain zero :has() rules or comments');
+  assert.equal(usageCss.includes('data-maga-ov-inset'), false, 'overview-usage.css must not use stale data-maga-ov-inset');
+  assert.equal(domFlagsSrc.includes('data-maga-ov-inset'), false, 'dom-flags.mjs must not compute or mutate data-maga-ov-inset');
+
+  assert.match(
+    usageCss,
+    /\[data-testid="overview-panel-host"\]\s*>\s*div\.flex-1\s*\{[\s\S]*?--maga-ov-effective-reserve:\s*calc\(var\(--overview-panel-reserve,\s*0px\)\s*\+\s*var\(--overview-panel-gutter-reserve,\s*0px\)\);/,
+    'flex-1 bridge computes --maga-ov-effective-reserve from native overview reserve variables'
+  );
+  assert.match(
+    usageCss,
+    /\[data-testid="overview-panel-host"\]\s*>\s*div\.flex-1\s+\[data-testid="conversation-view"\]\s*\{[\s\S]*?--overview-panel-reserve:\s*var\(--maga-ov-effective-reserve,\s*0px\);[\s\S]*?--overview-panel-gutter-reserve:\s*0px;/,
+    'conversation-view promotes --maga-ov-effective-reserve into --overview-panel-reserve and zeroes gutter reserve so overlay-scrollbar is not shifted twice'
+  );
+  assert.match(
+    usageCss,
+    /html\[data-agy-motion="reduced"\]\s+\[data-testid="overview-panel-host"\]\s*>\s*div\.flex-1\s+\[data-testid="conversation-view"\]:not\(\.no-transitions\)[\s\S]*?transition-duration:\s*160ms\s*!important;/,
+    'reduced motion shortens reserve transitions on conversation-view'
+  );
+  assert.match(
+    usageCss,
+    /html\[data-agy-motion="off"\]\s+\[data-testid="overview-panel-host"\]\s*>\s*div\.flex-1\s+\[data-testid="conversation-view"\][\s\S]*?transition:\s*none\s*!important;/,
+    'off motion disables reserve transitions on conversation-view'
+  );
+  assert.match(
+    usageCss,
+    /@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{[\s\S]*?\[data-testid="overview-panel-host"\]\s*>\s*div\.flex-1\s+\[data-testid="conversation-view"\][\s\S]*?transition:\s*none\s*!important;/,
+    'prefers-reduced-motion disables reserve transitions on conversation-view'
+  );
 });
 
 test('Stage 4: daemon, studio-settings & subagent-footer maintain thin orchestrators and acyclic submodules', async () => {

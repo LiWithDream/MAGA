@@ -29,6 +29,13 @@ test('install.sh / install.ps1 and uninstall --dry-run and pipe-mode isolation r
       assert.match(installOut, /\[dry-run\] mode=(prebuilt|source|source-bootstrap)/);
       assert.match(installOut, /studio\/cli\.mjs install/);
 
+      const installPreviewOut = execFileSync(
+        'powershell',
+        ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(REPO, 'install.ps1'), '-DryRun', '-Preview'],
+        { cwd: REPO, env, encoding: 'utf8', windowsHide: true }
+      );
+      assert.match(installPreviewOut, /studio\/cli\.mjs install --preview/);
+
       const uninstallOut = execFileSync(
         'powershell',
         ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(REPO, 'uninstall.ps1'), '-DryRun'],
@@ -56,6 +63,13 @@ test('install.sh / install.ps1 and uninstall --dry-run and pipe-mode isolation r
       encoding: 'utf8',
     });
     assert.match(installNoRulesOut, /studio\/cli\.mjs install --no-rules/);
+
+    const installPreviewOut = execFileSync('bash', [path.join(REPO, 'install.sh'), '--dry-run', '--preview'], {
+      cwd: REPO,
+      env,
+      encoding: 'utf8',
+    });
+    assert.match(installPreviewOut, /studio\/cli\.mjs install --preview/);
 
     // Piped stdin mode must NOT trust $PWD/studio/cli.mjs; it must route to remote-clone ($INSTALL_DIR).
     const pipedScript = readFileSync(path.join(REPO, 'install.sh'), 'utf8');

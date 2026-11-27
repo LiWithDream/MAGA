@@ -5,13 +5,26 @@ All notable changes to **AGY Studio (`agy-studio`, formerly MAGA)** will be docu
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.4.0] - 2026-11-27
+
+Introduced **AGY Studio Remote Control** and the companion **Native Android App (`com.agystudio.remote`)** for encrypted mobile & multi-pane remote supervision, alongside selectable cross-model review reviewers, PWA modularization, and cleaner release packaging.
 
 ### Added
 - **AGY Studio Remote Control (`remote/gateway/`, `remote/pwa/`, `core/daemon/remote/`, `user/src/modules/remote-tap.mjs`, `studio/remote-cli.mjs`)**:
   - **Zero-Dep Loopback Gateway & Edge Security (`remote/gateway/`)**: Standalone 7-file Node gateway binding strictly to `127.0.0.1` (`18791`) with single-use pairing codes, ECDSA P-256 device handshake, device revocation (`4001`) and live role demotion (`4003`), strict CSP, and fail-closed `cloudflare-access` (JWKS RS256) / `tailscale-serve` / `loopback` transports.
-  - **Controlled Write Loop & AGY Studio v1.3 Integration (`core/daemon/remote/`, `user/src/modules/remote-tap.mjs`, `remote/pwa/`)**: Remote permission approval (`convo.approve` with `PermissionScope.ONCE` and `waitingStepHash` CAS), message sending (`convo.send`), cancellation (`convo.cancel`), `/compact` execution (`convo.compact`), interrupted-task `Resume` (`convo.resumeState` / `convo.resume`), per-cascade single-writer lock (`cascade-lock.mjs`), and sanitized Studio overview (`studio.overview`: projects, worktrees, dual-pool quota, today tokens, Opus Gate status & dismiss).
+  - **Controlled Write Loop & Dual-UI Console (`core/daemon/remote/`, `user/src/modules/remote-tap.mjs`, `remote/pwa/`)**: Remote permission approval (`convo.approve` with `PermissionScope.ONCE` and `waitingStepHash` CAS), interactive `askQuestion` single/multi-select cards, message sending (`convo.send`), new chat modal, cancellation (`convo.cancel`), `/compact` execution (`convo.compact`), interrupted-task `Resume`, per-cascade single-writer lock (`cascade-lock.mjs`), model/effort capsule + image paste/camera upload, per-conversation draft persistence, inline `/` slash command bar, live RTT & connection recovery notice bar, and sanitized Studio overview (`studio.overview`).
   - **Desktop Settings & Zero-Dep QR Pairing (`studio/modules/settings/{remote-view,remote-events,qr-svg}.mjs`, `core/daemon/remote/settings-rpc.mjs`)**: Added the `Remote Control` category inside AGY Studio Settings with instant gateway enable/disable, Cloudflare Access / Loopback / Tailscale configuration, local ISO 18004 SVG QR code pairing, device role/revocation controls, and CLI/packaging integration (`studio/cli.mjs remote`, `studio/pack-release.mjs`, `studio/build.mjs`).
+- **Companion Native Android App & Self-Hosted OTA (`remote/android/`, `scripts/build-android-apk.mjs`, `remote/gateway/server.mjs`)**:
+  - Added lightweight Kotlin edge-to-edge WebView client (`com.agystudio.remote`) featuring native notifications & haptics, Android share-sheet image upload, in-app OAuth, network-change (`NetworkCallback`) / foreground resume / `onRenderProcessGone` crash recovery, `FileProvider` camera capture, and `onWebReady` startup handshake.
+  - Added optional foreground `KeepAliveService` (`dataSync`) and Cloudflare-Access-protected in-app OTA updater (`GET /api/android/latest`, `GET|HEAD /api/android/apk`, `npm run build:android`) with SHA-256 verification and atomic release staging.
+- **Cross-Model Review Gate Enhancements (`studio/modules/opus-gate-pill.mjs`, `studio/plugin/maga-opus-gate/`, `remote/pwa/src/studio-panel.mjs`)**: Added selectable `claude-opus` / `gemini-4-carbon-high` reviewer paths, pre-landing `PreToolUse` checkpoint pause, and mobile Opus Gate live refresh + trigger parity.
+
+### Changed
+- **Remote PWA Modularization (`remote/pwa/src/{workspace-shell,convo-actions}.mjs`)**: Extracted the Pure-DOM workspace shell builder (`createWorkspaceShellDom`, `renderSidebarProjectsBar`) and conversation action handlers (`createConvoActionHandlers`) out of `remote/pwa/src/app.mjs` (`1,995` -> `1,326` lines) and enforced the `< 2,000`-line invariant across all `remote/pwa/src/*.mjs` files.
+- **Release Packager Hygiene (`studio/pack-release.mjs`)**: Excluded `.gradle`, `local.properties`, `remote/android/**/build`, APK/JKS/keystore artifacts, and local Android update manifests from emitted macOS release tarballs.
+
+### Fixed
+- **Mobile WebView, Service Worker & Control Flow**: Fixed standalone PWA viewport height docking, Android back-gesture History API navigation, model popover outside-click handling, draft-safe service worker `controllerchange` reloads, shared media `previewUrl`/`dataBase64` mapping, keep-alive status cache deduplication while disabled, and mobile Opus Gate `sendMessage` argument ordering + overview refresh throttling.
 
 ## [1.3.0] - 2026-11-26
 

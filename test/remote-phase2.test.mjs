@@ -718,7 +718,10 @@ test('Phase 2 static invariants: 7 gateway files, <2000 lines, Zero-XSS across a
   const pwaSrcFiles = fs.readdirSync(path.join(PWA_DIR, 'src')).filter((f) => f.endsWith('.mjs'));
   assert.ok(pwaSrcFiles.length > 0);
   for (const fname of pwaSrcFiles) {
-    const src = fs.readFileSync(path.join(PWA_DIR, 'src', fname), 'utf8');
+    const abs = path.join(PWA_DIR, 'src', fname);
+    execFileSync(process.execPath, ['--check', abs], { stdio: 'pipe' });
+    const src = fs.readFileSync(abs, 'utf8');
+    assert.ok(src.split('\n').length < 2000, `remote/pwa/src/${fname} must stay < 2000 lines`);
     assert.equal(
       /\b(innerHTML|outerHTML|insertAdjacentHTML|document\.write)\b/.test(src),
       false,
@@ -2741,5 +2744,188 @@ test('Android OTA Gateway Endpoints & Native Keep-Alive / Update Bridge', async 
     if (prevWin) Object.defineProperty(globalThis, 'window', prevWin);
     else delete globalThis.window;
     fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+test('Phase 2 modularization: workspace-shell DOM builder and convo-actions guards', async () => {
+  const { JSDOM } = await import('jsdom');
+  const dom = new JSDOM('<!doctype html><html><body><div id="app"></div></body></html>', {
+    url: 'http://127.0.0.1/',
+  });
+  const prevDoc = Object.getOwnPropertyDescriptor(globalThis, 'document');
+  const prevWin = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  Object.defineProperty(globalThis, 'document', { value: dom.window.document, configurable: true, writable: true });
+  Object.defineProperty(globalThis, 'window', { value: dom.window, configurable: true, writable: true });
+
+  try {
+    const shellMod = await import(pathToFileURL(path.join(PWA_DIR, 'src', 'workspace-shell.mjs')).href);
+    const actionsMod = await import(pathToFileURL(path.join(PWA_DIR, 'src', 'convo-actions.mjs')).href);
+
+    const rootEl = dom.window.document.getElementById('app');
+    const selectedProjects = [];
+    const switchedTabs = [];
+    const state = {
+      layoutPref: 'auto',
+      searchQuery: '',
+      draftText: '',
+      draftMedia: [],
+      draftIdempotencyKey: 'k-init',
+      turboWriteConfirmed: false,
+      globalPreset: 3, // TURBO -> requires ack
+      identity: { role: 'steer' },
+      selectedId: '11111111-1111-4111-8111-111111111111',
+      selectedProjectId: '',
+      cancelConfirmArmedCid: '',
+      sendBusy: false,
+      cancelBusy: false,
+      approvingHash: '',
+      actionError: '',
+      actionNotice: '',
+      pendingApproveKeys: new Map(),
+      pendingResumeKeys: new Map(),
+      studioOverview: {
+        projects: [
+          { id: 'proj-a', name: 'RepoA' },
+          { id: 'proj-b', name: 'RepoB' },
+        ],
+      },
+    };
+
+    const refs = shellMod.createWorkspaceShellDom({
+      rootEl,
+      state,
+      layoutButtonLabel: (p) => `视图: ${p}`,
+      handlers: {
+        onSwitchMobileTab: (tab) => switchedTabs.push(tab),
+      },
+    });
+    assert.ok(rootEl.contains(refs.topbar));
+    assert.ok(rootEl.contains(refs.composerCard));
+    assert.ok(rootEl.contains(refs.timeline));
+    assert.ok(rootEl.contains(refs.mobileNav));
+    assert.ok(rootEl.contains(refs.sidebarProjects));
+    refs.navOverviewBtn.click();
+    assert.deepEqual(switchedTabs, ['overview']);
+
+    shellMod.renderSidebarProjectsBar(refs, state, {
+      onSelectProject: (pid) => {
+        selectedProjects.push(pid);
+        state.selectedProjectId = pid;
+      },
+    });
+    assert.equal(refs.sidebarProjects.classList.contains('rc-hidden'), false);
+    const chips = Array.from(refs.sidebarProjects.querySelectorAll('button.rc-chip'));
+    assert.equal(chips.length, 3);
+    chips[1].click();
+    assert.deepEqual(selectedProjects, ['proj-a']);
+    shellMod.renderSidebarProjectsBar(refs, state, {
+      onSelectProject: (pid) => selectedProjects.push(pid),
+    });
+    Array.from(refs.sidebarProjects.querySelectorAll('button.rc-chip'))[1].click();
+    assert.deepEqual(selectedProjects, ['proj-a', '']);
+
+    // Convo actions: TURBO ack guard, 2-tap cancel + resetCancelConfirm, approve key reuse & mismatch clear
+    const sentPayloads = [];
+    const canceledPayloads = [];
+    const approveCalls = [];
+    let approveShouldFail = 'transient_error';
+    const notices = [];
+    let refreshCount = 0;
+
+    const mockWs = {
+      async sendMessage(cid, text, opts) {
+        sentPayloads.push({ cid, text, opts });
+        return { ok: true };
+      },
+      async cancelConversation(cid, opts) {
+        canceledPayloads.push({ cid, opts });
+        return { ok: true };
+      },
+      async approveWaitingStep(cid, payload) {
+        approveCalls.push({ cid, payload });
+        if (approveShouldFail) {
+          const err = new Error(approveShouldFail);
+          err.code = approveShouldFail;
+          throw err;
+        }
+        return { ok: true };
+      },
+    };
+
+    let keySeq = 0;
+    const actions = actionsMod.createConvoActionHandlers({
+      state,
+      getWsClient: () => mockWs,
+      canSteer: () => true,
+      createIdempotencyKey: () => `k-${++keySeq}`,
+      setActionNotice: (msg) => notices.push(msg),
+      syncComposerControls: () => {},
+      renderDetailTimeline: () => {},
+      fetchAndRenderSnapshot: () => {},
+      refreshAllData: () => {
+        refreshCount += 1;
+      },
+    });
+
+    // 1. handleSendDraft blocks on unconfirmed TURBO
+    state.draftText = 'hello world';
+    state.turboWriteConfirmed = false;
+    await actions.handleSendDraft();
+    assert.equal(sentPayloads.length, 0);
+    assert.match(state.actionError, /TURBO/);
+
+    // Confirmed TURBO sends and clears draft
+    state.turboWriteConfirmed = true;
+    await actions.handleSendDraft();
+    assert.equal(sentPayloads.length, 1);
+    assert.equal(sentPayloads[0].text, 'hello world');
+    assert.equal(sentPayloads[0].opts.turboWriteConfirmed, true);
+    assert.equal(state.draftText, '');
+
+    // 2. handleCancelConvo 2-tap arm -> resetCancelConfirm -> arm -> confirm
+    await actions.handleCancelConvo();
+    assert.equal(state.cancelConfirmArmedCid, state.selectedId);
+    assert.equal(canceledPayloads.length, 0);
+    actions.resetCancelConfirm();
+    assert.equal(state.cancelConfirmArmedCid, '');
+
+    await actions.handleCancelConvo();
+    assert.equal(state.cancelConfirmArmedCid, state.selectedId);
+    await actions.handleCancelConvo();
+    assert.equal(canceledPayloads.length, 1);
+    assert.equal(state.cancelConfirmArmedCid, '');
+
+    // 3. handleApproveStep reuses idempotency key on transient error, clears on waiting_step_mismatch
+    const step = { stepIndex: 7, waitingStepHash: 'hash-7' };
+    await actions.handleApproveStep(step, 'allow_once');
+    await actions.handleApproveStep(step, 'allow_once');
+    assert.equal(approveCalls.length, 2);
+    assert.equal(
+      approveCalls[0].payload.idempotencyKey,
+      approveCalls[1].payload.idempotencyKey,
+      'transient failure must reuse same idempotencyKey on retry'
+    );
+
+    approveShouldFail = 'waiting_step_mismatch';
+    const beforeRefresh = refreshCount;
+    await actions.handleApproveStep(step, 'allow_once');
+    assert.equal(approveCalls.length, 3);
+    assert.equal(refreshCount, beforeRefresh + 1);
+
+    approveShouldFail = null;
+    await actions.handleApproveStep(step, 'allow_once');
+    assert.equal(approveCalls.length, 4);
+    assert.notEqual(
+      approveCalls[3].payload.idempotencyKey,
+      approveCalls[2].payload.idempotencyKey,
+      'after waiting_step_mismatch cleared key, next attempt allocates a fresh idempotencyKey'
+    );
+    assert.match(notices[notices.length - 1], /Allow Once/);
+  } finally {
+    dom.window.close();
+    if (prevDoc) Object.defineProperty(globalThis, 'document', prevDoc);
+    else delete globalThis.document;
+    if (prevWin) Object.defineProperty(globalThis, 'window', prevWin);
+    else delete globalThis.window;
   }
 });

@@ -107,6 +107,22 @@ export async function packRelease({ outDir = DIST_DIR, versionOverride = '' } = 
               return false;
             }
             if (
+              base === '.gradle' ||
+              base === 'local.properties' ||
+              base === 'android-latest.json' ||
+              base === 'AGY-Studio-Remote.apk' ||
+              base === 'android-release.jks' ||
+              base.endsWith('.apk') ||
+              base.endsWith('.jks') ||
+              base.endsWith('.keystore') ||
+              base.endsWith('.aab')
+            ) {
+              return false;
+            }
+            if (base === 'build' && srcPath.includes(`${path.sep}remote${path.sep}android${path.sep}`)) {
+              return false;
+            }
+            if (
               base === 'studio-prefs.json' ||
               base === 'project-suggestions-config.json' ||
               base === 'gateway.pid' ||

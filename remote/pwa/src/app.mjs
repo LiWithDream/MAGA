@@ -27,6 +27,7 @@ import {
 } from './studio-panel.mjs';
 import {
   STORAGE_KEYS,
+  bindViewportHeightSync,
   createAlertManager,
   createMobileHistoryController,
   createMoreMenuController,
@@ -1917,6 +1918,7 @@ function startWorkspaceSession() {
 }
 
 async function boot() {
+  bindViewportHeightSync();
   if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
     const hadController = Boolean(navigator.serviceWorker.controller);
     if (typeof navigator.serviceWorker.addEventListener === 'function') {

@@ -2184,6 +2184,14 @@ test('Remote Mobile Polish V2: stale worktree branch cleanup, Markdown tables, a
     histCtrl.handlePopState({ state: { rcView: 'list' } });
     assert.equal(navListCount, 1);
     assert.equal(navState.mobileView, 'list');
+
+    // 8. Standalone PWA viewport height sync (no 100dvh overflow clipping bottom composer bar)
+    assert.equal(cssSrc.includes('height: 100dvh'), false, 'styles.css must avoid 100dvh which clips bottom dock in Android standalone WebAPK');
+    assert.ok(cssSrc.includes('height: var(--rc-app-h, 100%)'), 'styles.css must bind .rc-app height to --rc-app-h');
+    assert.ok(bootHtml.includes('interactive-widget=resizes-content'), 'index.html must enable interactive-widget=resizes-content');
+    const unbindVp = mobileEnhMod.bindViewportHeightSync();
+    assert.match(doc.documentElement.style.getPropertyValue('--rc-app-h'), /^\d+px$/);
+    unbindVp();
   } finally {
     dom.window.close();
     if (prevDoc) Object.defineProperty(globalThis, 'document', prevDoc);

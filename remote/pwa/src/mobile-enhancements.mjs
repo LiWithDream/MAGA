@@ -38,6 +38,41 @@ export function defaultOverviewCollapsed() {
   return window.innerWidth < 1180;
 }
 
+export function bindViewportHeightSync() {
+  if (typeof window === 'undefined' || typeof document === 'undefined') return () => {};
+  let rafId = 0;
+  const apply = () => {
+    rafId = 0;
+    const innerH = Number(window.innerHeight || 0);
+    const vvH = Number(window.visualViewport?.height || 0);
+    const h = vvH > 0 && innerH > 0 ? Math.min(innerH, vvH) : vvH || innerH;
+    if (h > 100) {
+      document.documentElement.style.setProperty('--rc-app-h', `${Math.round(h)}px`);
+    }
+  };
+  const schedule = () => {
+    if (rafId) return;
+    if (typeof window.requestAnimationFrame === 'function') {
+      rafId = window.requestAnimationFrame(apply);
+    } else {
+      apply();
+    }
+  };
+  apply();
+  window.addEventListener('resize', schedule);
+  window.addEventListener('orientationchange', schedule);
+  if (window.visualViewport && typeof window.visualViewport.addEventListener === 'function') {
+    window.visualViewport.addEventListener('resize', schedule);
+  }
+  return () => {
+    window.removeEventListener('resize', schedule);
+    window.removeEventListener('orientationchange', schedule);
+    if (window.visualViewport && typeof window.visualViewport.removeEventListener === 'function') {
+      window.visualViewport.removeEventListener('resize', schedule);
+    }
+  };
+}
+
 function readAlertsPref() {
   try {
     const raw = window.localStorage.getItem(ALERTS_STORAGE_KEY);

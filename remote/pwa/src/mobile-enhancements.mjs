@@ -727,6 +727,77 @@ export function createMobileHistoryController({
   };
 }
 
+export function createOpusGateActions({
+  state,
+  getWsClient,
+  canSteer,
+  requiresTurboAck,
+  createIdempotencyKey,
+  buildPrompt,
+  setActionNotice,
+  syncComposerControls,
+  refreshStudioOverview,
+  refreshAllData,
+}) {
+  async function dismiss(prop) {
+    const wsClient = getWsClient();
+    if (!wsClient || !state.selectedId || !canSteer() || state.opusDismissBusy || !prop?.id) return;
+    const targetCid = state.selectedId;
+    state.opusDismissBusy = true;
+    state.actionError = '';
+    state.actionNotice = '';
+    syncComposerControls();
+    try {
+      await wsClient.dismissOpusProposal(targetCid, prop.id, { ts: prop.ts });
+      if (state.selectedId === targetCid) setActionNotice('已忽略 Opus Gate 检查点建议');
+      refreshStudioOverview(targetCid);
+    } catch (err) {
+      if (state.selectedId === targetCid) state.actionError = formatWriteError(err);
+    } finally {
+      state.opusDismissBusy = false;
+      syncComposerControls();
+    }
+  }
+
+  async function triggerReview(prop, reviewerModel = 'carbon') {
+    const wsClient = getWsClient();
+    if (!wsClient || !state.selectedId || !canSteer() || state.opusDismissBusy || !prop?.id) return;
+    const targetCid = state.selectedId;
+    const needTurbo = requiresTurboAck(state.globalPreset);
+    const confirmed = Boolean(needTurbo && state.turboWriteConfirmed);
+    if (needTurbo && !confirmed) {
+      state.actionError = '请先勾选 TURBO / 未知权限高危确认框后再发起审查';
+      state.actionNotice = '';
+      syncComposerControls();
+      return;
+    }
+    state.opusDismissBusy = true;
+    state.actionError = '';
+    state.actionNotice = '';
+    syncComposerControls();
+    try {
+      const prompt = buildPrompt(prop, reviewerModel);
+      await wsClient.sendMessage(targetCid, {
+        text: prompt,
+        turboWriteConfirmed: confirmed,
+        idempotencyKey: createIdempotencyKey(),
+      });
+      await wsClient.dismissOpusProposal(targetCid, prop.id, { ts: prop.ts }).catch(() => {});
+      if (state.selectedId === targetCid) {
+        setActionNotice(reviewerModel === 'opus' ? '已发起 Opus High 审查' : '已发起 Carbon High 审查');
+      }
+      refreshAllData();
+    } catch (err) {
+      if (state.selectedId === targetCid) state.actionError = formatWriteError(err);
+    } finally {
+      state.opusDismissBusy = false;
+      syncComposerControls();
+    }
+  }
+
+  return { dismiss, triggerReview };
+}
+
 export function createMoreMenuController({
   state,
   getMenuEl,

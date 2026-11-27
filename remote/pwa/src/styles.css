@@ -2890,8 +2890,21 @@ button.rc-footer-pill:disabled {
 .rc-app[data-layout-mode="mobile"] .rc-effort-full,
 .rc-app[data-layout-mode="mobile"] .rc-attach-label,
 .rc-app[data-layout-mode="mobile"] .rc-metrics-ttft,
+.rc-app[data-layout-mode="mobile"] .rc-quota-weekly,
 .rc-app[data-layout-mode="mobile"] .rc-stream-chars {
   display: none;
+}
+
+.rc-quota-pill[data-tone="warn"] {
+  color: var(--rc-amber);
+  border-color: var(--rc-amber-soft);
+  background: var(--rc-amber-soft);
+}
+
+.rc-quota-pill[data-tone="crit"] {
+  color: var(--rc-red);
+  border-color: var(--rc-red-soft);
+  background: var(--rc-red-soft);
 }
 
 .rc-app[data-layout-mode="mobile"] .rc-metrics-pill[data-has-tps="false"] {

@@ -225,9 +225,18 @@ export function renderResumeBanner(
   );
 }
 
+export function buildOpusReviewPrompt(prop, reviewerModel = 'carbon') {
+  const isOpus = String(reviewerModel || '').toLowerCase() === 'opus';
+  const modelId = isOpus ? 'claude-opus-5-5-high' : 'gemini-4-carbon-high';
+  const modelLabel = isOpus ? 'Opus High' : 'Carbon High';
+  const kind = String(prop?.kind || prop?.trigger || 'review');
+  const reason = String(prop?.summary || prop?.reason || '检查点审查建议').trim();
+  return `请加载 opus-gate 技能，直接发起一次 ${modelLabel}（${modelId}）审查（不要走配额门禁），针对当前检查点 [${kind}]：${reason}，检查变更风险、边界问题与回归隐患，给出明确结论和可落地的修复建议。`;
+}
+
 export function renderOpusGateBanner(
   container,
-  { opusGate, canWrite = false, busy = false, onDismiss } = {}
+  { opusGate, canWrite = false, online = true, busy = false, reviewerModel = 'carbon', onReview = null, onDismiss } = {}
 ) {
   if (!container) return;
   clearNode(container);
@@ -238,6 +247,9 @@ export function renderOpusGateBanner(
     return;
   }
   container.classList.remove('rc-hidden');
+
+  const isOpus = String(reviewerModel || '').toLowerCase() === 'opus';
+  const reviewLabel = isOpus ? '✦ 发起 Opus 审查' : '✦ 发起 Carbon 审查';
 
   appendNodes(
     container,
@@ -254,9 +266,18 @@ export function renderOpusGateBanner(
       ? el(
           'div',
           { className: 'rc-dock-group' },
+          onReview
+            ? el('button', {
+                type: 'button',
+                className: 'rc-btn is-sm is-primary rc-opus-review-btn',
+                disabled: busy || !online,
+                text: busy ? '处理中…' : reviewLabel,
+                onClick: () => onReview?.(prop, isOpus ? 'opus' : 'carbon'),
+              })
+            : null,
           el('button', {
             type: 'button',
-            className: 'rc-btn is-sm',
+            className: 'rc-btn is-sm rc-opus-dismiss-btn',
             disabled: busy,
             text: busy ? '处理中…' : '忽略建议',
             onClick: () => onDismiss?.(prop),

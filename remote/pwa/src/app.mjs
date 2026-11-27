@@ -21,6 +21,7 @@ import {
   renderSidebarListView,
 } from './sidebar-view.mjs';
 import {
+  buildOpusReviewPrompt,
   renderMobileMoreMenu,
   renderOpusGateBanner,
   renderResumeBanner,
@@ -33,6 +34,7 @@ import {
   createMobileHistoryController,
   createMoreMenuController,
   createNewChatController,
+  createOpusGateActions,
   defaultOverviewCollapsed,
   formatWriteError,
   readStoredPref,
@@ -1083,8 +1085,11 @@ function syncComposerControls() {
   renderOpusGateBanner(refs.opusBanner, {
     opusGate: activeOpusGate,
     canWrite: writable,
+    online,
     busy: state.opusDismissBusy,
-    onDismiss: handleDismissOpus,
+    reviewerModel: state.studioOverview?.studioPrefs?.opusGateModel || 'carbon',
+    onReview: opusGateActions.triggerReview,
+    onDismiss: opusGateActions.dismiss,
   });
 
   renderMediaPreviewStrip(refs.mediaStrip, state.draftMedia, {
@@ -1137,8 +1142,7 @@ function syncComposerControls() {
     isStreaming || state.cancelBusy || (state.cancelConfirmArmedCid && state.cancelConfirmArmedCid === state.selectedId)
   );
   refs.composerCard.setAttribute('data-streaming', showCancelControl ? 'true' : 'false');
-  syncStreamTimer(isStreaming);
-  const streamElapsedSec = state.streamStartedAt ? Math.floor((Date.now() - state.streamStartedAt) / 1000) : 0;
+  clearStreamTickTimer();
   const activeMetrics =
     hasSelection && state.studioOverview?.activeCascade?.cascadeId === state.selectedId
       ? state.studioOverview.activeCascade.metrics || null
@@ -1152,9 +1156,7 @@ function syncComposerControls() {
     showHiddenModels: state.showHiddenModels,
     modelBusy: state.modelSelectBusy,
     metrics: activeMetrics,
-    isStreaming,
-    streamElapsedSec,
-    streamChars: streamText.length,
+    quota: state.studioOverview?.quota || null,
     canWrite: writable,
     online,
     hasSelection,
@@ -1442,28 +1444,18 @@ async function handleCompactConvo() {
   }
 }
 
-async function handleDismissOpus(prop) {
-  if (!wsClient || !state.selectedId || !canSteer() || state.opusDismissBusy || !prop?.id) return;
-  const targetCid = state.selectedId;
-  state.opusDismissBusy = true;
-  state.actionError = '';
-  state.actionNotice = '';
-  syncComposerControls();
-  try {
-    await wsClient.dismissOpusProposal(targetCid, prop.id, { ts: prop.ts });
-    if (state.selectedId === targetCid) {
-      setActionNotice('已忽略 Opus Gate 检查点建议');
-    }
-    refreshStudioOverview(targetCid);
-  } catch (err) {
-    if (state.selectedId === targetCid) {
-      state.actionError = formatWriteError(err);
-    }
-  } finally {
-    state.opusDismissBusy = false;
-    syncComposerControls();
-  }
-}
+const opusGateActions = createOpusGateActions({
+  state,
+  getWsClient: () => wsClient,
+  canSteer,
+  requiresTurboAck,
+  createIdempotencyKey,
+  buildPrompt: buildOpusReviewPrompt,
+  setActionNotice,
+  syncComposerControls,
+  refreshStudioOverview,
+  refreshAllData,
+});
 
 function renderTopStatus() {
   const refs = ensureWorkspaceShell();

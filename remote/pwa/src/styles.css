@@ -2899,8 +2899,143 @@ button.rc-footer-pill:disabled {
 }
 
 .rc-app[data-layout-mode="mobile"] .rc-select,
-.rc-app[data-layout-mode="mobile"] .rc-modal-textarea {
+.rc-app[data-layout-mode="mobile"] .rc-modal-textarea,
+.rc-app[data-layout-mode="mobile"] .rc-ask-writein {
   font-size: 16px;
+}
+
+/* Interactive askQuestion Card */
+.rc-ask-card {
+  border-color: rgba(26, 115, 232, 0.34);
+  background: var(--rc-surface);
+  gap: 12px;
+}
+
+.rc-ask-q {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--rc-border);
+}
+
+.rc-ask-q:first-of-type {
+  padding-top: 2px;
+  border-top: none;
+}
+
+.rc-ask-q-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.rc-ask-q-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--rc-fg);
+  line-height: 1.45;
+}
+
+.rc-ask-options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.rc-ask-option {
+  width: 100%;
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 9px 11px;
+  border-radius: 10px;
+  border: 1px solid var(--rc-border);
+  background: var(--rc-bg);
+  color: var(--rc-fg);
+  text-align: left;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.42;
+  cursor: pointer;
+  transition: background-color 140ms ease, border-color 140ms ease;
+}
+
+.rc-ask-option:hover:not(:disabled) {
+  background: var(--rc-hover);
+}
+
+.rc-ask-option.is-selected {
+  border-color: var(--rc-accent);
+  background: var(--rc-accent-soft);
+}
+
+.rc-ask-option:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.rc-ask-indicator {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  border-radius: 999px;
+  border: 1.5px solid var(--rc-muted);
+  position: relative;
+}
+
+.rc-ask-indicator.is-multi {
+  border-radius: 4px;
+}
+
+.rc-ask-option.is-selected .rc-ask-indicator {
+  border-color: var(--rc-accent);
+  background: var(--rc-accent);
+}
+
+.rc-ask-option.is-selected .rc-ask-indicator::after {
+  content: "";
+  position: absolute;
+  inset: 3px;
+  border-radius: inherit;
+  background: #ffffff;
+}
+
+.rc-ask-option-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  word-break: break-word;
+}
+
+.rc-ask-rec-badge {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 700;
+  background: var(--rc-green-soft);
+  color: var(--rc-green);
+  vertical-align: 1px;
+}
+
+.rc-ask-writein {
+  width: 100%;
+  min-height: 36px;
+  padding: 6px 10px;
+  border-radius: 9px;
+  border: 1px solid var(--rc-border);
+  background: var(--rc-bg);
+  color: var(--rc-fg);
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+}
+
+.rc-ask-writein:focus {
+  border-color: var(--rc-accent);
 }
 
 .rc-app[data-layout-mode="mobile"] .rc-model-name-short,

@@ -91,15 +91,21 @@ export function computeWaitingStepHash(cascadeId, step) {
 
 export function normalizeWaitingStepsWithSha(cascadeId, list) {
   if (!Array.isArray(list) || list.length === 0) return [];
-  return list.map((w) => ({
-    stepIndex: Number(w?.stepIndex ?? 0),
-    waitingStepHash: computeWaitingStepHash(cascadeId, w),
-    toolName: String(w?.toolName || ''),
-    action: String(w?.action || ''),
-    commandLine: String(w?.commandLine || ''),
-    trajectoryId: String(w?.trajectoryId || ''),
-    interactionCase: String(w?.interactionCase || '')
-  }));
+  return list.map((w) => {
+    const item = {
+      stepIndex: Number(w?.stepIndex ?? 0),
+      waitingStepHash: computeWaitingStepHash(cascadeId, w),
+      toolName: String(w?.toolName || ''),
+      action: String(w?.action || ''),
+      commandLine: String(w?.commandLine || ''),
+      trajectoryId: String(w?.trajectoryId || ''),
+      interactionCase: String(w?.interactionCase || '')
+    };
+    if (Array.isArray(w?.questions) && w.questions.length > 0) {
+      item.questions = w.questions;
+    }
+    return item;
+  });
 }
 
 function parsePbMap(buf) {

@@ -689,13 +689,37 @@ async function handleConvoSend(params = {}) {
   );
 }
 
+function sanitizeAskQuestionAnswers(raw) {
+  if (!Array.isArray(raw)) return null;
+  if (raw.length > 12) return null;
+  const out = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') return null;
+    const sel = Array.isArray(item.selectedOptionIds)
+      ? item.selectedOptionIds.slice(0, 20).map((x) => String(x || '').trim()).filter(Boolean)
+      : [];
+    const writeIn = typeof item.writeInResponse === 'string' ? item.writeInResponse.trim().slice(0, 2000) : '';
+    out.push({
+      selectedOptionIds: sel,
+      writeInResponse: writeIn,
+      skipped: Boolean(item.skipped),
+    });
+  }
+  return out;
+}
+
 async function handleConvoApprove(params = {}) {
   const cascadeId = typeof params?.cascadeId === 'string' ? params.cascadeId.trim() : '';
   if (!UUID_RE.test(cascadeId)) {
     throw Object.assign(new Error('invalid_cascade_id'), { code: 'invalid_cascade_id' });
   }
   const decision = params?.decision;
-  if (decision !== 'allow_once' && decision !== 'deny') {
+  const validDecision =
+    decision === 'allow_once' ||
+    decision === 'deny' ||
+    decision === 'answer_question' ||
+    decision === 'cancel_question';
+  if (!validDecision) {
     throw Object.assign(new Error('invalid_decision'), { code: 'invalid_decision' });
   }
   const stepIndex = params?.stepIndex;
@@ -706,13 +730,22 @@ async function handleConvoApprove(params = {}) {
   if (!/^[0-9a-f]{16}$/.test(waitingStepHash)) {
     throw Object.assign(new Error('invalid_waiting_step_hash'), { code: 'invalid_waiting_step_hash' });
   }
+  let answers;
+  if (decision === 'answer_question') {
+    answers = sanitizeAskQuestionAnswers(params?.answers);
+    if (!answers || answers.length === 0) {
+      throw Object.assign(new Error('invalid_answers'), { code: 'invalid_answers' });
+    }
+  }
 
   return withCascadeWriteLock(cascadeId, 'remote:approve', async () => {
     const host = await resolveHostForCascade(cascadeId);
+    const rpcPayload = { cascadeId, stepIndex, waitingStepHash, decision };
+    if (answers) rpcPayload.answers = answers;
     const r = await invokeTapOnHost(
       host,
       'convo.approve',
-      { cascadeId, stepIndex, waitingStepHash, decision },
+      rpcPayload,
       10000
     );
     if (!r.ok || !r.value?.ok) {

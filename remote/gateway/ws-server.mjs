@@ -634,7 +634,12 @@ export function createWsServer({
 
     if (method === 'convo.approve') {
       const decision = params.decision;
-      if (decision !== 'allow_once' && decision !== 'deny') {
+      const validDecision =
+        decision === 'allow_once' ||
+        decision === 'deny' ||
+        decision === 'answer_question' ||
+        decision === 'cancel_question';
+      if (!validDecision) {
         return { ok: false, error: 'invalid_decision' };
       }
       const stepIndex = params.stepIndex;
@@ -645,13 +650,30 @@ export function createWsServer({
       if (!WAITING_HASH_RE.test(waitingStepHash)) {
         return { ok: false, error: 'invalid_waiting_step_hash' };
       }
+      let answers;
+      if (decision === 'answer_question') {
+        if (!Array.isArray(params.answers) || params.answers.length === 0 || params.answers.length > 12) {
+          return { ok: false, error: 'invalid_answers' };
+        }
+        answers = [];
+        for (const item of params.answers) {
+          if (!item || typeof item !== 'object') return { ok: false, error: 'invalid_answers' };
+          const sel = Array.isArray(item.selectedOptionIds)
+            ? item.selectedOptionIds.slice(0, 20).map((x) => String(x || '').trim()).filter(Boolean)
+            : [];
+          const writeIn = typeof item.writeInResponse === 'string' ? item.writeInResponse.trim().slice(0, 2000) : '';
+          answers.push({ selectedOptionIds: sel, writeInResponse: writeIn, skipped: Boolean(item.skipped) });
+        }
+      }
+      const rpcParams = { cascadeId, stepIndex, waitingStepHash, decision };
+      if (answers) rpcParams.answers = answers;
       return {
         ok: true,
         cascadeId,
         idempotencyKey: rawKey,
-        payloadHash: sha256Hex(JSON.stringify(['convo.approve', cascadeId, stepIndex, waitingStepHash, decision])),
-        rpcParams: { cascadeId, stepIndex, waitingStepHash, decision },
-        auditMeta: { cascadeId, stepIndex, waitingStepHash, decision },
+        payloadHash: sha256Hex(JSON.stringify(['convo.approve', cascadeId, stepIndex, waitingStepHash, decision, answers || null])),
+        rpcParams,
+        auditMeta: { cascadeId, stepIndex, waitingStepHash, decision, answerCount: answers ? answers.length : 0 },
       };
     }
 

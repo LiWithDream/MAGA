@@ -590,25 +590,30 @@ export function createRemoteWsClient(identity, handlers = {}) {
 
   function approveWaitingStep(
     cascadeId,
-    { stepIndex, waitingStepHash, decision, idempotencyKey = createIdempotencyKey() } = {}
+    { stepIndex, waitingStepHash, decision, answers = null, idempotencyKey = createIdempotencyKey() } = {}
   ) {
     if (!cascadeId || !UUID_RE.test(cascadeId)) {
       return Promise.reject(new Error('invalid_cascade_id'));
     }
-    if (decision !== 'allow_once' && decision !== 'deny') {
+    const validDecision =
+      decision === 'allow_once' ||
+      decision === 'deny' ||
+      decision === 'answer_question' ||
+      decision === 'cancel_question';
+    if (!validDecision) {
       return Promise.reject(new Error('invalid_decision'));
     }
-    return request(
-      'convo.approve',
-      {
-        cascadeId,
-        stepIndex,
-        waitingStepHash,
-        decision,
-        idempotencyKey,
-      },
-      22_000
-    );
+    const payload = {
+      cascadeId,
+      stepIndex,
+      waitingStepHash,
+      decision,
+      idempotencyKey,
+    };
+    if (decision === 'answer_question' && Array.isArray(answers)) {
+      payload.answers = answers;
+    }
+    return request('convo.approve', payload, 22_000);
   }
 
   function cancelConversation(cascadeId, { killBackgroundTasks = false, idempotencyKey = createIdempotencyKey() } = {}) {

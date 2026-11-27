@@ -2244,6 +2244,72 @@ test('Remote Mobile Polish V2: stale worktree branch cleanup, Markdown tables, a
       }
     );
     assert.match(longStreamFooter.textContent, /生成中 2m05s/);
+
+    // 10. Interactive askQuestion waiting card: renders single/multi options, recommended badge, write-in & submits structured answers
+    const diskFallbackMod = await import(pathToFileURL(path.join(REPO, 'core', 'daemon', 'remote', 'disk-fallback.mjs')).href);
+    const askQuestions = [
+      {
+        question: '选择实现路线？',
+        isMultiSelect: false,
+        options: [
+          { id: '1', text: '(Recommended) 轻量 Kotlin APK' },
+          { id: '2', text: '全原生 Compose' },
+        ],
+      },
+      {
+        question: '附加能力？',
+        isMultiSelect: true,
+        options: [
+          { id: '1', text: '原生通知' },
+          { id: '2', text: '分享传图' },
+        ],
+      },
+    ];
+    const normalizedAsk = diskFallbackMod.normalizeWaitingStepsWithSha(liveCid, [
+      {
+        stepIndex: 9,
+        toolName: 'ask_question',
+        action: 'askQuestion',
+        commandLine: '',
+        trajectoryId: 'traj-ask-1',
+        interactionCase: 'askQuestion',
+        questions: askQuestions,
+      },
+    ]);
+    assert.equal(normalizedAsk.length, 1);
+    assert.match(normalizedAsk[0].waitingStepHash, /^[0-9a-f]{16}$/);
+    assert.equal(normalizedAsk[0].questions.length, 2);
+
+    let capturedAskDecision = null;
+    let capturedAskExtra = null;
+    const askCards = timelineMod.renderWaitingCards(normalizedAsk, {
+      canWrite: true,
+      hostAttached: true,
+      onApprove: (w, dec, extra) => {
+        capturedAskDecision = dec;
+        capturedAskExtra = extra;
+      },
+    });
+    assert.equal(askCards.length, 1);
+    const askCard = askCards[0];
+    assert.ok(askCard.classList.contains('rc-ask-card'));
+    assert.match(askCard.textContent, /推荐/);
+    const askSubmit = askCard.querySelector('.rc-ask-submit');
+    assert.equal(askSubmit.disabled, true, 'submit starts disabled before any selection');
+    const qBlocks = askCard.querySelectorAll('.rc-ask-q');
+    assert.equal(qBlocks.length, 2);
+    qBlocks[0].querySelector('[data-option-id="1"]').click();
+    qBlocks[1].querySelector('[data-option-id="1"]').click();
+    qBlocks[1].querySelector('[data-option-id="2"]').click();
+    assert.equal(askSubmit.disabled, false);
+    askSubmit.click();
+    assert.equal(capturedAskDecision, 'answer_question');
+    assert.deepEqual(capturedAskExtra, {
+      answers: [
+        { selectedOptionIds: ['1'], writeInResponse: '', skipped: false },
+        { selectedOptionIds: ['1', '2'], writeInResponse: '', skipped: false },
+      ],
+    });
   } finally {
     dom.window.close();
     if (prevDoc) Object.defineProperty(globalThis, 'document', prevDoc);

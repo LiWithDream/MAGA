@@ -1273,11 +1273,12 @@ async function handleSendDraft() {
   }
 }
 
-async function handleApproveStep(w, decision) {
+async function handleApproveStep(w, decision, extra = null) {
   if (!wsClient || !state.selectedId || !canSteer() || state.approvingHash) return;
   const targetCid = state.selectedId;
   const waitingHash = String(w?.waitingStepHash || '');
-  const approveMapKey = `${targetCid}:${w?.stepIndex ?? ''}:${waitingHash}:${decision}`;
+  const ansSig = extra?.answers ? JSON.stringify(extra.answers) : '';
+  const approveMapKey = `${targetCid}:${w?.stepIndex ?? ''}:${waitingHash}:${decision}:${ansSig}`;
   let approveKey = state.pendingApproveKeys.get(approveMapKey);
   if (!approveKey) {
     approveKey = createIdempotencyKey();
@@ -1293,11 +1294,13 @@ async function handleApproveStep(w, decision) {
       stepIndex: w.stepIndex,
       waitingStepHash: waitingHash,
       decision,
+      answers: extra?.answers || null,
       idempotencyKey: approveKey,
     });
     state.pendingApproveKeys.delete(approveMapKey);
     if (state.selectedId === targetCid) {
-      setActionNotice(decision === 'allow_once' ? '已允许本次执行 (Allow Once)' : '已拒绝该操作 (Deny)');
+      const notices = { allow_once: '已允许本次执行 (Allow Once)', answer_question: '已提交你的选择', cancel_question: '已取消提问' };
+      setActionNotice(notices[decision] || '已拒绝该操作 (Deny)');
     }
     refreshAllData();
   } catch (err) {

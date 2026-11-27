@@ -25,7 +25,7 @@ jobs:
           else
             TARGET_REF="origin/main"
           fi
-          stranded="$(git branch -r --no-merged "$TARGET_REF" | grep -vE '^\s*origin/(HEAD|main)$' | sed 's/^[[:space:]]*//' || true)"
+          stranded="$(git branch -r --no-merged "$TARGET_REF" | grep -vE '^\s*origin/(HEAD|main|wip/.+)$' | sed 's/^[[:space:]]*//' || true)"
           if [[ -n "$stranded" ]]; then
             list="$(printf '%s' "$stranded" | tr '\n' ',' | sed 's/,$//')"
             if [[ "${{ github.ref_type }}" == "tag" ]]; then

@@ -18,6 +18,7 @@ import {
 
 const TEST_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(TEST_DIR, '..');
+const realpathNative = fs.realpathSync.native || fs.realpathSync;
 const HOOK_SCRIPT = path.join(REPO_ROOT, '.githooks', 'guard-main-branch.mjs');
 const GITHOOKS_DIR = path.join(REPO_ROOT, '.githooks');
 
@@ -37,7 +38,7 @@ function gitResult(cwd, args, extraEnv = {}) {
 }
 
 function createTempRepo(branch = 'main') {
-  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'maga-guardrails-')));
+  const dir = realpathNative(fs.mkdtempSync(path.join(os.tmpdir(), 'maga-guardrails-')));
   execFileSync('git', ['init', '-b', branch, dir], { stdio: 'ignore' });
   git(dir, ['config', 'user.name', 'MAGA Test']);
   git(dir, ['config', 'user.email', 'test@maga.local']);
@@ -48,7 +49,7 @@ function createTempRepo(branch = 'main') {
 }
 
 test('shell segment splitter and tokenizer handle quotes, escapes, and operators', () => {
-  const segments = splitShellSegments('echo "a && b" ; cd ../wt && git -C sub commit -m \'msg;ok\' | cat');
+  const segments = splitShellSegments('echo "a && b" ; cd ../wt && git -C sub commit -m \'msg;ok\' | cat', 'darwin');
   assert.deepEqual(segments, [
     'echo "a && b"',
     'cd ../wt',
@@ -56,7 +57,7 @@ test('shell segment splitter and tokenizer handle quotes, escapes, and operators
     'cat',
   ]);
 
-  assert.deepEqual(tokenizeSegment(`git commit -m "hello \\"world\\"" 'x y'`), [
+  assert.deepEqual(tokenizeSegment(`git commit -m "hello \\"world\\"" 'x y'`, null, 'darwin'), [
     'git',
     'commit',
     '-m',
@@ -80,7 +81,7 @@ test('extractGitInvocations tracks cd, -C, and env prefixes', () => {
 
 test('SessionStart enforces Worktree-Only policy on primary checkout and stays quiet inside linked worktrees', () => {
   const repo = createTempRepo('main');
-  const wtParent = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'maga-wt-ss-')));
+  const wtParent = realpathNative(fs.mkdtempSync(path.join(os.tmpdir(), 'maga-wt-ss-')));
   const wtDir = path.join(wtParent, 'feat-ss');
   try {
     const mainRes = evaluateHookPayload({ hookEventName: 'SessionStart', cwd: repo });
@@ -100,7 +101,7 @@ test('SessionStart enforces Worktree-Only policy on primary checkout and stays q
     const wtRes = evaluateHookPayload({ hookEventName: 'SessionStart', cwd: wtDir });
     assert.deepEqual(wtRes, {});
 
-    const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'maga-nongit-')));
+    const outside = realpathNative(fs.mkdtempSync(path.join(os.tmpdir(), 'maga-nongit-')));
     try {
       assert.deepEqual(evaluateHookPayload({ hookEventName: 'SessionStart', cwd: outside }), {});
     } finally {
@@ -115,9 +116,9 @@ test('SessionStart enforces Worktree-Only policy on primary checkout and stays q
 
 test('PreToolUse file edits are blocked in primary checkout (even on feat branch) and allowed in linked worktrees, local-only rules, artifacts, and merges', () => {
   const repo = createTempRepo('main');
-  const wtParent = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'maga-wt-')));
+  const wtParent = realpathNative(fs.mkdtempSync(path.join(os.tmpdir(), 'maga-wt-')));
   const wtDir = path.join(wtParent, 'feat-wt');
-  const artifactDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'maga-artifacts-')));
+  const artifactDir = realpathNative(fs.mkdtempSync(path.join(os.tmpdir(), 'maga-artifacts-')));
 
   try {
     // 1. Denied in primary checkout on main for edit_file & write_file (including non-existent nested subdir)
@@ -223,7 +224,7 @@ test('PreToolUse file edits are blocked in primary checkout (even on feat branch
 
 test('PreToolUse run_command enforces commit, force-push, and --tags guardrails', () => {
   const repo = createTempRepo('main');
-  const wtParent = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'maga-wt-cmd-')));
+  const wtParent = realpathNative(fs.mkdtempSync(path.join(os.tmpdir(), 'maga-wt-cmd-')));
   const wtDir = path.join(wtParent, 'feat-cmd');
 
   try {
@@ -354,7 +355,7 @@ test('PreToolUse run_command enforces commit, force-push, and --tags guardrails'
 
 test('CLI subprocess reads stdin JSON and outputs expected decision JSON', () => {
   const repo = createTempRepo('main');
-  const wtParent = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'maga-wt-sub-')));
+  const wtParent = realpathNative(fs.mkdtempSync(path.join(os.tmpdir(), 'maga-wt-sub-')));
   const wtDir = path.join(wtParent, 'feat-subproc');
   try {
     const denyOut = execFileSync(process.execPath, [HOOK_SCRIPT], {
@@ -410,7 +411,7 @@ test('CLI subprocess reads stdin JSON and outputs expected decision JSON', () =>
 });
 
 test('Git .githooks pre-commit and pre-push enforce branch, merge, force-push, and tag policies', () => {
-  const bareOrigin = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'maga-origin-')));
+  const bareOrigin = realpathNative(fs.mkdtempSync(path.join(os.tmpdir(), 'maga-origin-')));
   const repo = createTempRepo('main');
 
   try {
@@ -511,7 +512,7 @@ test('PreToolUse hook expands $VAR/${VAR} safely across standalone assignments, 
   const mainRepo = createTempRepo('main');
   const wtParent = `${mainRepo}-wt`;
   const wtDir = path.join(wtParent, 'feat-vars');
-  const fakeHome = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'maga-hook-home-')));
+  const fakeHome = realpathNative(fs.mkdtempSync(path.join(os.tmpdir(), 'maga-hook-home-')));
   const stateDir = path.join(fakeHome, '.gemini', 'antigravity', 'anti-claude');
 
   try {

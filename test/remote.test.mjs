@@ -1489,7 +1489,7 @@ test('Phase 1 Gateway Write Security: RBAC, demotion 4003, TURBO recheck, durabl
 
     // 2. Write RBAC, TURBO gate, durable idempotency across reconnect & epoch restart, non-blocking ping, rate limit, role demotion 4003
     const remoteDir = path.join(tmpRoot, 'gw-writes');
-    const sockPath = path.join(tmpRoot, 'bridge-writes.sock');
+    const sockPath = configMod.resolveSockPath(tmpRoot);
     const writeToken = 'uds-boot-token-0123456789abcdef';
     const writeCalls = [];
     let writeDelayMs = 0;
@@ -2257,7 +2257,7 @@ test('Phase 1 Red-Team regressions: same-key race, semaphore cap, payload hash c
       assert.equal(probed.globalPreset, null, 'attached host with globalPreset=null must stay null rather than stale diskPreset');
     `;
     execFileSync(process.execPath, ['--input-type=module', '-e', probeScript], {
-      env: { ...process.env, HOME: fakeHome },
+      env: { ...process.env, HOME: fakeHome, USERPROFILE: fakeHome },
       stdio: 'pipe',
     });
   } finally {

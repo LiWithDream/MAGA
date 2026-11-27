@@ -8,6 +8,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const TEST_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(TEST_DIR, '..');
+const realpathNative = fs.realpathSync.native || fs.realpathSync;
 const GLOBAL_GUARD_SCRIPT = path.join(REPO_ROOT, 'studio', 'plugin', 'maga-git-workflow', 'hooks', 'git-guard.mjs');
 const WT_UNIVERSAL_CLI = path.join(REPO_ROOT, 'studio', 'plugin', 'maga-git-workflow', 'bin', 'wt.mjs');
 
@@ -40,7 +41,7 @@ function git(cwd, args, extraEnv = {}) {
 }
 
 function createTempRepo(branch = 'main', withInitialCommit = true) {
-  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'maga-wf-repo-')));
+  const dir = realpathNative(fs.mkdtempSync(path.join(os.tmpdir(), 'maga-wf-repo-')));
   execFileSync('git', ['init', '-b', branch, dir], { stdio: 'ignore' });
   git(dir, ['config', 'user.name', 'MAGA Test']);
   git(dir, ['config', 'user.email', 'test@maga.local']);
@@ -75,7 +76,7 @@ test('global git-guard enforces 3 tiers (observe, protect-main, worktree-only), 
   const trunkRepo = createTempRepo('trunk', true);
   const wtParent = `${repo}-wt`;
   const wtDir = path.join(wtParent, 'feat-one');
-  const tmpRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'maga-wf-env-')));
+  const tmpRoot = realpathNative(fs.mkdtempSync(path.join(os.tmpdir(), 'maga-wf-env-')));
   const stateDir = path.join(tmpRoot, 'state');
   const pluginsDir = path.join(tmpRoot, 'plugins');
 
@@ -206,7 +207,7 @@ test('global git-guard enforces 3 tiers (observe, protect-main, worktree-only), 
 test('self-tampering, anti-forgery defer check, submodule separation, parser hardening, args.Cwd, and deny ring buffer', () => {
   const mainRepo = createTempRepo('main', true);
   const subSource = createTempRepo('main', true);
-  const tmpRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'maga-wf-sec-')));
+  const tmpRoot = realpathNative(fs.mkdtempSync(path.join(os.tmpdir(), 'maga-wf-sec-')));
   const stateDir = path.join(tmpRoot, 'state');
   const pluginsDir = path.join(tmpRoot, 'plugins');
 
@@ -334,7 +335,7 @@ test('self-tampering, anti-forgery defer check, submodule separation, parser har
     fs.rmSync(path.join(mainRepo, '.agents'), { recursive: true, force: true });
 
     // P2-1: Deep subdirectory under broken .git hint fails closed using repo gitHintRoot, not subdir path
-    const brokenRepo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'maga-wf-broken-')));
+    const brokenRepo = realpathNative(fs.mkdtempSync(path.join(os.tmpdir(), 'maga-wf-broken-')));
     try {
       fs.mkdirSync(path.join(brokenRepo, '.git'), { recursive: true });
       fs.mkdirSync(path.join(brokenRepo, 'src', 'deep'), { recursive: true });
@@ -430,7 +431,7 @@ test('self-tampering, anti-forgery defer check, submodule separation, parser har
 test('git-workflow-service syncs plugin with pinned Node, manages policy atomically, and wt.mjs works across non-Node & Node repos', async () => {
   const pyRepo = createTempRepo('main', true);
   const nodeRepo = createTempRepo('main', true);
-  const tmpRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'maga-wf-svc-')));
+  const tmpRoot = realpathNative(fs.mkdtempSync(path.join(os.tmpdir(), 'maga-wf-svc-')));
   const stateDir = path.join(tmpRoot, 'state');
   const pluginsDir = path.join(tmpRoot, 'plugins');
   const nativeProjectsDir = path.join(tmpRoot, 'native-projects');

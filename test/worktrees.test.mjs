@@ -8,6 +8,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const TEST_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(TEST_DIR, '..');
+const realpathNative = fs.realpathSync.native || fs.realpathSync;
 
 let JSDOM = null;
 try {
@@ -25,7 +26,7 @@ function gitSync(cwd, args, extraEnv = {}) {
 }
 
 function createTempGitRepo(initialBranch = 'main') {
-  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'maga-wt-repo-')));
+  const dir = realpathNative(fs.mkdtempSync(path.join(os.tmpdir(), 'maga-wt-repo-')));
   gitSync(dir, ['init', '-b', initialBranch]);
   gitSync(dir, ['config', 'user.email', 'test@maga.local']);
   gitSync(dir, ['config', 'user.name', 'MAGA Test']);
@@ -96,7 +97,7 @@ test('worktrees.mjs: porcelain -z parser, native projects discovery, stats gatin
   const wtAlpha = path.join(wtParent, 'alpha');
   const wtBeta = path.join(wtParent, 'beta');
   const wtDetached = path.join(wtParent, 'detached');
-  const stateTmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'maga-wt-state-')));
+  const stateTmp = realpathNative(fs.mkdtempSync(path.join(os.tmpdir(), 'maga-wt-state-')));
   const convWtDir = path.join(stateTmp, 'conv-worktrees');
   const nativeProjectsDir = path.join(stateTmp, 'native-projects');
   const regFile = path.join(stateTmp, 'missing-registry.json');
@@ -232,7 +233,7 @@ test('worktrees.mjs: security guards, symlinked -wt block, node_modules clean re
 
   const mainRepo = createTempGitRepo('main');
   const wtParent = `${mainRepo}-wt`;
-  const fakeEnvRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'maga-wt-sec-')));
+  const fakeEnvRoot = realpathNative(fs.mkdtempSync(path.join(os.tmpdir(), 'maga-wt-sec-')));
   const convWtDir = path.join(fakeEnvRoot, 'conv-worktrees');
   const nativeProjectsDir = path.join(fakeEnvRoot, 'native-projects');
   const symlinkParentRepo = createTempGitRepo('main');
@@ -411,7 +412,7 @@ test('deploy-meta provenance, single-desktop deploy guard & standalone studio/wt
 
   const mainRepo = createTempGitRepo('main');
   const wtParent = `${mainRepo}-wt`;
-  const tmpState = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'maga-deploy-meta-')));
+  const tmpState = realpathNative(fs.mkdtempSync(path.join(os.tmpdir(), 'maga-deploy-meta-')));
   const metaPath = path.join(tmpState, 'deploy-meta.json');
   const wtCliPath = path.join(REPO, 'studio', 'wt-cli.mjs');
 

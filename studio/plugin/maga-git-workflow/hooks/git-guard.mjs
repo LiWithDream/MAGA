@@ -944,11 +944,9 @@ function evaluateShellTamperCommand(commandLine, initialCwd, payload, policy, op
       }
     }
 
-    // 3. Repository `.agents/locks.json` tamper via shell unless MAGA_ALLOW_LOCKS_EDIT=1
+    // 3. Repository `.agents/locks.json` tamper via shell (only host process.env override honored, never inline agent env)
     if (
       process.env.MAGA_ALLOW_LOCKS_EDIT !== '1' &&
-      env.MAGA_ALLOW_LOCKS_EDIT !== '1' &&
-      shellVars.get('MAGA_ALLOW_LOCKS_EDIT') !== '1' &&
       (/\.agents[\\/]locks\.json/.test(expandedText) ||
         resolvedCandidates.some((c) => /\.agents[\\/]locks\.json/i.test(c.expanded)))
     ) {
@@ -976,7 +974,7 @@ function evaluateShellTamperCommand(commandLine, initialCwd, payload, policy, op
             /\.agents[\\/]locks\.json/.test(expandedText));
         if (hitsRepoLocks) {
           return makeDeny(
-            `Blocked by AGY Studio Lock Guard: modifying '.agents/locks.json' via shell is forbidden unless authorized by the user (MAGA_ALLOW_LOCKS_EDIT=1).`,
+            `Blocked by AGY Studio Lock Guard: modifying '.agents/locks.json' via shell is forbidden; '.agents/locks.json' is user-managed.`,
             { ctx, eff, tool: 'run_command', payload }
           );
         }
@@ -1260,7 +1258,7 @@ export function evaluateHookPayloadDetailed(payload, opts = {}) {
         fs.existsSync(path.join(ctx.topLevel, '.agents', 'locks.json')))
     ) {
       return makeDeny(
-        `Blocked by AGY Studio Lock Guard: editing '.agents/locks.json' directly via agent file tools is forbidden unless authorized by the user (MAGA_ALLOW_LOCKS_EDIT=1).`,
+        `Blocked by AGY Studio Lock Guard: editing '.agents/locks.json' directly via agent file tools is forbidden; '.agents/locks.json' is user-managed.`,
         { ctx, eff, tool: toolName, payload }
       );
     }

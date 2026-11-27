@@ -176,6 +176,22 @@ test('git-guard blocks agent tampering with .agents/locks.json via file tools an
     );
     assert.equal(shellDeny.decision, 'deny');
     assert.match(shellDeny.reason, /locks\.json/);
+
+    // Inline and exported MAGA_ALLOW_LOCKS_EDIT=1 inside agent's own command MUST NOT self-authorize!
+    for (const selfBypassCmd of [
+      'MAGA_ALLOW_LOCKS_EDIT=1 echo "{}" > .agents/locks.json',
+      'export MAGA_ALLOW_LOCKS_EDIT=1; echo "{}" > .agents/locks.json',
+    ]) {
+      const bypassAttempt = evaluateHookPayloadWithOptions(
+        {
+          hookEventName: 'PreToolUse',
+          cwd: repo,
+          toolCall: { name: 'run_command', args: { CommandLine: selfBypassCmd } },
+        },
+        { stateDir, pluginsDir }
+      );
+      assert.equal(bypassAttempt.decision, 'deny', `inline agent bypass must be denied: ${selfBypassCmd}`);
+    }
   } finally {
     fs.rmSync(repo, { recursive: true, force: true });
     fs.rmSync(stateDir, { recursive: true, force: true });

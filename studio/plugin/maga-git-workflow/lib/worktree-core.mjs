@@ -396,7 +396,8 @@ async function isPathTrackedInGitAsync(repoDir, relPath) {
 }
 
 function ensureExcludeEntries(commonDir, entriesToAdd) {
-  if (!commonDir || !Array.isArray(entriesToAdd) || entriesToAdd.length === 0) return;
+  if (!commonDir) return false;
+  if (!Array.isArray(entriesToAdd) || entriesToAdd.length === 0) return true;
   const excludeFile = path.join(commonDir, 'info', 'exclude');
   try {
     const existing = fs.existsSync(excludeFile) ? fs.readFileSync(excludeFile, 'utf8') : '';
@@ -416,7 +417,10 @@ function ensureExcludeEntries(commonDir, entriesToAdd) {
       const prefix = existing && !existing.endsWith('\n') ? '\n' : '';
       writeAtomicUtf8(excludeFile, `${existing}${prefix}${missing.join('\n')}\n`);
     }
-  } catch {}
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function collectSafeGovernanceDirFiles(baseDir, relPrefix, outFiles) {
@@ -438,7 +442,7 @@ function collectSafeGovernanceDirFiles(baseDir, relPrefix, outFiles) {
     if (lst.isDirectory()) {
       collectSafeGovernanceDirFiles(abs, rel, outFiles);
     } else if (lst.isFile() && lst.size <= MAX_GOVERNANCE_FILE_BYTES && isAllowedLocalGovernanceFileRel(rel)) {
-      outFiles.push({ abs, rel });
+      outFiles.push({ abs, rel, mode: lst.mode });
     }
   }
 }
@@ -477,11 +481,11 @@ export async function materializeLocalGovernanceAsync(mainReal, targetWorktreeDi
           if (!targetStat.isFile() || targetStat.size > MAX_GOVERNANCE_FILE_BYTES || !targetReal.toLowerCase().endsWith('.md')) {
             continue;
           }
-          filesToCopy.push({ abs: targetReal, rel: item });
+          filesToCopy.push({ abs: targetReal, rel: item, mode: targetStat.mode });
           excludeCandidates.push(item);
         } catch {}
       } else if (lstat.isFile() && lstat.size <= MAX_GOVERNANCE_FILE_BYTES) {
-        filesToCopy.push({ abs: srcAbs, rel: item });
+        filesToCopy.push({ abs: srcAbs, rel: item, mode: lstat.mode });
         excludeCandidates.push(item);
       }
     } else if (lstat.isDirectory() && !lstat.isSymbolicLink()) {
@@ -495,7 +499,10 @@ export async function materializeLocalGovernanceAsync(mainReal, targetWorktreeDi
 
   if (filesToCopy.length === 0) return { materialized: [] };
 
-  ensureExcludeEntries(resolvedCommon, excludeCandidates);
+  // Fail closed: never materialize untracked governance files if `.git/info/exclude` cannot be updated
+  if (!ensureExcludeEntries(resolvedCommon, excludeCandidates)) {
+    return { materialized: [] };
+  }
 
   const recordedFiles = [];
   for (const f of filesToCopy) {
@@ -505,7 +512,7 @@ export async function materializeLocalGovernanceAsync(mainReal, targetWorktreeDi
     try {
       const buf = fs.readFileSync(f.abs);
       fs.mkdirSync(path.dirname(dstAbs), { recursive: true });
-      fs.writeFileSync(dstAbs, buf);
+      fs.writeFileSync(dstAbs, buf, f.mode ? { mode: f.mode } : undefined);
       recordedFiles.push({ rel: f.rel, sha256: sha256Buffer(buf) });
     } catch {}
   }
@@ -543,10 +550,12 @@ async function cleanupLocalGovernanceBeforeRemoveAsync(worktreeRealPath) {
   }
 
   const files = Array.isArray(manifest?.files) ? manifest.files : [];
+  const recordedRelSet = new Set();
   for (const item of files) {
     const rel = typeof item?.rel === 'string' ? item.rel.trim() : '';
     const expectedSha = typeof item?.sha256 === 'string' ? item.sha256.trim().toLowerCase() : '';
     if (!isAllowedLocalGovernanceFileRel(rel) || !/^[0-9a-f]{64}$/.test(expectedSha)) continue;
+    recordedRelSet.add(rel);
     const targetAbs = path.join(worktreeRealPath, ...rel.split('/'));
     const lst = fs.lstatSync(targetAbs, { throwIfNoEntry: false });
     if (!lst || lst.isSymbolicLink() || !lst.isFile()) continue;
@@ -557,8 +566,19 @@ async function cleanupLocalGovernanceBeforeRemoveAsync(worktreeRealPath) {
         continue;
       }
       fs.rmSync(targetAbs, { force: true });
-      removedBackups.push({ targetAbs, buf });
+      removedBackups.push({ targetAbs, buf, mode: lst.mode });
     } catch {}
+  }
+
+  // Detect any newly authored unmanifested files inside excluded `.agents/skills` or `.agents/rules` so `git worktree remove` never silently deletes them
+  for (const govDir of ['.agents/skills', '.agents/rules']) {
+    const leftover = [];
+    collectSafeGovernanceDirFiles(path.join(worktreeRealPath, ...govDir.split('/')), govDir, leftover);
+    for (const f of leftover) {
+      if (!recordedRelSet.has(f.rel) && !skippedModified.includes(f.rel)) {
+        skippedModified.push(f.rel);
+      }
+    }
   }
 
   // Prune empty governance directories bottom-up so `git worktree remove` succeeds cleanly
@@ -594,7 +614,7 @@ async function cleanupLocalGovernanceBeforeRemoveAsync(worktreeRealPath) {
       try {
         if (!fs.lstatSync(bak.targetAbs, { throwIfNoEntry: false })) {
           fs.mkdirSync(path.dirname(bak.targetAbs), { recursive: true });
-          fs.writeFileSync(bak.targetAbs, bak.buf);
+          fs.writeFileSync(bak.targetAbs, bak.buf, bak.mode ? { mode: bak.mode } : undefined);
         }
       } catch {}
     }

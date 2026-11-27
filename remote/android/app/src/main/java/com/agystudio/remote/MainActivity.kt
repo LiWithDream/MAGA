@@ -35,6 +35,8 @@ import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.webkit.WebSettingsCompat
+import androidx.webkit.WebViewFeature
 import org.json.JSONObject
 import java.util.concurrent.Executors
 
@@ -210,8 +212,11 @@ class MainActivity : AppCompatActivity(), NativeBridge.HostActions {
             allowContentAccess = true
             setSupportMultipleWindows(false)
             mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
-            val cleanUa = userAgentString.replace("; wv)", ")").replace("Version/4.0 ", "")
-            userAgentString = "$cleanUa AGYStudioRemoteAndroid/${BuildConfig.VERSION_NAME}"
+            // Use clean Chrome Mobile UA (no `; wv)` or custom suffix) so Google/Cloudflare OAuth allows in-app sign-in
+            userAgentString = userAgentString.replace("; wv)", ")").replace("Version/4.0 ", "")
+        }
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.REQUESTED_WITH_HEADER_ALLOW_LIST)) {
+            WebSettingsCompat.setRequestedWithHeaderOriginAllowList(webView.settings, emptySet())
         }
 
         webView.addJavascriptInterface(NativeBridge(this), "__agyNative")
@@ -258,11 +263,18 @@ class MainActivity : AppCompatActivity(), NativeBridge.HostActions {
                 val uri = req.url ?: return false
                 val scheme = uri.scheme?.lowercase() ?: return false
                 if (scheme != "http" && scheme != "https") {
+                    // Block intent:// jumps back to Chrome during OAuth unless explicitly non-browser scheme
+                    if (scheme == "intent" || scheme == "googlechrome" || scheme == "android-app") {
+                        return true
+                    }
                     openExternally(uri)
                     return true
                 }
-                // Keep all redirects, programmatic navigations, and server/auth hosts inside WebView
-                if (req.isRedirect || !req.hasGesture() || isAllowedInAppHost(uri.host)) {
+                // While on any auth/login page (not yet on our server host), NEVER kick navigations out to external browser
+                val currentHost = view?.url?.let { runCatching { Uri.parse(it).host?.lowercase() }.getOrNull() }
+                val serverHost = Uri.parse(ServerPrefs.getServerUrl(this@MainActivity)).host?.lowercase()?.trim()
+                val inAuthFlow = !currentHost.isNullOrEmpty() && !serverHost.isNullOrEmpty() && currentHost != serverHost
+                if (inAuthFlow || req.isRedirect || !req.hasGesture() || isAllowedInAppHost(uri.host)) {
                     return false
                 }
                 openExternally(uri)
@@ -307,8 +319,10 @@ class MainActivity : AppCompatActivity(), NativeBridge.HostActions {
             "cloudflareaccess.com",
             "cloudflare.com",
             "google.com",
+            "googleapis.com",
             "googleusercontent.com",
             "gstatic.com",
+            "youtube.com",
             "github.com",
             "githubusercontent.com",
             "microsoftonline.com",

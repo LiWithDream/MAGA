@@ -5,6 +5,20 @@ All notable changes to **AGY Studio (`agy-studio`, formerly MAGA)** will be docu
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.1] - 2026-11-27
+
+Cross-device state synchronization fixes, Android bridge origin isolation, and OTA updater reliability hardening (following a full Claude Opus 5.5 read-only audit).
+
+### Fixed
+- **Opus Gate Proposal Cross-Device Sync (`studio/plugin/maga-opus-gate/hooks/gate-check.mjs`, `remote/pwa/src/app.mjs`)**: Automatically mark consumed `hook` proposals (`plan`, `risk`/`stop`, `debug`) as `dismissed: true` when `PreToolUse` allows the paused action, `PostToolUse` succeeds, or a subsequent `Stop` turn completes cleanly; hide mobile `opusBanner` and `resumeBanner` while streaming (`isStreaming === true`) and force a fresh `studio.overview` pull on stream completion (`isFinished`).
+- **PWA State Sync & Concurrency (`remote/pwa/src/`, `remote/gateway/ws-server.mjs`)**:
+  - Clear both `state.resumeState` and cached `snapshot.resumeState` upon successful Resume/send, and avoid leaving stale `snap.resumeState` active on snapshot replacement.
+  - Push `{ type: 'role_changed', role }` from Gateway to live WebSocket clients on role promotion without dropping the connection, and immediately refresh PWA composer controls on both `role_changed` and `welcome` role changes.
+  - Trigger `refreshAllData()` via `onEpochReset` when daemon/gateway restarts with a new `epoch`, clear stale `state.streams` in `onWelcome`, key `approvingByCid` locks per conversation so approvals in one chat never block another, preserve newly typed in-flight drafts after `sendMessage`, and expose `window.__agyNativeKeepAliveChanged` so native keep-alive stops/timeouts sync immediately back into the PWA menu and status cache.
+- **Android Bridge Isolation & OTA Updater Hardening (`remote/android/app/src/main/java/com/agystudio/remote/{MainActivity,AppUpdater}.kt`)**:
+  - Replaced wildcard root-domain matching with exact `serverHost` verification (`isServerHost` / `isTrustedServerOrigin`) plus explicit IdP allowlisting during `cloudflareaccess.com` auth redirects, gating every `NativeBridge` method and `ACTION_VIEW` intent to trusted server origins.
+  - Added Activity lifecycle cleanup (`WeakReference`, `onActivityDestroyed`), user-cancelable OTA downloads, and automatic SHA-256 re-verified APK install resume (`resumePendingInstall` in `onResume`) after granting unknown-sources permission.
+
 ## [1.4.0] - 2026-11-27
 
 Introduced **AGY Studio Remote Control** and the companion **Native Android App (`com.agystudio.remote`)** for encrypted mobile & multi-pane remote supervision, alongside selectable cross-model review reviewers, PWA modularization, and cleaner release packaging.

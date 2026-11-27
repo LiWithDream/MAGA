@@ -285,6 +285,12 @@ export function createRemoteWsClient(identity, handlers = {}) {
       return;
     }
 
+    if (msg.type === 'role_changed') {
+      const nextRole = typeof msg.role === 'string' ? msg.role.trim() : '';
+      if (nextRole) handlers.onRoleChanged?.(nextRole);
+      return;
+    }
+
     if (msg.type === 'welcome') {
       clearHandshakeTimer();
       if (typeof msg.epoch === 'string') {
@@ -311,7 +317,7 @@ export function createRemoteWsClient(identity, handlers = {}) {
         lastEpoch = msgEpoch;
         lastSeq = Number.isFinite(Number(msg.seq)) ? Number(msg.seq) : 0;
         if (connected) {
-          refreshList(false).catch(() => {});
+          handlers.onEpochReset?.(msgEpoch);
         }
       } else {
         if (msgEpoch) lastEpoch = msgEpoch;
@@ -347,6 +353,9 @@ export function createRemoteWsClient(identity, handlers = {}) {
       if (msgEpoch && lastEpoch && msgEpoch !== lastEpoch) {
         lastEpoch = msgEpoch;
         lastSeq = 0;
+        if (connected) {
+          handlers.onEpochReset?.(msgEpoch);
+        }
       } else if (msgEpoch && !lastEpoch) {
         lastEpoch = msgEpoch;
       }

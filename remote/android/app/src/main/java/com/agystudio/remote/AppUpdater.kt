@@ -15,11 +15,14 @@ import androidx.core.content.FileProvider
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import org.json.JSONObject
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.lang.ref.WeakReference
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
 import java.util.Locale
+import java.util.concurrent.CancellationException
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -36,6 +39,17 @@ object AppUpdater {
 
     private val executor = Executors.newSingleThreadExecutor()
     private val inFlight = AtomicBoolean(false)
+    private val downloadCancelled = AtomicBoolean(false)
+    @Volatile
+    private var activeConn: HttpURLConnection? = null
+    @Volatile
+    private var activeDialog: AlertDialog? = null
+    @Volatile
+    private var activeActivityRef: WeakReference<AppCompatActivity>? = null
+    @Volatile
+    private var pendingInstallFile: File? = null
+    @Volatile
+    private var pendingInstallSha256: String? = null
 
     private fun isSafeRelativeDownloadPath(rawPath: String): Boolean {
         return rawPath.startsWith("/") &&
@@ -62,15 +76,19 @@ object AppUpdater {
         if (!inFlight.compareAndSet(false, true)) {
             if (!silent) {
                 activity.runOnUiThread {
-                    Toast.makeText(activity, "正在检查更新，请稍候…", Toast.LENGTH_SHORT).show()
+                    if (!activity.isFinishing && !activity.isDestroyed) {
+                        Toast.makeText(activity, "正在检查更新，请稍候…", Toast.LENGTH_SHORT).show()
+                    }
                 }
             }
             return
         }
 
+        val appContext = activity.applicationContext
+        val activityRef = WeakReference(activity)
         executor.execute {
             try {
-                val serverUrl = ServerPrefs.getServerUrl(activity).trimEnd('/')
+                val serverUrl = ServerPrefs.getServerUrl(appContext).trimEnd('/')
                 val latestUrl = "$serverUrl/api/android/latest"
                 val cookie = CookieManager.getInstance().getCookie(serverUrl).orEmpty()
 
@@ -90,13 +108,13 @@ object AppUpdater {
                     val contentType = conn.contentType.orEmpty().lowercase(Locale.US)
                     if (code in 300..399 || contentType.contains("text/html")) {
                         if (!silent) {
-                            showToast(activity, "登录态已过期，请刷新页面重新登录后再检查更新")
+                            showToast(activityRef, "登录态已过期，请刷新页面重新登录后再检查更新")
                         }
                         return@execute
                     }
                     if (code != HttpURLConnection.HTTP_OK) {
                         if (!silent) {
-                            showToast(activity, "检查更新失败 (HTTP $code)")
+                            showToast(activityRef, "检查更新失败 (HTTP $code)")
                         }
                         return@execute
                     }
@@ -105,13 +123,13 @@ object AppUpdater {
                     val json = JSONObject(body)
                     if (!json.optBoolean("ok", false)) {
                         if (!silent) {
-                            showToast(activity, "检查更新失败：${json.optString("error", "unknown")}")
+                            showToast(activityRef, "检查更新失败：${json.optString("error", "unknown")}")
                         }
                         return@execute
                     }
                     if (!json.optBoolean("available", false)) {
                         if (!silent) {
-                            showToast(activity, "当前服务器尚未发布更新包")
+                            showToast(activityRef, "当前服务器尚未发布更新包")
                         }
                         return@execute
                     }
@@ -129,7 +147,7 @@ object AppUpdater {
                         !isSafeRelativeDownloadPath(downloadPath)
                     ) {
                         if (!silent) {
-                            showToast(activity, "服务器返回的版本元数据无效")
+                            showToast(activityRef, "服务器返回的版本元数据无效")
                         }
                         return@execute
                     }
@@ -137,14 +155,14 @@ object AppUpdater {
                     val downloadUrl = "$serverUrl$downloadPath"
                     if (!isSameOrigin(serverUrl, downloadUrl)) {
                         if (!silent) {
-                            showToast(activity, "服务器返回的下载地址不安全")
+                            showToast(activityRef, "服务器返回的下载地址不安全")
                         }
                         return@execute
                     }
 
                     if (versionCode <= BuildConfig.VERSION_CODE) {
                         if (!silent) {
-                            showToast(activity, "已是最新版本 (v${BuildConfig.VERSION_NAME})")
+                            showToast(activityRef, "已是最新版本 (v${BuildConfig.VERSION_NAME})")
                         }
                         return@execute
                     }
@@ -157,14 +175,15 @@ object AppUpdater {
                         downloadUrl = downloadUrl
                     )
 
-                    activity.runOnUiThread {
-                        if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
+                    val act = activityRef.get() ?: return@execute
+                    act.runOnUiThread {
+                        if (act.isFinishing || act.isDestroyed) return@runOnUiThread
                         val mbStr = String.format(Locale.US, "%.2f", info.bytes / 1048576.0)
-                        MaterialAlertDialogBuilder(activity)
+                        MaterialAlertDialogBuilder(act)
                             .setTitle("发现新版本 v${info.versionName}")
                             .setMessage("当前版本：v${BuildConfig.VERSION_NAME}\n安装包大小：${mbStr} MB\n直接从个人网关安全下载并校验 SHA-256。")
                             .setPositiveButton("立即下载安装") { _, _ ->
-                                downloadAndInstall(activity, info)
+                                downloadAndInstall(act, info)
                             }
                             .setNegativeButton("稍后", null)
                             .show()
@@ -174,7 +193,7 @@ object AppUpdater {
                 }
             } catch (err: Exception) {
                 if (!silent) {
-                    showToast(activity, "检查更新异常：${err.message ?: "网络不可用"}")
+                    showToast(activityRef, "检查更新异常：${err.message ?: "网络不可用"}")
                 }
             } finally {
                 inFlight.set(false)
@@ -184,9 +203,16 @@ object AppUpdater {
 
     fun downloadAndInstall(activity: AppCompatActivity, info: ReleaseInfo) {
         if (!inFlight.compareAndSet(false, true)) {
-            showToast(activity, "已有更新任务正在进行中")
+            if (!activity.isFinishing && !activity.isDestroyed) {
+                Toast.makeText(activity, "已有更新任务正在进行中", Toast.LENGTH_SHORT).show()
+            }
             return
         }
+
+        val appContext = activity.applicationContext
+        val activityRef = WeakReference(activity)
+        activeActivityRef = activityRef
+        downloadCancelled.set(false)
 
         activity.runOnUiThread {
             if (activity.isFinishing || activity.isDestroyed) {
@@ -218,17 +244,27 @@ object AppUpdater {
                 .setTitle("正在下载 AGY Remote v${info.versionName}")
                 .setView(box)
                 .setCancelable(false)
+                .setNegativeButton("取消") { d, _ ->
+                    downloadCancelled.set(true)
+                    executor.execute {
+                        runCatching { activeConn?.disconnect() }
+                    }
+                    runCatching { d.dismiss() }
+                }
                 .show()
+            activeDialog = dialog
 
             executor.execute {
                 var outFile: File? = null
                 try {
-                    val serverUrl = ServerPrefs.getServerUrl(activity).trimEnd('/')
+                    val serverUrl = ServerPrefs.getServerUrl(appContext).trimEnd('/')
                     if (info.bytes !in 1L..MAX_APK_BYTES || !isSameOrigin(serverUrl, info.downloadUrl)) {
                         throw IllegalStateException("非法的同源下载地址")
                     }
 
-                    val updatesDir = File(activity.cacheDir, "updates").apply { mkdirs() }
+                    val updatesDir = File(appContext.cacheDir, "updates").apply { mkdirs() }
+                    pendingInstallFile = null
+                    pendingInstallSha256 = null
                     updatesDir.listFiles()?.forEach { runCatching { it.delete() } }
                     val targetFile = File(updatesDir, "AGY-Studio-Remote-update.apk")
                     outFile = targetFile
@@ -243,6 +279,7 @@ object AppUpdater {
                             setRequestProperty("Cookie", cookie)
                         }
                     }
+                    activeConn = conn
 
                     try {
                         val code = conn.responseCode
@@ -266,8 +303,14 @@ object AppUpdater {
                         conn.inputStream.use { input ->
                             FileOutputStream(targetFile).use { output ->
                                 while (true) {
+                                    if (downloadCancelled.get()) {
+                                        throw CancellationException("已取消更新下载")
+                                    }
                                     val read = input.read(buf)
                                     if (read <= 0) break
+                                    if (downloadCancelled.get()) {
+                                        throw CancellationException("已取消更新下载")
+                                    }
                                     downloaded += read
                                     if (downloaded > info.bytes || downloaded > MAX_APK_BYTES) {
                                         throw IllegalStateException("安装包大小超出预期，已中止下载")
@@ -281,10 +324,12 @@ object AppUpdater {
                                         val pct = if (totalBytes > 0) ((downloaded * 100) / totalBytes).toInt().coerceIn(0, 100) else 0
                                         val dlMb = String.format(Locale.US, "%.2f", downloaded / 1048576.0)
                                         val totMb = String.format(Locale.US, "%.2f", totalBytes / 1048576.0)
-                                        activity.runOnUiThread {
-                                            if (dialog.isShowing) {
-                                                progressBar.progress = pct
-                                                statusText.text = "已下载 $dlMb / $totMb MB ($pct%)"
+                                        activityRef.get()?.let { act ->
+                                            act.runOnUiThread {
+                                                if (!act.isFinishing && !act.isDestroyed && dialog.isShowing) {
+                                                    progressBar.progress = pct
+                                                    statusText.text = "已下载 $dlMb / $totMb MB ($pct%)"
+                                                }
                                             }
                                         }
                                     }
@@ -302,20 +347,40 @@ object AppUpdater {
                             throw IllegalStateException("安装包校验失败，请重试")
                         }
 
-                        activity.runOnUiThread {
-                            runCatching { if (dialog.isShowing) dialog.dismiss() }
-                            if (!activity.isFinishing && !activity.isDestroyed) {
-                                installApk(activity, targetFile)
+                        pendingInstallFile = targetFile
+                        pendingInstallSha256 = info.sha256
+                        activityRef.get()?.let { act ->
+                            act.runOnUiThread {
+                                runCatching { if (dialog.isShowing) dialog.dismiss() }
+                                if (activeDialog === dialog) activeDialog = null
+                                if (!act.isFinishing && !act.isDestroyed) {
+                                    installApk(act, targetFile)
+                                }
                             }
                         }
                     } finally {
+                        if (activeConn === conn) activeConn = null
                         conn.disconnect()
                     }
+                } catch (err: CancellationException) {
+                    runCatching { outFile?.delete() }
+                    activityRef.get()?.let { act ->
+                        act.runOnUiThread {
+                            runCatching { if (dialog.isShowing) dialog.dismiss() }
+                            if (activeDialog === dialog) activeDialog = null
+                        }
+                    }
+                    showToast(activityRef, err.message ?: "已取消更新下载")
                 } catch (err: Exception) {
                     runCatching { outFile?.delete() }
-                    activity.runOnUiThread {
-                        runCatching { if (dialog.isShowing) dialog.dismiss() }
-                        showToast(activity, err.message ?: "安装包校验失败，请重试")
+                    activityRef.get()?.let { act ->
+                        act.runOnUiThread {
+                            runCatching { if (dialog.isShowing) dialog.dismiss() }
+                            if (activeDialog === dialog) activeDialog = null
+                        }
+                    }
+                    if (!downloadCancelled.get()) {
+                        showToast(activityRef, err.message ?: "安装包校验失败，请重试")
                     }
                 } finally {
                     inFlight.set(false)
@@ -324,9 +389,76 @@ object AppUpdater {
         }
     }
 
+    fun resumePendingInstall(activity: AppCompatActivity) {
+        val file = pendingInstallFile ?: return
+        val expectedSha = pendingInstallSha256 ?: return
+        if (!file.exists()) {
+            pendingInstallFile = null
+            pendingInstallSha256 = null
+            return
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !activity.packageManager.canRequestPackageInstalls()) {
+            return
+        }
+        if (!inFlight.compareAndSet(false, true)) return
+        val activityRef = WeakReference(activity)
+        executor.execute {
+            try {
+                if (!file.exists()) {
+                    pendingInstallFile = null
+                    pendingInstallSha256 = null
+                    return@execute
+                }
+                val digest = MessageDigest.getInstance("SHA-256")
+                val buf = ByteArray(8192)
+                FileInputStream(file).use { input ->
+                    while (true) {
+                        val read = input.read(buf)
+                        if (read <= 0) break
+                        digest.update(buf, 0, read)
+                    }
+                }
+                val actualSha = digest.digest().joinToString("") { "%02x".format(it) }
+                if (!actualSha.equals(expectedSha, ignoreCase = true)) {
+                    pendingInstallFile = null
+                    pendingInstallSha256 = null
+                    runCatching { file.delete() }
+                    showToast(activityRef, "待安装更新包校验失效，请重新检查更新")
+                    return@execute
+                }
+                activityRef.get()?.let { act ->
+                    act.runOnUiThread {
+                        if (!act.isFinishing && !act.isDestroyed) {
+                            installApk(act, file)
+                        }
+                    }
+                }
+            } catch (_: Exception) {
+            } finally {
+                inFlight.set(false)
+            }
+        }
+    }
+
+    fun onActivityDestroyed(activity: AppCompatActivity) {
+        val cur = activeActivityRef?.get()
+        if (cur === activity || cur == null) {
+            runCatching {
+                if (activeDialog?.isShowing == true) activeDialog?.dismiss()
+            }
+            activeDialog = null
+            if (inFlight.get()) {
+                downloadCancelled.set(true)
+                executor.execute {
+                    runCatching { activeConn?.disconnect() }
+                }
+            }
+        }
+    }
+
     private fun installApk(activity: AppCompatActivity, apkFile: File) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !activity.packageManager.canRequestPackageInstalls()) {
-            Toast.makeText(activity, "请允许 AGY Remote 安装应用更新，授权后返回重新点击安装", Toast.LENGTH_LONG).show()
+            Toast.makeText(activity, "请允许 AGY Remote 安装应用更新，授权后返回将自动继续安装", Toast.LENGTH_LONG).show()
             try {
                 val permIntent = Intent(
                     Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
@@ -344,13 +476,16 @@ object AppUpdater {
                 setDataAndType(uri, "application/vnd.android.package-archive")
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
             }
+            pendingInstallFile = null
+            pendingInstallSha256 = null
             activity.startActivity(installIntent)
         } catch (err: Exception) {
             Toast.makeText(activity, "无法拉起系统安装器：${err.message ?: "unknown"}", Toast.LENGTH_SHORT).show()
         }
     }
 
-    private fun showToast(activity: AppCompatActivity, msg: String) {
+    private fun showToast(activityRef: WeakReference<AppCompatActivity>, msg: String) {
+        val activity = activityRef.get() ?: return
         activity.runOnUiThread {
             if (!activity.isFinishing && !activity.isDestroyed) {
                 Toast.makeText(activity, msg, Toast.LENGTH_SHORT).show()

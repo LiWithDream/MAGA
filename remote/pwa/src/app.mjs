@@ -127,6 +127,7 @@ const state = {
   compactBusy: false,
   opusDismissBusy: false,
   approvingHash: '',
+  approvingByCid: new Map(),
   actionError: '',
   actionNotice: '',
   newChatOpen: false,
@@ -141,6 +142,7 @@ const alertManager = createAlertManager();
 
 let wsClient = null;
 let snapshotRefreshTimer = null;
+let pendingForceOverview = false;
 let studioOverviewSeq = 0;
 let lastOverviewRefreshAt = 0;
 let modelReqSeq = 0;
@@ -315,6 +317,8 @@ async function handleUnpairDevice() {
   state.draftIdempotencyKey = createIdempotencyKey();
   state.pendingApproveKeys.clear();
   state.pendingResumeKeys.clear();
+  state.approvingByCid.clear();
+  state.approvingHash = '';
   state.studioOverview = null;
   state.studioDrawerOpen = false;
   state.selectedProjectId = '';
@@ -617,8 +621,30 @@ function syncComposerControls() {
   }
   renderNewChatOverlay();
 
+  const activeConvo = hasSelection ? state.conversations.find((c) => c.id === state.selectedId) || null : null;
+  const activeSnap = hasSelection ? state.snapshots.get(state.selectedId) || null : null;
+  const authStatus = activeSnap?.status ?? activeConvo?.status;
+  let streamEntry = hasSelection ? state.streams.get(state.selectedId) || null : null;
+  if (
+    streamEntry &&
+    typeof streamEntry === 'object' &&
+    authStatus &&
+    !isRunningStatus(authStatus) &&
+    streamEntry.updatedAt &&
+    Date.now() - streamEntry.updatedAt > 15_000
+  ) {
+    state.streams.delete(state.selectedId);
+    streamEntry = null;
+  }
+  const streamText = typeof streamEntry === 'string' ? streamEntry : streamEntry?.text ?? '';
+  const isStreaming = Boolean(
+    hasSelection &&
+      (isRunningStatus(authStatus) ||
+        (typeof streamEntry === 'object' && streamEntry && isRunningStatus(streamEntry.status)))
+  );
+
   renderResumeBanner(refs.resumeBanner, {
-    resumeState: getEffectiveResumeState(state.selectedId),
+    resumeState: isStreaming ? null : getEffectiveResumeState(state.selectedId),
     canWrite: writable,
     online,
     needTurboConfirm,
@@ -628,7 +654,7 @@ function syncComposerControls() {
   });
 
   const activeOpusGate =
-    state.selectedId && state.studioOverview?.activeCascade?.cascadeId === state.selectedId
+    !isStreaming && state.selectedId && state.studioOverview?.activeCascade?.cascadeId === state.selectedId
       ? state.studioOverview.activeCascade.opusGate
       : null;
   renderOpusGateBanner(refs.opusBanner, {
@@ -687,20 +713,6 @@ function syncComposerControls() {
   }
   refs.cancelBtn.disabled = !writable || !online || !hasSelection || state.cancelBusy;
 
-  const activeConvo = hasSelection ? state.conversations.find((c) => c.id === state.selectedId) || null : null;
-  const activeSnap = hasSelection ? state.snapshots.get(state.selectedId) || null : null;
-  const authStatus = activeSnap?.status ?? activeConvo?.status;
-  let streamEntry = hasSelection ? state.streams.get(state.selectedId) || null : null;
-  if (streamEntry && typeof streamEntry === 'object' && authStatus && !isRunningStatus(authStatus) && streamEntry.updatedAt && Date.now() - streamEntry.updatedAt > 15_000) {
-    state.streams.delete(state.selectedId);
-    streamEntry = null;
-  }
-  const streamText = typeof streamEntry === 'string' ? streamEntry : streamEntry?.text ?? '';
-  const isStreaming = Boolean(
-    hasSelection &&
-      (isRunningStatus(authStatus) ||
-        (typeof streamEntry === 'object' && streamEntry && isRunningStatus(streamEntry.status)))
-  );
   const showCancelControl = Boolean(
     isStreaming || state.cancelBusy || (state.cancelConfirmArmedCid && state.cancelConfirmArmedCid === state.selectedId)
   );
@@ -945,8 +957,8 @@ function refreshStudioOverview(cascadeId = state.selectedId) {
 function applySnapshot(cascadeId, snap) {
   if (!cascadeId || !snap) return;
   state.snapshots.set(cascadeId, snap);
-  if (snap.resumeState && state.selectedId === cascadeId) {
-    state.resumeState = snap.resumeState;
+  if (state.selectedId === cascadeId) {
+    state.resumeState = snap.resumeState ?? null;
   }
   if (isRunningStatus(snap.status) && typeof snap.streamingText === 'string' && snap.streamingText) {
     const steps = Array.isArray(snap.steps) ? snap.steps : [];
@@ -986,13 +998,17 @@ async function fetchAndRenderSnapshot(cascadeId) {
   }
 }
 
-function scheduleSelectedSnapshotRefresh() {
-  if (!state.selectedId || snapshotRefreshTimer) return;
+function scheduleSelectedSnapshotRefresh({ forceOverview = false } = {}) {
+  if (!state.selectedId) return;
+  if (forceOverview) pendingForceOverview = true;
+  if (snapshotRefreshTimer) return;
   snapshotRefreshTimer = setTimeout(() => {
     snapshotRefreshTimer = null;
+    const forceOv = pendingForceOverview;
+    pendingForceOverview = false;
     if (state.selectedId && wsClient) {
       const targetId = state.selectedId;
-      if (Date.now() - lastOverviewRefreshAt > 1200) refreshStudioOverview(targetId);
+      if (forceOv || Date.now() - lastOverviewRefreshAt > 1200) refreshStudioOverview(targetId);
       wsClient
         .fetchSnapshot(targetId)
         .then((snap) => {
@@ -1160,7 +1176,7 @@ function handleTapDelta(delta) {
       const stepAdvanced = Number.isFinite(Number(data.stepCount)) && snap && data.stepCount > (snap.steps?.length || 0);
       if (isFinished) syncComposerControls();
       if (gapDetected || isFinished || stepAdvanced) {
-        scheduleSelectedSnapshotRefresh();
+        scheduleSelectedSnapshotRefresh({ forceOverview: isFinished });
       } else {
         renderDetailTimeline();
       }
@@ -1211,8 +1227,11 @@ function startWorkspaceSession() {
       }
     },
     onWelcome: (msg) => {
+      state.streams.clear();
+      let roleUpdated = false;
       if (msg.deviceRole && state.identity && state.identity.role !== msg.deviceRole) {
         state.identity.role = msg.deviceRole;
+        roleUpdated = true;
         saveDeviceIdentity(state.identity).catch(() => {});
       }
       if (msg.health) {
@@ -1232,7 +1251,20 @@ function startWorkspaceSession() {
       refreshStudioOverview(state.selectedId);
       refreshModels(state.selectedId);
       renderTopStatus();
+      if (roleUpdated) {
+        renderDetailTimeline();
+      }
     },
+    onRoleChanged: (nextRole) => {
+      if (!state.identity || !nextRole || state.identity.role === nextRole) return;
+      state.identity.role = nextRole;
+      saveDeviceIdentity(state.identity).catch(() => {});
+      setActionNotice(`设备权限已更新为 ${nextRole.toUpperCase()}`);
+      renderTopStatus();
+      renderStudioPanels();
+      renderDetailTimeline();
+    },
+    onEpochReset: () => refreshAllData(),
     onDelta: handleTapDelta,
     onSnapshot: (cid, snap) => {
       applySnapshot(cid, snap);
@@ -1265,6 +1297,12 @@ async function boot() {
       if (state.selectedId && state.wsStatus === 'connected') scheduleSelectedSnapshotRefresh();
     },
     onNativeNetworkChange: (info) => wsClient?.handleNetworkChange?.(info),
+    onNativeKeepAliveChanged: () => {
+      if (state.identity) {
+        renderMoreMenu();
+        renderTopStatus();
+      }
+    },
   });
   if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
     const hadController = Boolean(navigator.serviceWorker.controller);

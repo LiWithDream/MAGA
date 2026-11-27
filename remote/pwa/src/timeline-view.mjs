@@ -1036,7 +1036,8 @@ export function renderDetailTimeline({
   for (const card of renderWaitingCards(waiting, {
     canWrite,
     hostAttached: Boolean(state.hostAttached && state.wsStatus === 'connected'),
-    busyHash: state.approvingHash || '',
+    busyHash:
+      (state.approvingByCid instanceof Map ? state.approvingByCid.get(cid) : '') || state.approvingHash || '',
     onApprove,
   })) {
     refs.timeline.appendChild(card);

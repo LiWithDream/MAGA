@@ -2929,3 +2929,303 @@ test('Phase 2 modularization: workspace-shell DOM builder and convo-actions guar
     else delete globalThis.window;
   }
 });
+
+test('Phase 2 v1.4.1 state-sync: resume/draft cleanup, per-cid approval locks, native keep-alive sync & streaming banners', async () => {
+  const { JSDOM } = await import('jsdom');
+  const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://127.0.0.1/' });
+  const prevDoc = Object.getOwnPropertyDescriptor(globalThis, 'document');
+  const prevWin = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  Object.defineProperty(globalThis, 'document', { value: dom.window.document, configurable: true, writable: true });
+  Object.defineProperty(globalThis, 'window', { value: dom.window, configurable: true, writable: true });
+
+  try {
+    const actionsMod = await import(pathToFileURL(path.join(PWA_DIR, 'src', 'convo-actions.mjs')).href);
+    const nativeBridgeMod = await import(pathToFileURL(path.join(PWA_DIR, 'src', 'native-bridge.mjs')).href);
+    const mobileEnhMod = await import(pathToFileURL(path.join(PWA_DIR, 'src', 'mobile-enhancements.mjs')).href);
+
+    const cidA = '11111111-1111-4111-8111-111111111111';
+    const cidB = '22222222-2222-4222-8222-222222222222';
+    const state = {
+      selectedId: cidA,
+      globalPreset: 2,
+      draftText: 'first message',
+      draftMedia: [],
+      draftIdempotencyKey: 'k-init',
+      turboWriteConfirmed: false,
+      resumeState: { cascadeId: cidA, interrupted: true, active: false, lastIdx: 4, reason: 'interrupted' },
+      snapshots: new Map([[cidA, { status: 'IDLE', resumeState: { cascadeId: cidA, interrupted: true, active: false, lastIdx: 4 } }]]),
+      pendingApproveKeys: new Map(),
+      pendingResumeKeys: new Map(),
+      approvingByCid: new Map(),
+      approvingHash: '',
+      cancelConfirmArmedCid: '',
+      sendBusy: false,
+      resumeBusy: false,
+      actionError: '',
+      actionNotice: '',
+    };
+
+    let releaseFirstSend;
+    let releaseFirstApprove;
+    const approveStarted = [];
+    const mockWs = {
+      async sendMessage() {
+        await new Promise((r) => {
+          releaseFirstSend = r;
+        });
+        return { ok: true };
+      },
+      async resumeConversation() {
+        return { ok: true };
+      },
+      async approveWaitingStep(cid) {
+        approveStarted.push(cid);
+        if (cid === cidA) {
+          await new Promise((r) => {
+            releaseFirstApprove = r;
+          });
+        }
+        return { ok: true };
+      },
+    };
+
+    let keySeq = 0;
+    const actions = actionsMod.createConvoActionHandlers({
+      state,
+      getWsClient: () => mockWs,
+      canSteer: () => true,
+      createIdempotencyKey: () => `k-sync-${++keySeq}`,
+      setActionNotice: (msg) => {
+        state.actionNotice = msg;
+      },
+      syncComposerControls: () => {},
+      renderDetailTimeline: () => {},
+      fetchAndRenderSnapshot: () => {},
+      refreshAllData: () => {},
+    });
+
+    // 1. handleResumeConvo clears BOTH state.resumeState AND cached snapshot.resumeState
+    await actions.handleResumeConvo(state.resumeState);
+    assert.equal(state.resumeState, null);
+    assert.equal(state.snapshots.get(cidA)?.resumeState, null);
+
+    // 2. handleSendDraft preserves newly typed in-flight text in localStorage instead of overwriting with ''
+    const sendPromise = actions.handleSendDraft();
+    state.draftText = 'typed while sending';
+    releaseFirstSend();
+    await sendPromise;
+    assert.equal(state.draftText, 'typed while sending');
+    assert.equal(mobileEnhMod.loadConversationDraft(cidA), 'typed while sending');
+
+    // 3. Per-conversation approvingByCid lock: in-flight approval on cidA must NOT block cidB
+    const pAppA = actions.handleApproveStep({ stepIndex: 1, waitingStepHash: 'h-a' }, 'allow_once');
+    assert.equal(state.approvingByCid.get(cidA), 'h-a');
+    state.selectedId = cidB;
+    await actions.handleApproveStep({ stepIndex: 2, waitingStepHash: 'h-b' }, 'allow_once');
+    assert.deepEqual(approveStarted, [cidA, cidB]);
+    assert.equal(state.approvingByCid.has(cidB), false);
+    assert.equal(state.approvingByCid.has(cidA), true);
+    releaseFirstApprove();
+    await pAppA;
+    assert.equal(state.approvingByCid.has(cidA), false);
+
+    // 4. Native keep-alive stop callback resets PWA dedup cache & fires onNativeKeepAliveChanged
+    let keepAliveEnabled = true;
+    const sentStatus = [];
+    const kaChangedEvents = [];
+    dom.window.__agyNative = {
+      isNative: () => true,
+      isKeepAliveEnabled: () => keepAliveEnabled,
+      updateKeepAliveStatus: (txt) => sentStatus.push(txt),
+    };
+    const cleanupNative = nativeBridgeMod.bindNativeAndroidBridge({
+      onNativeKeepAliveChanged: (val) => kaChangedEvents.push(val),
+    });
+    assert.equal(nativeBridgeMod.updateNativeKeepAliveStatus('已连接 · 20ms'), true);
+    assert.equal(nativeBridgeMod.updateNativeKeepAliveStatus('已连接 · 20ms'), false, 'dedup skips identical text');
+    keepAliveEnabled = false;
+    assert.equal(dom.window.__agyNativeKeepAliveChanged(false), true);
+    assert.deepEqual(kaChangedEvents, [false]);
+    keepAliveEnabled = true;
+    assert.equal(
+      nativeBridgeMod.updateNativeKeepAliveStatus('已连接 · 20ms'),
+      true,
+      'after __agyNativeKeepAliveChanged cleared cache, status re-emits when re-enabled'
+    );
+    cleanupNative();
+    delete dom.window.__agyNative;
+
+    // 5. app.mjs streaming banner suppression, finish overview force, applySnapshot clearing, role/epoch hooks
+    const appSrc = fs.readFileSync(path.join(PWA_DIR, 'src', 'app.mjs'), 'utf8');
+    assert.match(appSrc, /const isStreaming =[\s\S]*?renderResumeBanner\([\s\S]*?isStreaming \? null : getEffectiveResumeState/);
+    assert.match(appSrc, /const activeOpusGate =\s*!isStreaming\s*&&/);
+    assert.match(appSrc, /scheduleSelectedSnapshotRefresh\(\{\s*forceOverview:\s*isFinished\s*\}\)/);
+    assert.match(appSrc, /state\.resumeState\s*=\s*snap\.resumeState\s*\?\?\s*null;/);
+    assert.match(appSrc, /onWelcome:\s*\(msg\)\s*=>\s*\{\s*state\.streams\.clear\(\);/);
+    assert.match(appSrc, /onRoleChanged:\s*\(nextRole\)\s*=>/);
+    assert.match(appSrc, /onEpochReset:\s*\(\)\s*=>\s*refreshAllData\(\)/);
+  } finally {
+    dom.window.close();
+    if (prevDoc) Object.defineProperty(globalThis, 'document', prevDoc);
+    else delete globalThis.document;
+    if (prevWin) Object.defineProperty(globalThis, 'window', prevWin);
+    else delete globalThis.window;
+  }
+});
+
+test('Phase 2 v1.4.1 live role promotion push (ws-server -> ws-client) and epoch reset callback', async () => {
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'maga-rem-rolepush-'));
+  const remoteDir = path.join(tmpRoot, 'remote');
+  const distDir = path.join(tmpRoot, 'dist');
+  fs.mkdirSync(remoteDir, { recursive: true });
+  fs.mkdirSync(distDir, { recursive: true });
+  fs.writeFileSync(path.join(distDir, 'index.html'), '<!doctype html><html><body></body></html>');
+
+  let gw = null;
+  const openSockets = [];
+  const origWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  const origDoc = Object.getOwnPropertyDescriptor(globalThis, 'document');
+  const origFetch = Object.getOwnPropertyDescriptor(globalThis, 'fetch');
+  const origWs = Object.getOwnPropertyDescriptor(globalThis, 'WebSocket');
+  const origLs = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+  let activeClient = null;
+
+  try {
+    const mockUds = {
+      onTap: () => () => {},
+      onConnect: () => () => {},
+      request: async (method) => {
+        if (method === 'bridge.health') {
+          return { ok: true, hostAttached: true, globalPreset: 2, capabilities: { sendMessage: true } };
+        }
+        if (method === 'convo.list') return { source: 'cdp', globalPreset: 2, conversations: [] };
+        return { ok: true };
+      },
+      close: () => {},
+    };
+    gw = await serverMod.createGatewayServer({
+      remoteDir,
+      pwaDistDir: distDir,
+      udsClient: mockUds,
+      port: 0,
+      writePid: false,
+      revocationCheckMs: 30,
+    });
+
+    const kp = await crypto.webcrypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign', 'verify']);
+    const publicKeyJwk = await crypto.webcrypto.subtle.exportKey('jwk', kp.publicKey);
+    configMod.writePairing(
+      { code: 'PROMO1', expiresAt: Date.now() + 60_000, role: 'observe', gatewayFingerprint: gw.gatewayFingerprint },
+      { remoteDir }
+    );
+    const pairRes = await (
+      await fetch(`http://127.0.0.1:${gw.port}/api/pair/complete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: 'PROMO1', deviceName: 'ObsPhone', publicKeyJwk, turboAcknowledged: true }),
+      })
+    ).json();
+    assert.equal(pairRes.ok, true);
+    assert.equal(pairRes.role, 'observe');
+
+    const ch = await (await fetch(`http://127.0.0.1:${gw.port}/api/auth/challenge`)).json();
+    const sig = await signHello(kp.privateKey, { nonce: ch.nonce, deviceId: pairRes.deviceId, lastSeq: 0, lastEpoch: '' });
+    const ws = await rawWsUpgrade(gw.port);
+    openSockets.push(ws.socket);
+    const reader = readServerFrames(ws.socket, ws.head);
+    ws.socket.write(
+      makeMaskedClientFrame(
+        0x1,
+        Buffer.from(
+          JSON.stringify({
+            type: 'hello',
+            protocol: 'maga-remote/1',
+            deviceId: pairRes.deviceId,
+            nonce: ch.nonce,
+            signature: sig,
+            lastSeq: 0,
+            lastEpoch: '',
+          })
+        )
+      )
+    );
+    const welcome = JSON.parse((await reader.nextFrame()).payload.toString('utf8'));
+    assert.equal(welcome.type, 'welcome');
+    assert.equal(welcome.deviceRole, 'observe');
+
+    // Promote device from observe -> steer on disk while socket stays connected
+    let closedByServer = false;
+    ws.socket.once('close', () => {
+      closedByServer = true;
+    });
+    const devs = configMod.readDevices({ remoteDir });
+    configMod.writeDevices(
+      devs.map((d) => (d.deviceId === pairRes.deviceId ? { ...d, role: 'steer' } : d)),
+      { remoteDir }
+    );
+
+    const roleMsg = JSON.parse((await reader.nextFrame()).payload.toString('utf8'));
+    assert.equal(roleMsg.type, 'role_changed');
+    assert.equal(roleMsg.role, 'steer');
+    assert.equal(closedByServer, false, 'role promotion must keep existing WebSocket connected');
+    ws.socket.destroy();
+
+    // Verify ws-client.mjs dispatches onRoleChanged & onEpochReset
+    const rolesSeen = [];
+    const epochsSeen = [];
+    globalThis.localStorage = { getItem: () => null, setItem: () => {} };
+    globalThis.window = { location: { protocol: 'https:', host: 'agy.miracleli.com' }, addEventListener: () => {}, removeEventListener: () => {} };
+    globalThis.document = { visibilityState: 'visible', addEventListener: () => {}, removeEventListener: () => {} };
+    globalThis.fetch = async () => ({ ok: true, json: async () => ({ nonce: 'mock-n1' }) });
+    let sockRef = null;
+    globalThis.WebSocket = class {
+      static OPEN = 1;
+      static CONNECTING = 0;
+      constructor() {
+        this.readyState = 1;
+        this._h = new Map();
+        sockRef = this;
+        setTimeout(() => this._h.get('open')?.(), 0);
+      }
+      addEventListener(ev, fn) {
+        this._h.set(ev, fn);
+      }
+      send() {}
+      close() {
+        this.readyState = 3;
+      }
+      emitJson(obj) {
+        this._h.get('message')?.({ data: JSON.stringify(obj) });
+      }
+    };
+    const wsClientMod = await import(pathToFileURL(path.join(PWA_DIR, 'src', 'ws-client.mjs')).href);
+    activeClient = wsClientMod.createRemoteWsClient(
+      { deviceId: pairRes.deviceId, privateKey: kp.privateKey },
+      {
+        onRoleChanged: (r) => rolesSeen.push(r),
+        onEpochReset: (ep) => epochsSeen.push(ep),
+      }
+    );
+    await new Promise((r) => setTimeout(r, 30));
+    sockRef.emitJson({ type: 'welcome', epoch: 'ep-1', seq: 1, health: { hostAttached: true }, conversations: [] });
+    sockRef.emitJson({ type: 'role_changed', role: 'steer' });
+    sockRef.emitJson({ type: 'delta', epoch: 'ep-2', seq: 1, kind: 'summaries', data: { upserts: [] } });
+    sockRef.emitJson({ type: 'deltas', epoch: 'ep-3', seq: 1, items: [] });
+    assert.deepEqual(rolesSeen, ['steer']);
+    assert.deepEqual(epochsSeen, ['ep-2', 'ep-3']);
+  } finally {
+    activeClient?.dispose();
+    const restore = (k, desc) => {
+      if (desc) Object.defineProperty(globalThis, k, desc);
+      else delete globalThis[k];
+    };
+    restore('window', origWindow);
+    restore('document', origDoc);
+    restore('fetch', origFetch);
+    restore('WebSocket', origWs);
+    restore('localStorage', origLs);
+    for (const s of openSockets) s.destroy();
+    await gw?.close().catch(() => {});
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});

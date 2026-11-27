@@ -106,14 +106,21 @@ export function createConvoActionHandlers({
       if (state.selectedId === targetCid) {
         if (state.draftText === textSnapshot) {
           state.draftText = '';
+          saveConversationDraft(targetCid, '');
+        } else {
+          saveConversationDraft(targetCid, state.draftText);
         }
         if (state.draftMedia.length === mediaSnapshot.length) {
           state.draftMedia = [];
         }
         state.draftIdempotencyKey = createIdempotencyKey();
+        state.resumeState = null;
         setActionNotice(mediaSnapshot.length > 0 ? '指令与图片已发送至桌面端' : '指令已发送至桌面端');
+      } else {
+        saveConversationDraft(targetCid, '');
       }
-      saveConversationDraft(targetCid, '');
+      const sentSnap = state.snapshots?.get?.(targetCid);
+      if (sentSnap) sentSnap.resumeState = null;
       fetchAndRenderSnapshot(targetCid);
     } catch (err) {
       if (err?.code === 'idempotency_key_conflict' || err?.code === 'outcome_unknown') {
@@ -136,8 +143,12 @@ export function createConvoActionHandlers({
 
   async function handleApproveStep(w, decision, extra = null) {
     const wsClient = getWsClient();
-    if (!wsClient || !state.selectedId || !canSteer() || state.approvingHash) return;
+    if (!wsClient || !state.selectedId || !canSteer()) return;
+    if (!(state.approvingByCid instanceof Map)) {
+      state.approvingByCid = new Map();
+    }
     const targetCid = state.selectedId;
+    if (state.approvingByCid.has(targetCid)) return;
     const waitingHash = String(w?.waitingStepHash || '');
     const ansSig = extra?.answers ? JSON.stringify(extra.answers) : '';
     const approveMapKey = `${targetCid}:${w?.stepIndex ?? ''}:${waitingHash}:${decision}:${ansSig}`;
@@ -146,6 +157,7 @@ export function createConvoActionHandlers({
       approveKey = createIdempotencyKey();
       state.pendingApproveKeys.set(approveMapKey, approveKey);
     }
+    state.approvingByCid.set(targetCid, waitingHash);
     state.approvingHash = waitingHash;
     state.actionError = '';
     state.actionNotice = '';
@@ -181,7 +193,13 @@ export function createConvoActionHandlers({
         state.actionError = formatWriteError(err);
       }
     } finally {
-      state.approvingHash = '';
+      state.approvingByCid.delete(targetCid);
+      if (state.selectedId === targetCid) {
+        state.approvingHash = '';
+      } else {
+        const currentBusy = state.approvingByCid.get(state.selectedId) || '';
+        state.approvingHash = currentBusy;
+      }
       renderDetailTimeline();
       syncComposerControls();
     }
@@ -259,6 +277,8 @@ export function createConvoActionHandlers({
         idempotencyKey,
       });
       state.pendingResumeKeys.delete(mapKey);
+      const resumedSnap = state.snapshots?.get?.(targetCid);
+      if (resumedSnap) resumedSnap.resumeState = null;
       if (state.selectedId === targetCid) {
         state.resumeState = null;
         setActionNotice('已静默触发继续任务 (Resume)');

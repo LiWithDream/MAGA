@@ -178,10 +178,38 @@ function loadRepoLocks(gitRoots) {
 }
 
 function isSafeBoundedRegex(pattern) {
-  if (typeof pattern !== 'string' || !pattern || pattern.length > 256) return false;
+  if (typeof pattern !== 'string' || !pattern || pattern.length > 384) return false;
   // Reject nested repeating groups that risk catastrophic backtracking
   if (/\([^)]*[+*][^)]*\)[+*?]/.test(pattern)) return false;
   return true;
+}
+
+function normalizeLocksSchema(locks) {
+  if (!locks || typeof locks !== 'object') {
+    return { lockedFiles: [], paramLocks: [], bannedPatterns: [] };
+  }
+  const lockedFiles = [
+    ...(Array.isArray(locks.lockedFiles) ? locks.lockedFiles : []),
+    ...(Array.isArray(locks.locked_files) ? locks.locked_files : []),
+  ];
+  const paramLocks = [
+    ...(Array.isArray(locks.paramLocks) ? locks.paramLocks : []),
+    ...(Array.isArray(locks.param_locks) ? locks.param_locks : []),
+  ];
+  const rawBanned = [
+    ...(Array.isArray(locks.bannedPatterns) ? locks.bannedPatterns : []),
+    ...(Array.isArray(locks.tombstone_rules) ? locks.tombstone_rules : []),
+  ];
+  const bannedPatterns = rawBanned.map((b) => ({
+    id: b?.id || '',
+    scope: typeof b?.scope === 'string' ? b.scope.trim() : '',
+    pattern: b?.pattern || '',
+    flags: b?.flags || '',
+    quote: b?.quote || b?.message || '',
+    source: b?.source || b?.provenance || '',
+    reopenIf: b?.reopenIf || b?.reopen_if || '',
+  }));
+  return { lockedFiles, paramLocks, bannedPatterns };
 }
 
 function normalizeRelCompare(absTarget, rootDir) {
@@ -207,14 +235,15 @@ export function evaluateLocksPreToolUse(payload, opts = {}) {
   const loaded = loadRepoLocks(gitRoots);
   if (!loaded) return { decision: 'allow' };
 
-  const { locks, locksRoot } = loaded;
+  const { locks: rawLocks, locksRoot } = loaded;
+  const locks = normalizeLocksSchema(rawLocks);
   const toolName = String(payload?.toolCall?.name || '').toLowerCase();
 
   if (FILE_EDIT_TOOLS.has(toolName)) {
     const rawPath = args.Path || args.TargetFile || args.path || args.file_path || '';
     if (!rawPath || typeof rawPath !== 'string') return { decision: 'allow' };
     const absTarget = path.isAbsolute(rawPath) ? path.resolve(rawPath) : path.resolve(rawCwd, rawPath);
-    const lockedFiles = Array.isArray(locks.lockedFiles) ? locks.lockedFiles : [];
+    const lockedFiles = locks.lockedFiles;
     for (const entry of lockedFiles) {
       const lockRelRaw = typeof entry?.path === 'string' ? entry.path.trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '') : '';
       if (!lockRelRaw) continue;
@@ -240,7 +269,7 @@ export function evaluateLocksPreToolUse(payload, opts = {}) {
     if (!cmd) return { decision: 'allow' };
 
     // 1. Parameter locks (`KEY=val` or `--kebab-key val` / `--kebab-key=val`) — deterministic speed-bump across local & ssh strings
-    const paramLocks = Array.isArray(locks.paramLocks) ? locks.paramLocks : [];
+    const paramLocks = locks.paramLocks;
     for (const p of paramLocks) {
       const key = typeof p?.key === 'string' ? p.key.trim() : '';
       const expected = p?.expected !== undefined && p?.expected !== null ? String(p.expected).trim() : '';
@@ -266,9 +295,10 @@ export function evaluateLocksPreToolUse(payload, opts = {}) {
       }
     }
 
-    // 2. Banned dead-end / Tombstone patterns
-    const bannedPatterns = Array.isArray(locks.bannedPatterns) ? locks.bannedPatterns : [];
+    // 2. Banned dead-end / Tombstone patterns (skipping file-sanitization-only scopes on shell commands so read-only SSH paths work cleanly)
+    const bannedPatterns = locks.bannedPatterns;
     for (const b of bannedPatterns) {
+      if (b.scope && /sanitization/i.test(b.scope)) continue;
       if (!isSafeBoundedRegex(b?.pattern)) continue;
       try {
         const re = new RegExp(b.pattern, b.flags && /^[im]{0,2}$/.test(b.flags) ? b.flags : '');

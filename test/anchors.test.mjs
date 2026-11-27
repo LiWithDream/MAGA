@@ -60,6 +60,24 @@ test('Pillar 3: .agents/locks.json PreToolUse guard catches locked files, param 
               reopenIf: 'new multi-scale pos-embed',
             },
           ],
+          tombstone_rules: [
+            {
+              id: 'TS-012',
+              scope: 'cluster',
+              pattern: 'pkill\\s+-STOP|crater_queue_daemon\\.sh\\s+trackC\\b',
+              message: 'DDP pkill -STOP loops and rtx4090 trackC are banned.',
+              provenance: 'Turn #126,129',
+              reopen_if: 'Explicit user quota expansion',
+            },
+            {
+              id: 'TS-013',
+              scope: 'sanitization_and_shared_state',
+              pattern: '/VM/[A-Za-z0-9_.-]+/',
+              message: 'Tracked files must not leak /VM/<user> paths.',
+              provenance: 'ENV.md',
+              reopen_if: 'Never',
+            },
+          ],
         },
         null,
         2
@@ -128,6 +146,31 @@ test('Pillar 3: .agents/locks.json PreToolUse guard catches locked files, param 
     assert.equal(tombAsk.decision, 'force_ask');
     assert.match(tombAsk.reason, /640分辨率已经证伪掉点/);
     assert.match(tombAsk.reason, /reopen-if: new multi-scale pos-embed/);
+
+    // 5. Research `tombstone_rules` (`message`/`provenance`/`reopen_if`) blocks `pkill -STOP` while skipping `sanitization` scope on SSH commands
+    const ts12Ask = evaluateLocksPreToolUse(
+      {
+        hookEventName: 'PreToolUse',
+        cwd: repo,
+        toolCall: { name: 'run_command', args: { CommandLine: 'ssh pro6000 "pkill -STOP python"' } },
+      },
+      { stateDir }
+    );
+    assert.equal(ts12Ask.decision, 'force_ask');
+    assert.match(ts12Ask.reason, /TS-012/);
+    assert.match(ts12Ask.reason, /Turn #126,129/);
+
+    assert.deepEqual(
+      evaluateLocksPreToolUse(
+        {
+          hookEventName: 'PreToolUse',
+          cwd: repo,
+          toolCall: { name: 'run_command', args: { CommandLine: 'ssh pro6000 "ls /VM/dingli/sscl_tpami"' } },
+        },
+        { stateDir }
+      ),
+      { decision: 'allow' }
+    );
   } finally {
     fs.rmSync(repo, { recursive: true, force: true });
     fs.rmSync(stateDir, { recursive: true, force: true });

@@ -1261,6 +1261,61 @@ test('Phase 2 Composer Footer V2: models.list/select, convo.send image attachmen
     assert.equal(bigImgRes.ok, false);
     assert.equal(bigImgRes.error, 'invalid_media_data');
 
+    // 2b. convo.send encodes /compact & /plan as official SlashCommandScopeItem chunks, keeps paths as plain text, and retains cache if composer unmounts
+    const slashInputBox = dom.window.document.createElement('div');
+    slashInputBox.id = 'antigravity.agentSidePanelInputBox';
+    const compactInfo = { $typeName: 'exa.codeium_common_pb.SlashCommandInfo', name: 'compact', type: 1 };
+    const planInfo = { $typeName: 'exa.codeium_common_pb.SlashCommandInfo', name: 'plan', type: 2 };
+    slashInputBox.__reactFiber$slash = {
+      memoizedProps: {
+        handleSubmit: () => {},
+        slashCommandItems: [
+          { title: 'compact', info: compactInfo },
+          { title: 'plan', info: planInfo },
+        ],
+      },
+      return: null,
+    };
+    dom.window.document.body.appendChild(slashInputBox);
+
+    const slashCompactRes = await callRpc(cSteer, 'sl-1', 'convo.send', {
+      cascadeId: cid,
+      text: '/compact',
+      idempotencyKey: 'k-sl-compact-1',
+    });
+    assert.equal(slashCompactRes.ok, true);
+    assert.equal(slashCompactRes.result.slashCommand, 'compact');
+    const compactSent = sentMessages.at(-1);
+    assert.equal(compactSent.items.length, 2);
+    assert.equal(compactSent.items[0].chunk.case, 'item');
+    assert.equal(compactSent.items[0].chunk.value.scopeItem.case, 'slashCommand');
+    assert.deepEqual(compactSent.items[0].chunk.value.scopeItem.value.info, compactInfo);
+    assert.equal(compactSent.items[1].chunk.case, 'text');
+    assert.equal(compactSent.items[1].chunk.value, ' ');
+
+    // Remove input box to verify cachedSlashCommands still encodes /plan with trailing prompt
+    slashInputBox.remove();
+    const slashPlanRes = await callRpc(cSteer, 'sl-2', 'convo.send', {
+      cascadeId: cid,
+      text: '/plan 设计方案',
+      idempotencyKey: 'k-sl-plan-1',
+    });
+    assert.equal(slashPlanRes.ok, true);
+    assert.equal(slashPlanRes.result.slashCommand, 'plan');
+    const planSent = sentMessages.at(-1);
+    assert.equal(planSent.items[0].chunk.value.scopeItem.value.info.name, 'plan');
+    assert.equal(planSent.items[1].chunk.value, ' 设计方案');
+
+    // Unix paths like /Users/demo/app.mjs must remain plain text
+    const pathSendRes = await callRpc(cSteer, 'sl-3', 'convo.send', {
+      cascadeId: cid,
+      text: '/Users/demo/app.mjs',
+      idempotencyKey: 'k-sl-path-1',
+    });
+    assert.equal(pathSendRes.ok, true);
+    assert.equal(pathSendRes.result.slashCommand, undefined);
+    assert.deepEqual(sentMessages.at(-1).items, [{ chunk: { case: 'text', value: '/Users/demo/app.mjs' } }]);
+
     // 3. composer-bar.mjs pure-DOM & Media Preview Strip XSS-safe tests
     const composerBarMod = await import(pathToFileURL(path.join(PWA_DIR, 'src', 'composer-bar.mjs')).href);
     const doc = dom.window.document;

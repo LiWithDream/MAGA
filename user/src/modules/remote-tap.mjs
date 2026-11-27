@@ -43,6 +43,7 @@ export function createRemoteTapModule(rt, modelApi = null) {
   let cachedStore = null;
   let cachedLsClient = null;
   let cachedPrefStore = null;
+  let cachedSlashCommands = [];
 
   function safeCall(fn) {
     try {
@@ -1448,6 +1449,80 @@ export function createRemoteTapModule(rt, modelApi = null) {
     };
   }
 
+  function discoverSlashCommandItems() {
+    if (typeof document !== 'undefined') {
+      const boxes = document.querySelectorAll(
+        '[id="antigravity.agentSidePanelInputBox"], [data-testid="agent-input-box"]'
+      );
+      for (const box of boxes) {
+        const fk = Object.keys(box).find((k) => k.startsWith('__reactFiber$'));
+        let f = fk ? box[fk] : null;
+        for (let i = 0; i < 45 && f; i++, f = f.return) {
+          const pr = f.memoizedProps;
+          if (pr && typeof pr.handleSubmit === 'function' && Array.isArray(pr.slashCommandItems)) {
+            const valid = pr.slashCommandItems.filter((x) => x && x.info && typeof x.info === 'object');
+            if (valid.length > 0) {
+              cachedSlashCommands = valid;
+              return valid;
+            }
+          }
+        }
+      }
+    }
+    return cachedSlashCommands;
+  }
+
+  function buildMessageItemsWithSlashCommands(text) {
+    if (!text) return { items: [], matchedSlash: '' };
+    const m = /^\s*\/([a-zA-Z0-9_-]{1,64})(?:(\s+)([\s\S]*))?$/.exec(text);
+    if (m) {
+      const wanted = m[1].toLowerCase();
+      const sep = m[2] || '';
+      const rest = m[3] || '';
+      const slashList = discoverSlashCommandItems();
+      const slashDef = slashList.find((x) => {
+        const name = String(x?.info?.name || x?.title || '').trim().toLowerCase();
+        return name === wanted;
+      });
+      if (slashDef && slashDef.info) {
+        const matchedName = String(slashDef.info.name || m[1]);
+        return {
+          matchedSlash: matchedName,
+          items: [
+            {
+              $typeName: 'exa.codeium_common_pb.TextOrScopeItem',
+              chunk: {
+                case: 'item',
+                value: {
+                  $typeName: 'exa.codeium_common_pb.ContextScopeItem',
+                  scopeItem: {
+                    case: 'slashCommand',
+                    value: {
+                      $typeName: 'exa.codeium_common_pb.SlashCommandScopeItem',
+                      argumentValues: {},
+                      info: slashDef.info,
+                    },
+                  },
+                },
+              },
+            },
+            {
+              $typeName: 'exa.codeium_common_pb.TextOrScopeItem',
+              chunk: {
+                case: 'text',
+                value: rest ? `${sep || ' '}${rest}` : ' ',
+              },
+            },
+          ],
+        };
+      }
+    }
+    return {
+      matchedSlash: '',
+      items: [{ chunk: { case: 'text', value: text } }],
+    };
+  }
+
   async function sendMessage(payload) {
     const cid = typeof payload?.cascadeId === 'string' ? payload.cascadeId.trim() : '';
     if (!UUID_RE.test(cid)) return { ok: false, error: 'invalid_cascade_id' };
@@ -1475,12 +1550,22 @@ export function createRemoteTapModule(rt, modelApi = null) {
     }
 
     try {
+      const built = buildMessageItemsWithSlashCommands(text);
       await lsClient.sendUserCascadeMessage({
         cascadeId: cid,
-        items: text ? [{ chunk: { case: 'text', value: text } }] : [],
+        items: built.items,
         ...(mediaObjs.length ? { media: mediaObjs } : {}),
       });
-      return { ok: true, cascadeId: cid, globalPreset: globalPreset ?? null, mediaCount: mediaObjs.length };
+      if (built.matchedSlash === 'compact') {
+        safeCall(() => window.__agClaudeUxBridge?.syncCompactVisualState?.(true));
+      }
+      return {
+        ok: true,
+        cascadeId: cid,
+        globalPreset: globalPreset ?? null,
+        mediaCount: mediaObjs.length,
+        ...(built.matchedSlash ? { slashCommand: built.matchedSlash } : {}),
+      };
     } catch (err) {
       return { ok: false, error: String(err?.message || err || 'send_failed') };
     }
@@ -1778,6 +1863,7 @@ export function createRemoteTapModule(rt, modelApi = null) {
     cachedStore = null;
     cachedLsClient = null;
     cachedPrefStore = null;
+    cachedSlashCommands = [];
     if (typeof window !== 'undefined' && window.__agRemoteTap === api) {
       window.__agRemoteTap = null;
     }

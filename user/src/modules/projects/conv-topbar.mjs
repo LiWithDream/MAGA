@@ -45,6 +45,8 @@ export function createConvProjectTopbar(ctx) {
   const {
     FEAT,
     L,
+    FILE_MANAGER_ZH,
+    FILE_MANAGER_EN,
     rtState,
     pState,
     escapeHtml,
@@ -513,7 +515,7 @@ export function createConvProjectTopbar(ctx) {
       repoTipParts.push(
         worktreeUi
           ? L('左键切换 Worktree，右键复制路径', 'Click to switch worktree, right-click to copy path')
-          : L('左键在 Finder 中打开，右键复制路径', 'Click to reveal in Finder, right-click to copy')
+          : L(`左键在 ${FILE_MANAGER_ZH || '访达'} 中打开，右键复制路径`, `Click to reveal in ${FILE_MANAGER_EN || 'Finder'}, right-click to copy`)
       );
     } else if (remoteLabel) {
       repoTipParts.push(`${project.remoteUrl || remoteLabel} (${L('点击打开远程仓库', 'Click to open remote repository')})`);

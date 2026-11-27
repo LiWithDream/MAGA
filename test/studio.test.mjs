@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -2384,8 +2384,29 @@ test('readProjectWorkspaceStatusAsync & handleProjectRpcRequest return Git commi
   assert.ok(Array.isArray(direct.recentCommits) && direct.recentCommits.length >= 1);
   assert.ok(direct.recentCommits[0].hash && direct.recentCommits[0].fullHash && direct.recentCommits[0].subject);
   assert.ok(Array.isArray(direct.dirtyFiles));
-  assert.match(direct.remoteUrl || '', /github\.com\/LiWithDream\/(MAGA|agy-studio)/i);
-  assert.ok(typeof direct.latestTag === 'string' && direct.latestTag.startsWith('v'));
+  assert.equal(typeof direct.remoteUrl, 'string');
+  assert.ok(direct.latestTag === null || (typeof direct.latestTag === 'string' && direct.latestTag.startsWith('v')));
+
+  const tmpGitRepo = realpathSync(mkdtempSync(path.join(tmpdir(), 'maga-ws-status-')));
+  try {
+    execFileSync('git', ['init'], { cwd: tmpGitRepo, stdio: 'pipe' });
+    execFileSync(
+      'git',
+      ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '--allow-empty', '-m', 'init'],
+      { cwd: tmpGitRepo, stdio: 'pipe' }
+    );
+    execFileSync('git', ['tag', 'v0.9.9'], { cwd: tmpGitRepo, stdio: 'pipe' });
+    execFileSync('git', ['remote', 'add', 'origin', 'git@github.com:LiWithDream/agy-studio.git'], {
+      cwd: tmpGitRepo,
+      stdio: 'pipe',
+    });
+    const tmpStatus = await readProjectWorkspaceStatusAsync(tmpGitRepo, { force: true });
+    assert.equal(tmpStatus.ok, true);
+    assert.equal(tmpStatus.remoteUrl, 'https://github.com/LiWithDream/agy-studio');
+    assert.equal(tmpStatus.latestTag, 'v0.9.9');
+  } finally {
+    rmSync(tmpGitRepo, { recursive: true, force: true });
+  }
 
   const detailOk = await readGitCommitDetailAsync(REPO, direct.recentCommits[0].hash);
   assert.equal(detailOk.ok, true);

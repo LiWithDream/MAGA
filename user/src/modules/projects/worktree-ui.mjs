@@ -22,6 +22,8 @@ function normPathKey(p) {
 export function createWorktreeUiController(ctx) {
   const {
     L,
+    FILE_MANAGER_ZH,
+    FILE_MANAGER_EN,
     rtState,
     pState,
     pHooks,
@@ -340,7 +342,7 @@ export function createWorktreeUiController(ctx) {
                 </span>
                 ${isCur ? `<span class="ag-wt-check">${SVG_WT_CHECK}</span>` : ''}
               </button>
-              <button type="button" class="ag-wt-act" data-ag-wt-finder="${escapeHtml(wtPath)}" title="${escapeHtml(L('在访达中打开', 'Reveal in Finder'))}" aria-label="${escapeHtml(L('在访达中打开', 'Reveal in Finder'))}">${SVG_WT_FINDER}</button>
+              <button type="button" class="ag-wt-act" data-ag-wt-finder="${escapeHtml(wtPath)}" title="${escapeHtml(L(`在${FILE_MANAGER_ZH}中打开`, `Reveal in ${FILE_MANAGER_EN}`))}" aria-label="${escapeHtml(L(`在${FILE_MANAGER_ZH}中打开`, `Reveal in ${FILE_MANAGER_EN}`))}">${SVG_WT_FINDER}</button>
               <button type="button" class="ag-wt-act" data-ag-wt-copy="${escapeHtml(wtPath)}" title="${escapeHtml(L('复制路径', 'Copy path'))}" aria-label="${escapeHtml(L('复制路径', 'Copy path'))}">${SVG_WT_COPY}</button>
             </div>`;
           })

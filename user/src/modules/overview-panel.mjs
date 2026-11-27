@@ -2,7 +2,7 @@
  * Enhanced Right Overview Panel (compact shortcuts, live context & cache, dual-window quotas, subagents & skills).
  */
 export function createOverviewPanelModule(rt, metricsQuota) {
-  const { FEAT, L, state: rtState, later, cancelLater, escapeHtml, hooks } = rt;
+  const { FEAT, L, FILE_MANAGER_EN, state: rtState, later, cancelLater, escapeHtml, hooks } = rt;
   const {
     SVG_COMPACT_ICON,
     SVG_COMPACT_DONE,
@@ -463,7 +463,7 @@ export function createOverviewPanelModule(rt, metricsQuota) {
             }
             ${
               ws.dirPath
-                ? `<button type="button" class="ag-ov-hdr-action" data-ag-ov-action="finder">Finder ↗</button>`
+                ? `<button type="button" class="ag-ov-hdr-action" data-ag-ov-action="finder">${escapeHtml(FILE_MANAGER_EN || 'Finder')} ↗</button>`
                 : ''
             }
           </div>

@@ -4,7 +4,7 @@
  * Remote Repo links, Clean Markdown preview & Recents filter header.
  */
 export function createProjectWorkspaceUi(ctx) {
-  const { L, rtState, escapeHtml, pState, pHooks, ICONS } = ctx;
+  const { L, FILE_MANAGER_ZH, FILE_MANAGER_EN, rtState, escapeHtml, pState, pHooks, ICONS } = ctx;
   const {
     SVG_CLAUDE_PROJECTS_ICON,
     SVG_PROJ_SEARCH_ICON,
@@ -61,14 +61,14 @@ export function createProjectWorkspaceUi(ctx) {
   }
 
   function buildFileMentionItem(project, relPath) {
-    const rel = String(relPath || '').replace(/^\/+/, '').trim();
+    const rel = String(relPath || '').replace(/^[\\/]+/, '').trim();
     if (!project?.dirPath || !rel) return null;
     const base = String(project.dirPath).replace(/[\\/]+$/, '');
     const abs = `${base}/${rel}`;
     const absUri = encodeLocalFileUri(abs);
     const primaryUri = encodeLocalFileUri(project.dirPath);
     if (!absUri) return null;
-    const name = rel.split('/').pop() || rel;
+    const name = rel.split(/[\\/]+/).pop() || rel;
     return {
       kind: 'file',
       label: name,
@@ -445,7 +445,7 @@ export function createProjectWorkspaceUi(ctx) {
     const metaChips = [];
     if (hasLocalDir && shortPath) {
       metaChips.push(
-        `<button type="button" class="ag-pd-meta-chip ag-pd-meta-path" data-ag-pd-open-finder="true" title="${escapeHtml(L('点击在访达中打开 · 右键复制路径：', 'Click to open in Finder · Right-click to copy: ') + project.dirPath)}">${SVG_CLAUDE_PROJECTS_ICON}<span>${escapeHtml(shortPath)}</span></button>`
+        `<button type="button" class="ag-pd-meta-chip ag-pd-meta-path" data-ag-pd-open-finder="true" title="${escapeHtml(L(`点击在${FILE_MANAGER_ZH}中打开 · 右键复制路径：`, `Click to open in ${FILE_MANAGER_EN} · Right-click to copy: `) + project.dirPath)}">${SVG_CLAUDE_PROJECTS_ICON}<span>${escapeHtml(shortPath)}</span></button>`
       );
     } else if (remoteUrl) {
       metaChips.push(
@@ -615,7 +615,7 @@ export function createProjectWorkspaceUi(ctx) {
                 const statTxt = f.added || f.deleted ? `+${f.added} -${f.deleted}` : '';
                 return `<div class="ag-pd-dirty-row">
                   <span class="ag-pd-dirty-st" data-st="${escapeHtml(f.status)}">${escapeHtml(f.status)}</span>
-                  <button type="button" class="ag-pd-dirty-path" data-ag-pd-reveal-rel="${escapeHtml(f.path)}" title="${escapeHtml(L('在访达中定位：', 'Reveal in Finder: ') + f.path)}">${escapeHtml(f.path)}</button>
+                  <button type="button" class="ag-pd-dirty-path" data-ag-pd-reveal-rel="${escapeHtml(f.path)}" title="${escapeHtml(L(`在${FILE_MANAGER_ZH}中定位：`, `Reveal in ${FILE_MANAGER_EN}: `) + f.path)}">${escapeHtml(f.path)}</button>
                   ${statTxt ? `<span class="ag-pd-dirty-stat">${escapeHtml(statTxt)}</span>` : ''}
                   <button type="button" class="ag-pd-dirty-mention-btn" data-ag-pd-mention-rel="${escapeHtml(f.path)}" title="${escapeHtml(L('引用 @文件 到输入框', 'Mention @file in composer'))}" aria-label="${escapeHtml(L('引用文件', 'Mention file'))}">+</button>
                 </div>`;

@@ -20,6 +20,7 @@ export function execGitAsync(absDir, args, timeoutMs = 1200) {
         timeout: timeoutMs,
         maxBuffer: 256 * 1024,
         encoding: 'utf8',
+        windowsHide: true,
         env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
       },
       (err, stdout) => {

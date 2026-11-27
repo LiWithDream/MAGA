@@ -4,8 +4,32 @@
  */
 import crypto from 'node:crypto';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import {
+  ensureRemoteDir,
+  getRemotePaths,
+  isPosixPermsEnforced,
+  isWindowsNamedPipe,
+  readJsonSafe,
+  resolveRemoteDir,
+  resolveSockPath,
+  withDevicesLock,
+  writeAtomicFile,
+  writeJsonAtomic,
+} from '../shared/fs-paths.mjs';
+
+export {
+  ensureRemoteDir,
+  getRemotePaths,
+  isPosixPermsEnforced,
+  isWindowsNamedPipe,
+  readJsonSafe,
+  resolveRemoteDir,
+  resolveSockPath,
+  withDevicesLock,
+  writeAtomicFile,
+  writeJsonAtomic,
+};
 
 export const ALLOWED_TRANSPORTS = Object.freeze([
   'loopback',
@@ -28,108 +52,6 @@ export const DEFAULT_REMOTE_CONFIG = Object.freeze({
   tailscaleAllowedUsers: [],
   allowLocalPairingWithoutEdge: true,
 });
-
-export function resolveRemoteDir(overrideDir = null) {
-  if (overrideDir && typeof overrideDir === 'string') {
-    return path.resolve(overrideDir);
-  }
-  if (process.env.MAGA_REMOTE_STATE_DIR) {
-    return path.resolve(process.env.MAGA_REMOTE_STATE_DIR);
-  }
-  const stateDir = process.env.ANTI_CLAUDE_STATE_DIR
-    ? path.resolve(process.env.ANTI_CLAUDE_STATE_DIR)
-    : path.join(os.homedir(), '.gemini', 'antigravity', 'anti-claude');
-  return path.join(stateDir, 'remote');
-}
-
-export function resolveSockPath(remoteDir = resolveRemoteDir(), overrideSockPath = null) {
-  if (overrideSockPath && typeof overrideSockPath === 'string') {
-    return path.resolve(overrideSockPath);
-  }
-  if (process.env.MAGA_REMOTE_SOCK_PATH) {
-    return path.resolve(process.env.MAGA_REMOTE_SOCK_PATH);
-  }
-  const resolvedDir = path.resolve(remoteDir);
-  const candidate = path.join(resolvedDir, 'bridge.sock');
-  if (Buffer.byteLength(candidate, 'utf8') > 95) {
-    const hash12 = crypto.createHash('sha256').update(resolvedDir).digest('hex').slice(0, 12);
-    return path.join(os.tmpdir(), `maga-rem-${hash12}.sock`);
-  }
-  return candidate;
-}
-
-export function getRemotePaths(overrideDir = null, overrideSockPath = null) {
-  const remoteDir = resolveRemoteDir(overrideDir);
-  return {
-    remoteDir,
-    configFile: path.join(remoteDir, 'config.json'),
-    devicesFile: path.join(remoteDir, 'devices.json'),
-    devicesLockFile: path.join(remoteDir, 'devices.json.lock'),
-    deviceLastSeenFile: path.join(remoteDir, 'device-last-seen.json'),
-    pairingFile: path.join(remoteDir, 'pairing.json'),
-    pidFile: path.join(remoteDir, 'gateway.pid'),
-    auditFile: path.join(remoteDir, 'audit.jsonl'),
-    identityFile: path.join(remoteDir, 'gateway-identity.json'),
-    sockPath: resolveSockPath(remoteDir, overrideSockPath),
-  };
-}
-
-export function ensureRemoteDir(dirPath, mode = 0o700) {
-  fs.mkdirSync(dirPath, { recursive: true, mode });
-  try {
-    fs.chmodSync(dirPath, mode);
-  } catch {}
-  return dirPath;
-}
-
-function rejectIfSymlink(targetPath) {
-  try {
-    const lst = fs.lstatSync(targetPath);
-    if (lst.isSymbolicLink()) {
-      throw new Error(`refusing_symlink_target:${targetPath}`);
-    }
-  } catch (err) {
-    if (err && err.code !== 'ENOENT') throw err;
-  }
-}
-
-export function writeAtomicFile(filePath, content, { mode = 0o600, dirMode = 0o700 } = {}) {
-  const resolved = path.resolve(filePath);
-  ensureRemoteDir(path.dirname(resolved), dirMode);
-  rejectIfSymlink(resolved);
-  const tmp = `${resolved}.tmp-${process.pid}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
-  try {
-    fs.writeFileSync(tmp, content, { encoding: 'utf8', mode });
-    try {
-      fs.chmodSync(tmp, mode);
-    } catch {}
-    fs.renameSync(tmp, resolved);
-    try {
-      fs.chmodSync(resolved, mode);
-    } catch {}
-  } catch (err) {
-    try {
-      fs.rmSync(tmp, { force: true });
-    } catch {}
-    throw err;
-  }
-}
-
-export function writeJsonAtomic(filePath, data, opts = {}) {
-  writeAtomicFile(filePath, `${JSON.stringify(data, null, 2)}\n`, opts);
-}
-
-export function readJsonSafe(filePath, fallback = null) {
-  try {
-    if (!fs.existsSync(filePath)) return fallback;
-    const lst = fs.lstatSync(filePath);
-    if (lst.isSymbolicLink() || !lst.isFile()) return fallback;
-    const raw = fs.readFileSync(filePath, 'utf8');
-    return JSON.parse(raw);
-  } catch {
-    return fallback;
-  }
-}
 
 export function parseTimestampMs(val) {
   if (typeof val === 'number' && Number.isFinite(val)) return val;
@@ -327,67 +249,6 @@ export function writeDevices(devices, { remoteDir = null } = {}) {
   const clean = Array.isArray(devices) ? devices : [];
   writeJsonAtomic(devicesFile, { devices: clean }, { mode: 0o600, dirMode: 0o700 });
   return clean;
-}
-
-export async function withDevicesLock(fn, { remoteDir = null, staleMs = 5000, timeoutMs = 3000 } = {}) {
-  const { remoteDir: resolvedDir, devicesLockFile } = getRemotePaths(remoteDir);
-  ensureRemoteDir(resolvedDir, 0o700);
-  const deadline = Date.now() + timeoutMs;
-
-  let acquired = false;
-  while (!acquired) {
-    try {
-      const fd = fs.openSync(
-        devicesLockFile,
-        fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY,
-        0o600
-      );
-      try {
-        fs.writeFileSync(fd, JSON.stringify({ pid: process.pid, ts: Date.now() }), 'utf8');
-      } finally {
-        fs.closeSync(fd);
-      }
-      acquired = true;
-    } catch (err) {
-      if (!err || err.code !== 'EEXIST') throw err;
-      let healed = false;
-      try {
-        const st = fs.lstatSync(devicesLockFile);
-        if (st.isSymbolicLink()) {
-          fs.rmSync(devicesLockFile, { force: true });
-          healed = true;
-        } else {
-          let lockTs = st.mtimeMs;
-          try {
-            const parsed = JSON.parse(fs.readFileSync(devicesLockFile, 'utf8'));
-            if (typeof parsed?.ts === 'number' && Number.isFinite(parsed.ts)) {
-              lockTs = parsed.ts;
-            }
-          } catch {}
-          if (Date.now() - lockTs > staleMs) {
-            fs.rmSync(devicesLockFile, { force: true });
-            healed = true;
-          }
-        }
-      } catch (statErr) {
-        if (statErr && statErr.code === 'ENOENT') healed = true;
-      }
-      if (!healed && Date.now() >= deadline) {
-        throw new Error('devices_lock_timeout');
-      }
-      if (!healed) {
-        await new Promise((r) => setTimeout(r, 15));
-      }
-    }
-  }
-
-  try {
-    return await fn();
-  } finally {
-    try {
-      fs.rmSync(devicesLockFile, { force: true });
-    } catch {}
-  }
 }
 
 export function readDeviceLastSeen({ remoteDir = null } = {}) {

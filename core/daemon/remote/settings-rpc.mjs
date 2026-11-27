@@ -20,6 +20,11 @@ import {
   writeDevices,
   writePairing,
 } from '../../../remote/gateway/config.mjs';
+import {
+  isPidAlive,
+  isPosixPermsEnforced,
+  readProcessCommandLineAsync,
+} from '../../../remote/shared/fs-paths.mjs';
 
 export const REMOTE_SETTINGS_RPC_ACTIONS = new Set([
   'getRemoteControlStatus',
@@ -36,34 +41,10 @@ const DEFAULT_PWA_DIST_DIR = path.join(REPO_ROOT, 'remote', 'pwa', 'dist');
 
 function execFileAsync(bin, args, timeoutMs = 1000) {
   return new Promise((resolve) => {
-    execFile(bin, args, { encoding: 'utf8', timeout: timeoutMs }, (err, stdout) => {
+    execFile(bin, args, { encoding: 'utf8', timeout: timeoutMs, windowsHide: true }, (err, stdout) => {
       resolve({ ok: !err, stdout: String(stdout || '').trim() });
     });
   });
-}
-
-function isPidAlive(pid) {
-  const num = Number(pid);
-  if (!Number.isInteger(num) || num <= 1) return false;
-  try {
-    process.kill(num, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function defaultCheckGatewayCmdline(pid) {
-  if (process.platform === 'win32') {
-    const res = await execFileAsync(
-      'powershell',
-      ['-NoProfile', '-Command', `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`],
-      1200
-    );
-    return res.stdout;
-  }
-  const res = await execFileAsync('ps', ['-ww', '-p', String(pid), '-o', 'command='], 1200);
-  return res.stdout;
 }
 
 async function readGatewayRuntimeInfo(remoteDir, opts = {}) {
@@ -76,7 +57,8 @@ async function readGatewayRuntimeInfo(remoteDir, opts = {}) {
   if (!pid || !isPidAlive(pid)) {
     return { running: false, pid: null, port, startedAt, matchesGateway: false };
   }
-  const cmdFn = typeof opts.checkProcessCmd === 'function' ? opts.checkProcessCmd : defaultCheckGatewayCmdline;
+  const cmdFn =
+    typeof opts.checkProcessCmd === 'function' ? opts.checkProcessCmd : readProcessCommandLineAsync;
   const cmd = await cmdFn(pid).catch(() => '');
   const matchesGateway = Boolean(cmd && /remote[\\/]+gateway[\\/]+server\.mjs/i.test(cmd));
   return {
@@ -246,19 +228,21 @@ function inspectRemoteConfigAndPermissions(remoteDir, cfg, pwaDistDir, gwInfo, h
     pushItem('pwa', cfg.enabled ? 'warn' : 'info', 'remote_pwa_not_built', 'Remote PWA dist missing; run "npm run build:remote"');
   }
 
-  for (const [label, targetPath] of [
-    ['remote_dir', paths.remoteDir],
-    ['config.json', paths.configFile],
-    ['devices.json', paths.devicesFile],
-    ['pairing.json', paths.pairingFile],
-  ]) {
-    if (!fs.existsSync(targetPath)) continue;
-    try {
-      const mode = fs.lstatSync(targetPath).mode & 0o777;
-      if ((mode & 0o077) !== 0) {
-        pushItem(`perm_${label}`, 'warn', 'permissive_file_permissions', `${label} has overly permissive mode 0o${mode.toString(8)}`);
-      }
-    } catch {}
+  if (isPosixPermsEnforced()) {
+    for (const [label, targetPath] of [
+      ['remote_dir', paths.remoteDir],
+      ['config.json', paths.configFile],
+      ['devices.json', paths.devicesFile],
+      ['pairing.json', paths.pairingFile],
+    ]) {
+      if (!fs.existsSync(targetPath)) continue;
+      try {
+        const mode = fs.lstatSync(targetPath).mode & 0o777;
+        if ((mode & 0o077) !== 0) {
+          pushItem(`perm_${label}`, 'warn', 'permissive_file_permissions', `${label} has overly permissive mode 0o${mode.toString(8)}`);
+        }
+      } catch {}
+    }
   }
 
   if (cfg.enabled && !gwInfo.running) {

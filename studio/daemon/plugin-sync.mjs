@@ -21,14 +21,52 @@ export function isPluginInstalled(pluginName, requiredFiles = ['plugin.json', 'h
   return requiredFiles.every((rel) => fs.existsSync(path.join(targetDir, rel)));
 }
 
-export function formatPinnedHookCommand(rawCmd, nodeBin) {
+function resolveWinShortPathDefault(rawPath) {
+  const cleanPath = String(rawPath || '').replace(/"/g, '').trim();
+  if (!cleanPath || process.platform !== 'win32') return null;
+  try {
+    const out = execFileSync(
+      'cmd.exe',
+      ['/d', '/c', `for %I in ("${cleanPath}") do @echo %~sI`],
+      {
+        encoding: 'utf8',
+        timeout: 1500,
+        windowsHide: true,
+        windowsVerbatimArguments: true,
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }
+    ).trim();
+    const first = out.split(/\r?\n/)[0]?.trim();
+    if (first && !/[()\s&^%!"]/.test(first) && fs.existsSync(first)) {
+      return first;
+    }
+  } catch {}
+  return null;
+}
+
+export function formatPinnedHookCommand(rawCmd, nodeBin, opts = {}) {
   const cmd = String(rawCmd || '').trim();
   const m = cmd.match(/^node\s+(.+)$/);
   if (!m || !nodeBin) return cmd;
-  const quoted =
-    process.platform === 'win32'
-      ? `"${String(nodeBin).replace(/"/g, '\\"')}"`
-      : `'${String(nodeBin).replace(/'/g, `'\\''`)}'`;
+  const platform = opts.platform || process.platform;
+  if (platform === 'win32') {
+    const binStr = String(nodeBin).trim();
+    if (/[()\s&^%!"]/.test(binStr)) {
+      const resolver =
+        opts.resolveShortPathFn === null
+          ? null
+          : typeof opts.resolveShortPathFn === 'function'
+            ? opts.resolveShortPathFn
+            : resolveWinShortPathDefault;
+      const shortBin = resolver ? resolver(binStr) : null;
+      if (shortBin && !/[()\s&^%!"]/.test(shortBin)) {
+        return `${shortBin} ${m[1]}`;
+      }
+      return `"${binStr.replace(/"/g, '\\"')}" ${m[1]}`;
+    }
+    return `${binStr} ${m[1]}`;
+  }
+  const quoted = `'${String(nodeBin).replace(/'/g, `'\\''`)}'`;
   return `${quoted} ${m[1]}`;
 }
 
@@ -82,8 +120,8 @@ export function extractPluginHookNodeBin(pluginName, hooksObj) {
   if (!cmd) return process.execPath;
   const sq = cmd.match(/^'((?:[^']|'\\'')+)'\s+/);
   if (sq) return sq[1].replace(/'\\''/g, "'");
-  const dq = cmd.match(/^"([^"]+)"\s+/);
-  if (dq) return dq[1];
+  const dq = cmd.match(/^"((?:[^"\\]|\\.)+)"\s+/);
+  if (dq) return dq[1].replace(/\\"/g, '"');
   const bare = cmd.match(/^(\S+)\s+/);
   return bare ? bare[1] : process.execPath;
 }
@@ -201,7 +239,7 @@ export function verifyPluginHookNodeRuntime(pluginName, { requireSqlite = false 
       execFileSync(
         nodeBin,
         ['-e', "import('node:sqlite').then(m => { if (!m.DatabaseSync) process.exit(2); })"],
-        { timeout: 2500, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }
+        { timeout: 2500, encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] }
       );
       return {
         ok: true,
@@ -214,6 +252,7 @@ export function verifyPluginHookNodeRuntime(pluginName, { requireSqlite = false 
     const ver = execFileSync(nodeBin, ['--version'], {
       timeout: 2000,
       encoding: 'utf8',
+      windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
     }).trim();
     return {

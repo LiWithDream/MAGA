@@ -5,6 +5,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { ensureRemoteDir, getRemotePaths } from './config.mjs';
+import { isPosixPermsEnforced, renameWithWinRetry } from '../shared/fs-paths.mjs';
 
 const DEFAULT_MAX_BYTES = 2 * 1024 * 1024;
 const DEFAULT_RATE_WINDOW_MS = 60_000;
@@ -71,27 +72,33 @@ export function createAuditLogger({
             fs.rmSync(rotatedFile, { force: true });
           }
         } catch {}
-        fs.renameSync(targetFile, rotatedFile);
-        try {
-          fs.chmodSync(rotatedFile, 0o600);
-        } catch {}
+        renameWithWinRetry(targetFile, rotatedFile);
+        if (isPosixPermsEnforced()) {
+          try {
+            fs.chmodSync(rotatedFile, 0o600);
+          } catch {}
+        }
         const fd = fs.openSync(targetFile, 'a', 0o600);
         fs.closeSync(fd);
-        try {
-          fs.chmodSync(targetFile, 0o600);
-        } catch {}
+        if (isPosixPermsEnforced()) {
+          try {
+            fs.chmodSync(targetFile, 0o600);
+          } catch {}
+        }
         return;
       }
-      if ((lst.mode & 0o777) !== 0o600) {
+      if (isPosixPermsEnforced() && (lst.mode & 0o777) !== 0o600) {
         fs.chmodSync(targetFile, 0o600);
       }
     } catch (err) {
       if (err && err.code === 'ENOENT') {
         const fd = fs.openSync(targetFile, 'a', 0o600);
         fs.closeSync(fd);
-        try {
-          fs.chmodSync(targetFile, 0o600);
-        } catch {}
+        if (isPosixPermsEnforced()) {
+          try {
+            fs.chmodSync(targetFile, 0o600);
+          } catch {}
+        }
       } else {
         throw err;
       }

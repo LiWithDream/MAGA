@@ -7,12 +7,14 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-ux-cdp-'));
 process.env.HOME = home;
+process.env.USERPROFILE = home;
 process.env.APPDATA = path.join(home, 'AppData', 'Roaming');
+process.env.LOCALAPPDATA = path.join(home, 'AppData', 'Local');
 delete process.env.CLAUDE_UX_NO_CDP;
 process.env.CLAUDE_UX_CDP_TIMEOUT_MS = '150';
 
@@ -52,7 +54,7 @@ before(async () => {
   fs.mkdirSync(path.dirname(portFile()), { recursive: true });
   fs.writeFileSync(portFile(), '12345\n/devtools/browser/x');
   globalThis.fetch = async () => ({ json: async () => [{ type: 'page', url: 'http://127.0.0.1:5173/', webSocketDebuggerUrl: 'ws://127.0.0.1/x' }] });
-  mod = await import(path.join(REPO, 'install.mjs'));
+  mod = await import(pathToFileURL(path.join(REPO, 'install.mjs')).href);
 });
 
 after(() => {

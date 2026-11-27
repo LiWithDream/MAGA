@@ -2,13 +2,17 @@
  * 1. Single-Instance PID Management
  */
 import fs from 'node:fs';
+import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import {
   PID_FILE,
   RUN_ONCE,
   STATE_DIR,
+  STOP_SIGNAL_FILE,
   attachedTargets,
-  runtimeState
+  readJsonOrFallback,
+  runtimeState,
+  writeAtomicUtf8
 } from './env.mjs';
 
 function readProcessCommandLine(pid) {
@@ -20,10 +24,11 @@ function readProcessCommandLine(pid) {
   }
   if (process.platform === 'win32') {
     try {
+      const ps = `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; (Get-CimInstance Win32_Process -Filter "ProcessId=${Number(pid)}").CommandLine`;
       return execFileSync(
         'powershell',
-        ['-NoProfile', '-Command', `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`],
-        { encoding: 'utf8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'] }
+        ['-NoProfile', '-Command', ps],
+        { encoding: 'utf8', timeout: 5000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }
       ).trim();
     } catch {
       return '';
@@ -55,6 +60,8 @@ export function isOwnDaemonProcess(pid, { commandReader = readProcessCommandLine
 }
 
 let pidCleanupBound = false;
+let stopWatcherHandle = null;
+
 function removeOwnPidFile(pidFile = PID_FILE) {
   try {
     if (!fs.existsSync(pidFile)) return;
@@ -65,9 +72,108 @@ function removeOwnPidFile(pidFile = PID_FILE) {
   } catch {}
 }
 
+function triggerGracefulShutdown(pidFile = PID_FILE, { onStop = null } = {}) {
+  if (typeof onStop === 'function') {
+    onStop();
+    return;
+  }
+  if (runtimeState.shuttingDown) return;
+  runtimeState.shuttingDown = true;
+  if (stopWatcherHandle) {
+    try {
+      stopWatcherHandle.stop();
+    } catch {}
+    stopWatcherHandle = null;
+  }
+  const finish = () => {
+    for (const [, entry] of attachedTargets.entries()) {
+      try {
+        entry.ws.close();
+      } catch {}
+    }
+    removeOwnPidFile(pidFile);
+    process.exit(0);
+  };
+  if (runtimeState.activeRelaunchPromise) {
+    Promise.race([runtimeState.activeRelaunchPromise, new Promise((r) => setTimeout(r, 6000))]).finally(finish);
+  } else {
+    finish();
+  }
+}
+
+export function requestCooperativeStop(targetPid = 0, { stopFile = STOP_SIGNAL_FILE } = {}) {
+  const payload = {
+    targetPid: Number(targetPid) > 0 ? Number(targetPid) : 0,
+    requestedAt: Date.now()
+  };
+  writeAtomicUtf8(stopFile, `${JSON.stringify(payload)}\n`);
+  return payload;
+}
+
+export function checkStopSignal({ stopFile = STOP_SIGNAL_FILE, pidFile = PID_FILE, onStop = null } = {}) {
+  try {
+    if (!stopFile || !fs.existsSync(stopFile)) return false;
+    const doc = readJsonOrFallback(stopFile, null);
+    if (!doc || typeof doc !== 'object') return false;
+    const targetPid = Number(doc.targetPid) || 0;
+    if (targetPid !== 0 && targetPid !== process.pid) return false;
+    try {
+      fs.rmSync(stopFile, { force: true });
+    } catch {}
+    triggerGracefulShutdown(pidFile, { onStop });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function startStopSignalWatcher({
+  stateDir = STATE_DIR,
+  stopFile = STOP_SIGNAL_FILE,
+  pidFile = PID_FILE,
+  onStop = null,
+  pollMs = 500
+} = {}) {
+  fs.mkdirSync(stateDir, { recursive: true });
+  const targetName = path.basename(stopFile).toLowerCase();
+  let watcher = null;
+  let stopped = false;
+
+  const check = () => {
+    if (stopped) return;
+    checkStopSignal({ stopFile, pidFile, onStop });
+  };
+
+  try {
+    watcher = fs.watch(stateDir, (_eventType, filename) => {
+      if (!filename || String(filename).toLowerCase() === targetName) {
+        check();
+      }
+    });
+    watcher.unref?.();
+  } catch {}
+
+  const interval = setInterval(check, Math.max(100, Number(pollMs) || 500));
+  interval.unref?.();
+
+  return {
+    stop() {
+      stopped = true;
+      clearInterval(interval);
+      if (watcher) {
+        try {
+          watcher.close();
+        } catch {}
+        watcher = null;
+      }
+    }
+  };
+}
+
 export function claimPidFile({
   pidFile = PID_FILE,
   stateDir = STATE_DIR,
+  stopFile = STOP_SIGNAL_FILE,
   runOnce = RUN_ONCE,
   isDaemonFn = isOwnDaemonProcess,
   killFn = process.kill,
@@ -84,24 +190,24 @@ export function claimPidFile({
         } catch {}
       }
     }
+    if (stopFile && fs.existsSync(stopFile)) {
+      const stale = readJsonOrFallback(stopFile, null);
+      const staleTarget = Number(stale?.targetPid) || 0;
+      if (staleTarget !== process.pid) {
+        try {
+          fs.rmSync(stopFile, { force: true });
+        } catch {}
+      }
+    }
     fs.writeFileSync(pidFile, `${process.pid}\n`, 'utf8');
     if (bindExit && !pidCleanupBound && pidFile === PID_FILE) {
       pidCleanupBound = true;
       process.on('exit', () => removeOwnPidFile(PID_FILE));
+      if (process.platform === 'win32' && !stopWatcherHandle) {
+        stopWatcherHandle = startStopSignalWatcher({ stateDir, stopFile, pidFile: PID_FILE });
+      }
       for (const sig of ['SIGTERM', 'SIGINT']) {
-        process.on(sig, () => {
-          if (runtimeState.shuttingDown) return;
-          runtimeState.shuttingDown = true;
-          const finish = () => {
-            removeOwnPidFile(PID_FILE);
-            process.exit(0);
-          };
-          if (runtimeState.activeRelaunchPromise) {
-            Promise.race([runtimeState.activeRelaunchPromise, new Promise((r) => setTimeout(r, 6000))]).finally(finish);
-          } else {
-            finish();
-          }
-        });
+        process.on(sig, () => triggerGracefulShutdown(PID_FILE));
       }
     }
   } catch {}

@@ -499,6 +499,7 @@ if (isMainModule) {
   const shutdown = async () => {
     if (shuttingDown) return;
     shuttingDown = true;
+    setTimeout(() => process.exit(0), 2000).unref();
     try {
       await gw?.close();
     } catch {}
@@ -508,6 +509,9 @@ if (isMainModule) {
   process.on('SIGINT', () => shutdown());
   process.on('SIGTERM', () => shutdown());
   process.on('disconnect', () => shutdown());
+  process.on('message', (msg) => {
+    if (msg && msg.type === 'shutdown') shutdown();
+  });
 
   try {
     gw = await createGatewayServer();

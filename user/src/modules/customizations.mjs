@@ -2,7 +2,7 @@
  * Claude-Style Customizations Page Polish (category tabs, framed cards, + Add Skill importer).
  */
 export function createCustomizationsModule(rt) {
-  const { FEAT, L, state: rtState, escapeHtml, hooks } = rt;
+  const { FEAT, L, FILE_MANAGER_ZH, FILE_MANAGER_EN, state: rtState, escapeHtml, hooks } = rt;
   const ensureSharedModalEscBound = (...args) => hooks.ensureSharedModalEscBound?.(...args);
   const closeProjectsModal = (...args) => hooks.closeProjectsModal?.(...args);
   const invalidateOverviewSnapshotCache = (...args) => hooks.invalidateOverviewSnapshotCache?.(...args);
@@ -358,7 +358,7 @@ export function createCustomizationsModule(rt) {
     const okHtml = st.successMsg
       ? `<div class="ag-cust-ok-banner"><span>${escapeHtml(st.successMsg)}</span>${
           st.createdPath
-            ? `<button type="button" class="ag-cust-ok-open" data-ag-agent-reveal="${escapeHtml(st.createdPath)}">${L('在 Finder 查看', 'Reveal')}</button>`
+            ? `<button type="button" class="ag-cust-ok-open" data-ag-agent-reveal="${escapeHtml(st.createdPath)}">${L(`在 ${FILE_MANAGER_ZH} 查看`, `Reveal in ${FILE_MANAGER_EN}`)}</button>`
             : ''
         }</div>`
       : '';

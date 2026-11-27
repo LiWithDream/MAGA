@@ -94,6 +94,8 @@ function getDefaultPluginsDir(explicit) {
   );
 }
 
+const realpathNative = fs.realpathSync.native || fs.realpathSync;
+
 function resolveExistingPrefixRealpath(targetPath) {
   let cur = path.resolve(targetPath);
   const tail = [];
@@ -105,7 +107,7 @@ function resolveExistingPrefixRealpath(targetPath) {
   }
   let realBase = cur;
   try {
-    realBase = fs.realpathSync(cur);
+    realBase = realpathNative(cur);
   } catch {}
   return tail.length > 0 ? path.join(realBase, ...tail) : realBase;
 }
@@ -194,6 +196,7 @@ export function resolveGitContextDetailed(dirPath) {
     topAndGit = execFileSync('git', ['-C', existingDir, 'rev-parse', '--show-toplevel', '--git-dir', '--git-common-dir'], {
       encoding: 'utf8',
       timeout: 2000,
+      windowsHide: true,
       env: gitExecEnv(),
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -226,6 +229,7 @@ export function resolveGitContextDetailed(dirPath) {
     const out = execFileSync('git', ['-C', existingDir, 'symbolic-ref', '--short', 'HEAD'], {
       encoding: 'utf8',
       timeout: 2000,
+      windowsHide: true,
       env: gitExecEnv(),
       stdio: ['ignore', 'pipe', 'pipe'],
     }).trim();
@@ -262,6 +266,7 @@ function isUnbornHead(dirPath) {
   const res = spawnSync('git', ['-C', dirPath, 'rev-parse', '--verify', '-q', 'HEAD'], {
     encoding: 'utf8',
     timeout: 1200,
+    windowsHide: true,
     env: gitExecEnv(),
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -422,7 +427,7 @@ function extractCommandTargetsFromHookDef(rawCmd) {
 export function hasValidLocalGuardrail(mainRoot) {
   if (!mainRoot) return false;
   try {
-    const realMain = fs.realpathSync(mainRoot);
+    const realMain = realpathNative(mainRoot);
     const agentsDir = path.join(realMain, '.agents');
     const hooksDir = path.join(agentsDir, 'hooks');
     const hooksJsonPath = path.join(agentsDir, 'hooks.json');
@@ -451,8 +456,8 @@ export function hasValidLocalGuardrail(mainRoot) {
       if (!rawScript) return false;
       const absScript = path.resolve(agentsDir, expandHome(rawScript));
       if (!fs.existsSync(absScript)) return false;
-      const realScript = fs.realpathSync(absScript);
-      const realHooksDir = fs.existsSync(hooksDir) ? fs.realpathSync(hooksDir) : hooksDir;
+      const realScript = realpathNative(absScript);
+      const realHooksDir = fs.existsSync(hooksDir) ? realpathNative(hooksDir) : hooksDir;
       if (!isInsideDir(realScript, realHooksDir)) return false;
       const a = CASE_INSENSITIVE_FS ? realScript.toLowerCase() : realScript;
       const b = CASE_INSENSITIVE_FS ? realHooksDir.toLowerCase() : realHooksDir;

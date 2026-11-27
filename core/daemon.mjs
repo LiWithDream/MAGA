@@ -17,11 +17,12 @@ import {
   USER_DIR,
   VERIFY_ONCE,
   attachedTargets,
+  installWinHeadlessLogTee,
   runtimeState,
   skippedNonHostTargets
 } from './daemon/env.mjs';
 import { checkPidOwnership, claimPidFile, isOwnDaemonProcess } from './daemon/pid.mjs';
-import { startMacCdpBootstrap, waitForMacRelaunchReady } from './daemon/cdp-bootstrap.mjs';
+import { startCdpBootstrap, startMacCdpBootstrap, waitForMacRelaunchReady } from './daemon/cdp-bootstrap.mjs';
 import {
   DEFAULT_STUDIO_PREFS,
   getCachedBootPayload,
@@ -119,8 +120,9 @@ const isMainModule = (() => {
 })();
 
 if (isMainModule) {
+  if (!RUN_ONCE) installWinHeadlessLogTee();
   claimPidFile();
-  startMacCdpBootstrap();
+  startCdpBootstrap();
 
   if (VERIFY_ONCE) {
     await runVerifyOnce();

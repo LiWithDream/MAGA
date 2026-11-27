@@ -80,6 +80,13 @@ export function createCustomRuntime(ctxArg) {
 
   const L = (zh, en) => (FEAT.i18n ? zh : en);
 
+  const navPlatform = typeof navigator !== 'undefined' && navigator ? String(navigator.platform || '') : '';
+  const platform =
+    (ctxArg && ctxArg.boot && ctxArg.boot.platform) ||
+    (/Win/i.test(navPlatform) ? 'win32' : /Linux/i.test(navPlatform) ? 'linux' : 'darwin');
+  const FILE_MANAGER_ZH = platform === 'win32' ? '资源管理器' : platform === 'linux' ? '文件管理器' : '访达';
+  const FILE_MANAGER_EN = platform === 'win32' ? 'Explorer' : platform === 'linux' ? 'Files' : 'Finder';
+
   const docRoot = typeof document !== 'undefined' ? document.documentElement : null;
   const origDocLang = docRoot ? docRoot.getAttribute('lang') : null;
   const hadDocLang = docRoot ? docRoot.hasAttribute('lang') : false;
@@ -339,6 +346,10 @@ export function createCustomRuntime(ctxArg) {
     getCjkScale: () => currentCjkScale,
     FEAT,
     L,
+    platform,
+    isWindows: platform === 'win32',
+    FILE_MANAGER_ZH,
+    FILE_MANAGER_EN,
     docRoot,
     origDocLang,
     hadDocLang,

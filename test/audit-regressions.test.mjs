@@ -61,6 +61,9 @@ function runInstallCli(home, args, extraEnv = {}) {
     env: {
       ...process.env,
       HOME: home,
+      USERPROFILE: home,
+      APPDATA: path.join(home, 'AppData', 'Roaming'),
+      LOCALAPPDATA: path.join(home, 'AppData', 'Local'),
       ANTI_CLAUDE_NO_NETWORK: '1',
       ANTI_CLAUDE_NO_LAUNCHD: '1',
       ANTI_CLAUDE_NO_CDP: '1',
@@ -2708,9 +2711,12 @@ test('[Audit-2026-11-21 · Installer] preserves backup on corrupt state, respect
 
     const realAgents = path.join(h.home, 'real-AGENTS.md');
     fs.writeFileSync(realAgents, '# Personal Rules\n', { mode: 0o600 });
-    fs.chmodSync(realAgents, 0o600);
-    fs.rmSync(path.join(h.home, '.gemini', 'AGENTS.md'), { force: true });
-    fs.symlinkSync(realAgents, path.join(h.home, '.gemini', 'AGENTS.md'));
+    const agentsPath = path.join(h.home, '.gemini', 'AGENTS.md');
+    if (process.platform !== 'win32') {
+      fs.chmodSync(realAgents, 0o600);
+      fs.rmSync(agentsPath, { force: true });
+      fs.symlinkSync(realAgents, agentsPath);
+    }
 
     /* Official automation whose folder happens to start with ac- (no created_by: 'anti-claude') */
     const nativeAcSidecar = path.join(h.home, '.gemini', 'config', 'sidecars', 'ac-official-report');
@@ -2735,9 +2741,10 @@ test('[Audit-2026-11-21 · Installer] preserves backup on corrupt state, respect
     assert.equal(inst1.status, 0, inst1.stderr);
 
     /* Bug #35: symlink & 0600 mode preserved on AGENTS.md */
-    const agentsPath = path.join(h.home, '.gemini', 'AGENTS.md');
-    assert.equal(fs.lstatSync(agentsPath).isSymbolicLink(), true, 'AGENTS.md symlink preserved');
-    assert.equal(fs.statSync(realAgents).mode & 0o777, 0o600, 'AGENTS.md target 0600 mode preserved');
+    if (process.platform !== 'win32') {
+      assert.equal(fs.lstatSync(agentsPath).isSymbolicLink(), true, 'AGENTS.md symlink preserved');
+      assert.equal(fs.statSync(realAgents).mode & 0o777, 0o600, 'AGENTS.md target 0600 mode preserved');
+    }
 
     /* Bug #6: User sets custom statusLine, then re-runs install -> custom statusLine must be respected */
     const customSettings = JSON.parse(fs.readFileSync(path.join(cliDir, 'settings.json'), 'utf8'));
@@ -2802,7 +2809,7 @@ test('[Audit-2026-11-21 · Daemon Security & CDP] blocks symlink/case bypasses, 
 
     if (fs.existsSync(fakeSshTarget)) {
       const symToSsh = path.join(tmpRoot, 'innocent-link');
-      fs.symlinkSync(fakeSshTarget, symToSsh);
+      fs.symlinkSync(fakeSshTarget, symToSsh, process.platform === 'win32' ? 'junction' : 'dir');
       assert.equal(daemon.isSafeProjectDir(symToSsh), false, 'symlink pointing to ~/.ssh is rejected');
     }
 

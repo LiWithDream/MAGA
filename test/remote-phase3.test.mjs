@@ -180,9 +180,11 @@ test('Phase 3 settings-rpc manages config, Cloudflare/Tailscale fail-closed vali
     assert.ok(saved.config.allowedOrigins.includes('https://agy.example.com'));
     assert.equal(saved.publicBaseUrl, 'https://agy.example.com');
 
-    // Verify 0600 file permissions on config.json
-    const cfgMode = fs.lstatSync(path.join(remoteDir, 'config.json')).mode & 0o777;
-    assert.equal(cfgMode, 0o600);
+    // Verify 0600 file permissions on config.json (POSIX only)
+    if (gwConfigMod.isPosixPermsEnforced()) {
+      const cfgMode = fs.lstatSync(path.join(remoteDir, 'config.json')).mode & 0o777;
+      assert.equal(cfgMode, 0o600);
+    }
 
     // 4. Create pairing -> writes 0600 pairing.json + returns HTTPS Cloudflare pairingUrl
     const pair = await rpcMod.createRemotePairing({ role: 'steer', ttlSec: 180 }, opts);
@@ -191,7 +193,9 @@ test('Phase 3 settings-rpc manages config, Cloudflare/Tailscale fail-closed vali
     assert.equal(pair.role, 'steer');
     assert.equal(pair.pairingUrl, `https://agy.example.com/#pair=${pair.code}`);
     assert.equal(pair.localUrl, `http://127.0.0.1:18792/#pair=${pair.code}`);
-    assert.equal(fs.lstatSync(path.join(remoteDir, 'pairing.json')).mode & 0o777, 0o600);
+    if (gwConfigMod.isPosixPermsEnforced()) {
+      assert.equal(fs.lstatSync(path.join(remoteDir, 'pairing.json')).mode & 0o777, 0o600);
+    }
 
     // 5. Device role update & revocation
     gwConfigMod.writeDevices(

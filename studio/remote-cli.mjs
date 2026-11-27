@@ -1,36 +1,33 @@
 /**
  * AGY Studio Remote Control CLI — remote subcommands & doctor diagnostics.
  */
-import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
-import {
-  chmodSync,
-  closeSync,
-  constants,
-  existsSync,
-  lstatSync,
-  mkdirSync,
-  openSync,
-  readFileSync,
-  renameSync,
-  rmSync,
-  writeFileSync,
-  writeSync,
-} from 'node:fs';
+import { existsSync, lstatSync, readFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { REMOTE_PWA_DIST } from './build.mjs';
 import { PID_FILE as DAEMON_PID_FILE, STATE_DIR } from '../core/daemon/env.mjs';
+import { WIN_TASK_NAME, getWinStartupVbsPath, inspectWinCoreDaemon } from '../core/daemon/win-service.mjs';
+import {
+  getRemotePaths,
+  isPidAlive,
+  isPosixPermsEnforced,
+  readJsonSafe,
+  readProcessCommandLineSync,
+  withDevicesLock,
+  writeJsonAtomic,
+} from '../remote/shared/fs-paths.mjs';
 
-const REMOTE_DIR = path.resolve(process.env.MAGA_REMOTE_STATE_DIR || path.join(STATE_DIR, 'remote'));
-const REMOTE_CONFIG_FILE = path.join(REMOTE_DIR, 'config.json');
-const REMOTE_PAIRING_FILE = path.join(REMOTE_DIR, 'pairing.json');
-const REMOTE_DEVICES_FILE = path.join(REMOTE_DIR, 'devices.json');
-const REMOTE_LAST_SEEN_FILE = path.join(REMOTE_DIR, 'device-last-seen.json');
-const REMOTE_DEVICES_LOCK_FILE = `${REMOTE_DEVICES_FILE}.lock`;
-const REMOTE_IDENTITY_FILE = path.join(REMOTE_DIR, 'gateway-identity.json');
-const REMOTE_PID_FILE = path.join(REMOTE_DIR, 'gateway.pid');
+const REMOTE_PATHS = getRemotePaths(null, null, {
+  env: process.env.ANTI_CLAUDE_STATE_DIR ? process.env : { ...process.env, ANTI_CLAUDE_STATE_DIR: STATE_DIR },
+});
+const REMOTE_DIR = REMOTE_PATHS.remoteDir;
+const REMOTE_CONFIG_FILE = REMOTE_PATHS.configFile;
+const REMOTE_PAIRING_FILE = REMOTE_PATHS.pairingFile;
+const REMOTE_DEVICES_FILE = REMOTE_PATHS.devicesFile;
+const REMOTE_LAST_SEEN_FILE = REMOTE_PATHS.deviceLastSeenFile;
+const REMOTE_IDENTITY_FILE = REMOTE_PATHS.identityFile;
+const REMOTE_PID_FILE = REMOTE_PATHS.pidFile;
 
-const DEVICES_LOCK_STALE_MS = 5000;
 const VALID_TRANSPORTS = new Set(['loopback', 'tailscale-serve', 'cloudflare-access']);
 const VALID_ROLES = new Set(['observe', 'steer', 'admin']);
 const DEFAULT_REMOTE_CONFIG = {
@@ -45,36 +42,8 @@ const DEFAULT_REMOTE_CONFIG = {
   allowLocalPairingWithoutEdge: true,
 };
 
-function readJsonSafe(filePath) {
-  if (!existsSync(filePath)) return null;
-  try {
-    return JSON.parse(readFileSync(filePath, 'utf8'));
-  } catch {
-    return null;
-  }
-}
-
-function ensureRemoteDir() {
-  mkdirSync(REMOTE_DIR, { recursive: true, mode: 0o700 });
-  chmodSync(REMOTE_DIR, 0o700);
-}
-
 function writeSecretJson(filePath, obj) {
-  ensureRemoteDir();
-  const dir = path.dirname(filePath);
-  const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
-  try {
-    writeFileSync(tmp, `${JSON.stringify(obj, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
-    chmodSync(tmp, 0o600);
-    renameSync(tmp, filePath);
-    chmodSync(filePath, 0o600);
-  } catch (err) {
-    try {
-      rmSync(tmp, { force: true });
-    } catch {}
-    throw err;
-  }
-  return dir;
+  writeJsonAtomic(filePath, obj, { mode: 0o600, dirMode: 0o700 });
 }
 
 function parseFlagValue(args, flag) {
@@ -93,86 +62,6 @@ function parseCsvFlag(args, flag) {
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
-}
-
-async function withDevicesLock(fn) {
-  ensureRemoteDir();
-  const deadline = Date.now() + 3000;
-  let acquired = false;
-  while (Date.now() < deadline) {
-    try {
-      const fd = openSync(
-        REMOTE_DEVICES_LOCK_FILE,
-        constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY,
-        0o600
-      );
-      try {
-        writeSync(fd, JSON.stringify({ pid: process.pid, ts: Date.now() }));
-      } finally {
-        closeSync(fd);
-      }
-      acquired = true;
-      break;
-    } catch (err) {
-      if (err?.code !== 'EEXIST') throw err;
-      let healed = false;
-      try {
-        const st = lstatSync(REMOTE_DEVICES_LOCK_FILE);
-        if (st.isSymbolicLink()) {
-          rmSync(REMOTE_DEVICES_LOCK_FILE, { force: true });
-          healed = true;
-        } else {
-          let lockTs = Math.max(st.mtimeMs, st.ctimeMs);
-          try {
-            const parsed = JSON.parse(readFileSync(REMOTE_DEVICES_LOCK_FILE, 'utf8'));
-            if (typeof parsed?.ts === 'number' && Number.isFinite(parsed.ts)) {
-              lockTs = parsed.ts;
-            }
-          } catch {}
-          if (Date.now() - lockTs > DEVICES_LOCK_STALE_MS) {
-            rmSync(REMOTE_DEVICES_LOCK_FILE, { force: true });
-            healed = true;
-          }
-        }
-      } catch (statErr) {
-        if (statErr?.code === 'ENOENT') healed = true;
-      }
-      if (!healed) await sleepMs(20);
-    }
-  }
-  if (!acquired) {
-    throw new Error('Timed out acquiring devices.json.lock');
-  }
-  try {
-    return await fn();
-  } finally {
-    try {
-      rmSync(REMOTE_DEVICES_LOCK_FILE, { force: true });
-    } catch {}
-  }
-}
-
-function isPidAlive(pid) {
-  const num = Number(pid);
-  if (!Number.isInteger(num) || num <= 1) return false;
-  try {
-    process.kill(num, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function readProcessCmdline(pid) {
-  try {
-    return execFileSync('ps', ['-ww', '-p', String(pid), '-o', 'command='], {
-      encoding: 'utf8',
-      timeout: 1500,
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim();
-  } catch {
-    return '';
-  }
 }
 
 function readGatewayPidInfo() {
@@ -202,8 +91,8 @@ function readGatewayPidInfo() {
   const alive = isPidAlive(pid);
   let matchesGateway = false;
   if (alive) {
-    const cmd = readProcessCmdline(pid);
-    matchesGateway = Boolean(cmd && /remote[\\/]gateway[\\/]server\.mjs/i.test(cmd));
+    const cmd = readProcessCommandLineSync(pid);
+    matchesGateway = Boolean(cmd && /remote[\\/]+gateway[\\/]+server\.mjs/i.test(cmd));
   }
   return { present: true, pid, port, startedAt, alive: alive && matchesGateway, matchesGateway };
 }
@@ -252,7 +141,7 @@ function isDaemonRunning() {
   try {
     const pid = parseInt(readFileSync(DAEMON_PID_FILE, 'utf8').trim(), 10);
     if (!isPidAlive(pid)) return false;
-    const cmd = readProcessCmdline(pid);
+    const cmd = readProcessCommandLineSync(pid);
     return !cmd || /daemon\.mjs/i.test(cmd);
   } catch {
     return false;
@@ -334,23 +223,25 @@ export function collectRemoteControlDiagnostics() {
     });
   }
 
-  for (const [label, targetPath, expectedMask] of [
-    ['remote_dir', REMOTE_DIR, 0o077],
-    ['config.json', REMOTE_CONFIG_FILE, 0o077],
-    ['devices.json', REMOTE_DEVICES_FILE, 0o077],
-    ['pairing.json', REMOTE_PAIRING_FILE, 0o077],
-  ]) {
-    if (!existsSync(targetPath)) continue;
-    try {
-      const mode = lstatSync(targetPath).mode & 0o777;
-      if ((mode & expectedMask) !== 0) {
-        dangerousIssues.push({
-          level: 'warn',
-          code: 'permissive_file_permissions',
-          message: `${label} has overly permissive mode 0o${mode.toString(8)}`,
-        });
-      }
-    } catch {}
+  if (isPosixPermsEnforced()) {
+    for (const [label, targetPath, expectedMask] of [
+      ['remote_dir', REMOTE_DIR, 0o077],
+      ['config.json', REMOTE_CONFIG_FILE, 0o077],
+      ['devices.json', REMOTE_DEVICES_FILE, 0o077],
+      ['pairing.json', REMOTE_PAIRING_FILE, 0o077],
+    ]) {
+      if (!existsSync(targetPath)) continue;
+      try {
+        const mode = lstatSync(targetPath).mode & 0o777;
+        if ((mode & expectedMask) !== 0) {
+          dangerousIssues.push({
+            level: 'warn',
+            code: 'permissive_file_permissions',
+            message: `${label} has overly permissive mode 0o${mode.toString(8)}`,
+          });
+        }
+      } catch {}
+    }
   }
 
   return {
@@ -448,7 +339,23 @@ export async function handleRemoteCommand(subArgs) {
     const uid = typeof process.getuid === 'function' ? process.getuid() : 501;
     const hints = [];
     if (!daemonRunning) {
-      hints.push(`Daemon is not running; start with: launchctl kickstart -k "gui/${uid}/com.antigravity.anti-claude.daemon"`);
+      if (process.platform === 'win32') {
+        let winDiag = null;
+        try {
+          winDiag = inspectWinCoreDaemon();
+        } catch {}
+        if (winDiag?.mode === 'vbs' || (!winDiag?.installed && existsSync(getWinStartupVbsPath()))) {
+          const vbs = winDiag?.startupVbs || getWinStartupVbsPath();
+          hints.push(`Daemon is not running; start with: wscript "${vbs}" (or re-run powershell -ExecutionPolicy Bypass -File .\\install.ps1)`);
+        } else {
+          const tn = winDiag?.taskName || WIN_TASK_NAME;
+          hints.push(`Daemon is not running; start with: schtasks /run /tn ${tn} (or re-run powershell -ExecutionPolicy Bypass -File .\\install.ps1)`);
+        }
+      } else if (process.platform === 'darwin') {
+        hints.push(`Daemon is not running; start with: launchctl kickstart -k "gui/${uid}/com.antigravity.anti-claude.daemon"`);
+      } else {
+        hints.push('Daemon is not running; start with: systemctl --user restart anti-claude-daemon.service');
+      }
     }
     if (!diag.pwaBuilt) {
       hints.push('Remote PWA dist is missing; run: npm run build:remote');
@@ -636,26 +543,29 @@ export async function handleRemoteCommand(subArgs) {
     if (!targetId) {
       throw new Error('Usage: node studio/cli.mjs remote revoke <deviceId>');
     }
-    const result = await withDevicesLock(() => {
-      const doc = readJsonSafe(REMOTE_DEVICES_FILE);
-      const devices = Array.isArray(doc?.devices) ? doc.devices : [];
-      const target = devices.find((d) => d && d.deviceId === targetId);
-      if (!target) {
-        throw new Error(`Device not found: ${targetId}`);
-      }
-      if (!target.revokedAt) {
-        target.revokedAt = Date.now();
-      }
-      writeSecretJson(REMOTE_DEVICES_FILE, { ...(doc && typeof doc === 'object' ? doc : {}), devices });
-      return {
-        ok: true,
-        command: 'remote revoke',
-        deviceId: target.deviceId,
-        name: target.name || '',
-        revokedAt: target.revokedAt,
-        message: '已吊销，网关将踢下线',
-      };
-    });
+    const result = await withDevicesLock(
+      () => {
+        const doc = readJsonSafe(REMOTE_DEVICES_FILE);
+        const devices = Array.isArray(doc?.devices) ? doc.devices : [];
+        const target = devices.find((d) => d && d.deviceId === targetId);
+        if (!target) {
+          throw new Error(`Device not found: ${targetId}`);
+        }
+        if (!target.revokedAt) {
+          target.revokedAt = Date.now();
+        }
+        writeSecretJson(REMOTE_DEVICES_FILE, { ...(doc && typeof doc === 'object' ? doc : {}), devices });
+        return {
+          ok: true,
+          command: 'remote revoke',
+          deviceId: target.deviceId,
+          name: target.name || '',
+          revokedAt: target.revokedAt,
+          message: '已吊销，网关将踢下线',
+        };
+      },
+      { remoteDir: REMOTE_DIR }
+    );
     return result;
   }
 

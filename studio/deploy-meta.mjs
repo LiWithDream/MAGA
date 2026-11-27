@@ -7,6 +7,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { renameWithWinRetry } from '../core/daemon/env.mjs';
 
 const STATE_DIR = path.resolve(
   process.env.ANTI_CLAUDE_STATE_DIR || path.join(os.homedir(), '.gemini', 'antigravity', 'anti-claude')
@@ -58,32 +59,6 @@ export function collectGitDeployProvenance(repoRoot) {
     dirty: Boolean(statusOut),
     deployedAt: Date.now(),
   };
-}
-
-const WIN_RETRY_SLEEP_BUF =
-  typeof SharedArrayBuffer === 'function' ? new Int32Array(new SharedArrayBuffer(4)) : null;
-
-function renameWithWinRetry(src, dst) {
-  if (process.platform !== 'win32') {
-    fs.renameSync(src, dst);
-    return;
-  }
-  for (let i = 0; i < 6; i += 1) {
-    try {
-      fs.renameSync(src, dst);
-      return;
-    } catch (err) {
-      const code = err?.code;
-      if ((code !== 'EPERM' && code !== 'EBUSY' && code !== 'EACCES') || i === 5) {
-        throw err;
-      }
-      if (WIN_RETRY_SLEEP_BUF) {
-        try {
-          Atomics.wait(WIN_RETRY_SLEEP_BUF, 0, 0, Math.min(200, Math.round(20 * Math.pow(1.6, i))));
-        } catch {}
-      }
-    }
-  }
 }
 
 export function writeDeployMeta(repoRoot, metaPath = DEPLOY_META_PATH, extra = {}) {

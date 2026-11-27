@@ -9,10 +9,38 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
-test('install.sh and uninstall.sh --dry-run and pipe-mode isolation run cleanly against temp HOME', () => {
+test('install.sh / install.ps1 and uninstall --dry-run and pipe-mode isolation run cleanly against temp HOME', () => {
   const fakeHome = mkdtempSync(path.join(tmpdir(), 'maga-home-dry-'));
   try {
-    const env = { ...process.env, HOME: fakeHome };
+    const env = {
+      ...process.env,
+      HOME: fakeHome,
+      USERPROFILE: fakeHome,
+      APPDATA: path.join(fakeHome, 'AppData', 'Roaming'),
+      LOCALAPPDATA: path.join(fakeHome, 'AppData', 'Local'),
+    };
+    if (process.platform === 'win32') {
+      const installOut = execFileSync(
+        'powershell',
+        ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(REPO, 'install.ps1'), '-DryRun'],
+        { cwd: REPO, env, encoding: 'utf8', windowsHide: true }
+      );
+      assert.match(installOut, /\[dry-run\] os=Windows/);
+      assert.match(installOut, /\[dry-run\] mode=(prebuilt|source|source-bootstrap)/);
+      assert.match(installOut, /studio\/cli\.mjs install/);
+
+      const uninstallOut = execFileSync(
+        'powershell',
+        ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(REPO, 'uninstall.ps1'), '-DryRun'],
+        { cwd: REPO, env, encoding: 'utf8', windowsHide: true }
+      );
+      assert.match(uninstallOut, /studio\/cli\.mjs rollback/);
+      assert.match(uninstallOut, /install\.mjs uninstall/);
+      assert.match(uninstallOut, /preserve:.*studio-prefs\.json/);
+      assert.equal(existsSync(path.join(fakeHome, '.gemini')), false, 'dry-run must not mutate USERPROFILE/.gemini');
+      return;
+    }
+
     const installOut = execFileSync('bash', [path.join(REPO, 'install.sh'), '--dry-run'], {
       cwd: REPO,
       env,
@@ -115,19 +143,73 @@ test('packRelease builds zero-npm-install macOS tarball with valid SHA-256, zero
     `;
     const checkOut = execFileSync(process.execPath, ['--input-type=module', '-e', verifyScript], {
       cwd: extractedRoot,
-      env: { ...process.env, HOME: fakeHome, MAGA_USE_PREBUILT: '1' },
+      env: {
+        ...process.env,
+        HOME: fakeHome,
+        USERPROFILE: fakeHome,
+        APPDATA: path.join(fakeHome, 'AppData', 'Roaming'),
+        LOCALAPPDATA: path.join(fakeHome, 'AppData', 'Local'),
+        MAGA_USE_PREBUILT: '1',
+      },
       encoding: 'utf8',
     });
     const parsed = JSON.parse(checkOut.trim().split('\n').pop());
     assert.equal(parsed.ok, true);
 
-    // Verify install.sh --dry-run detects prebuilt mode inside unpacked tarball
-    const dryOut = execFileSync('bash', [path.join(extractedRoot, 'install.sh'), '--dry-run'], {
-      cwd: extractedRoot,
-      env: { ...process.env, HOME: fakeHome },
-      encoding: 'utf8',
-    });
+    // Verify native installer --dry-run detects prebuilt mode inside unpacked archive
+    const dryEnv = {
+      ...process.env,
+      HOME: fakeHome,
+      USERPROFILE: fakeHome,
+      APPDATA: path.join(fakeHome, 'AppData', 'Roaming'),
+      LOCALAPPDATA: path.join(fakeHome, 'AppData', 'Local'),
+    };
+    const dryOut =
+      process.platform === 'win32'
+        ? execFileSync(
+            'powershell',
+            ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(extractedRoot, 'install.ps1'), '-DryRun'],
+            { cwd: extractedRoot, env: dryEnv, encoding: 'utf8', windowsHide: true }
+          )
+        : execFileSync('bash', [path.join(extractedRoot, 'install.sh'), '--dry-run'], {
+            cwd: extractedRoot,
+            env: dryEnv,
+            encoding: 'utf8',
+          });
     assert.match(dryOut, /\[dry-run\] mode=prebuilt/);
+  } finally {
+    rmSync(distOut, { recursive: true, force: true });
+    rmSync(unpackDir, { recursive: true, force: true });
+    rmSync(path.join(REPO, 'studio', 'prebuilt'), { recursive: true, force: true });
+  }
+});
+
+test('packRelease builds zero-npm-install Windows zip with remote PWA, shared fs-paths, and Android exclusions', async () => {
+  const distOut = mkdtempSync(path.join(tmpdir(), 'maga-win-dist-'));
+  const unpackDir = mkdtempSync(path.join(tmpdir(), 'maga-win-unpack-'));
+  try {
+    const { packRelease } = await import(pathToFileURL(path.join(REPO, 'studio', 'pack-release.mjs')).href);
+    const res = await packRelease({ outDir: distOut, platform: 'windows' });
+    assert.equal(res.ok, true);
+    assert.equal(path.basename(res.archive), `agy-studio-v${res.version}-windows.zip`);
+    assert.equal(existsSync(res.archive), true);
+    assert.equal(existsSync(res.sha256File), true);
+
+    const expectedHash = crypto.createHash('sha256').update(readFileSync(res.archive)).digest('hex');
+    assert.equal(res.sha256, expectedHash);
+
+    execFileSync('tar', ['-xf', res.archive, '-C', unpackDir]);
+    const extractedRoot = path.join(unpackDir, `agy-studio-v${res.version}-windows`);
+    assert.equal(existsSync(path.join(extractedRoot, 'install.ps1')), true);
+    assert.equal(existsSync(path.join(extractedRoot, 'uninstall.ps1')), true);
+    assert.equal(existsSync(path.join(extractedRoot, 'user', 'custom.js')), true);
+    assert.equal(existsSync(path.join(extractedRoot, 'studio', 'prebuilt', 'studio-entry.js')), true);
+    assert.equal(existsSync(path.join(extractedRoot, 'remote', 'shared', 'fs-paths.mjs')), true);
+    assert.equal(existsSync(path.join(extractedRoot, 'remote', 'pwa', 'dist', 'app.js')), true);
+    assert.equal(existsSync(path.join(extractedRoot, 'remote', 'android', '.gradle')), false);
+    assert.equal(existsSync(path.join(extractedRoot, 'remote', 'android', 'app', 'build')), false);
+    assert.equal(existsSync(path.join(extractedRoot, 'remote', 'android', 'local.properties')), false);
+    assert.equal(existsSync(path.join(extractedRoot, 'node_modules')), false);
   } finally {
     rmSync(distOut, { recursive: true, force: true });
     rmSync(unpackDir, { recursive: true, force: true });
@@ -138,7 +220,13 @@ test('packRelease builds zero-npm-install macOS tarball with valid SHA-256, zero
 test('studio/cli.mjs sync-rules and rollback cleanly strip fast-io rules while preserving user AGENTS.md content', () => {
   const fakeHome = mkdtempSync(path.join(tmpdir(), 'agy-rollback-home-'));
   try {
-    const env = { ...process.env, HOME: fakeHome };
+    const env = {
+      ...process.env,
+      HOME: fakeHome,
+      USERPROFILE: fakeHome,
+      APPDATA: path.join(fakeHome, 'AppData', 'Roaming'),
+      LOCALAPPDATA: path.join(fakeHome, 'AppData', 'Local'),
+    };
     const geminiDir = path.join(fakeHome, '.gemini');
     const agentsMd = path.join(geminiDir, 'AGENTS.md');
     mkdirSync(geminiDir, { recursive: true });

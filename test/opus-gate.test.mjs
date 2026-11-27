@@ -229,7 +229,12 @@ test('opus-gate-service persists quota, syncs plugin, enforces CAS dismiss, reco
     assert.ok(synced.files.includes('rules/AGENTS.md'));
     assert.ok(synced.files.includes('skills/opus-gate/SKILL.md'));
     assert.ok(synced.files.includes('hooks/gate-check.mjs'));
+    assert.ok(synced.files.includes('hooks/lib/git-landing.mjs'));
     assert.equal(isOpusGatePluginInstalled({ pluginsDir: dirs.pluginsDir }), true);
+    const gateCheckLines = fs
+      .readFileSync(path.join(REPO, 'studio', 'plugin', 'maga-opus-gate', 'hooks', 'gate-check.mjs'), 'utf8')
+      .split('\n').length;
+    assert.ok(gateCheckLines < 1500, `Expected gate-check.mjs < 1500 lines after split, got ${gateCheckLines}`);
 
     const cid = 'conv_service_123456';
     writeOpusGateProposal(
@@ -1363,8 +1368,10 @@ test('syncOpusGatePlugin pins absolute Node executable, chmods hook, prunes stal
     assert.ok(syncedHooks['maga-opus-gate'].PreToolUse[0].hooks[0].command.includes(process.execPath));
     assert.ok(syncedHooks['maga-opus-gate'].PostToolUse[0].hooks[0].command.includes(process.execPath));
 
-    const hookStat = fs.statSync(path.join(dirs.pluginsDir, 'maga-opus-gate', 'hooks', 'gate-check.mjs'));
-    assert.ok((hookStat.mode & 0o111) !== 0, 'gate-check.mjs must be executable');
+    if (process.platform !== 'win32') {
+      const hookStat = fs.statSync(path.join(dirs.pluginsDir, 'maga-opus-gate', 'hooks', 'gate-check.mjs'));
+      assert.ok((hookStat.mode & 0o111) !== 0, 'gate-check.mjs must be executable');
+    }
 
     const runtimeCheck = verifyOpusGateHookNodeRuntime({ pluginsDir: dirs.pluginsDir });
     assert.equal(runtimeCheck.ok, true);

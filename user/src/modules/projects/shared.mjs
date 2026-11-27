@@ -2,7 +2,7 @@
  * Shared state, SVG icons, and runtime/sidebar dependency adapters for Projects submodules.
  */
 export function createProjectSharedContext(rt, modelApi) {
-  const { FEAT, L, state: rtState, frame, later, escapeHtml, setLeafText, syncAttrTargetSet, hooks } = rt;
+  const { FEAT, L, FILE_MANAGER_ZH, FILE_MANAGER_EN, state: rtState, frame, later, escapeHtml, setLeafText, syncAttrTargetSet, hooks } = rt;
   const getSidebarHook = (name) => (...args) => hooks[name]?.(...args);
 
   const ICONS = {
@@ -135,6 +135,8 @@ export function createProjectSharedContext(rt, modelApi) {
   return {
     FEAT,
     L,
+    FILE_MANAGER_ZH: FILE_MANAGER_ZH || '访达',
+    FILE_MANAGER_EN: FILE_MANAGER_EN || 'Finder',
     rtState,
     frame,
     later,

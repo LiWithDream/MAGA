@@ -4,11 +4,14 @@
  */
 import crypto from 'node:crypto';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { DatabaseSync, HOME, STATE_DIR, UUID_RE, readJsonOrFallback } from '../env.mjs';
 import { isPathInsideDir } from '../projects.mjs';
+import {
+  ensureRemoteDir as ensureSharedRemoteDir,
+  getRemotePaths as getSharedRemotePaths,
+} from '../../../remote/shared/fs-paths.mjs';
 
 export const DEFAULT_REMOTE_CONFIG = Object.freeze({
   enabled: false,
@@ -28,23 +31,13 @@ export const MAX_TRANSCRIPT_TAIL_BYTES = 512 * 1024;
 export const MAX_FIELD_CHARS = 16384;
 
 export function resolveRemotePaths(env = process.env) {
-  const baseStateDir = path.resolve(env.ANTI_CLAUDE_STATE_DIR || STATE_DIR);
-  const remoteDir = path.resolve(env.MAGA_REMOTE_STATE_DIR || path.join(baseStateDir, 'remote'));
-  const configFile = path.join(remoteDir, 'config.json');
-  const explicitSock = typeof env.MAGA_REMOTE_SOCK_PATH === 'string' && env.MAGA_REMOTE_SOCK_PATH.trim();
-  let sockPath = explicitSock ? path.resolve(explicitSock) : path.join(remoteDir, 'bridge.sock');
-  if (Buffer.byteLength(sockPath, 'utf8') > 95) {
-    const hash = crypto.createHash('sha256').update(remoteDir).digest('hex').slice(0, 12);
-    sockPath = path.join(os.tmpdir(), `maga-rem-${hash}.sock`);
-  }
+  const effectiveEnv = env?.ANTI_CLAUDE_STATE_DIR ? env : { ...env, ANTI_CLAUDE_STATE_DIR: STATE_DIR };
+  const { remoteDir, configFile, sockPath } = getSharedRemotePaths(null, null, { env: effectiveEnv });
   return { remoteDir, configFile, sockPath };
 }
 
 export function ensureRemoteDir(remoteDir) {
-  fs.mkdirSync(remoteDir, { recursive: true, mode: 0o700 });
-  try {
-    fs.chmodSync(remoteDir, 0o700);
-  } catch {}
+  return ensureSharedRemoteDir(remoteDir, 0o700);
 }
 
 export function truncateText(val, max = MAX_FIELD_CHARS) {

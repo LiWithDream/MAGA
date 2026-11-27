@@ -275,7 +275,7 @@ Small daily friction adds up when you live inside Antigravity all day — every 
 | Root DOM observers (`MagaKernel`) | **`1`** shared `MutationObserver` (`data-maga-own` filtered) |
 | Frame flush cost (Apple Silicon local CDP check) | **`1.5–3.6 ms`** with leaf-only telemetry slots (`MetricsBus`) |
 | Global CSS `:has()` selectors | **`0`** (enforced by automated test guards) |
-| Automated regression & invariant suite (`npm test`) | **`215+`** passing tests, **`0`** skipped |
+| Automated regression & invariant suite (`npm test`) | **`225+`** passing tests, **`0`** skipped |
 | Background footprint | **`1`** local `LaunchAgent` (macOS) / Scheduled Task (Windows) |
 
 ---
@@ -366,7 +366,7 @@ This comes from Antigravity's native `language_server` when its TLS/proxy connec
 │   ├── styles/            # Scoped stylesheets (0 :has() selectors)
 │   ├── cli.mjs            # Unified CLI (install / deploy / sync-rules / doctor / rollback / remote)
 │   └── pack-release.mjs   # Zero-npm-install Release tarball packager
-├── test/                  # Automated regression & invariant suite (215+ tests)
+├── test/                  # Automated regression & invariant suite (225+ tests)
 ├── install.sh             # One-line macOS installer (--dry-run, prebuilt & source modes)
 ├── uninstall.sh           # Clean macOS rollback & uninstaller (--dry-run supported)
 ├── install.ps1            # One-line Windows PowerShell installer (-DryRun, -NoRules, -NoShortcut)
@@ -376,7 +376,7 @@ This comes from Antigravity's native `language_server` when its TLS/proxy connec
 | Contributor Command | Purpose |
 | :--- | :--- |
 | `npm run wt:new -- feat/slug` | Create an isolated sibling Git worktree with symlinked/junctioned `node_modules` |
-| `npm test` | Compile `user/custom.js` and run the full 215+ test & invariant suite |
+| `npm test` | Compile `user/custom.js` and run the full 225+ test & invariant suite |
 | `npm run deploy` | Hot-reload UI changes into running Antigravity from clean `main` (no app restart) |
 | `npm run release:pack:all` | Build zero-`npm-install` macOS `.tar.gz` and Windows `.zip` archives + SHA-256 in `dist/` |
 

@@ -7,6 +7,7 @@ import net from 'node:net';
 import path from 'node:path';
 import { DatabaseSync, REPO_ROOT, UUID_RE, attachedTargets, runtimeState } from './env.mjs';
 import { isPathInsideDir } from './projects.mjs';
+import { isWindowsNamedPipe } from '../../remote/shared/fs-paths.mjs';
 import {
   DEFAULT_REMOTE_CONFIG,
   MAX_FIELD_CHARS,
@@ -1050,6 +1051,7 @@ async function dispatchUdsRpc(client, req) {
 }
 
 function safeUnlinkSocket(sockPath) {
+  if (isWindowsNamedPipe(sockPath)) return;
   try {
     const lst = fs.lstatSync(sockPath);
     if (lst.isSocket()) {
@@ -1059,22 +1061,25 @@ function safeUnlinkSocket(sockPath) {
 }
 
 function createUdsServer(sockPath, remoteDir) {
-  try {
-    const lst = fs.lstatSync(sockPath);
-    if (lst.isSocket()) {
-      fs.rmSync(sockPath, { force: true });
-    } else {
-      throw new Error(`refusing_to_unlink_non_socket:${sockPath}`);
+  const isPipe = isWindowsNamedPipe(sockPath);
+  if (!isPipe) {
+    try {
+      const lst = fs.lstatSync(sockPath);
+      if (lst.isSocket()) {
+        fs.rmSync(sockPath, { force: true });
+      } else {
+        throw new Error(`refusing_to_unlink_non_socket:${sockPath}`);
+      }
+    } catch (err) {
+      if (err?.code !== 'ENOENT') throw err;
     }
-  } catch (err) {
-    if (err?.code !== 'ENOENT') throw err;
-  }
 
-  const parentDir = path.dirname(sockPath);
-  if (parentDir === remoteDir || isPathInsideDir(remoteDir, sockPath)) {
-    ensureRemoteDir(parentDir);
-  } else {
-    fs.mkdirSync(parentDir, { recursive: true });
+    const parentDir = path.dirname(sockPath);
+    if (parentDir === remoteDir || isPathInsideDir(remoteDir, sockPath)) {
+      ensureRemoteDir(parentDir);
+    } else {
+      fs.mkdirSync(parentDir, { recursive: true });
+    }
   }
 
   const server = net.createServer((client) => {
@@ -1121,9 +1126,11 @@ function createUdsServer(sockPath, remoteDir) {
   return new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(sockPath, () => {
-      try {
-        fs.chmodSync(sockPath, 0o600);
-      } catch {}
+      if (!isPipe) {
+        try {
+          fs.chmodSync(sockPath, 0o600);
+        } catch {}
+      }
       server.removeListener('error', reject);
       resolve(server);
     });

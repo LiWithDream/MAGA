@@ -276,7 +276,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 | 根 DOM 观测器数量（`MagaKernel`） | **`1`** 个统一 `MutationObserver`（`data-maga-own` 自隔离） |
 | 主线程刷帧耗时（Apple Silicon 本地 CDP 实测） | **`1.5–3.6 ms`**，高频遥测走叶节点原地更新（`MetricsBus`） |
 | 全局 CSS `:has()` 选择器数量 | **`0`**（自动化测试硬守卫） |
-| 自动化回归与不变量测试（`npm test`） | **`215+`** 项全部通过，**`0`** 项跳过 |
+| 自动化回归与不变量测试（`npm test`） | **`225+`** 项全部通过，**`0`** 项跳过 |
 | 后台进程占用 | **`1`** 个本地 `LaunchAgent`（macOS）/ 计划任务（Windows） |
 
 ---
@@ -367,7 +367,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 │   ├── styles/            # 作用域样式表（全仓 0 条 :has() 选择器）
 │   ├── cli.mjs            # 统一 CLI（install / deploy / sync-rules / doctor / rollback / remote）
 │   └── pack-release.mjs   # 零依赖 Release 压缩包打包器
-├── test/                  # 自动化测试套件（215+ 项回归与架构守卫）
+├── test/                  # 自动化测试套件（225+ 项回归与架构守卫）
 ├── install.sh             # 一键 macOS 安装脚本（支持 --dry-run、预编包与源码模式）
 ├── uninstall.sh           # 一键 macOS 无痕回滚卸载脚本（支持 --dry-run）
 ├── install.ps1            # 一键 Windows PowerShell 安装脚本（支持 -DryRun / -NoRules / -NoShortcut）
@@ -377,7 +377,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 | 开发者命令 | 作用 |
 | :--- | :--- |
 | `npm run wt:new -- feat/slug` | 创建隔离开发用 Git Worktree 并自动软链 / Junction `node_modules` |
-| `npm test` | 编译 `user/custom.js` 并运行全部 215+ 项回归与不变量测试 |
+| `npm test` | 编译 `user/custom.js` 并运行全部 225+ 项回归与不变量测试 |
 | `npm run deploy` | 在干净 `main` 上秒级热更新至运行中的 Antigravity（无需重启客户端） |
 | `npm run release:pack:all` | 生成零 `npm install` 的 macOS `.tar.gz` 与 Windows `.zip` 及 SHA-256 校验文件到 `dist/` |
 

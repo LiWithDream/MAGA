@@ -38,8 +38,9 @@ const PLUGIN_FILES = [
   'rules/AGENTS.md',
   'skills/opus-gate/SKILL.md',
   'hooks/gate-check.mjs',
+  'hooks/lib/git-landing.mjs',
 ];
-const REQUIRED_PLUGIN_FILES = ['plugin.json', 'hooks.json', 'hooks/gate-check.mjs'];
+const REQUIRED_PLUGIN_FILES = ['plugin.json', 'hooks.json', 'hooks/gate-check.mjs', 'hooks/lib/git-landing.mjs'];
 const EXECUTABLE_PLUGIN_FILES = new Set(['hooks/gate-check.mjs']);
 
 export const OPUS_GATE_ACTIONS = new Set([

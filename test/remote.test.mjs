@@ -370,6 +370,24 @@ test('Static security & MAGA architecture invariants for remote control modules'
     execFileSync(process.execPath, ['--check', filePath], { stdio: 'pipe' });
     const src = fs.readFileSync(filePath, 'utf8');
     assert.ok(src.split('\n').length < 2000, `${path.relative(REPO, filePath)} must stay < 2000 lines`);
+    importRe.lastIndex = 0;
+    let m;
+    while ((m = importRe.exec(src)) !== null) {
+      const spec = m[1];
+      assert.ok(
+        spec.startsWith('node:') || spec.startsWith('./') || spec === '../shared/fs-paths.mjs',
+        `Third-party or unapproved import "${spec}" forbidden in ${path.relative(REPO, filePath)}`
+      );
+    }
+  }
+
+  const sharedFiles = collectFiles(path.join(REPO, 'remote', 'shared'), { exts: ['.mjs'] });
+  assert.ok(sharedFiles.length >= 1, 'expected remote/shared/*.mjs modules');
+  for (const filePath of sharedFiles) {
+    execFileSync(process.execPath, ['--check', filePath], { stdio: 'pipe' });
+    const src = fs.readFileSync(filePath, 'utf8');
+    assert.ok(src.split('\n').length < 2000, `${path.relative(REPO, filePath)} must stay < 2000 lines`);
+    importRe.lastIndex = 0;
     let m;
     while ((m = importRe.exec(src)) !== null) {
       const spec = m[1];
@@ -429,9 +447,14 @@ test('Gateway enforces 127.0.0.1 bind, >95B UDS path fallback, Host/Origin check
 
     const longDir = path.join(tmpRoot, 'nested-' + 'x'.repeat(100));
     const degradedSock = configMod.resolveSockPath(longDir);
-    assert.ok(degradedSock.startsWith(os.tmpdir()));
-    assert.ok(path.basename(degradedSock).startsWith('maga-rem-'));
-    assert.ok(Buffer.byteLength(degradedSock, 'utf8') <= 95);
+    if (process.platform === 'win32') {
+      assert.ok(configMod.isWindowsNamedPipe(degradedSock));
+      assert.ok(degradedSock.startsWith('\\\\.\\pipe\\maga-rem-'));
+    } else {
+      assert.ok(degradedSock.startsWith(os.tmpdir()));
+      assert.ok(path.basename(degradedSock).startsWith('maga-rem-'));
+      assert.ok(Buffer.byteLength(degradedSock, 'utf8') <= 95);
+    }
 
     const remoteDir = path.join(tmpRoot, 'static');
     const distDir = path.join(tmpRoot, 'dist');
@@ -439,7 +462,13 @@ test('Gateway enforces 127.0.0.1 bind, >95B UDS path fallback, Host/Origin check
     fs.mkdirSync(distDir, { recursive: true });
     fs.writeFileSync(secretFile, 'SECRET_OUTSIDE_DIST');
     fs.writeFileSync(path.join(distDir, 'index.html'), '<!doctype html><html><body>OK</body></html>');
-    fs.symlinkSync(secretFile, path.join(distDir, 'escape.txt'));
+    let symlinkEscapeCreated = false;
+    try {
+      fs.symlinkSync(secretFile, path.join(distDir, 'escape.txt'));
+      symlinkEscapeCreated = true;
+    } catch (err) {
+      if (process.platform !== 'win32' || err?.code !== 'EPERM') throw err;
+    }
 
     gw = await serverMod.createGatewayServer({
       remoteDir,
@@ -448,10 +477,12 @@ test('Gateway enforces 127.0.0.1 bind, >95B UDS path fallback, Host/Origin check
       writePid: true,
     });
 
-    assert.equal(fs.statSync(remoteDir).mode & 0o777, 0o700);
-    assert.equal(fs.statSync(gw.paths.identityFile).mode & 0o777, 0o600);
-    assert.equal(fs.statSync(gw.paths.pidFile).mode & 0o777, 0o600);
-    assert.equal(fs.statSync(gw.paths.auditFile).mode & 0o777, 0o600);
+    if (configMod.isPosixPermsEnforced()) {
+      assert.equal(fs.statSync(remoteDir).mode & 0o777, 0o700);
+      assert.equal(fs.statSync(gw.paths.identityFile).mode & 0o777, 0o600);
+      assert.equal(fs.statSync(gw.paths.pidFile).mode & 0o777, 0o600);
+      assert.equal(fs.statSync(gw.paths.auditFile).mode & 0o777, 0o600);
+    }
 
     // gateway-identity.json holds persistent P-256 keypair, never exposed via /api/health
     const idDoc = JSON.parse(fs.readFileSync(gw.paths.identityFile, 'utf8'));
@@ -474,8 +505,10 @@ test('Gateway enforces 127.0.0.1 bind, >95B UDS path fallback, Host/Origin check
     });
     assert.equal(traversalStatus, 403);
 
-    const symlinkRes = await fetch(`http://127.0.0.1:${gw.port}/escape.txt`);
-    assert.equal(symlinkRes.status, 403);
+    if (symlinkEscapeCreated) {
+      const symlinkRes = await fetch(`http://127.0.0.1:${gw.port}/escape.txt`);
+      assert.equal(symlinkRes.status, 403);
+    }
 
     const badHostStatus = await new Promise((resolve, reject) => {
       const req = http.request(
@@ -627,7 +660,7 @@ test('Gateway enforces fail-closed edge authentication and rejects cloudflare-mt
 test('Pairing TURBO fail-closed, 5-failure lockout, domain-separated hello, epoch/seq0 zero-race, stream non-ring, live revocation 4001 & watch leak guard', async () => {
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'maga-rem-ws-'));
   const remoteDir = path.join(tmpRoot, 'remote');
-  const sockPath = path.join(tmpRoot, 'bridge.sock');
+  const sockPath = configMod.resolveSockPath(tmpRoot);
   let udsServer = null;
   let gw = null;
   let gwRestarted = null;
@@ -641,7 +674,7 @@ test('Pairing TURBO fail-closed, 5-failure lockout, domain-separated hello, epoc
 
     const gwNoUds = await serverMod.createGatewayServer({
       remoteDir: path.join(tmpRoot, 'no-uds'),
-      sockPath: path.join(tmpRoot, 'nonexistent.sock'),
+      sockPath: configMod.resolveSockPath(path.join(tmpRoot, 'no-uds-missing')),
       port: 0,
       now: () => clockMs,
       writePid: false,
@@ -1019,7 +1052,7 @@ test('Gateway child process exits gracefully on IPC disconnect and cleans up gat
 test('remote-bridge enforces UUID whitelist, DESC LIMIT pagination, >1.5MB budget, transcript tailing, and daemon --once safety', async () => {
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'maga-rem-bridge-'));
   const bridgeMod = await import(pathToFileURL(path.join(REPO, 'core', 'daemon', 'remote-bridge.mjs')).href);
-  const sockPath = path.join(tmpRoot, 'bridge.sock');
+  const sockPath = configMod.resolveSockPath(tmpRoot);
   const remoteDir = path.join(tmpRoot, 'remote');
 
   try {
@@ -1135,7 +1168,7 @@ test('remote-bridge enforces UUID whitelist, DESC LIMIT pagination, >1.5MB budge
     const onceStateDir = path.join(tmpRoot, 'daemon-once-state');
     const onceUserDir = path.join(tmpRoot, 'daemon-once-user');
     const onceRemoteDir = path.join(tmpRoot, 'daemon-once-remote');
-    const onceSock = path.join(onceRemoteDir, 'bridge.sock');
+    const onceSock = configMod.resolveSockPath(onceRemoteDir);
     configMod.ensureRemoteDir(onceRemoteDir);
     configMod.saveRemoteConfig({ enabled: true, port: 18995 }, { remoteDir: onceRemoteDir });
 
@@ -1257,7 +1290,7 @@ test('buildRemotePwa(), CLI remote lifecycle (#pair=, live revoke kick 4001), an
   const tmpDist = path.join(tmpRoot, 'pwa-dist');
   const tmpStateDir = path.join(tmpRoot, 'anti-claude-state');
   const tmpRemoteDir = path.join(tmpRoot, 'remote-state');
-  const tmpSockPath = path.join(tmpRoot, 'missing.sock');
+  const tmpSockPath = configMod.resolveSockPath(path.join(tmpRoot, 'missing-bridge'));
   let childGw = null;
   const openSockets = [];
 
@@ -1309,8 +1342,10 @@ test('buildRemotePwa(), CLI remote lifecycle (#pair=, live revoke kick 4001), an
     assert.equal(onRes.ok, true);
     assert.equal(onRes.config.enabled, true);
     assert.equal(onRes.config.port, freePort);
-    assert.equal(fs.statSync(tmpRemoteDir).mode & 0o777, 0o700);
-    assert.equal(fs.statSync(path.join(tmpRemoteDir, 'config.json')).mode & 0o777, 0o600);
+    if (configMod.isPosixPermsEnforced()) {
+      assert.equal(fs.statSync(tmpRemoteDir).mode & 0o777, 0o700);
+      assert.equal(fs.statSync(path.join(tmpRemoteDir, 'config.json')).mode & 0o777, 0o600);
+    }
 
     childGw = spawn(process.execPath, [path.join(GW_DIR, 'server.mjs')], {
       env: cliEnv,
@@ -1705,7 +1740,7 @@ test('Phase 1 Bridge & Tap: per-boot UDS token, zero-disk-write, multi-window co
   const cid1 = '44444444-4444-4444-8444-444444444441';
   const cid2 = '55555555-5555-4555-8555-555555555552';
   const remoteDir = path.join(tmpRoot, 'remote');
-  const sockPath = path.join(tmpRoot, 'bridge.sock');
+  const sockPath = configMod.resolveSockPath(tmpRoot);
   const bootToken = 'bridge-boot-secret-token-9988';
   const prevTargets = Array.from(attachedTargets.entries());
 
@@ -1932,7 +1967,7 @@ test('Phase 1 Red-Team regressions: same-key race, semaphore cap, payload hash c
 
   try {
     const remoteDir = path.join(tmpRoot, 'remote');
-    const sockPath = path.join(tmpRoot, 'bridge.sock');
+    const sockPath = configMod.resolveSockPath(tmpRoot);
     const writeToken = 'rt-uds-token-0123456789abcdef';
     const writeCalls = [];
     let writeHandler = async (req) => {
@@ -2233,6 +2268,99 @@ test('Phase 1 Red-Team regressions: same-key race, semaphore cap, payload hash c
       await srv.close().catch(() => {});
     }
     await udsServer?.close().catch(() => {});
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+test('remote/shared/fs-paths.mjs handles Windows Named Pipes, permission gating, EPERM rename retries & IPC graceful shutdown', async () => {
+  const sharedMod = await import(pathToFileURL(path.join(REPO, 'remote', 'shared', 'fs-paths.mjs')).href);
+
+  // 1. Named pipe resolution on win32
+  const winPipe = sharedMod.resolveSockPath('C:\\Users\\dev\\.gemini\\antigravity\\anti-claude\\remote', null, {
+    platform: 'win32',
+    env: {},
+  });
+  assert.equal(sharedMod.isWindowsNamedPipe(winPipe), true);
+  assert.match(winPipe, /^\\\\\.\\pipe\\maga-rem-[0-9a-f]{16}$/);
+  const explicitPipe = '\\\\.\\pipe\\custom-test-pipe';
+  assert.equal(
+    sharedMod.resolveSockPath('C:\\tmp', explicitPipe, { platform: 'win32', env: {} }),
+    explicitPipe
+  );
+  assert.equal(sharedMod.isPosixPermsEnforced('win32'), false);
+  assert.equal(sharedMod.isPosixPermsEnforced('darwin'), true);
+
+  // 2. renameWithWinRetry recovers from transient EPERM / EBUSY on win32
+  let renameAttempts = 0;
+  sharedMod.renameWithWinRetry('a.tmp', 'a.json', {
+    platform: 'win32',
+    backoffMs: 1,
+    renameFn: () => {
+      renameAttempts += 1;
+      if (renameAttempts < 3) {
+        const err = new Error('transient lock');
+        err.code = renameAttempts === 1 ? 'EPERM' : 'EBUSY';
+        throw err;
+      }
+    },
+  });
+  assert.equal(renameAttempts, 3);
+
+  // 3. Gateway IPC { type: 'shutdown' } gracefully removes PID file & flushes audit log
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'maga-rem-ipc-win-'));
+  const remoteDir = path.join(tmpRoot, 'remote');
+  const distDir = path.join(tmpRoot, 'dist');
+  fs.mkdirSync(distDir, { recursive: true });
+  fs.writeFileSync(path.join(distDir, 'index.html'), '<!doctype html><html><body>OK</body></html>');
+  configMod.ensureRemoteDir(remoteDir);
+  const freePort = await getFreePort();
+  configMod.saveRemoteConfig({ enabled: true, port: freePort, transport: 'loopback' }, { remoteDir });
+  const sockPath = configMod.resolveSockPath(tmpRoot);
+
+  const gwChild = fork(path.join(GW_DIR, 'server.mjs'), [], {
+    cwd: REPO,
+    env: {
+      ...process.env,
+      MAGA_REMOTE_STATE_DIR: remoteDir,
+      MAGA_REMOTE_SOCK_PATH: sockPath,
+    },
+    windowsHide: true,
+    stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+  });
+  try {
+    await new Promise((resolve, reject) => {
+      let buf = '';
+      const t = setTimeout(() => reject(new Error('gateway_ipc_listen_timeout')), 5000);
+      gwChild.stdout.on('data', (d) => {
+        buf += d.toString('utf8');
+        if (buf.includes('maga_remote_gateway_listening')) {
+          clearTimeout(t);
+          resolve();
+        }
+      });
+      gwChild.once('exit', (code) => {
+        clearTimeout(t);
+        reject(new Error(`gateway_exited_early_${code}`));
+      });
+    });
+
+    assert.equal(fs.existsSync(path.join(remoteDir, 'gateway.pid')), true);
+    const exitInfo = await new Promise((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error('gateway_ipc_shutdown_timeout')), 4000);
+      gwChild.once('exit', (code, signal) => {
+        clearTimeout(t);
+        resolve({ code, signal });
+      });
+      gwChild.send({ type: 'shutdown' });
+    });
+    assert.equal(exitInfo.code, 0);
+    assert.equal(fs.existsSync(path.join(remoteDir, 'gateway.pid')), false, 'IPC shutdown must remove gateway.pid');
+    const auditRaw = fs.readFileSync(path.join(remoteDir, 'audit.jsonl'), 'utf8');
+    assert.match(auditRaw, /"event":"gateway_stop"/);
+  } finally {
+    if (gwChild.exitCode === null) {
+      try { gwChild.kill('SIGKILL'); } catch {}
+    }
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   }
 });

@@ -1,11 +1,12 @@
 /**
  * AGY Studio Remote Control — Gateway Child Process Supervisor & Orphan Reclaim
  */
-import { execFile, fork } from 'node:child_process';
+import { fork } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { REPO_ROOT, readJsonOrFallback } from '../env.mjs';
 import { DEFAULT_REMOTE_CONFIG } from './disk-fallback.mjs';
+import { readProcessCommandLineAsync } from '../../../remote/shared/fs-paths.mjs';
 
 const GATEWAY_RESTART_BACKOFF_MS = [1000, 2000, 4000, 8000, 15000];
 
@@ -15,29 +16,6 @@ function readRemoteConfigSig(configFile) {
   } catch {
     return '';
   }
-}
-
-function readProcessCommandLineAsync(pid) {
-  return new Promise((resolve) => {
-    if (process.platform === 'linux') {
-      try {
-        const raw = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8');
-        if (raw) return resolve(raw.replace(/\0+/g, ' ').trim());
-      } catch {}
-    }
-    if (process.platform === 'win32') {
-      execFile(
-        'powershell',
-        ['-NoProfile', '-Command', `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`],
-        { encoding: 'utf8', timeout: 1500 },
-        (err, stdout) => resolve(err ? '' : String(stdout || '').trim())
-      );
-      return;
-    }
-    execFile('ps', ['-ww', '-p', String(pid), '-o', 'command='], { encoding: 'utf8', timeout: 1500 }, (err, stdout) =>
-      resolve(err ? '' : String(stdout || '').trim())
-    );
-  });
 }
 
 export function stopGatewayChildSync(state) {
@@ -50,7 +28,14 @@ export function stopGatewayChildSync(state) {
   }
   try {
     if (!child.killed && child.exitCode === null) {
-      child.kill('SIGTERM');
+      if (child.connected) {
+        try {
+          child.send({ type: 'shutdown' });
+        } catch {}
+      }
+      if (process.platform !== 'win32') {
+        child.kill('SIGTERM');
+      }
     }
   } catch {}
 }
@@ -66,24 +51,47 @@ export async function stopGatewayChildGracefully(state) {
   if (child.killed || child.exitCode !== null) return;
   await new Promise((resolve) => {
     let done = false;
+    let termTimer = null;
+    let killTimer = null;
     const finish = () => {
       if (done) return;
       done = true;
-      clearTimeout(killTimer);
+      if (termTimer) clearTimeout(termTimer);
+      if (killTimer) clearTimeout(killTimer);
       resolve();
     };
     child.once('exit', finish);
-    const killTimer = setTimeout(() => {
+    killTimer = setTimeout(() => {
       try {
         child.kill('SIGKILL');
       } catch {}
       finish();
     }, 3000);
     killTimer.unref?.();
-    try {
-      child.kill('SIGTERM');
-    } catch {
-      finish();
+    let ipcSent = false;
+    if (child.connected) {
+      try {
+        child.send({ type: 'shutdown' });
+        ipcSent = true;
+      } catch {}
+    }
+    if (ipcSent) {
+      termTimer = setTimeout(() => {
+        try {
+          if (!child.killed && child.exitCode === null) {
+            child.kill('SIGTERM');
+          }
+        } catch {
+          finish();
+        }
+      }, 1500);
+      termTimer.unref?.();
+    } else {
+      try {
+        child.kill('SIGTERM');
+      } catch {
+        finish();
+      }
     }
   });
 }
@@ -131,6 +139,7 @@ export function reconcileGatewayProcess(state) {
         MAGA_REMOTE_SOCK_PATH: state.paths.sockPath,
         ...(state.udsWriteToken ? { MAGA_REMOTE_UDS_TOKEN: state.udsWriteToken } : {})
       },
+      windowsHide: true,
       stdio: ['ignore', 'inherit', 'inherit', 'ipc']
     });
     const startedAt = Date.now();

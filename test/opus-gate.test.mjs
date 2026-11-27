@@ -229,7 +229,12 @@ test('opus-gate-service persists quota, syncs plugin, enforces CAS dismiss, reco
     assert.ok(synced.files.includes('rules/AGENTS.md'));
     assert.ok(synced.files.includes('skills/opus-gate/SKILL.md'));
     assert.ok(synced.files.includes('hooks/gate-check.mjs'));
+    assert.ok(synced.files.includes('hooks/lib/git-landing.mjs'));
     assert.equal(isOpusGatePluginInstalled({ pluginsDir: dirs.pluginsDir }), true);
+    const gateCheckLines = fs
+      .readFileSync(path.join(REPO, 'studio', 'plugin', 'maga-opus-gate', 'hooks', 'gate-check.mjs'), 'utf8')
+      .split('\n').length;
+    assert.ok(gateCheckLines < 1500, `Expected gate-check.mjs < 1500 lines after split, got ${gateCheckLines}`);
 
     const cid = 'conv_service_123456';
     writeOpusGateProposal(

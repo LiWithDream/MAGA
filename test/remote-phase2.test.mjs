@@ -311,7 +311,7 @@ test('Phase 2 End-to-End (Gateway + Bridge + Tap): studio.overview, convo.resume
   const remoteDir = path.join(tmpRoot, 'remote');
   const stateDir = path.join(tmpRoot, 'state');
   const convDir = path.join(tmpRoot, 'conversations');
-  const sockPath = path.join(tmpRoot, 'bridge.sock');
+  const sockPath = configMod.resolveSockPath(tmpRoot);
   const bootToken = 'phase2-boot-token-0123456789abcd';
   const bridgeMod = await import(pathToFileURL(path.join(REPO, 'core', 'daemon', 'remote-bridge.mjs')).href);
   const { attachedTargets } = await import(pathToFileURL(path.join(REPO, 'core', 'daemon', 'env.mjs')).href);
@@ -958,7 +958,7 @@ test('Phase 2 Composer Footer V2: models.list/select, convo.send image attachmen
   const remoteDir = path.join(tmpRoot, 'remote');
   const stateDir = path.join(tmpRoot, 'state');
   const convDir = path.join(tmpRoot, 'conversations');
-  const sockPath = path.join(tmpRoot, 'bridge.sock');
+  const sockPath = configMod.resolveSockPath(tmpRoot);
   const bootToken = 'footer-v2-boot-token-0123456789abc';
   const bridgeMod = await import(pathToFileURL(path.join(REPO, 'core', 'daemon', 'remote-bridge.mjs')).href);
   const { attachedTargets } = await import(pathToFileURL(path.join(REPO, 'core', 'daemon', 'env.mjs')).href);

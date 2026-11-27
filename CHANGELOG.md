@@ -5,6 +5,23 @@ All notable changes to **AGY Studio (`agy-studio`, formerly MAGA)** will be docu
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2026-11-27
+
+Added full **Windows 10/11** support (parity across desktop daemon, CDP bootstrap, installers, Release `.zip` packager, Remote Control Named Pipes & dual-platform GitHub Actions CI), consolidated Remote filesystem/process primitives into a shared zero-dependency module, and modularized the Opus Gate hook sentinel.
+
+### Added
+- **Windows 10/11 Desktop & Installer Support (`core/daemon/win-service.mjs`, `core/daemon/cdp-bootstrap-win.mjs`, `install.ps1`, `uninstall.ps1`, `studio/setup-hooks.mjs`, `test/windows.test.mjs`)**:
+  - Added headless user-level Task Scheduler daemon management (`AGYStudioDaemon` via `conhost.exe --headless`, with automatic Startup `.vbs` fallback on restricted GPOs), optional Start Menu shortcut `Antigravity (AGY Studio)` (`--remote-debugging-port=0`), and gentle `WM_CLOSE` CDP cold-boot relaunch + Windows System Proxy diagnostics.
+  - Added one-line PowerShell installers (`install.ps1` / `uninstall.ps1` supporting `-DryRun`, `-NoRules`, `-NoShortcut`, `-Purge`, `npm ci` + `--autostash`), Windows Junction `node_modules` links in `wt.mjs`, and `npm run release:pack:win` / `release:pack:all` generating `agy-studio-v*-windows.zip` with bundled `remote/pwa/dist`.
+- **Shared Remote Filesystem & Process Layer (`remote/shared/fs-paths.mjs`)**:
+  - Consolidated `resolveRemoteDir`, `resolveSockPath` (Windows Named Pipes `\\.\pipe\maga-rem-<hash>`), `getRemotePaths`, `renameWithWinRetry`, `isPosixPermsEnforced`, `ensureRemoteDir`, `writeAtomicFile`/`writeJsonAtomic`, `readJsonSafe`, `withDevicesLock`, `isPidAlive`, and cross-platform `readProcessCommandLineAsync`/`Sync` into one zero-dep module shared by Gateway, Daemon Bridge, Settings RPC, and CLI.
+- **Dual-Platform CI (`.github/workflows/ci.yml`)**: Added GitHub Actions workflow running `npm run build:remote && npm test` on `macos-latest` and `windows-latest` (`Node 22`, `fail-fast: false`).
+
+### Changed
+- **Windows Remote Control Parity (`remote/gateway/`, `core/daemon/remote/`, `core/daemon/remote-bridge.mjs`, `studio/remote-cli.mjs`)**: Added Named Pipe IPC skipping stale-socket `unlink`/`chmod`, gated POSIX `0o077`/`0o600` permission checks on `isPosixPermsEnforced()`, added Windows PowerShell CIM process inspection + `schtasks` hints to `studio/remote-cli.mjs`, and implemented graceful IPC `{ type: 'shutdown' }` gateway termination before `SIGTERM`/`SIGKILL`.
+- **Opus Gate Hook Modularization (`studio/plugin/maga-opus-gate/hooks/lib/git-landing.mjs`, `studio/daemon/opus-gate-service.mjs`)**: Extracted Git diff inspection, landing command parser (`detectLandingAction`), and worktree attribution helpers out of `hooks/gate-check.mjs` (`1,916` -> `~1,300` lines) and synced `hooks/lib/git-landing.mjs` in `opus-gate-service.mjs`.
+- **Cross-Platform AI Install Docs (`README.md`, `README.zh-CN.md`, `docs/INSTALL_AGENT.md`)**: Unified macOS + Windows 10/11 instructions, idempotent clone-or-pull prompts, PowerShell `-ExecutionPolicy Bypass` guidance, prebuilt archive fallback, and self-termination safeguards.
+
 ## [1.4.2] - 2026-11-27
 
 Hardened end-user & AI-assisted installation, refined `doctor` first-install status reporting, added `.gitattributes` line-ending hygiene, and removed personal default domains from Android/test fixtures.

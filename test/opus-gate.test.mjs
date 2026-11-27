@@ -2313,3 +2313,151 @@ test('opus-gate-pill morphs to live reviewing state with Effort canvas & panel j
     }
   });
 });
+
+test('Auto-dismisses consumed hook proposals across PreToolUse, PostToolUse and clean Stop turns', () => {
+  const dirs = makeTempDirs('og-autodismiss-');
+  const hookOpts = (extra = {}) => ({
+    stateDir: dirs.stateDir,
+    studioPrefsFile: dirs.studioPrefsFile,
+    quotaStateFile: dirs.quotaStateFile,
+    proposalsDir: dirs.proposalsDir,
+    pluginDataDir: dirs.pluginDataDir,
+    now: 950_000,
+    ...extra,
+  });
+
+  try {
+    fs.writeFileSync(dirs.studioPrefsFile, JSON.stringify({ ...DEFAULT_STUDIO_PREFS, opusGateMode: 'semi' }));
+    fs.writeFileSync(
+      dirs.quotaStateFile,
+      JSON.stringify({ schema: 1, updatedAt: 950_000, claude: { fiveHourRemainingPct: 80, weeklyRemainingPct: 85 } })
+    );
+
+    // 1. Pre-merge pause -> Stop keeps proposal -> Next turn git merge allows & auto-dismisses
+    const cidMerge = 'conv_autodismiss_merge_1';
+    const riskSummary = {
+      gitRoot: REPO,
+      changedAbsFiles: [path.join(REPO, 'studio/core/kernel.mjs')],
+      changedFiles: 1,
+      changedLines: 25,
+      gitHighRisk: ['studio/core/kernel.mjs'],
+      diffHash: 'hash_merge_auto_1',
+    };
+    evaluateHookEvent(
+      {
+        hookEventName: 'PostToolUse',
+        conversationId: cidMerge,
+        cwd: REPO,
+        toolCall: { name: 'edit_file', args: { Path: path.join(REPO, 'studio/core/kernel.mjs') } },
+      },
+      hookOpts()
+    );
+    const denyMerge = evaluateHookEvent(
+      {
+        hookEventName: 'PreToolUse',
+        conversationId: cidMerge,
+        cwd: REPO,
+        toolCall: { name: 'run_command', args: { CommandLine: 'git merge --no-ff feat/x' } },
+      },
+      hookOpts({ gitSummary: riskSummary })
+    );
+    assert.equal(denyMerge.decision, 'deny');
+    assert.equal(readProposal(dirs, cidMerge)?.dismissed, false);
+
+    evaluateHookEvent(
+      { hookEventName: 'Stop', conversationId: cidMerge, cwd: REPO, terminationReason: 'NO_TOOL_CALL' },
+      hookOpts({ gitSummary: riskSummary })
+    );
+    assert.equal(readProposal(dirs, cidMerge)?.dismissed, false, 'proposal stays visible while waiting on user');
+
+    const allowMerge = evaluateHookEvent(
+      {
+        hookEventName: 'PreToolUse',
+        conversationId: cidMerge,
+        cwd: REPO,
+        toolCall: { name: 'run_command', args: { CommandLine: 'git merge --no-ff feat/x' } },
+      },
+      hookOpts({ gitSummary: riskSummary })
+    );
+    assert.deepEqual(allowMerge, { decision: 'allow' });
+    assert.equal(readProposal(dirs, cidMerge)?.dismissed, true, 'next-turn landing allow must dismiss proposal');
+
+    // 2. Plan pause -> Stop -> next-turn non-plan edit_file allows & dismisses plan proposal
+    const cidPlan = 'conv_autodismiss_plan_2';
+    evaluateHookEvent(
+      {
+        hookEventName: 'PostToolUse',
+        conversationId: cidPlan,
+        cwd: REPO,
+        toolCall: { name: 'write_file', args: { Path: path.join(REPO, 'implementation_plan.md'), Content: '# Plan X' } },
+      },
+      hookOpts()
+    );
+    assert.equal(readProposal(dirs, cidPlan)?.kind, 'plan');
+    assert.equal(readProposal(dirs, cidPlan)?.dismissed, false);
+
+    const emptyGit = { gitRoot: REPO, changedAbsFiles: [], changedFiles: 0, changedLines: 0, gitHighRisk: [], diffHash: 'empty' };
+    evaluateHookEvent(
+      { hookEventName: 'Stop', conversationId: cidPlan, cwd: REPO, terminationReason: 'NO_TOOL_CALL' },
+      hookOpts({ gitSummary: emptyGit })
+    );
+    assert.equal(readProposal(dirs, cidPlan)?.dismissed, false, 'same-turn plan Stop preserves proposal');
+
+    const allowEdit = evaluateHookEvent(
+      {
+        hookEventName: 'PreToolUse',
+        conversationId: cidPlan,
+        cwd: REPO,
+        toolCall: { name: 'edit_file', args: { Path: path.join(REPO, 'src/app.mjs') } },
+      },
+      hookOpts()
+    );
+    assert.deepEqual(allowEdit, { decision: 'allow' });
+    assert.equal(readProposal(dirs, cidPlan)?.dismissed, true, 'proceeding with source edit must dismiss plan proposal');
+
+    // 3. PostToolUse successful run_command clears stale debug proposal
+    const cidDebug = 'conv_autodismiss_debug_3';
+    evaluateHookEvent(
+      { hookEventName: 'PostToolUse', conversationId: cidDebug, toolCall: { name: 'run_command' }, error: 'err 1' },
+      hookOpts()
+    );
+    evaluateHookEvent(
+      { hookEventName: 'PostToolUse', conversationId: cidDebug, toolCall: { name: 'run_command' }, error: 'err 2' },
+      hookOpts()
+    );
+    assert.equal(readProposal(dirs, cidDebug)?.kind, 'debug');
+    assert.equal(readProposal(dirs, cidDebug)?.dismissed, false);
+
+    evaluateHookEvent(
+      { hookEventName: 'PostToolUse', conversationId: cidDebug, toolCall: { name: 'run_command' }, error: '' },
+      hookOpts()
+    );
+    assert.equal(readProposal(dirs, cidDebug)?.dismissed, true, 'successful command clears debug proposal');
+
+    // 4. Subsequent clean Stop dismisses stale hook risk proposal while preserving semantic proposals
+    const cidStop = 'conv_autodismiss_stop_4';
+    writeOpusGateProposal(
+      cidStop,
+      { kind: 'risk', source: 'hook', diffHash: 'h-stale', ts: 950_000, dismissed: false },
+      { proposalsDir: dirs.proposalsDir }
+    );
+    evaluateHookEvent(
+      { hookEventName: 'Stop', conversationId: cidStop, cwd: REPO, terminationReason: 'NO_TOOL_CALL' },
+      hookOpts({ gitSummary: emptyGit })
+    );
+    assert.equal(readProposal(dirs, cidStop)?.dismissed, true, 'clean Stop dismisses prior-turn hook risk proposal');
+
+    writeOpusGateProposal(
+      cidStop,
+      { kind: 'risk', source: 'semantic', diffHash: 'h-sem', ts: 950_000, dismissed: false },
+      { proposalsDir: dirs.proposalsDir }
+    );
+    evaluateHookEvent(
+      { hookEventName: 'Stop', conversationId: cidStop, cwd: REPO, terminationReason: 'NO_TOOL_CALL' },
+      hookOpts({ gitSummary: emptyGit })
+    );
+    assert.equal(readProposal(dirs, cidStop)?.dismissed, false, 'clean Stop preserves semantic preflight proposal');
+  } finally {
+    dirs.cleanup();
+  }
+});

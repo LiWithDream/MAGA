@@ -963,6 +963,19 @@ function removeProposalFile(proposalsDir, cid) {
   } catch {}
 }
 
+function dismissProposalIfActive(proposalsDir, cid, predicate) {
+  if (!cid || !proposalsDir) return false;
+  const cur = readJsonSafe(getProposalPath(proposalsDir, cid), null);
+  if (!cur || cur.dismissed === true) return false;
+  if (typeof predicate === 'function' && !predicate(cur)) return false;
+  writeProposalFile(proposalsDir, cid, {
+    ...cur,
+    dismissed: true,
+    dismissedDiffHash: cur.diffHash || cur.dismissedDiffHash || '',
+  });
+  return true;
+}
+
 function persistConvState(convFile, conv, touchLogFile, pluginDataDir, pruneOpts = {}) {
   if (!convFile) return;
   writeAtomicJson(convFile, conv);
@@ -1155,13 +1168,14 @@ export function evaluateHookEvent(payload = {}, opts = {}) {
     const args = payload.toolCall?.args && typeof payload.toolCall.args === 'object' ? payload.toolCall.args : {};
 
     if (toolName === 'edit_file' || toolName === 'write_file') {
-      if (!prefs.opusGateCheckpoints.plan || !conv.pendingPlanHash) {
-        if (hadLog) persistConvState(convFile, conv, touchLogFile, pluginDataDir);
-        return emptyResult;
-      }
       const rawFile = args.Path || args.path || args.TargetFile || args.AbsolutePath || '';
       const absPath = resolveAbsPath(rawFile, payload.cwd || '');
       const isPlanTarget = Boolean(args.ArtifactMetadata?.RequestFeedback) || (absPath ? PLAN_PATH_RE.test(absPath) : false);
+      if (!prefs.opusGateCheckpoints.plan || !conv.pendingPlanHash) {
+        if (!isPlanTarget) dismissProposalIfActive(proposalsDir, cid, (p) => p.kind === 'plan');
+        if (hadLog) persistConvState(convFile, conv, touchLogFile, pluginDataDir);
+        return emptyResult;
+      }
       if (isPlanTarget) {
         if (hadLog) persistConvState(convFile, conv, touchLogFile, pluginDataDir);
         return emptyResult;
@@ -1173,6 +1187,7 @@ export function evaluateHookEvent(payload = {}, opts = {}) {
         conv.acknowledgedPlanHash === planHash ||
         (curProp?.dismissed === true && curProp?.dismissedDiffHash === planHash)
       ) {
+        dismissProposalIfActive(proposalsDir, cid, (p) => p.kind === 'plan');
         if (hadLog) persistConvState(convFile, conv, touchLogFile, pluginDataDir);
         return emptyResult;
       }
@@ -1269,6 +1284,7 @@ export function evaluateHookEvent(payload = {}, opts = {}) {
         (riskHit && !stopHit && riskHash && conv.lastAuditedRiskHash === riskHash) ||
         (stopHit && !riskHit && attr.stopFiles <= conv.lastAuditedStopFiles && attr.stopLines <= conv.lastAuditedStopLines)
       ) {
+        dismissProposalIfActive(proposalsDir, cid, (p) => p.kind === 'risk' || p.kind === 'stop');
         if (hadLog) persistConvState(convFile, conv, touchLogFile, pluginDataDir);
         return emptyResult;
       }
@@ -1358,6 +1374,11 @@ export function evaluateHookEvent(payload = {}, opts = {}) {
       } else {
         conv.consecutiveErrors = 0;
         conv.lastErrorSig = '';
+        dismissProposalIfActive(proposalsDir, cid, (p) => p.kind === 'debug');
+        const cmdLine = String(payload.toolCall?.args?.CommandLine || payload.toolCall?.args?.command || '');
+        if (detectLandingAction(cmdLine, payload.cwd || '')) {
+          dismissProposalIfActive(proposalsDir, cid, (p) => p.kind === 'risk' || p.kind === 'stop');
+        }
       }
       persistConvState(convFile, conv, touchLogFile, pluginDataDir);
       return {};
@@ -1541,6 +1562,13 @@ export function evaluateHookEvent(payload = {}, opts = {}) {
     }
 
     if (!kind) {
+      dismissProposalIfActive(proposalsDir, cid, (p) => {
+        if (p.source !== 'hook') return false;
+        if (p.kind === 'risk' || p.kind === 'stop') return true;
+        if (p.kind === 'debug') return conv.consecutiveErrors < 2;
+        if (p.kind === 'plan') return !hadLog;
+        return false;
+      });
       if (hadLog || conv.pendingPlanHash) persistConvState(convFile, conv, touchLogFile, pluginDataDir);
       return {};
     }

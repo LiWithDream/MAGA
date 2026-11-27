@@ -240,7 +240,11 @@ test('Phase 2 studio-bridge aggregates resumeState, sanitized overview & Opus Ga
       JSON.stringify({ worktreePath: path.join(tmpRoot, 'MAGA-wt', 'remote'), branch: 'feat/remote-control', repoRoot: projDir, updatedAt: Date.now() })
     );
     opusService.saveQuotaState(
-      { tierName: 'Pro', claude: { fiveHourRemainingPct: 82, weeklyRemainingPct: 91 }, gemini: { fiveHourRemainingPct: 100, weeklyRemainingPct: 100 } },
+      {
+        tierName: 'Pro',
+        claude: { fiveHourRemainingPct: 82, weeklyRemainingPct: 91, fiveHourResetSec: 1795784590, weeklyResetSec: 1796266576 },
+        gemini: { fiveHourRemainingPct: 100, weeklyRemainingPct: 100, fiveHourResetSec: 1795784511, weeklyResetSec: 1796281311 },
+      },
       { quotaStateFile }
     );
     const nowTs = Date.now();
@@ -288,6 +292,8 @@ test('Phase 2 studio-bridge aggregates resumeState, sanitized overview & Opus Ga
     assert.equal(overview.worktreeByCid[cid].branch, 'feat/remote-control');
     assert.equal(overview.worktreeByCid[cid].projectId, 'proj-demo');
     assert.equal(overview.quota.claude.fiveHourRemainingPct, 82);
+    assert.equal(overview.quota.gemini.fiveHourResetSec, 1795784511);
+    assert.equal(overview.quota.gemini.weeklyResetSec, 1796281311);
     assert.equal(overview.todayUsage.totalTokens, 10_000);
     assert.equal(overview.activeCascade.opusGate.proposal.id, 'abc123def456');
     assert.equal(overview.activeCascade.autoCompact.pending.ctxPct, 92);
@@ -840,7 +846,7 @@ test('Phase 2 Dual-Form UI regressions: layout mode, Overview panel, code copy &
     const overviewMod = await import(pathToFileURL(path.join(PWA_DIR, 'src', 'overview-panel.mjs')).href);
     const timelineMod = await import(pathToFileURL(path.join(PWA_DIR, 'src', 'timeline-view.mjs')).href);
 
-    // 1. resolveLayoutMode & formatResetCountdown
+    // 1. resolveLayoutMode & formatResetCountdown (relative durations + Unix epoch sec/ms)
     assert.equal(helpersMod.resolveLayoutMode('auto', 1280), 'desktop');
     assert.equal(helpersMod.resolveLayoutMode('auto', 390), 'mobile');
     assert.equal(helpersMod.resolveLayoutMode('desktop', 390), 'desktop');
@@ -848,45 +854,72 @@ test('Phase 2 Dual-Form UI regressions: layout mode, Overview panel, code copy &
     assert.equal(helpersMod.formatResetCountdown(2700), '45m');
     assert.equal(helpersMod.formatResetCountdown(12000), '3h 20m');
     assert.equal(helpersMod.formatResetCountdown(0), '');
+    const fixedNowMs = 1_795_783_509_000;
+    const fixedNowSec = Math.floor(fixedNowMs / 1000);
+    assert.equal(helpersMod.formatResetCountdown(fixedNowSec + 1080, fixedNowMs), '18m');
+    assert.equal(helpersMod.formatResetCountdown(fixedNowSec + 5 * 86400 + 3600, fixedNowMs), '5d 1h');
+    assert.equal(helpersMod.formatResetCountdown((fixedNowSec + 7200) * 1000, fixedNowMs), '2h');
+    assert.equal(helpersMod.formatResetCountdown(fixedNowSec - 10, fixedNowMs), '');
 
-    // 2. renderOverviewPanel
+    // 2. renderOverviewPanel (must use CSSOM style.width, never setAttribute('style', ...) blocked by strict CSP)
     const ovRoot = dom.window.document.createElement('aside');
     let filteredPid = '';
-    overviewMod.renderOverviewPanel(ovRoot, {
-      overview: {
-        quota: {
-          tierName: 'Ultra',
-          claude: { fiveHourRemainingPct: 92, weeklyRemainingPct: 79, fiveHourResetSec: 3600, weeklyResetSec: 172800 },
-          gemini: { fiveHourRemainingPct: 80, weeklyRemainingPct: 90, fiveHourResetSec: 1800, weeklyResetSec: 86400 },
+    const origSetAttr = dom.window.Element.prototype.setAttribute;
+    let inlineStyleAttrCalls = 0;
+    dom.window.Element.prototype.setAttribute = function patchedSetAttr(name, val) {
+      if (String(name).toLowerCase() === 'style') inlineStyleAttrCalls += 1;
+      return origSetAttr.call(this, name, val);
+    };
+    try {
+      overviewMod.renderOverviewPanel(ovRoot, {
+        overview: {
+          quota: {
+            tierName: 'Ultra',
+            claude: { fiveHourRemainingPct: 92, weeklyRemainingPct: 79, fiveHourResetSec: 3600, weeklyResetSec: 172800 },
+            gemini: { fiveHourRemainingPct: 80, weeklyRemainingPct: 90, fiveHourResetSec: 1800, weeklyResetSec: 86400 },
+          },
+          todayUsage: {
+            date: '2026-11-26',
+            requests: 120,
+            totalTokens: 1_500_000,
+            uncached: 150_000,
+            cacheRead: 850_000,
+            output: 500_000,
+          },
+          projects: [
+            { id: 'proj-maga', name: 'MAGA', shortPath: '~/Developer/MAGA', worktrees: [{ branch: 'main', isMain: true }] },
+          ],
+          worktreeByCid: {
+            'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1': { branch: 'feat/remote-dual-ui', repoName: 'MAGA', projectId: 'proj-maga' },
+          },
+          activeCascade: {
+            cascadeId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1',
+            opusGate: { proposal: { id: 'p-1' } },
+            autoCompact: { pending: null },
+          },
         },
-        todayUsage: {
-          date: '2026-11-26',
-          requests: 120,
-          totalTokens: 1_500_000,
-          uncached: 150_000,
-          cacheRead: 850_000,
-          output: 500_000,
+        selectedConvo: { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1', title: 'Dual UI Test', status: 'IDLE', stepCount: 12 },
+        snapshot: { cascadeId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1', status: 'IDLE', source: 'cdp', steps: [{ idx: 1 }] },
+        selectedProjectId: '',
+        onSelectProject: (pid) => {
+          filteredPid = pid;
         },
-        projects: [
-          { id: 'proj-maga', name: 'MAGA', shortPath: '~/Developer/MAGA', worktrees: [{ branch: 'main', isMain: true }] },
-        ],
-        worktreeByCid: {
-          'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1': { branch: 'feat/remote-dual-ui', repoName: 'MAGA', projectId: 'proj-maga' },
-        },
-        activeCascade: {
-          cascadeId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1',
-          opusGate: { proposal: { id: 'p-1' } },
-          autoCompact: { pending: null },
-        },
-      },
-      selectedConvo: { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1', title: 'Dual UI Test', status: 'IDLE', stepCount: 12 },
-      snapshot: { cascadeId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1', status: 'IDLE', source: 'cdp', steps: [{ idx: 1 }] },
-      selectedProjectId: '',
-      onSelectProject: (pid) => {
-        filteredPid = pid;
-      },
-    });
-    assert.equal(ovRoot.querySelectorAll('.rc-meter-fill').length, 4);
+      });
+    } finally {
+      dom.window.Element.prototype.setAttribute = origSetAttr;
+    }
+    assert.equal(inlineStyleAttrCalls, 0, 'renderOverviewPanel must never call setAttribute("style", ...) under strict CSP');
+    const meterFills = Array.from(ovRoot.querySelectorAll('.rc-meter-fill'));
+    assert.equal(meterFills.length, 4);
+    assert.deepEqual(
+      meterFills.map((n) => n.style.width),
+      ['92%', '79%', '80%', '90%']
+    );
+    assert.deepEqual(
+      Array.from(ovRoot.querySelectorAll('.rc-usage-seg')).map((n) => n.style.width),
+      ['57%', '10%', '33%']
+    );
+    assert.match(ovRoot.textContent, /80% · 30m/);
     assert.match(ovRoot.textContent, /1\.5M tok/);
     assert.match(ovRoot.textContent, /缓存 85%/);
     assert.match(ovRoot.textContent, /feat\/remote-dual-ui/);

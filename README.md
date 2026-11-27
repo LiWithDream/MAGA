@@ -61,6 +61,7 @@ Antigravity Desktop 2.0 is built around **one agent in one chat**. Once you jugg
 | **Keep long sessions sharp before context rot** | Manual `/compact` after responses already start degrading | Cache-aware Auto-Compact at configurable thresholds or before scheduled waits, protecting drafts |
 | **Run long tasks & subagents without babysitting** | Subagents stay tucked in drawers; interrupted runs require manual reprompting | Instant 50/50 subagent split from the dock, one-click silent `Resume`, folded noise & disciplined turns |
 | **Customize models, dock & interface language** | Fixed bar, no effort presets, English-only UI | Per-family effort sliders, custom model filter, live 3-tab Settings Studio & built-in Chinese UI |
+| **Check progress & approve runs away from your desk** | Tied to your desktop window | Encrypted PWA & native Android app over Cloudflare Access or Tailscale with approvals, chat, OTA & optional keep-alive |
 
 ---
 
@@ -159,6 +160,18 @@ Antigravity Desktop 2.0 is built around **one agent in one chat**. Once you jugg
 
 ---
 
+<a id="remote-companion"></a>
+
+### 5. Remote Control & Android Companion
+
+**Monitor runs, approve waiting tool calls, and steer sessions from your phone or another browser — with zero open ports.**
+
+- **Zero-Dep Loopback Gateway & Edge Security**: A standalone 7-file gateway binds strictly to `127.0.0.1:18791` behind Cloudflare Access (JWKS RS256), Tailscale Serve, or local loopback, pairing via single-use codes or local SVG QR codes and ECDSA P-256 device handshakes with granular roles (`observe` / `steer` / `admin`) and instant revocation.
+- **Full Mobile & Desktop Console**: Inspect live streaming steps, dual-pool quotas, per-project views, and interactive `askQuestion` cards; switch models/effort tiers; attach screenshots or camera photos; trigger `/compact`, `Resume`, or Opus Gate reviews; and guard writes with fail-closed `TURBO` confirmations.
+- **Native Android App & Self-Hosted OTA (`remote/android/`)**: Edge-to-edge WebView client with native notifications & haptics, Android share-sheet upload, in-app OAuth, network/resume/crash recovery, optional `KeepAliveService` listener, and Cloudflare-Access-authenticated in-app OTA updates (`/api/android/latest`, `/api/android/apk`).
+
+---
+
 ## Quick Start
 
 **Requirements**: macOS (Apple Silicon or Intel) · Node.js `>= 22` · Google Antigravity Desktop 2.0
@@ -246,7 +259,7 @@ Small daily friction adds up when you live inside Antigravity all day — every 
 | Root DOM observers (`MagaKernel`) | **`1`** shared `MutationObserver` (`data-maga-own` filtered) |
 | Frame flush cost (Apple Silicon local CDP check) | **`1.5–3.6 ms`** with leaf-only telemetry slots (`MetricsBus`) |
 | Global CSS `:has()` selectors | **`0`** (enforced by automated test guards) |
-| Automated regression & invariant suite (`npm test`) | **`195+`** passing tests, **`0`** skipped |
+| Automated regression & invariant suite (`npm test`) | **`210+`** passing tests, **`0`** skipped |
 | Background footprint | **`1`** local macOS `LaunchAgent` |
 
 ---
@@ -326,7 +339,7 @@ This comes from Antigravity's native `language_server` when its TLS/proxy connec
 .
 ├── core/                  # Local CDP daemon + submodules (attach, bootstrap, SQLite, projects, worktrees)
 ├── user/src/              # 22 modular ESM frontend files (<2,000 lines each, compiled to user/custom.js)
-├── remote/                # Remote Control zero-dep loopback gateway (7 files) & mobile PWA client
+├── remote/                # Remote Control zero-dep loopback gateway (7 files), modular PWA & native Android app
 ├── vendor/agy-capsule/    # Vendored MIT model/effort picker, motion themes & SQLite parser
 ├── studio/
 │   ├── core/              # MagaKernel (1 root observer), DomFlags, MetricsBus, snapshot
@@ -337,7 +350,7 @@ This comes from Antigravity's native `language_server` when its TLS/proxy connec
 │   ├── styles/            # Scoped stylesheets (0 :has() selectors)
 │   ├── cli.mjs            # Unified CLI (install / deploy / sync-rules / doctor / rollback / remote)
 │   └── pack-release.mjs   # Zero-npm-install Release tarball packager
-├── test/                  # Automated regression & invariant suite (195+ tests)
+├── test/                  # Automated regression & invariant suite (210+ tests)
 ├── install.sh             # One-line macOS installer (--dry-run, prebuilt & source modes)
 └── uninstall.sh           # Clean rollback & uninstaller (--dry-run supported)
 ```
@@ -345,7 +358,7 @@ This comes from Antigravity's native `language_server` when its TLS/proxy connec
 | Contributor Command | Purpose |
 | :--- | :--- |
 | `npm run wt:new -- feat/slug` | Create an isolated sibling Git worktree with symlinked `node_modules` |
-| `npm test` | Compile `user/custom.js` and run the full 195+ test & invariant suite |
+| `npm test` | Compile `user/custom.js` and run the full 210+ test & invariant suite |
 | `npm run deploy` | Hot-reload UI changes into running Antigravity from clean `main` (no app restart) |
 | `npm run release:pack` | Build a zero-`npm-install` macOS tarball + SHA-256 checksum in `dist/` |
 

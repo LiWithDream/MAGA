@@ -62,6 +62,7 @@
 | **长对话防止上下文退化** | 等模型变笨了才手动敲 `/compact`，常常错过缓存热窗 | 缓存感知智能压缩（`Auto-Compact`），到阈值或长等待前自动瘦身，且不覆盖未发草稿 |
 | **跑长任务与多子代理免盯屏** | 子代理藏在侧栏里；流式中断后要手动补发提示词续跑 | 底栏一键 50/50 子代理分屏、偶发中断一键静默 `Resume`、折叠噪音并减少无效轮次 |
 | **模型操控与中文阅读体验** | 底栏拥挤、缺少思考档位预设、原生仅英文界面 | 分家族思考强度滑轨、隐藏不常用模型、实时三标签设置台，以及内置简体中文与苹方字高校准 |
+| **离开电脑时远程盯进度与审批** | 只能守在桌面窗口前查看与授权 | 加密移动 PWA 与原生 Android 客户端（走 Cloudflare Access / Tailscale），支持审批、发图、对话、`Opus Gate` 与自托管 OTA 更新 |
 
 ---
 
@@ -160,6 +161,18 @@
 
 ---
 
+<a id="remote-companion"></a>
+
+### 5. 手机与网页远程操控（Remote Control & Android 客户端）
+
+**离开桌面也能实时看流式进度、点工具审批与继续追问——零公网端口暴露。**
+
+- **7 文件零依赖回环网关与边界认证**：网关严格仅监听 `127.0.0.1:18791`，通过 Cloudflare Access（JWKS RS256）、Tailscale Serve 或本机回环接入；支持一次性配对码与桌面端本地 SVG 二维码扫码配对，基于 ECDSA P-256 设备握手与角色权限（`observe` / `steer` / `admin`）随时升降级或吊销设备。
+- **完整控制台体验（桌面三栏 + 移动端）**：实时查看过程流、双池配额与分项目视图，支持交互式 `askQuestion` 单选/多选卡片、切换模型与思考档位、粘贴或相机传图、触发 `/compact` / `Resume` / `Opus Gate` 复核，并对 `TURBO` 模式强制二次确认防误触。
+- **原生 Android 客户端与自托管 OTA（`remote/android/`）**：沉浸式全面屏壳体、原生通知与震动反馈、系统分享直接传图、应用内 OAuth 登录、断网/切网/WebView 崩进程自愈、可选前台保活监听服务（`KeepAliveService`），以及走同源 Cloudflare Access 校验的应用内静默查更与一键 OTA 安装。
+
+---
+
 ## 快速开始
 
 **环境要求**：macOS（Apple Silicon 或 Intel）· Node.js `>= 22` · Google Antigravity Desktop 2.0
@@ -247,7 +260,7 @@ bash ./install.sh
 | 根 DOM 观测器数量（`MagaKernel`） | **`1`** 个统一 `MutationObserver`（`data-maga-own` 自隔离） |
 | 主线程刷帧耗时（Apple Silicon 本地 CDP 实测） | **`1.5–3.6 ms`**，高频遥测走叶节点原地更新（`MetricsBus`） |
 | 全局 CSS `:has()` 选择器数量 | **`0`**（自动化测试硬守卫） |
-| 自动化回归与不变量测试（`npm test`） | **`195+`** 项全部通过，**`0`** 项跳过 |
+| 自动化回归与不变量测试（`npm test`） | **`210+`** 项全部通过，**`0`** 项跳过 |
 | 后台进程占用 | **`1`** 个本地 macOS `LaunchAgent` |
 
 ---
@@ -327,7 +340,7 @@ bash ./install.sh
 .
 ├── core/                  # 本地 CDP 守护进程与子模块（挂载、冷启引导、SQLite、项目扫描、worktrees）
 ├── user/src/              # 22 个模块化 ESM 前端源码（全部 <2,000 行，编入 user/custom.js）
-├── remote/                # 远程控制零依赖回环网关（7 文件）与手机端 PWA 客户端
+├── remote/                # 远程控制零依赖回环网关（7 文件）、模块化 PWA 与原生 Android 客户端
 ├── vendor/agy-capsule/    # 内化整合的 MIT 模型/滑轨核心、动效主题与 SQLite 解析
 ├── studio/
 │   ├── core/              # MagaKernel（单根观测器）、DomFlags、MetricsBus、状态快照
@@ -338,7 +351,7 @@ bash ./install.sh
 │   ├── styles/            # 作用域样式表（全仓 0 条 :has() 选择器）
 │   ├── cli.mjs            # 统一 CLI（install / deploy / sync-rules / doctor / rollback / remote）
 │   └── pack-release.mjs   # 零依赖 Release 压缩包打包器
-├── test/                  # 自动化测试套件（195+ 项回归与架构守卫）
+├── test/                  # 自动化测试套件（210+ 项回归与架构守卫）
 ├── install.sh             # 一键安装脚本（支持 --dry-run、预编包与源码模式）
 └── uninstall.sh           # 一键无痕回滚卸载脚本（支持 --dry-run）
 ```
@@ -346,7 +359,7 @@ bash ./install.sh
 | 开发者命令 | 作用 |
 | :--- | :--- |
 | `npm run wt:new -- feat/slug` | 创建隔离开发用 Git Worktree 并自动软链 `node_modules` |
-| `npm test` | 编译 `user/custom.js` 并运行全部 195+ 项回归与不变量测试 |
+| `npm test` | 编译 `user/custom.js` 并运行全部 210+ 项回归与不变量测试 |
 | `npm run deploy` | 在干净 `main` 上秒级热更新至运行中的 Antigravity（无需重启客户端） |
 | `npm run release:pack` | 生成零 `npm install` 的 macOS Release 压缩包及 SHA-256 校验文件到 `dist/` |
 

@@ -446,6 +446,17 @@ test('deploy-meta provenance, single-desktop deploy guard & standalone studio/wt
     assert.match(blockedWtGuard.reason || '', /Currently live bundle was deployed from 'main'/);
     assert.match(blockedWtGuard.reason || '', /--preview/);
 
+    const blockedWtInstallGuard = evaluateDeployGuard(createdJson.worktreePath, { mode: 'install', metaPath });
+    assert.equal(blockedWtInstallGuard.allowed, false);
+    assert.match(blockedWtInstallGuard.reason || '', /--preview/);
+
+    const allowedWtInstallPreview = evaluateDeployGuard(createdJson.worktreePath, {
+      mode: 'install',
+      allowNonMain: true,
+      metaPath,
+    });
+    assert.equal(allowedWtInstallPreview.allowed, true);
+
     // Explicit preview flag permits deploy with daemon split-brain warning & previous-live notice
     const previewGuard = evaluateDeployGuard(createdJson.worktreePath, { allowNonMain: true, metaPath });
     assert.equal(previewGuard.allowed, true);

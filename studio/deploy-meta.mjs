@@ -141,7 +141,7 @@ export function evaluateDeployGuard(
     ? `Currently live bundle was deployed from '${liveBranch}' (${liveWorktree || 'unknown'}).`
     : '';
 
-  if (mode === 'install') {
+  if (mode === 'install' && (!provenance.isLinkedWorktree || allowNonMain)) {
     const warnings = [];
     if (needsBranchOrWtGuard) {
       warnings.push(

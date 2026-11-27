@@ -9,10 +9,10 @@ val keyAliasProp = System.getenv("AGY_KEY_ALIAS") ?: (project.findProperty("agyK
 val keyPasswordProp = System.getenv("AGY_KEY_PASSWORD") ?: (project.findProperty("agyKeyPassword") as String?) ?: keystorePassword
 
 val defaultServerUrlProp = (
-    System.getenv("AGY_SERVER_URL")
-        ?: (project.findProperty("agyServerUrl") as String?)
+    System.getenv("AGY_SERVER_URL")?.trim()?.takeIf { it.isNotBlank() }
+        ?: (project.findProperty("agyServerUrl") as String?)?.trim()?.takeIf { it.isNotBlank() }
         ?: "https://example.invalid"
-).trim().removeSuffix("/")
+).removeSuffix("/")
 val defaultServerHost = try {
     java.net.URI(defaultServerUrlProp).host ?: "example.invalid"
 } catch (_: Exception) {

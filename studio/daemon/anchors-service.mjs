@@ -379,8 +379,9 @@ export async function createMilestoneHandoff(payload = {}, opts = {}) {
     .filter(Boolean)
     .join('\n');
 
-  const lsAddress = String(payload.lsAddress || opts.lsAddress || process.env.ANTIGRAVITY_LS_ADDRESS || '').trim();
-  const csrfToken = String(payload.csrfToken || opts.csrfToken || process.env.ANTIGRAVITY_CSRF_TOKEN || '').trim();
+  // Take lsAddress & csrfToken strictly from trusted opts or daemon process.env — NEVER from untrusted renderer payload!
+  const lsAddress = String(opts.lsAddress || process.env.ANTIGRAVITY_LS_ADDRESS || '').trim();
+  const csrfToken = String(opts.csrfToken || process.env.ANTIGRAVITY_CSRF_TOKEN || '').trim();
   const fetchFn = opts.fetchImpl || (typeof fetch === 'function' ? fetch : null);
 
   if (!lsAddress || !csrfToken || !fetchFn || !/^127\.0\.0\.1:\d+$|^localhost:\d+$/i.test(lsAddress)) {

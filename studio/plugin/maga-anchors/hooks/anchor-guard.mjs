@@ -86,11 +86,11 @@ function readJsonSafe(filePath, fallback = null) {
   }
 }
 
-function writeAtomicJson(filePath, obj) {
+function writeAtomicText(filePath, text) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
   try {
-    fs.writeFileSync(tmp, `${JSON.stringify(obj, null, 2)}\n`, 'utf8');
+    fs.writeFileSync(tmp, text, 'utf8');
     fs.renameSync(tmp, filePath);
   } catch (err) {
     try {
@@ -98,6 +98,10 @@ function writeAtomicJson(filePath, obj) {
     } catch {}
     throw err;
   }
+}
+
+function writeAtomicJson(filePath, obj) {
+  writeAtomicText(filePath, `${JSON.stringify(obj, null, 2)}\n`);
 }
 
 function getSafeCid(raw) {
@@ -184,6 +188,50 @@ function isSafeBoundedRegex(pattern) {
   return true;
 }
 
+function findFastUpwardLocks(startDir) {
+  if (!startDir || typeof startDir !== 'string') return null;
+  let cur = path.resolve(startDir);
+  for (let depth = 0; depth < 16; depth += 1) {
+    const locksCandidate = path.join(cur, '.agents', 'locks.json');
+    if (fs.existsSync(locksCandidate)) {
+      const parsed = readJsonSafe(locksCandidate, null);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return { locks: parsed, locksRoot: cur };
+      }
+    }
+    const gitEntry = path.join(cur, '.git');
+    if (fs.existsSync(gitEntry)) {
+      // Linked worktree `.git` is a file pointing to `<commonDir>/worktrees/<slug>`; check mainRoot too!
+      try {
+        const st = fs.statSync(gitEntry);
+        if (st.isFile()) {
+          const gitPtr = fs.readFileSync(gitEntry, 'utf8').trim();
+          const m = gitPtr.match(/^gitdir:\s*(.+)$/i);
+          if (m) {
+            const wtGitDir = path.resolve(cur, m[1].trim());
+            const commonCandidate = path.resolve(wtGitDir, '..', '..');
+            if (path.basename(commonCandidate) === '.git') {
+              const mainRoot = path.dirname(commonCandidate);
+              const mainLocks = path.join(mainRoot, '.agents', 'locks.json');
+              if (fs.existsSync(mainLocks)) {
+                const parsed = readJsonSafe(mainLocks, null);
+                if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                  return { locks: parsed, locksRoot: mainRoot, topLevel: cur, mainRoot };
+                }
+              }
+            }
+          }
+        }
+      } catch {}
+      break;
+    }
+    const parent = path.dirname(cur);
+    if (parent === cur) break;
+    cur = parent;
+  }
+  return null;
+}
+
 function normalizeLocksSchema(locks) {
   if (!locks || typeof locks !== 'object') {
     return { lockedFiles: [], paramLocks: [], bannedPatterns: [] };
@@ -200,15 +248,25 @@ function normalizeLocksSchema(locks) {
     ...(Array.isArray(locks.bannedPatterns) ? locks.bannedPatterns : []),
     ...(Array.isArray(locks.tombstone_rules) ? locks.tombstone_rules : []),
   ];
-  const bannedPatterns = rawBanned.map((b) => ({
-    id: b?.id || '',
-    scope: typeof b?.scope === 'string' ? b.scope.trim() : '',
-    pattern: b?.pattern || '',
-    flags: b?.flags || '',
-    quote: b?.quote || b?.message || '',
-    source: b?.source || b?.provenance || '',
-    reopenIf: b?.reopenIf || b?.reopen_if || '',
-  }));
+  const bannedPatterns = rawBanned.map((b) => {
+    const scope = typeof b?.scope === 'string' ? b.scope.trim() : '';
+    const defaultApplies = scope && /sanitization/i.test(scope) ? ['file'] : ['shell'];
+    const appliesTo = Array.isArray(b?.appliesTo)
+      ? b.appliesTo.map((x) => String(x || '').toLowerCase())
+      : Array.isArray(b?.applies_to)
+        ? b.applies_to.map((x) => String(x || '').toLowerCase())
+        : defaultApplies;
+    return {
+      id: b?.id || '',
+      scope,
+      appliesTo,
+      pattern: b?.pattern || '',
+      flags: b?.flags || '',
+      quote: b?.quote || b?.message || '',
+      source: b?.source || b?.provenance || '',
+      reopenIf: b?.reopenIf || b?.reopen_if || '',
+    };
+  });
   return { lockedFiles, paramLocks, bannedPatterns };
 }
 
@@ -231,11 +289,11 @@ export function evaluateLocksPreToolUse(payload, opts = {}) {
 
   const args = payload?.toolCall?.args && typeof payload.toolCall.args === 'object' ? payload.toolCall.args : {};
   const rawCwd = args.Cwd || args.cwd || payload?.cwd || process.cwd();
-  const gitRoots = resolveGitRoots(rawCwd);
-  const loaded = loadRepoLocks(gitRoots);
+  // Zero-subprocess fast path (`<0.2ms` pure fs walk; zero git spawn when `.agents/locks.json` is absent)
+  const loaded = findFastUpwardLocks(rawCwd);
   if (!loaded) return { decision: 'allow' };
 
-  const { locks: rawLocks, locksRoot } = loaded;
+  const { locks: rawLocks, locksRoot, topLevel, mainRoot } = loaded;
   const locks = normalizeLocksSchema(rawLocks);
   const toolName = String(payload?.toolCall?.name || '').toLowerCase();
 
@@ -248,7 +306,7 @@ export function evaluateLocksPreToolUse(payload, opts = {}) {
       const lockRelRaw = typeof entry?.path === 'string' ? entry.path.trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '') : '';
       if (!lockRelRaw) continue;
       const cmpLock = CASE_INSENSITIVE_FS ? lockRelRaw.toLowerCase() : lockRelRaw;
-      for (const rootCand of [gitRoots.topLevel, gitRoots.mainRoot, locksRoot]) {
+      for (const rootCand of [topLevel, mainRoot, locksRoot]) {
         if (!rootCand) continue;
         const rel = normalizeRelCompare(absTarget, rootCand);
         if (rel === cmpLock || rel.startsWith(`${cmpLock}/`)) {
@@ -258,6 +316,28 @@ export function evaluateLocksPreToolUse(payload, opts = {}) {
             decision: 'force_ask',
             reason: `[AGY Studio Lock Guard] File '${lockRelRaw}' is locked${src}: "${quote}"`,
           };
+        }
+      }
+    }
+
+    // Check file-scoped `bannedPatterns` (e.g. sanitization guards against committing private IPs/paths into non-excluded files)
+    const basenameTarget = path.basename(absTarget);
+    if (basenameTarget !== 'ENV.md') {
+      const writtenContent = String(args.Content || args.Replacement || args.TargetContent || '');
+      if (writtenContent) {
+        for (const b of locks.bannedPatterns) {
+          if (!b.appliesTo.includes('file') || !isSafeBoundedRegex(b?.pattern)) continue;
+          try {
+            const re = new RegExp(b.pattern, b.flags && /^[im]{0,2}$/.test(b.flags) ? b.flags : '');
+            if (re.test(writtenContent)) {
+              const quote = String(b.quote || 'Content matches banned file pattern').slice(0, 220);
+              const src = b.source ? ` (${String(b.source).slice(0, 40)})` : '';
+              return {
+                decision: 'force_ask',
+                reason: `[AGY Studio File Guard] Edit to '${basenameTarget}' hits '${b.id || b.pattern}'${src}: "${quote}"`,
+              };
+            }
+          } catch {}
         }
       }
     }
@@ -295,10 +375,10 @@ export function evaluateLocksPreToolUse(payload, opts = {}) {
       }
     }
 
-    // 2. Banned dead-end / Tombstone patterns (skipping file-sanitization-only scopes on shell commands so read-only SSH paths work cleanly)
+    // 2. Banned dead-end / Tombstone patterns (`appliesTo` includes `'shell'`)
     const bannedPatterns = locks.bannedPatterns;
     for (const b of bannedPatterns) {
-      if (b.scope && /sanitization/i.test(b.scope)) continue;
+      if (!b.appliesTo.includes('shell')) continue;
       if (!isSafeBoundedRegex(b?.pattern)) continue;
       try {
         const re = new RegExp(b.pattern, b.flags && /^[im]{0,2}$/.test(b.flags) ? b.flags : '');
@@ -447,8 +527,7 @@ export function flushQueuedAnchorWritesForRepo(gitRoots, opts = {}) {
         }
         if (missing.length > 0) {
           const prefix = existing && !existing.endsWith('\n') ? '\n' : '';
-          fs.mkdirSync(path.dirname(excludeFile), { recursive: true });
-          fs.writeFileSync(excludeFile, `${existing}${prefix}${missing.join('\n')}\n`, 'utf8');
+          writeAtomicText(excludeFile, `${existing}${prefix}${missing.join('\n')}\n`);
         }
       }
     } catch {}
@@ -480,8 +559,7 @@ export function flushQueuedAnchorWritesForRepo(gitRoots, opts = {}) {
         fs.rmSync(metaJson, { force: true });
       } catch {}
     } else {
-      fs.mkdirSync(path.dirname(targetMd), { recursive: true });
-      fs.writeFileSync(targetMd, renderAnchorsMarkdownFile(safeAnchors), 'utf8');
+      writeAtomicText(targetMd, renderAnchorsMarkdownFile(safeAnchors));
       writeAtomicJson(metaJson, { schema: 1, usedTokens, maxTokens: MAX_ANCHOR_TOKENS, anchors: safeAnchors });
     }
   }

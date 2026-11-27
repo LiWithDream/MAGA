@@ -171,6 +171,21 @@ test('Pillar 3: .agents/locks.json PreToolUse guard catches locked files, param 
       ),
       { decision: 'allow' }
     );
+
+    // File-scoped sanitization rule (`TS-013`) DOES catch leaking `/VM/<user>/` into non-ENV.md file writes!
+    const leakWrite = evaluateLocksPreToolUse(
+      {
+        hookEventName: 'PreToolUse',
+        cwd: repo,
+        toolCall: {
+          name: 'write_file',
+          args: { Path: path.join(repo, 'docs', 'guide.md'), Content: 'Path: /VM/dingli/sscl_tpami/code\n' },
+        },
+      },
+      { stateDir }
+    );
+    assert.equal(leakWrite.decision, 'force_ask');
+    assert.match(leakWrite.reason, /TS-013/);
   } finally {
     fs.rmSync(repo, { recursive: true, force: true });
     fs.rmSync(stateDir, { recursive: true, force: true });
@@ -272,17 +287,24 @@ test('Pillar 1, 2 & 3B: UTF-8 tail cursor, CoT redaction, zero-CoT rule file, 40
         cascadeId: cid,
         repoRoot: repo,
         userInitiated: true,
-        lsAddress: '127.0.0.1:51234',
-        csrfToken: 'csrf-tok',
+        // Untrusted payload address/token MUST be ignored in favor of trusted opts/env!
+        lsAddress: '127.0.0.1:18791',
+        csrfToken: 'evil-override',
       },
       {
         stateDir,
         brainDir,
-        fetchImpl: async () => ({
-          ok: true,
-          status: 200,
-          json: async () => ({ conversation: { id: 'new-milestone-cid-999' } }),
-        }),
+        lsAddress: '127.0.0.1:51234',
+        csrfToken: 'csrf-tok',
+        fetchImpl: async (url, init) => {
+          assert.match(url, /127\.0\.0\.1:51234/);
+          assert.equal(init.headers['x-antigravity-csrf-token'], 'csrf-tok');
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ conversation: { id: 'new-milestone-cid-999' } }),
+          };
+        },
       }
     );
     assert.equal(handoffCreated.ok, true);

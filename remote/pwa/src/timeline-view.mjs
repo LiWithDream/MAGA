@@ -14,13 +14,68 @@ import {
   normalizeStepStatus,
 } from './ui-helpers.mjs';
 
+const BARE_URL_RE = /https?:\/\/[^\s<>"'`\u3000-\u303f\uff00-\uffef]+/gi;
+
+function trimTrailingUrlPunct(rawUrl) {
+  let url = String(rawUrl || '');
+  while (url.length > 0) {
+    const last = url[url.length - 1];
+    if (/[.,;:!?。，；：！？》】」』]/.test(last)) {
+      url = url.slice(0, -1);
+      continue;
+    }
+    if (last === ')' && (url.match(/\(/g)?.length || 0) < (url.match(/\)/g)?.length || 0)) {
+      url = url.slice(0, -1);
+      continue;
+    }
+    if (last === ']' && (url.match(/\[/g)?.length || 0) < (url.match(/\]/g)?.length || 0)) {
+      url = url.slice(0, -1);
+      continue;
+    }
+    break;
+  }
+  return url;
+}
+
+function appendPlainTextWithLinks(parent, text) {
+  if (!text) return;
+  BARE_URL_RE.lastIndex = 0;
+  let lastIdx = 0;
+  let m;
+  while ((m = BARE_URL_RE.exec(text)) !== null) {
+    const raw = m[0];
+    const cleanUrl = trimTrailingUrlPunct(raw);
+    if (!cleanUrl || cleanUrl.length < 10) continue;
+    if (m.index > lastIdx) {
+      parent.appendChild(document.createTextNode(text.slice(lastIdx, m.index)));
+    }
+    parent.appendChild(
+      el('a', {
+        className: 'rc-md-link',
+        href: cleanUrl,
+        target: '_blank',
+        rel: 'noopener noreferrer',
+        text: cleanUrl,
+      })
+    );
+    const trailing = raw.slice(cleanUrl.length);
+    if (trailing) {
+      parent.appendChild(document.createTextNode(trailing));
+    }
+    lastIdx = m.index + raw.length;
+  }
+  if (lastIdx < text.length) {
+    parent.appendChild(document.createTextNode(text.slice(lastIdx)));
+  }
+}
+
 function appendInlineMarkdown(parent, line, depth = 0) {
   const tokenRe = /\[([^\]\n]+)\]\(([^)\s]+)\)|`([^`\n]+)`|\*\*([^*\n]+)\*\*|~~([^~\n]+)~~|\*([^*\n]+)\*/g;
   let lastIdx = 0;
   let match;
   while ((match = tokenRe.exec(line)) !== null) {
     if (match.index > lastIdx) {
-      parent.appendChild(document.createTextNode(line.slice(lastIdx, match.index)));
+      appendPlainTextWithLinks(parent, line.slice(lastIdx, match.index));
     }
     if (match[1] !== undefined && match[2] !== undefined) {
       const label = match[1];
@@ -70,7 +125,7 @@ function appendInlineMarkdown(parent, line, depth = 0) {
     lastIdx = tokenRe.lastIndex;
   }
   if (lastIdx < line.length) {
-    parent.appendChild(document.createTextNode(line.slice(lastIdx)));
+    appendPlainTextWithLinks(parent, line.slice(lastIdx));
   }
 }
 

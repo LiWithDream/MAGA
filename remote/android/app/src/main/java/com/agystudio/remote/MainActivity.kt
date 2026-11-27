@@ -2,17 +2,25 @@ package com.agystudio.remote
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.content.Context
 import android.content.Intent
 import android.content.res.Configuration
 import android.graphics.Color
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.provider.MediaStore
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.CookieManager
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
@@ -31,6 +39,7 @@ import androidx.activity.SystemBarStyle
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.FileProvider
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
@@ -38,6 +47,7 @@ import androidx.core.view.WindowInsetsControllerCompat
 import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewFeature
 import org.json.JSONObject
+import java.io.File
 import java.util.concurrent.Executors
 
 class MainActivity : AppCompatActivity(), NativeBridge.HostActions {
@@ -48,35 +58,66 @@ class MainActivity : AppCompatActivity(), NativeBridge.HostActions {
     private lateinit var errorDetailText: TextView
 
     private var fileUploadCallback: ValueCallback<Array<Uri>>? = null
+    private var pendingCameraPhotoUri: Uri? = null
     private var lastBackPressedMs: Long = 0L
     private var lastThreeFingerTriggerMs: Long = 0L
+    private var lastResumeDispatchMs: Long = 0L
     private var pageLoadedOnce: Boolean = false
+    private var webReady: Boolean = false
     private var pendingSharedMediaJson: String? = null
     private var pendingFocusCascadeId: String? = null
     private var pendingLaunchUrl: String? = null
     private var lastInsetsJson: String? = null
+    private var lastNetworkJson: String? = null
+    private var lastNetworkOnline: Boolean = true
+    private var lastNetworkTransport: String = ""
+    private var networkCallbackRegistered: Boolean = false
 
+    private val mainHandler = Handler(Looper.getMainLooper())
     private val ioExecutor = Executors.newSingleThreadExecutor()
+    private var pendingNetworkDispatch: Runnable? = null
+
+    private val connectivityManager: ConnectivityManager?
+        get() = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+
+    private val networkCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) {
+            scheduleNetworkStateSync()
+        }
+
+        override fun onLost(network: Network) {
+            scheduleNetworkStateSync()
+        }
+
+        override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) {
+            scheduleNetworkStateSync()
+        }
+    }
 
     private val filePickerLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
         val callback = fileUploadCallback
+        val cameraUri = pendingCameraPhotoUri
         fileUploadCallback = null
+        pendingCameraPhotoUri = null
         if (callback == null) return@registerForActivityResult
-        if (result.resultCode != RESULT_OK || result.data == null) {
+        if (result.resultCode != RESULT_OK) {
             callback.onReceiveValue(null)
             return@registerForActivityResult
         }
-        val data = result.data!!
+        val data = result.data
         val uris = mutableListOf<Uri>()
-        data.clipData?.let { clip ->
+        data?.clipData?.let { clip ->
             for (i in 0 until clip.itemCount) {
                 clip.getItemAt(i)?.uri?.let { uris.add(it) }
             }
         }
         if (uris.isEmpty()) {
-            data.data?.let { uris.add(it) }
+            data?.data?.let { uris.add(it) }
+        }
+        if (uris.isEmpty() && cameraUri != null) {
+            uris.add(cameraUri)
         }
         callback.onReceiveValue(if (uris.isNotEmpty()) uris.toTypedArray() else null)
     }
@@ -93,13 +134,17 @@ class MainActivity : AppCompatActivity(), NativeBridge.HostActions {
 
         NotificationHelper.ensureChannels(this)
         buildContentView()
-        configureWebView()
+        configureWebView(webView)
         bindWindowInsets()
         bindBackGesture()
+        registerNetworkMonitor()
 
         handleIncomingIntent(intent)
         loadCurrentServer(clearCache = false)
     }
+
+    private fun isNightMode(): Boolean =
+        (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
 
     private fun applyEdgeToEdgeChrome() {
         enableEdgeToEdge(
@@ -117,14 +162,37 @@ class MainActivity : AppCompatActivity(), NativeBridge.HostActions {
     }
 
     private fun syncSystemBarIconAppearance() {
-        val isDark = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+        val isDark = isNightMode()
         val controller = WindowInsetsControllerCompat(window, window.decorView)
         controller.isAppearanceLightStatusBars = !isDark
         controller.isAppearanceLightNavigationBars = !isDark
     }
 
+    private fun applyThemeSurfaceColors() {
+        val isDark = isNightMode()
+        val bgColor = if (isDark) Color.parseColor("#212120") else Color.parseColor("#FFFFFF")
+        val fgColor = if (isDark) Color.parseColor("#FAF9F5") else Color.parseColor("#1F1E1D")
+        rootContainer.setBackgroundColor(bgColor)
+        webView.setBackgroundColor(bgColor)
+        errorOverlay.setBackgroundColor(bgColor)
+        errorDetailText.setTextColor(fgColor)
+    }
+
+    private fun createConfiguredWebViewInstance(): WebView {
+        val isDark = isNightMode()
+        val bgColor = if (isDark) Color.parseColor("#212120") else Color.parseColor("#FFFFFF")
+        return WebView(this).apply {
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+            setBackgroundColor(bgColor)
+            overScrollMode = View.OVER_SCROLL_NEVER
+        }
+    }
+
     private fun buildContentView() {
-        val isDark = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+        val isDark = isNightMode()
         val bgColor = if (isDark) Color.parseColor("#212120") else Color.parseColor("#FFFFFF")
         val fgColor = if (isDark) Color.parseColor("#FAF9F5") else Color.parseColor("#1F1E1D")
 
@@ -136,14 +204,7 @@ class MainActivity : AppCompatActivity(), NativeBridge.HostActions {
             setBackgroundColor(bgColor)
         }
 
-        webView = WebView(this).apply {
-            layoutParams = FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT
-            )
-            setBackgroundColor(bgColor)
-            overScrollMode = View.OVER_SCROLL_NEVER
-        }
+        webView = createConfiguredWebViewInstance()
 
         val density = resources.displayMetrics.density
         progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
@@ -195,13 +256,47 @@ class MainActivity : AppCompatActivity(), NativeBridge.HostActions {
         setContentView(rootContainer)
     }
 
+    private fun recreateWebViewAfterCrash() {
+        val oldWebView = webView
+        val oldIndex = rootContainer.indexOfChild(oldWebView).coerceAtLeast(0)
+        rootContainer.removeView(oldWebView)
+        try {
+            oldWebView.destroy()
+        } catch (_: Exception) {
+        }
+        pageLoadedOnce = false
+        webReady = false
+        webView = createConfiguredWebViewInstance()
+        configureWebView(webView)
+        rootContainer.addView(webView, oldIndex)
+        ViewCompat.requestApplyInsets(rootContainer)
+        Toast.makeText(this, "页面进程已自动恢复", Toast.LENGTH_SHORT).show()
+        loadCurrentServer(clearCache = false)
+    }
+
+    private fun createCameraCaptureIntent(): Intent? {
+        return try {
+            val camDir = File(cacheDir, "camera").apply { mkdirs() }
+            val photoFile = File(camDir, "agy_cam_${System.currentTimeMillis()}.jpg")
+            val photoUri = FileProvider.getUriForFile(this, "${packageName}.fileprovider", photoFile)
+            pendingCameraPhotoUri = photoUri
+            Intent(MediaStore.ACTION_IMAGE_CAPTURE).apply {
+                putExtra(MediaStore.EXTRA_OUTPUT, photoUri)
+                addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+        } catch (_: Exception) {
+            pendingCameraPhotoUri = null
+            null
+        }
+    }
+
     @SuppressLint("SetJavaScriptEnabled")
-    private fun configureWebView() {
+    private fun configureWebView(targetWebView: WebView) {
         val cookieManager = CookieManager.getInstance()
         cookieManager.setAcceptCookie(true)
-        cookieManager.setAcceptThirdPartyCookies(webView, true)
+        cookieManager.setAcceptThirdPartyCookies(targetWebView, true)
 
-        webView.settings.apply {
+        targetWebView.settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
             @Suppress("DEPRECATION")
@@ -216,12 +311,12 @@ class MainActivity : AppCompatActivity(), NativeBridge.HostActions {
             userAgentString = userAgentString.replace("; wv)", ")").replace("Version/4.0 ", "")
         }
         if (WebViewFeature.isFeatureSupported(WebViewFeature.REQUESTED_WITH_HEADER_ALLOW_LIST)) {
-            WebSettingsCompat.setRequestedWithHeaderOriginAllowList(webView.settings, emptySet())
+            WebSettingsCompat.setRequestedWithHeaderOriginAllowList(targetWebView.settings, emptySet())
         }
 
-        webView.addJavascriptInterface(NativeBridge(this), "__agyNative")
+        targetWebView.addJavascriptInterface(NativeBridge(this), "__agyNative")
 
-        webView.webChromeClient = object : WebChromeClient() {
+        targetWebView.webChromeClient = object : WebChromeClient() {
             override fun onProgressChanged(view: WebView?, newProgress: Int) {
                 if (newProgress in 1..99) {
                     progressBar.visibility = View.VISIBLE
@@ -237,10 +332,11 @@ class MainActivity : AppCompatActivity(), NativeBridge.HostActions {
                 fileChooserParams: FileChooserParams?
             ): Boolean {
                 fileUploadCallback?.onReceiveValue(null)
+                pendingCameraPhotoUri = null
                 fileUploadCallback = filePathCallback
                 return try {
                     val acceptTypes = fileChooserParams?.acceptTypes?.filter { it.isNotBlank() }.orEmpty()
-                    val intent = Intent(Intent.ACTION_GET_CONTENT).apply {
+                    val galleryIntent = Intent(Intent.ACTION_GET_CONTENT).apply {
                         addCategory(Intent.CATEGORY_OPENABLE)
                         type = if (acceptTypes.size == 1) acceptTypes[0] else "image/*"
                         if (acceptTypes.size > 1) {
@@ -248,16 +344,22 @@ class MainActivity : AppCompatActivity(), NativeBridge.HostActions {
                         }
                         putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
                     }
-                    filePickerLauncher.launch(Intent.createChooser(intent, "选择图片附件"))
+                    val chooser = Intent.createChooser(galleryIntent, "选择图片或拍照")
+                    val camIntent = createCameraCaptureIntent()
+                    if (camIntent != null) {
+                        chooser.putExtra(Intent.EXTRA_INITIAL_INTENTS, arrayOf(camIntent))
+                    }
+                    filePickerLauncher.launch(chooser)
                     true
                 } catch (_: Exception) {
                     fileUploadCallback = null
+                    pendingCameraPhotoUri = null
                     false
                 }
             }
         }
 
-        webView.webViewClient = object : WebViewClient() {
+        targetWebView.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
                 val req = request ?: return false
                 val uri = req.url ?: return false
@@ -270,11 +372,12 @@ class MainActivity : AppCompatActivity(), NativeBridge.HostActions {
                     openExternally(uri)
                     return true
                 }
-                // While on any auth/login page (not yet on our server host), NEVER kick navigations out to external browser
                 val currentHost = view?.url?.let { runCatching { Uri.parse(it).host?.lowercase() }.getOrNull() }
                 val serverHost = Uri.parse(ServerPrefs.getServerUrl(this@MainActivity)).host?.lowercase()?.trim()
                 val inAuthFlow = !currentHost.isNullOrEmpty() && !serverHost.isNullOrEmpty() && currentHost != serverHost
-                if (inAuthFlow || req.isRedirect || !req.hasGesture() || isAllowedInAppHost(uri.host)) {
+                // Always keep server/Access redirects and active OAuth flows inside WebView;
+                // user-tapped external links (e.g. Google Drive / GitHub) inside chat open externally.
+                if (inAuthFlow || req.isRedirect || !req.hasGesture() || isServerOrAccessHost(uri.host)) {
                     return false
                 }
                 openExternally(uri)
@@ -287,7 +390,9 @@ class MainActivity : AppCompatActivity(), NativeBridge.HostActions {
                 errorOverlay.visibility = View.GONE
                 CookieManager.getInstance().flush()
                 pushLastInsetsToWeb()
-                flushPendingDispatches()
+                if (webReady) {
+                    flushPendingDispatches()
+                }
             }
 
             override fun onReceivedError(
@@ -297,14 +402,20 @@ class MainActivity : AppCompatActivity(), NativeBridge.HostActions {
             ) {
                 if (request?.isForMainFrame == true) {
                     val desc = error?.description?.toString().orEmpty()
-                    errorDetailText.text = "连接失败：$desc\n(${ServerPrefs.getServerUrl(this@MainActivity)})"
+                    errorDetailText.text = "连接失败：$desc\n(${ServerPrefs.getServerUrl(this@MainActivity)})\n网络恢复后将自动重连"
                     errorOverlay.visibility = View.VISIBLE
                 }
+            }
+
+            override fun onRenderProcessGone(view: WebView?, detail: RenderProcessGoneDetail?): Boolean {
+                if (view !== webView) return true
+                runOnUiThread { recreateWebViewAfterCrash() }
+                return true
             }
         }
     }
 
-    private fun isAllowedInAppHost(host: String?): Boolean {
+    private fun isServerOrAccessHost(host: String?): Boolean {
         val target = host?.lowercase()?.trim() ?: return false
         val serverHost = Uri.parse(ServerPrefs.getServerUrl(this)).host?.lowercase()?.trim()
         if (!serverHost.isNullOrEmpty()) {
@@ -315,22 +426,7 @@ class MainActivity : AppCompatActivity(), NativeBridge.HostActions {
                 if (target == rootDomain || target.endsWith(".$rootDomain")) return true
             }
         }
-        val authDomains = listOf(
-            "cloudflareaccess.com",
-            "cloudflare.com",
-            "google.com",
-            "googleapis.com",
-            "googleusercontent.com",
-            "gstatic.com",
-            "youtube.com",
-            "github.com",
-            "githubusercontent.com",
-            "microsoftonline.com",
-            "live.com",
-            "okta.com",
-            "auth0.com"
-        )
-        return authDomains.any { target == it || target.endsWith(".$it") }
+        return target == "cloudflareaccess.com" || target.endsWith(".cloudflareaccess.com")
     }
 
     private fun openExternally(uri: Uri) {
@@ -340,14 +436,88 @@ class MainActivity : AppCompatActivity(), NativeBridge.HostActions {
         }
     }
 
+    private fun registerNetworkMonitor() {
+        val cm = connectivityManager ?: return
+        try {
+            cm.registerDefaultNetworkCallback(networkCallback)
+            networkCallbackRegistered = true
+        } catch (_: Exception) {
+            networkCallbackRegistered = false
+        }
+        syncNetworkStateNow(pushToWeb = false)
+    }
+
+    private fun unregisterNetworkMonitor() {
+        pendingNetworkDispatch?.let { mainHandler.removeCallbacks(it) }
+        pendingNetworkDispatch = null
+        if (!networkCallbackRegistered) return
+        networkCallbackRegistered = false
+        try {
+            connectivityManager?.unregisterNetworkCallback(networkCallback)
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun scheduleNetworkStateSync() {
+        pendingNetworkDispatch?.let { mainHandler.removeCallbacks(it) }
+        val task = Runnable { syncNetworkStateNow(pushToWeb = true) }
+        pendingNetworkDispatch = task
+        mainHandler.postDelayed(task, 250L)
+    }
+
+    private fun readCurrentNetworkState(): Pair<Boolean, String> {
+        val cm = connectivityManager ?: return Pair(true, "unknown")
+        val active = cm.activeNetwork ?: return Pair(false, "none")
+        val caps = cm.getNetworkCapabilities(active) ?: return Pair(false, "none")
+        val hasInternet = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        if (!hasInternet) return Pair(false, "none")
+        val base = when {
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "wifi"
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "cellular"
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "ethernet"
+            else -> "other"
+        }
+        val transport = if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) "$base+vpn" else base
+        return Pair(true, transport)
+    }
+
+    private fun syncNetworkStateNow(pushToWeb: Boolean) {
+        val (online, transport) = readCurrentNetworkState()
+        val changed = online != lastNetworkOnline || transport != lastNetworkTransport
+        lastNetworkOnline = online
+        lastNetworkTransport = transport
+        val payload = JSONObject().apply {
+            put("online", online)
+            put("transport", transport)
+        }.toString()
+        lastNetworkJson = payload
+
+        if (online && errorOverlay.visibility == View.VISIBLE) {
+            loadCurrentServer(clearCache = false)
+            return
+        }
+        if (pushToWeb && changed) {
+            pushLastNetworkToWeb()
+        }
+    }
+
+    private fun pushLastNetworkToWeb() {
+        val json = lastNetworkJson ?: return
+        if (!webReady) return
+        webView.post {
+            webView.evaluateJavascript(
+                "window.__agyNativeNetworkChange && window.__agyNativeNetworkChange($json);",
+                null
+            )
+        }
+    }
+
     private fun bindWindowInsets() {
         ViewCompat.setOnApplyWindowInsetsListener(rootContainer) { _, insets ->
             val sys = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
             val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
             val density = resources.displayMetrics.density.coerceAtLeast(1f)
 
-            // When keyboard is open, shrink WebView bottom margin to sit flush above IME;
-            // when keyboard is closed, let WebView extend edge-to-edge behind the transparent gesture pill.
             val lp = webView.layoutParams as FrameLayout.LayoutParams
             val targetBottomMargin = if (ime.bottom > 0) ime.bottom else 0
             if (lp.bottomMargin != targetBottomMargin) {
@@ -377,7 +547,7 @@ class MainActivity : AppCompatActivity(), NativeBridge.HostActions {
 
     private fun pushLastInsetsToWeb() {
         val json = lastInsetsJson ?: return
-        if (!pageLoadedOnce) return
+        if (!pageLoadedOnce && !webReady) return
         webView.post {
             webView.evaluateJavascript(
                 "window.__agyApplyNativeInsets && window.__agyApplyNativeInsets($json);",
@@ -438,16 +608,18 @@ class MainActivity : AppCompatActivity(), NativeBridge.HostActions {
         val launchUrl = pendingLaunchUrl
         if (!launchUrl.isNullOrEmpty()) {
             pendingLaunchUrl = null
+            webReady = false
             webView.loadUrl(launchUrl)
+        } else if (webReady) {
+            flushPendingDispatches()
         }
-        flushPendingDispatches()
     }
 
     private fun handleIncomingIntent(intent: Intent?) {
         if (intent == null) return
         if (intent.action == Intent.ACTION_VIEW) {
             val viewUri = intent.data
-            if (viewUri != null && (viewUri.scheme == "https" || viewUri.scheme == "http") && isAllowedInAppHost(viewUri.host)) {
+            if (viewUri != null && (viewUri.scheme == "https" || viewUri.scheme == "http") && isServerOrAccessHost(viewUri.host)) {
                 pendingLaunchUrl = viewUri.toString()
             }
         }
@@ -482,7 +654,7 @@ class MainActivity : AppCompatActivity(), NativeBridge.HostActions {
                 if (json != null) {
                     runOnUiThread {
                         pendingSharedMediaJson = json
-                        flushPendingDispatches()
+                        if (webReady) flushPendingDispatches()
                     }
                 }
             }
@@ -490,7 +662,7 @@ class MainActivity : AppCompatActivity(), NativeBridge.HostActions {
     }
 
     private fun flushPendingDispatches() {
-        if (!pageLoadedOnce) return
+        if (!webReady) return
         val cid = pendingFocusCascadeId
         if (!cid.isNullOrEmpty()) {
             pendingFocusCascadeId = null
@@ -516,6 +688,7 @@ class MainActivity : AppCompatActivity(), NativeBridge.HostActions {
 
     private fun loadCurrentServer(clearCache: Boolean) {
         errorOverlay.visibility = View.GONE
+        webReady = false
         if (clearCache) {
             webView.clearCache(true)
         }
@@ -527,7 +700,25 @@ class MainActivity : AppCompatActivity(), NativeBridge.HostActions {
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
         syncSystemBarIconAppearance()
+        applyThemeSurfaceColors()
         ViewCompat.requestApplyInsets(rootContainer)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        syncSystemBarIconAppearance()
+        CookieManager.getInstance().flush()
+        syncNetworkStateNow(pushToWeb = true)
+        val now = System.currentTimeMillis()
+        if (webReady && now - lastResumeDispatchMs > 600L) {
+            lastResumeDispatchMs = now
+            webView.post {
+                webView.evaluateJavascript(
+                    "window.__agyNativeResume && window.__agyNativeResume();",
+                    null
+                )
+            }
+        }
     }
 
     override fun onPause() {
@@ -536,6 +727,7 @@ class MainActivity : AppCompatActivity(), NativeBridge.HostActions {
     }
 
     override fun onDestroy() {
+        unregisterNetworkMonitor()
         ioExecutor.shutdownNow()
         webView.destroy()
         super.onDestroy()
@@ -576,6 +768,15 @@ class MainActivity : AppCompatActivity(), NativeBridge.HostActions {
     override fun onReloadPage(clearCache: Boolean) {
         runOnUiThread {
             loadCurrentServer(clearCache = clearCache)
+        }
+    }
+
+    override fun onWebReady() {
+        runOnUiThread {
+            webReady = true
+            pushLastInsetsToWeb()
+            pushLastNetworkToWeb()
+            flushPendingDispatches()
         }
     }
 

@@ -12,11 +12,17 @@ class NativeBridge(
         fun onVibrate(timings: LongArray)
         fun onRequestNotificationPermission()
         fun onReloadPage(clearCache: Boolean)
+        fun onWebReady()
         fun getCurrentServerUrl(): String
     }
 
     @JavascriptInterface
     fun isNative(): Boolean = true
+
+    @JavascriptInterface
+    fun onWebReady() {
+        host.onWebReady()
+    }
 
     @JavascriptInterface
     fun getAppVersion(): String = BuildConfig.VERSION_NAME

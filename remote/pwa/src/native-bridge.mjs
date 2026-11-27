@@ -87,6 +87,8 @@ export function bindNativeAndroidBridge({
   onCloseOverlays,
   onCloseModal,
   onNavigateToList,
+  onNativeResume,
+  onNativeNetworkChange,
 } = {}) {
   if (typeof window === 'undefined') return () => {};
   const native = getNativeBridge();
@@ -96,6 +98,24 @@ export function bindNativeAndroidBridge({
 
   window.__agyApplyNativeInsets = (insets) => {
     applyNativeInsets(insets);
+  };
+
+  window.__agyNativeResume = () => {
+    try {
+      onNativeResume?.();
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  window.__agyNativeNetworkChange = (info) => {
+    try {
+      onNativeNetworkChange?.(info && typeof info === 'object' ? info : { online: true });
+      return true;
+    } catch {
+      return false;
+    }
   };
 
   window.__agyNativeBack = () => {
@@ -148,8 +168,11 @@ export function bindNativeAndroidBridge({
         name: String(raw?.name || 'shared-image.jpg').slice(0, 80),
         mimeType,
         dataUrl,
+        previewUrl: dataUrl,
+        dataBase64: base64Data,
         base64Data,
         size: approxBytes,
+        sizeBytes: approxBytes,
       });
     }
     if (added.length > 0) {
@@ -164,8 +187,16 @@ export function bindNativeAndroidBridge({
     return added.length;
   };
 
+  try {
+    if (native && typeof native.onWebReady === 'function') {
+      native.onWebReady();
+    }
+  } catch {}
+
   return () => {
     delete window.__agyApplyNativeInsets;
+    delete window.__agyNativeResume;
+    delete window.__agyNativeNetworkChange;
     delete window.__agyNativeBack;
     delete window.__agyFocusConversation;
     delete window.__agyReceiveSharedMedia;

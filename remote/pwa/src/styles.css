@@ -3130,3 +3130,51 @@ button.rc-footer-pill:disabled {
   width: auto;
   max-height: 55dvh;
 }
+
+.rc-md-link {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.rc-slash-bar {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 6px;
+  overflow-x: auto;
+  padding: 2px 2px 4px;
+  scrollbar-width: none;
+}
+
+.rc-slash-bar::-webkit-scrollbar {
+  display: none;
+}
+
+.rc-slash-chip {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  padding: 0 9px;
+  border-radius: 999px;
+  border: 1px solid var(--rc-border);
+  background: var(--rc-subtle);
+  color: var(--rc-fg);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.rc-slash-chip:active {
+  transform: scale(0.97);
+}
+
+.rc-slash-cmd {
+  font-family: var(--rc-mono);
+  font-weight: 600;
+  color: var(--rc-accent);
+}
+
+.rc-slash-desc {
+  color: var(--rc-muted);
+  font-size: 11px;
+}

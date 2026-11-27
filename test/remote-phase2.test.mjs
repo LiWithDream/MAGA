@@ -2345,12 +2345,16 @@ test('Remote Mobile Polish V2: stale worktree branch cleanup, Markdown tables, a
     const nativeNotifs = [];
     const nativeVibs = [];
     let nativeSettingsOpened = 0;
+    let nativeWebReadyCalls = 0;
+    let nativeResumed = 0;
+    let nativeNetworkEvents = [];
     dom.window.__agyNative = {
       isNative: () => true,
       notify: (title, body, tag, category, cascadeId) => nativeNotifs.push({ title, body, tag, category, cascadeId }),
       vibrate: (patternJson) => nativeVibs.push(patternJson),
       requestNotificationPermission: () => {},
       openNativeSettings: () => { nativeSettingsOpened += 1; },
+      onWebReady: () => { nativeWebReadyCalls += 1; },
     };
     const bridgeState = {
       mobileView: 'detail',
@@ -2376,7 +2380,14 @@ test('Remote Mobile Polish V2: stale worktree branch cleanup, Markdown tables, a
       onCloseOverlays: () => { bridgeState.modelPopoverOpen = false; },
       onCloseModal: () => { bridgeState.newChatOpen = false; },
       onNavigateToList: () => { bridgeState.mobileView = 'list'; bridgeListNavs += 1; },
+      onNativeResume: () => { nativeResumed += 1; },
+      onNativeNetworkChange: (info) => nativeNetworkEvents.push(info),
     });
+    assert.equal(nativeWebReadyCalls, 1, 'bindNativeAndroidBridge signals onWebReady to Android host');
+    assert.equal(dom.window.__agyNativeResume(), true);
+    assert.equal(nativeResumed, 1);
+    assert.equal(dom.window.__agyNativeNetworkChange({ online: true, transport: 'cellular+vpn' }), true);
+    assert.deepEqual(nativeNetworkEvents[0], { online: true, transport: 'cellular+vpn' });
     dom.window.__agyApplyNativeInsets({ top: 34, bottom: 24, left: 0, right: 0 });
     assert.equal(doc.documentElement.style.getPropertyValue('--rc-inset-top'), '34px');
     assert.equal(doc.documentElement.style.getPropertyValue('--rc-inset-bottom'), '24px');
@@ -2392,6 +2403,8 @@ test('Remote Mobile Polish V2: stale worktree branch cleanup, Markdown tables, a
     ]);
     assert.equal(receivedCount, 1);
     assert.equal(bridgeState.draftMedia.length, 1);
+    assert.equal(bridgeState.draftMedia[0].previewUrl, 'data:image/jpeg;base64,/9j/4AAQSkZJRg==');
+    assert.equal(bridgeState.draftMedia[0].dataBase64, '/9j/4AAQSkZJRg==');
     const nativeAlerts = mobileEnhMod.createAlertManager({ baseTitle: 'AGY Native' });
     nativeAlerts.observeConversations([{ id: liveCid, title: 'Build APK', status: 'RUNNING', waitingSteps: [] }]);
     nativeAlerts.observeConversations([{ id: liveCid, title: 'Build APK', status: 'WAITING_FOR_USER', waitingSteps: [{ stepIndex: 1 }] }]);
@@ -2403,6 +2416,119 @@ test('Remote Mobile Polish V2: stale worktree branch cleanup, Markdown tables, a
     assert.equal(nativeSettingsOpened, 1);
     unbindNative();
     delete dom.window.__agyNative;
+
+    // 12. Stability & Daily UX: bare URL auto-linkify, draft persistence, slash bar, connection notice & CF auth_expired
+    const mdNode = timelineMod.renderSafeMarkdown(
+      '下载链接：https://drive.google.com/file/d/1OOctBJrkguxO_nEepLNG/view?usp=drivesdk，详见 (https://example.com/a_(b))，代码 `https://code.ignored.test` 不转链接。'
+    );
+    const links = Array.from(mdNode.querySelectorAll('a.rc-md-link'));
+    assert.equal(links.length, 2, 'auto-linkifies bare URLs while skipping inline code');
+    assert.equal(links[0].getAttribute('href'), 'https://drive.google.com/file/d/1OOctBJrkguxO_nEepLNG/view?usp=drivesdk');
+    assert.equal(links[1].getAttribute('href'), 'https://example.com/a_(b)');
+    assert.equal(links[0].getAttribute('target'), '_blank');
+
+    mobileEnhMod.saveConversationDraft(liveCid, '继续排查重连问题');
+    assert.equal(mobileEnhMod.loadConversationDraft(liveCid), '继续排查重连问题');
+    mobileEnhMod.saveConversationDraft(liveCid, '');
+    assert.equal(mobileEnhMod.loadConversationDraft(liveCid), '');
+
+    const slashHost = doc.createElement('div');
+    let pickedSlash = '';
+    mobileEnhMod.renderSlashCommandBar(slashHost, {
+      draftText: '/co',
+      writable: true,
+      online: true,
+      onPick: (cmd) => { pickedSlash = cmd; },
+    });
+    assert.equal(slashHost.classList.contains('rc-hidden'), false);
+    const slashBtn = slashHost.querySelector('.rc-slash-chip');
+    assert.ok(slashBtn);
+    slashBtn.click();
+    assert.equal(pickedSlash, '/compact');
+
+    const noticeHost = doc.createElement('div');
+    let reloginTriggered = 0;
+    let reconnectTriggered = 0;
+    mobileEnhMod.renderConnectionNoticeBar(noticeHost, {
+      state: { wsStatus: 'auth_expired', wsDetail: 'CF expired', hostAttached: false },
+      onRelogin: () => { reloginTriggered += 1; },
+      onReconnect: () => { reconnectTriggered += 1; },
+    });
+    assert.equal(noticeHost.classList.contains('rc-hidden'), false);
+    assert.equal(noticeHost.getAttribute('data-tone'), 'danger');
+    noticeHost.querySelector('button').click();
+    assert.equal(reloginTriggered, 1);
+
+    mobileEnhMod.renderConnectionNoticeBar(noticeHost, {
+      state: { wsStatus: 'offline', wsDetail: '网络断开', hostAttached: false },
+      onReconnect: () => { reconnectTriggered += 1; },
+    });
+    assert.equal(noticeHost.getAttribute('data-tone'), 'warn');
+    noticeHost.querySelector('button').click();
+    assert.equal(reconnectTriggered, 1);
+
+    // WS client detects Cloudflare Access redirect (opaqueredirect) -> auth_expired
+    const wsClientMod = await import(pathToFileURL(path.join(PWA_DIR, 'src', 'ws-client.mjs')).href);
+    const origFetch = globalThis.fetch;
+    const statuses = [];
+    let clientUnderTest = null;
+    try {
+      globalThis.fetch = async () => ({
+        ok: false,
+        status: 0,
+        type: 'opaqueredirect',
+        redirected: true,
+        url: 'https://dark-unit-b0d1.cloudflareaccess.com/cdn-cgi/access/login',
+        headers: { get: () => 'text/html' },
+        json: async () => null,
+      });
+      clientUnderTest = wsClientMod.createRemoteWsClient(
+        { deviceId: 'dev-cf-test', privateKey: {} },
+        { onStatus: (st, det) => statuses.push({ st, det }) }
+      );
+      await new Promise((r) => setTimeout(r, 30));
+      assert.ok(statuses.some((s) => s.st === 'auth_expired'), 'opaqueredirect triggers auth_expired status');
+      clientUnderTest.handleNetworkChange({ online: false, transport: 'none' });
+      assert.ok(statuses.some((s) => s.st === 'offline'), 'handleNetworkChange(online=false) emits offline');
+    } finally {
+      clientUnderTest?.dispose();
+      globalThis.fetch = origFetch;
+    }
+
+    // createOpusGateActions.triggerReview sends prompt string as 2nd positional arg to sendMessage
+    const studioPanelMod = await import(pathToFileURL(path.join(PWA_DIR, 'src', 'studio-panel.mjs')).href);
+    const opusSendCalls = [];
+    const opusDismissCalls = [];
+    const opusState = {
+      selectedId: liveCid,
+      globalPreset: 2,
+      turboWriteConfirmed: false,
+      opusDismissBusy: false,
+      actionError: '',
+      actionNotice: '',
+    };
+    const opusActions = mobileEnhMod.createOpusGateActions({
+      state: opusState,
+      getWsClient: () => ({
+        sendMessage: async (cid, text, opts) => opusSendCalls.push({ cid, text, opts }),
+        dismissOpusProposal: async (cid, id, opts) => opusDismissCalls.push({ cid, id, opts }),
+      }),
+      canSteer: () => true,
+      requiresTurboAck: () => false,
+      createIdempotencyKey: () => 'opus-rev-key-1',
+      buildPrompt: studioPanelMod.buildOpusReviewPrompt,
+      setActionNotice: (msg) => { opusState.actionNotice = msg; },
+      syncComposerControls: () => {},
+      refreshStudioOverview: () => {},
+      refreshAllData: () => {},
+    });
+    await opusActions.triggerReview({ id: 'prop-merge-1', kind: 'stop', reason: 'Pre-merge review', ts: 12345 }, 'carbon');
+    assert.equal(opusSendCalls.length, 1);
+    assert.equal(opusSendCalls[0].cid, liveCid);
+    assert.equal(typeof opusSendCalls[0].text, 'string');
+    assert.match(opusSendCalls[0].text, /gemini-4-carbon-high/);
+    assert.equal(opusSendCalls[0].opts.idempotencyKey, 'opus-rev-key-1');
+    assert.equal(opusDismissCalls.length, 1);
   } finally {
     dom.window.close();
     if (prevDoc) Object.defineProperty(globalThis, 'document', prevDoc);

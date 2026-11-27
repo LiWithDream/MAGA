@@ -254,6 +254,10 @@ export function normalizeWsStatus(status, detail = '') {
       return { label: '握手连接中', tone: 'warn' };
     case 'reconnecting':
       return { label: detail || '重连中…', tone: 'warn' };
+    case 'offline':
+      return { label: detail || '网络已断开', tone: 'warn' };
+    case 'auth_expired':
+      return { label: '登录态已过期', tone: 'danger' };
     case 'revoked':
       return { label: '设备已吊销', tone: 'danger' };
     case 'error':

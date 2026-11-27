@@ -6,11 +6,30 @@
 import { signChallengePayload } from './crypto-store.mjs';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const PING_INTERVAL_MS = 18_000;
-const STALE_TIMEOUT_MS = 65_000;
-const RESUME_PROBE_MS = 3_500;
+const PING_INTERVAL_MS = 15_000;
+const STALE_TIMEOUT_MS = 40_000;
+const HANDSHAKE_TIMEOUT_MS = 10_000;
+const RESUME_PROBE_MS = 2_500;
 const BASE_BACKOFF_MS = 800;
 const MAX_BACKOFF_MS = 15_000;
+const AUTH_EXPIRED_RETRY_MS = 30_000;
+
+function isCloudflareAuthRedirectResponse(res) {
+  if (!res) return false;
+  if (res.type === 'opaqueredirect') return true;
+  if (res.status === 301 || res.status === 302 || res.status === 303 || res.status === 307 || res.status === 308) {
+    return true;
+  }
+  const url = String(res.url || '');
+  if (res.redirected && /cloudflareaccess\.com|\/cdn-cgi\/access\//i.test(url)) {
+    return true;
+  }
+  const ct = String(res.headers?.get?.('content-type') || '').toLowerCase();
+  if (ct.includes('text/html')) {
+    return true;
+  }
+  return false;
+}
 
 export function createIdempotencyKey() {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -79,11 +98,16 @@ export function createRemoteWsClient(identity, handlers = {}) {
   let disposed = false;
   let reconnectTimer = null;
   let pingTimer = null;
+  let handshakeTimer = null;
   let resumeProbeTimer = null;
   let attempt = 0;
   let lastSeq = 0;
   let lastEpoch = '';
   let lastActivityAt = 0;
+  let lastPingSentAt = 0;
+  let lastRttMs = null;
+  let networkOnline = typeof navigator === 'undefined' ? true : navigator.onLine !== false;
+  let lastTransport = '';
   let connected = false;
   let desiredWatchId = null;
   let activeWatchId = null;
@@ -94,6 +118,20 @@ export function createRemoteWsClient(identity, handlers = {}) {
     try {
       handlers.onStatus?.(status, detail);
     } catch {}
+  };
+
+  const emitRtt = (rttMs) => {
+    lastRttMs = rttMs;
+    try {
+      handlers.onRtt?.(rttMs);
+    } catch {}
+  };
+
+  const clearHandshakeTimer = () => {
+    if (handshakeTimer) {
+      clearTimeout(handshakeTimer);
+      handshakeTimer = null;
+    }
   };
 
   const clearResumeProbeTimer = () => {
@@ -112,6 +150,7 @@ export function createRemoteWsClient(identity, handlers = {}) {
       clearInterval(pingTimer);
       pingTimer = null;
     }
+    clearHandshakeTimer();
     clearResumeProbeTimer();
   };
 
@@ -129,6 +168,12 @@ export function createRemoteWsClient(identity, handlers = {}) {
     return true;
   };
 
+  const sendPing = () => {
+    const now = Date.now();
+    lastPingSentAt = now;
+    return sendJson({ type: 'ping', ts: now });
+  };
+
   const startHeartbeat = () => {
     if (pingTimer) clearInterval(pingTimer);
     lastActivityAt = Date.now();
@@ -140,7 +185,7 @@ export function createRemoteWsClient(identity, handlers = {}) {
         } catch {}
         return;
       }
-      sendJson({ type: 'ping', ts: Date.now() });
+      sendPing();
     }, PING_INTERVAL_MS);
   };
 
@@ -217,6 +262,11 @@ export function createRemoteWsClient(identity, handlers = {}) {
       return;
     }
     if (msg.type === 'pong') {
+      const sentAt = Number(msg.ts) || lastPingSentAt;
+      if (sentAt > 0) {
+        const rtt = Math.max(1, Date.now() - sentAt);
+        if (rtt < 60_000) emitRtt(rtt);
+      }
       return;
     }
 
@@ -236,6 +286,7 @@ export function createRemoteWsClient(identity, handlers = {}) {
     }
 
     if (msg.type === 'welcome') {
+      clearHandshakeTimer();
       if (typeof msg.epoch === 'string') {
         lastEpoch = msg.epoch;
       }
@@ -245,6 +296,7 @@ export function createRemoteWsClient(identity, handlers = {}) {
       connected = true;
       attempt = 0;
       startHeartbeat();
+      sendPing();
       emitStatus('connected', '');
       handlers.onWelcome?.(msg);
       if (desiredWatchId) {
@@ -334,6 +386,10 @@ export function createRemoteWsClient(identity, handlers = {}) {
     if (ws && (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN)) {
       return;
     }
+    if (!networkOnline) {
+      emitStatus('offline', '网络已断开，等待恢复');
+      return;
+    }
     connectInFlight = true;
     connected = false;
     emitStatus(attempt === 0 ? 'connecting' : 'reconnecting', '');
@@ -345,10 +401,21 @@ export function createRemoteWsClient(identity, handlers = {}) {
           method: 'GET',
           cache: 'no-store',
           credentials: 'same-origin',
+          redirect: 'manual',
         });
+        if (isCloudflareAuthRedirectResponse(res)) {
+          emitStatus('auth_expired', 'Cloudflare Access 登录态已过期');
+          scheduleReconnect(AUTH_EXPIRED_RETRY_MS, '等待重新登录');
+          return;
+        }
         const data = await res.json().catch(() => null);
         if (!res.ok || !data?.nonce) {
           if (res.status === 401 || res.status === 403) {
+            if (!data || !data.error || /access|login|cloudflare/i.test(String(data.error))) {
+              emitStatus('auth_expired', 'Cloudflare Access 登录态已过期');
+              scheduleReconnect(AUTH_EXPIRED_RETRY_MS, '等待重新登录');
+              return;
+            }
             emitStatus('error', data?.error || `鉴权拒绝 (HTTP ${res.status})`);
             scheduleReconnect(8_000, '等待认证恢复');
             return;
@@ -363,6 +430,10 @@ export function createRemoteWsClient(identity, handlers = {}) {
         challenge = data;
       } catch (err) {
         handlers.onError?.(err);
+        if (!networkOnline) {
+          emitStatus('offline', '网络已断开，等待恢复');
+          return;
+        }
         scheduleReconnect(null, String(err?.message || '网络不可达'));
         return;
       }
@@ -389,6 +460,14 @@ export function createRemoteWsClient(identity, handlers = {}) {
       const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const socket = new WebSocket(`${proto}//${window.location.host}/ws`);
       ws = socket;
+      clearHandshakeTimer();
+      handshakeTimer = setTimeout(() => {
+        handshakeTimer = null;
+        if (disposed || ws !== socket || connected) return;
+        try {
+          socket.close(4000, 'handshake_timeout');
+        } catch {}
+      }, HANDSHAKE_TIMEOUT_MS);
 
       socket.addEventListener('open', () => {
         if (ws !== socket || disposed) return;
@@ -418,6 +497,7 @@ export function createRemoteWsClient(identity, handlers = {}) {
           clearInterval(pingTimer);
           pingTimer = null;
         }
+        clearHandshakeTimer();
         clearResumeProbeTimer();
         rejectAllPending('connection_closed');
         if (disposed) return;
@@ -441,9 +521,13 @@ export function createRemoteWsClient(identity, handlers = {}) {
           emitStatus('revoked', msg);
           return;
         }
-        if (reason === 'resume_probe_timeout') {
+        if (!networkOnline) {
+          emitStatus('offline', '网络已断开，等待恢复');
+          return;
+        }
+        if (reason === 'resume_probe_timeout' || reason === 'network_switch') {
           attempt = 0;
-          scheduleReconnect(200, '网络恢复中');
+          scheduleReconnect(200, '网络切换恢复中');
           return;
         }
         scheduleReconnect(null, reason || `连接已断开 (${ev.code || 1006})`);
@@ -457,9 +541,12 @@ export function createRemoteWsClient(identity, handlers = {}) {
     }
   }
 
-  const onVisibilityOrOnline = () => {
+  const probeOrReconnect = ({ forceProbe = false, closeReason = 'resume_probe_timeout' } = {}) => {
     if (disposed) return;
-    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+    if (!networkOnline) {
+      emitStatus('offline', '网络已断开，等待恢复');
+      return;
+    }
     if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
       if (connectInFlight) return;
       attempt = 0;
@@ -470,22 +557,84 @@ export function createRemoteWsClient(identity, handlers = {}) {
       connect();
       return;
     }
+    if (ws.readyState === WebSocket.CONNECTING) {
+      if (forceProbe) {
+        try {
+          ws.close(4000, closeReason);
+        } catch {}
+      }
+      return;
+    }
     if (ws.readyState === WebSocket.OPEN && connected) {
-      sendJson({ type: 'ping', ts: Date.now() });
+      sendPing();
       if (!resumeProbeTimer) {
         resumeProbeTimer = setTimeout(() => {
           resumeProbeTimer = null;
           if (disposed || !ws || ws.readyState !== WebSocket.OPEN) return;
           try {
-            ws.close(4000, 'resume_probe_timeout');
+            ws.close(4000, closeReason);
           } catch {}
         }, RESUME_PROBE_MS);
       }
     }
   };
 
+  const onVisibilityOrOnline = () => {
+    if (disposed) return;
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+    networkOnline = typeof navigator === 'undefined' ? true : navigator.onLine !== false;
+    probeOrReconnect({ forceProbe: false });
+  };
+
+  const handleNetworkChange = ({ online = true, transport = '' } = {}) => {
+    if (disposed) return;
+    const nextOnline = Boolean(online);
+    const nextTransport = String(transport || '').trim();
+    const wasOffline = !networkOnline;
+    const transportChanged = Boolean(nextTransport && lastTransport && nextTransport !== lastTransport);
+    networkOnline = nextOnline;
+    if (nextTransport) lastTransport = nextTransport;
+
+    if (!nextOnline) {
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+      if (!connected) {
+        emitStatus('offline', '网络已断开，等待恢复');
+      } else if (ws && ws.readyState === WebSocket.OPEN) {
+        sendPing();
+        if (!resumeProbeTimer) {
+          resumeProbeTimer = setTimeout(() => {
+            resumeProbeTimer = null;
+            if (disposed || !ws || ws.readyState !== WebSocket.OPEN) return;
+            try {
+              ws.close(4000, 'network_lost');
+            } catch {}
+          }, RESUME_PROBE_MS);
+        }
+      }
+      return;
+    }
+
+    if (wasOffline || transportChanged || !connected) {
+      probeOrReconnect({ forceProbe: wasOffline || transportChanged, closeReason: 'network_switch' });
+    }
+  };
+
+  const handleNativeResume = () => {
+    if (disposed) return;
+    networkOnline = true;
+    probeOrReconnect({ forceProbe: false, closeReason: 'resume_probe_timeout' });
+  };
+
+  const onBrowserOffline = () => {
+    handleNetworkChange({ online: false });
+  };
+
   if (typeof window !== 'undefined') {
     window.addEventListener('online', onVisibilityOrOnline);
+    window.addEventListener('offline', onBrowserOffline);
     window.addEventListener('pageshow', onVisibilityOrOnline);
     window.addEventListener('focus', onVisibilityOrOnline);
   }
@@ -713,6 +862,7 @@ export function createRemoteWsClient(identity, handlers = {}) {
     rejectAllPending('disposed');
     if (typeof window !== 'undefined') {
       window.removeEventListener('online', onVisibilityOrOnline);
+      window.removeEventListener('offline', onBrowserOffline);
       window.removeEventListener('pageshow', onVisibilityOrOnline);
       window.removeEventListener('focus', onVisibilityOrOnline);
     }
@@ -757,12 +907,29 @@ export function createRemoteWsClient(identity, handlers = {}) {
     dismissOpusProposal,
     fetchModels,
     selectModel,
+    handleNetworkChange,
+    handleNativeResume,
+    getStats: () => ({
+      connected,
+      lastRttMs,
+      lastSeq,
+      attempt,
+      networkOnline,
+      lastTransport,
+    }),
     reconnectNow: () => {
       if (!disposed) {
+        networkOnline = true;
         attempt = 0;
         if (reconnectTimer) {
           clearTimeout(reconnectTimer);
           reconnectTimer = null;
+        }
+        if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+          try {
+            ws.close(4000, 'network_switch');
+          } catch {}
+          return;
         }
         connect();
       }

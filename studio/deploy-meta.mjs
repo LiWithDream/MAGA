@@ -60,6 +60,32 @@ export function collectGitDeployProvenance(repoRoot) {
   };
 }
 
+const WIN_RETRY_SLEEP_BUF =
+  typeof SharedArrayBuffer === 'function' ? new Int32Array(new SharedArrayBuffer(4)) : null;
+
+function renameWithWinRetry(src, dst) {
+  if (process.platform !== 'win32') {
+    fs.renameSync(src, dst);
+    return;
+  }
+  for (let i = 0; i < 6; i += 1) {
+    try {
+      fs.renameSync(src, dst);
+      return;
+    } catch (err) {
+      const code = err?.code;
+      if ((code !== 'EPERM' && code !== 'EBUSY' && code !== 'EACCES') || i === 5) {
+        throw err;
+      }
+      if (WIN_RETRY_SLEEP_BUF) {
+        try {
+          Atomics.wait(WIN_RETRY_SLEEP_BUF, 0, 0, Math.min(200, Math.round(20 * Math.pow(1.6, i))));
+        } catch {}
+      }
+    }
+  }
+}
+
 export function writeDeployMeta(repoRoot, metaPath = DEPLOY_META_PATH, extra = {}) {
   const provenance = {
     ...collectGitDeployProvenance(repoRoot),
@@ -69,7 +95,7 @@ export function writeDeployMeta(repoRoot, metaPath = DEPLOY_META_PATH, extra = {
   const tmp = `${metaPath}.tmp-${process.pid}-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
   try {
     fs.writeFileSync(tmp, `${JSON.stringify(provenance, null, 2)}\n`, 'utf8');
-    fs.renameSync(tmp, metaPath);
+    renameWithWinRetry(tmp, metaPath);
   } catch (err) {
     try {
       fs.rmSync(tmp, { force: true });
@@ -99,7 +125,10 @@ export function readDeployMeta(metaPath = DEPLOY_META_PATH) {
   }
 }
 
-export function evaluateDeployGuard(repoRoot, { allowNonMain = false, metaPath = DEPLOY_META_PATH } = {}) {
+export function evaluateDeployGuard(
+  repoRoot,
+  { allowNonMain = false, mode = 'deploy', metaPath = DEPLOY_META_PATH } = {}
+) {
   const provenance = collectGitDeployProvenance(repoRoot);
   const live = readDeployMeta(metaPath);
   const isNonMainBranch = Boolean(provenance.branch && provenance.branch !== 'main' && provenance.branch !== 'master');
@@ -111,6 +140,33 @@ export function evaluateDeployGuard(repoRoot, { allowNonMain = false, metaPath =
   const liveSummary = liveBranch
     ? `Currently live bundle was deployed from '${liveBranch}' (${liveWorktree || 'unknown'}).`
     : '';
+
+  if (mode === 'install') {
+    const warnings = [];
+    if (needsBranchOrWtGuard) {
+      warnings.push(
+        `Installing from '${provenance.branch || 'unknown'}' (${provenance.worktreePath}).`
+      );
+    }
+    if (liveWorktree && normalizeFsPath(liveWorktree) !== normalizeFsPath(provenance.worktreePath)) {
+      warnings.push(
+        `Replacing previous live bundle deployed from '${liveBranch || 'unknown'}' (${liveWorktree}).`
+      );
+    }
+    if (provenance.dirty) {
+      warnings.push(
+        `Installing from a checkout with local uncommitted changes at '${provenance.worktreePath}'.`
+      );
+    }
+    return {
+      allowed: true,
+      preview: false,
+      warnings,
+      provenance,
+      live: live.meta,
+      reason: null,
+    };
+  }
 
   if (needsGuard && !allowNonMain) {
     const parts = [];

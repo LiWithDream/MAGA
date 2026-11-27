@@ -282,14 +282,14 @@ export function stripStudioBlocksOnly() {
   }
 }
 
-export async function deployStudio({ allowNonMain = false, metaPath } = {}) {
+export async function deployStudio({ allowNonMain = false, mode = 'deploy', metaPath } = {}) {
   if (!existsSync(TARGET_CUSTOM_JS) || !existsSync(TARGET_CUSTOM_CSS)) {
     throw new Error(
       `Anti-Claude user directory not initialized at ${TARGET_USER_DIR}. Run "node studio/cli.mjs install" first.`
     );
   }
 
-  const guard = evaluateDeployGuard(REPO_ROOT, { allowNonMain, metaPath });
+  const guard = evaluateDeployGuard(REPO_ROOT, { allowNonMain, mode, metaPath });
   if (!guard.allowed) {
     throw new Error(guard.reason);
   }

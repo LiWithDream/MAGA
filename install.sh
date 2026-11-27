@@ -144,6 +144,10 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
   echo "[dry-run] node=$NODE_BIN ($("$NODE_BIN" -v))"
   echo "[dry-run] mode=$MODE"
   echo "[dry-run] targetDir=$TARGET_DIR"
+  NPM_BOOT_CMD="npm install --no-audit --no-fund"
+  if [[ "$MODE" == "remote-clone" || -f "$TARGET_DIR/package-lock.json" ]]; then
+    NPM_BOOT_CMD="npm ci --no-audit --no-fund"
+  fi
   case "$MODE" in
     prebuilt)
       echo "[dry-run] exec: MAGA_USE_PREBUILT=1 \"$NODE_BIN\" studio/cli.mjs ${CLI_ARGS[*]}"
@@ -152,10 +156,10 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
       echo "[dry-run] exec: \"$NODE_BIN\" studio/cli.mjs ${CLI_ARGS[*]}"
       ;;
     source-bootstrap)
-      echo "[dry-run] exec: npm install --no-audit --no-fund && \"$NODE_BIN\" studio/cli.mjs ${CLI_ARGS[*]}"
+      echo "[dry-run] exec: $NPM_BOOT_CMD && \"$NODE_BIN\" studio/cli.mjs ${CLI_ARGS[*]}"
       ;;
     remote-clone)
-      echo "[dry-run] exec: git clone \"$REPO_URL\" \"$TARGET_DIR\" && cd \"$TARGET_DIR\" && npm install --no-audit --no-fund && \"$NODE_BIN\" studio/cli.mjs ${CLI_ARGS[*]}"
+      echo "[dry-run] exec: git clone \"$REPO_URL\" \"$TARGET_DIR\" && cd \"$TARGET_DIR\" && $NPM_BOOT_CMD && \"$NODE_BIN\" studio/cli.mjs ${CLI_ARGS[*]}"
       ;;
   esac
   exit 0
@@ -165,7 +169,7 @@ if [[ "$MODE" == "remote-clone" ]]; then
   command -v git >/dev/null 2>&1 || { echo "Error: git is required for remote install." >&2; exit 1; }
   if [[ -d "$TARGET_DIR/.git" ]]; then
     echo "Updating existing AGY Studio clone at $TARGET_DIR..."
-    git -C "$TARGET_DIR" pull --ff-only
+    git -C "$TARGET_DIR" pull --ff-only --autostash
   else
     mkdir -p "$(dirname "$TARGET_DIR")"
     echo "Cloning AGY Studio into $TARGET_DIR..."
@@ -187,7 +191,11 @@ if [[ "$MODE" == "prebuilt" ]]; then
 elif [[ "$MODE" == "source-bootstrap" ]]; then
   command -v npm >/dev/null 2>&1 || { echo "Error: npm is required to install build dependencies (esbuild)." >&2; exit 1; }
   echo "Installing build dependencies (esbuild)..."
-  npm install --no-audit --no-fund
+  if [[ -f "$TARGET_DIR/package-lock.json" ]]; then
+    npm ci --no-audit --no-fund
+  else
+    npm install --no-audit --no-fund
+  fi
   "$NODE_BIN" studio/cli.mjs "${CLI_ARGS[@]}"
 else
   "$NODE_BIN" studio/cli.mjs "${CLI_ARGS[@]}"

@@ -1630,7 +1630,7 @@ test('Remote stability & cache busting: versioned PWA assets, no-store headers, 
         setItem: () => {},
       };
       globalThis.window = {
-        location: { protocol: 'https:', host: 'agy.miracleli.com' },
+        location: { protocol: 'https:', host: 'remote.example.com' },
         addEventListener: (ev, fn) => listeners.set(ev, fn),
         removeEventListener: (ev) => listeners.delete(ev),
       };
@@ -2481,7 +2481,7 @@ test('Remote Mobile Polish V2: stale worktree branch cleanup, Markdown tables, a
         status: 0,
         type: 'opaqueredirect',
         redirected: true,
-        url: 'https://dark-unit-b0d1.cloudflareaccess.com/cdn-cgi/access/login',
+        url: 'https://team.cloudflareaccess.com/cdn-cgi/access/login',
         headers: { get: () => 'text/html' },
         json: async () => null,
       });
@@ -3174,7 +3174,7 @@ test('Phase 2 v1.4.1 live role promotion push (ws-server -> ws-client) and epoch
     const rolesSeen = [];
     const epochsSeen = [];
     globalThis.localStorage = { getItem: () => null, setItem: () => {} };
-    globalThis.window = { location: { protocol: 'https:', host: 'agy.miracleli.com' }, addEventListener: () => {}, removeEventListener: () => {} };
+    globalThis.window = { location: { protocol: 'https:', host: 'remote.example.com' }, addEventListener: () => {}, removeEventListener: () => {} };
     globalThis.document = { visibilityState: 'visible', addEventListener: () => {}, removeEventListener: () => {} };
     globalThis.fetch = async () => ({ ok: true, json: async () => ({ nonce: 'mock-n1' }) });
     let sockRef = null;

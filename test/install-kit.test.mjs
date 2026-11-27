@@ -38,6 +38,7 @@ test('install.sh and uninstall.sh --dry-run and pipe-mode isolation run cleanly 
       encoding: 'utf8',
     });
     assert.match(pipedOut, /\[dry-run\] mode=remote-clone/);
+    assert.match(pipedOut, /npm ci --no-audit --no-fund/);
 
     const uninstallOut = execFileSync('bash', [path.join(REPO, 'uninstall.sh'), '--dry-run'], {
       cwd: REPO,
@@ -177,5 +178,20 @@ test('studio/cli.mjs sync-rules and rollback cleanly strip fast-io rules while p
     assert.match(afterRollback, /Keep my custom workflow\./);
   } finally {
     rmSync(fakeHome, { recursive: true, force: true });
+  }
+});
+
+test('public hygiene: no personal domains in tracked Android sources or test fixtures', () => {
+  const checkedPaths = [
+    path.join(REPO, 'remote', 'android', 'app', 'build.gradle.kts'),
+    path.join(REPO, 'remote', 'android', 'app', 'src', 'main', 'AndroidManifest.xml'),
+    path.join(REPO, 'test', 'remote-phase2.test.mjs'),
+  ];
+  const personalDomain = ['agy.', 'miracle', 'li.com'].join('');
+  const personalTenant = ['dark-unit', 'b0d1'].join('-');
+  const personalRe = new RegExp(`${personalDomain.replace(/\./g, '\\.')}|${personalTenant}`, 'i');
+  for (const filePath of checkedPaths) {
+    const content = readFileSync(filePath, 'utf8');
+    assert.equal(personalRe.test(content), false, `Personal domain found in ${path.relative(REPO, filePath)}`);
   }
 });

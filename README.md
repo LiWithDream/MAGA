@@ -181,10 +181,10 @@ Antigravity Desktop 2.0 is built around **one agent in one chat**. Once you jugg
 Paste this prompt directly into Antigravity or Claude Code:
 
 ```text
-Clone https://github.com/LiWithDream/agy-studio.git to ~/Developer/agy-studio, read docs/INSTALL_AGENT.md, run bash ./install.sh, and verify with node studio/cli.mjs doctor. Do not touch /Applications/Antigravity.app or delete existing chats.
+Check Node.js >= 22 (`node -v`). If ~/Developer/agy-studio/.git exists, run `git -C ~/Developer/agy-studio pull --ff-only --autostash`; otherwise clone https://github.com/LiWithDream/agy-studio.git to ~/Developer/agy-studio. Read docs/INSTALL_AGENT.md, run bash ./install.sh, and verify with node studio/cli.mjs doctor. Do NOT modify /Applications/Antigravity.app, delete existing chats, or quit/relaunch Antigravity from inside an active Antigravity session (if doctor reports pending_restart, ask me to restart Antigravity manually).
 ```
 
-> **Safe by design**: Never modifies `/Applications/Antigravity.app`, keeps all data local, and reverts cleanly at any time with `bash ./uninstall.sh` → [See how it works](#safe-fast).
+> **Safe by design**: Never modifies `/Applications/Antigravity.app`, keeps all data local, and reverts cleanly at any time with `bash ./uninstall.sh` → [See how it works](#safe-fast). *(macOS only in `v1.4.x` — do not run `bash ./install.sh` on Windows; native Windows 10/11 support lands in `v1.5.0`.)*
 
 <details>
 <summary><b>Alternative install methods (Prebuilt tarball / From source / Uninstall &amp; Diagnostics)</b></summary>
@@ -259,7 +259,7 @@ Small daily friction adds up when you live inside Antigravity all day — every 
 | Root DOM observers (`MagaKernel`) | **`1`** shared `MutationObserver` (`data-maga-own` filtered) |
 | Frame flush cost (Apple Silicon local CDP check) | **`1.5–3.6 ms`** with leaf-only telemetry slots (`MetricsBus`) |
 | Global CSS `:has()` selectors | **`0`** (enforced by automated test guards) |
-| Automated regression & invariant suite (`npm test`) | **`210+`** passing tests, **`0`** skipped |
+| Automated regression & invariant suite (`npm test`) | **`215+`** passing tests, **`0`** skipped |
 | Background footprint | **`1`** local macOS `LaunchAgent` |
 
 ---
@@ -350,7 +350,7 @@ This comes from Antigravity's native `language_server` when its TLS/proxy connec
 │   ├── styles/            # Scoped stylesheets (0 :has() selectors)
 │   ├── cli.mjs            # Unified CLI (install / deploy / sync-rules / doctor / rollback / remote)
 │   └── pack-release.mjs   # Zero-npm-install Release tarball packager
-├── test/                  # Automated regression & invariant suite (210+ tests)
+├── test/                  # Automated regression & invariant suite (215+ tests)
 ├── install.sh             # One-line macOS installer (--dry-run, prebuilt & source modes)
 └── uninstall.sh           # Clean rollback & uninstaller (--dry-run supported)
 ```
@@ -358,7 +358,7 @@ This comes from Antigravity's native `language_server` when its TLS/proxy connec
 | Contributor Command | Purpose |
 | :--- | :--- |
 | `npm run wt:new -- feat/slug` | Create an isolated sibling Git worktree with symlinked `node_modules` |
-| `npm test` | Compile `user/custom.js` and run the full 210+ test & invariant suite |
+| `npm test` | Compile `user/custom.js` and run the full 215+ test & invariant suite |
 | `npm run deploy` | Hot-reload UI changes into running Antigravity from clean `main` (no app restart) |
 | `npm run release:pack` | Build a zero-`npm-install` macOS tarball + SHA-256 checksum in `dist/` |
 

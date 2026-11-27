@@ -883,3 +883,296 @@ test('projects chrome-geometry pure helpers distinguish Windows top menu bar and
     { leftPx: 0, topPx: 30, collapsed: true, safeLeftPad: 224 }
   );
 });
+
+function buildDomFromChromeFixture(fixture, { JSDOM, includeAnchors = true, trackWidthOverride = null, includeOverviewHost = true, includeToggleBtns = true } = {}) {
+  const dom = new JSDOM('<!doctype html><html><body></body></html>');
+  const { window } = dom;
+  const { document } = window;
+  Object.defineProperty(window, 'innerWidth', { value: fixture.viewport.innerWidth, configurable: true });
+  Object.defineProperty(window, 'innerHeight', { value: fixture.viewport.innerHeight, configurable: true });
+
+  const patchRect = (el, r) => {
+    const safe = r || { left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0 };
+    el.getBoundingClientRect = () => ({ ...safe, x: safe.left, y: safe.top });
+  };
+
+  const sidebarNodes = [];
+  for (const item of fixture.bgSidebars || []) {
+    const sb = document.createElement(String(item.tag || 'div').toLowerCase());
+    sb.className = (item.classes || ['bg-sidebar']).join(' ');
+    if (item.testId) sb.setAttribute('data-testid', item.testId);
+    patchRect(sb, item.rect);
+
+    if (includeAnchors && item.anchors) {
+      if (item.anchors.hasProjectsNav) {
+        const nav = document.createElement('button');
+        nav.id = 'ag-claude-projects-nav-btn';
+        sb.appendChild(nav);
+      }
+      if (item.anchors.hasAutomationsBtn) {
+        const btn = document.createElement('button');
+        btn.setAttribute('data-testid', 'automations-button');
+        sb.appendChild(btn);
+      }
+      if (item.anchors.hasProjectHeader) {
+        const hdr = document.createElement('div');
+        hdr.setAttribute('data-testid', 'project-header');
+        sb.appendChild(hdr);
+      }
+    }
+
+    let root = sb;
+    for (const parentMeta of item.parentChain || []) {
+      const wrap = document.createElement(String(parentMeta.tag || 'div').toLowerCase());
+      if (parentMeta.overflow) wrap.style.overflow = parentMeta.overflow;
+      if (parentMeta.overflowX) wrap.style.overflowX = parentMeta.overflowX;
+      if (parentMeta.transition) wrap.style.transition = parentMeta.transition;
+      const isTrack =
+        parentMeta.overflow === 'hidden' ||
+        parentMeta.overflowX === 'hidden' ||
+        String(parentMeta.transition || '').includes('width');
+      const rect =
+        isTrack && typeof trackWidthOverride === 'number' && parentMeta.rect
+          ? {
+              ...parentMeta.rect,
+              width: trackWidthOverride,
+              right: parentMeta.rect.left + trackWidthOverride,
+            }
+          : parentMeta.rect;
+      patchRect(wrap, rect);
+      wrap.appendChild(root);
+      root = wrap;
+    }
+
+    document.body.appendChild(root);
+    sidebarNodes.push(sb);
+  }
+
+  let ovBtn = null;
+  let auxBtn = null;
+  if (includeToggleBtns && fixture.controls?.overviewToggleRect) {
+    ovBtn = document.createElement('button');
+    ovBtn.setAttribute('data-testid', 'toggle-overview-panel');
+    patchRect(ovBtn, fixture.controls.overviewToggleRect);
+    document.body.appendChild(ovBtn);
+  }
+  if (includeToggleBtns && fixture.controls?.auxToggleRect) {
+    auxBtn = document.createElement('button');
+    auxBtn.setAttribute('data-testid', 'toggle-aux-sidebar');
+    patchRect(auxBtn, fixture.controls.auxToggleRect);
+    document.body.appendChild(auxBtn);
+  }
+  if (includeOverviewHost && fixture.controls?.overviewPanelHostRect) {
+    const host = document.createElement('div');
+    host.setAttribute('data-testid', 'overview-panel-host');
+    patchRect(host, fixture.controls.overviewPanelHostRect);
+    document.body.appendChild(host);
+  }
+
+  return { dom, window, document, sidebarNodes, ovBtn, auxBtn };
+}
+
+test('dual-OS Chrome DOM geometry fixtures pass privacy hygiene and end-to-end JSDOM layout regression checks', async () => {
+  const { JSDOM } = await import('jsdom');
+  const geom = await import(
+    pathToFileURL(path.join(REPO, 'user', 'src', 'modules', 'projects', 'chrome-geometry.mjs')).href
+  );
+  const { computeSettingsDrawerTopInset } = await import(
+    pathToFileURL(path.join(REPO, 'studio', 'modules', 'settings', 'constants.mjs')).href
+  );
+
+  const darwinPath = path.join(REPO, 'test', 'fixtures', 'darwin', 'chrome-layout.json');
+  const win32Path = path.join(REPO, 'test', 'fixtures', 'win32', 'chrome-layout.json');
+  const darwinRaw = fs.readFileSync(darwinPath, 'utf8');
+  const win32Raw = fs.readFileSync(win32Path, 'utf8');
+
+  // Strict privacy hygiene on committed fixtures
+  const personalTokenRe = new RegExp(['miracle', 'li'].join('') + '|' + ['dark-unit', 'b0d1'].join('-') + '|/Users/|C:\\\\Users\\\\', 'i');
+  for (const [label, raw] of [['darwin', darwinRaw], ['win32', win32Raw]]) {
+    assert.equal(personalTokenRe.test(raw), false, `${label} fixture must not contain personal identifiers or home paths`);
+  }
+
+  const darwinFixture = JSON.parse(darwinRaw);
+  const win32Fixture = JSON.parse(win32Raw);
+  assert.equal(darwinFixture.schema, 1);
+  assert.equal(darwinFixture.platform, 'darwin');
+  assert.equal(win32Fixture.schema, 1);
+  assert.equal(win32Fixture.platform, 'win32');
+
+  // 1. Real macOS live fixture regression
+  {
+    const { window, document, ovBtn, auxBtn } = buildDomFromChromeFixture(darwinFixture, { JSDOM });
+    assert.equal(geom.measureTopMenuBarHeight(document, window), 0);
+    geom.syncWinTopBarCssVar(undefined, document, window);
+    assert.equal(document.documentElement.style.getPropertyValue('--ag-win-top-bar'), '');
+
+    const sb = geom.findLeftSidebarEl(document, window);
+    assert.ok(sb, 'darwin fixture must resolve a left sidebar element');
+    assert.equal(sb.getBoundingClientRect().top, 0);
+    assert.ok(sb.getBoundingClientRect().width >= 200);
+    assert.equal(sb.getBoundingClientRect().height, darwinFixture.viewport.innerHeight);
+
+    const track = geom.findLeftSidebarTrackEl(sb, document, window);
+    assert.ok(track && track !== sb, 'darwin fixture must resolve the width-animating ancestor track');
+    assert.equal(
+      geom.computeProjectsOverlayMetrics({
+        sidebarRect: sb.getBoundingClientRect(),
+        trackRect: track.getBoundingClientRect(),
+        topBarPx: 0,
+        winW: window.innerWidth,
+      }).topPx,
+      0
+    );
+
+    const prevDoc = globalThis.document;
+    const prevWin = globalThis.window;
+    globalThis.document = document;
+    globalThis.window = window;
+    try {
+      const inset = computeSettingsDrawerTopInset(ovBtn, auxBtn);
+      assert.ok(inset >= 48 && inset <= 96, `unexpected macOS settings drawer inset: ${inset}`);
+    } finally {
+      globalThis.document = prevDoc;
+      globalThis.window = prevWin;
+    }
+  }
+
+  // 2. Windows 10/11 top-menu-bar fixture regression (anchors, fallback, collapsing track sliver, settings drawer)
+  {
+    const { window, document, ovBtn, auxBtn } = buildDomFromChromeFixture(win32Fixture, { JSDOM });
+    assert.equal(geom.measureTopMenuBarHeight(document, window), 30);
+    geom.syncWinTopBarCssVar(undefined, document, window);
+    assert.equal(document.documentElement.style.getPropertyValue('--ag-win-top-bar'), '30px');
+
+    const sb = geom.findLeftSidebarEl(document, window);
+    assert.ok(sb, 'win32 fixture must resolve left sidebar rather than top menu bar');
+    assert.equal(sb.getBoundingClientRect().top, 30);
+    assert.equal(sb.getBoundingClientRect().width, 256);
+
+    const track = geom.findLeftSidebarTrackEl(sb, document, window);
+    assert.ok(track && track !== sb, 'win32 fixture must resolve width-animating sidebar track');
+    assert.deepEqual(
+      geom.computeProjectsOverlayMetrics({
+        sidebarRect: sb.getBoundingClientRect(),
+        trackRect: track.getBoundingClientRect(),
+        topBarPx: geom.measureTopMenuBarHeight(document, window),
+        winW: window.innerWidth,
+      }),
+      { leftPx: 256, topPx: 30, collapsed: false, safeLeftPad: 24 }
+    );
+
+    // Fallback path when anchor nodes are absent must still skip bgSidebars[0] (top menu bar)
+    const noAnchors = buildDomFromChromeFixture(win32Fixture, { JSDOM, includeAnchors: false });
+    const fallbackSb = geom.findLeftSidebarEl(noAnchors.document, noAnchors.window);
+    assert.equal(fallbackSb?.getBoundingClientRect().width, 256);
+    assert.equal(fallbackSb?.getBoundingClientRect().top, 30);
+
+    // Collapsing track sliver (width=3px) snaps Projects overlay cleanly to leftPx=0 while preserving topPx=30
+    const sliver = buildDomFromChromeFixture(win32Fixture, { JSDOM, trackWidthOverride: 3 });
+    const sliverSb = geom.findLeftSidebarEl(sliver.document, sliver.window);
+    const sliverTrack = geom.findLeftSidebarTrackEl(sliverSb, sliver.document, sliver.window);
+    assert.deepEqual(
+      geom.computeProjectsOverlayMetrics({
+        sidebarRect: sliverSb.getBoundingClientRect(),
+        trackRect: sliverTrack.getBoundingClientRect(),
+        topBarPx: 30,
+        winW: sliver.window.innerWidth,
+      }),
+      { leftPx: 0, topPx: 30, collapsed: true, safeLeftPad: 224 }
+    );
+
+    // Settings drawer top inset clears Windows 30px top bar across host, toggle-btn, and bare-topbar fallback modes
+    const prevDoc = globalThis.document;
+    const prevWin = globalThis.window;
+    try {
+      globalThis.document = document;
+      globalThis.window = window;
+      assert.equal(computeSettingsDrawerTopInset(ovBtn, auxBtn), 84);
+
+      const toggleOnly = buildDomFromChromeFixture(win32Fixture, { JSDOM, includeOverviewHost: false });
+      globalThis.document = toggleOnly.document;
+      globalThis.window = toggleOnly.window;
+      assert.equal(computeSettingsDrawerTopInset(toggleOnly.ovBtn, toggleOnly.auxBtn), 78);
+
+      const barOnly = buildDomFromChromeFixture(win32Fixture, {
+        JSDOM,
+        includeOverviewHost: false,
+        includeToggleBtns: false,
+      });
+      globalThis.document = barOnly.document;
+      globalThis.window = barOnly.window;
+      assert.equal(computeSettingsDrawerTopInset(null, null), 78);
+    } finally {
+      globalThis.document = prevDoc;
+      globalThis.window = prevWin;
+    }
+  }
+});
+
+test('cdp-probe and capture-chrome-fixture sanitize untrusted fields and skip non-workspace targets', async () => {
+  const { selectWorkspacePage, resolveLiveCdpPort } = await import(
+    pathToFileURL(path.join(REPO, 'studio', 'cdp-probe.mjs')).href
+  );
+  const { sanitizeFixtureSnapshot } = await import(
+    pathToFileURL(path.join(REPO, 'studio', 'capture-chrome-fixture.mjs')).href
+  );
+
+  const picked = selectWorkspacePage([
+    { type: 'page', url: 'data:text/html,splash', webSocketDebuggerUrl: 'ws://127.0.0.1:9222/splash' },
+    { type: 'page', url: 'devtools://devtools/bundled/inspector.html', webSocketDebuggerUrl: 'ws://127.0.0.1:9222/dt' },
+    { type: 'service_worker', url: 'https://127.0.0.1:60000/sw.js', webSocketDebuggerUrl: 'ws://127.0.0.1:9222/sw' },
+    { type: 'page', url: 'https://127.0.0.1:60000/c/conv-1', webSocketDebuggerUrl: 'ws://127.0.0.1:9222/app' },
+  ]);
+  assert.equal(picked?.webSocketDebuggerUrl, 'ws://127.0.0.1:9222/app');
+  assert.equal(selectWorkspacePage([{ type: 'page', url: 'data:text/html,only', webSocketDebuggerUrl: 'ws://x' }]), null);
+
+  const resolved = resolveLiveCdpPort({
+    endpoints: [
+      { channel: 'darwin', portFile: '/missing/port' },
+      { channel: 'win32', portFile: '/valid/port' },
+    ],
+    existsSyncFn: (p) => p === '/valid/port',
+    readPortFn: (p) => (p === '/valid/port' ? 60123 : 0),
+  });
+  assert.deepEqual(resolved, { port: 60123, channel: 'win32', portFile: '/valid/port' });
+
+  const sanitized = sanitizeFixtureSnapshot(
+    {
+      viewport: { innerWidth: 1440.4, innerHeight: 900.2, devicePixelRatio: 2 },
+      cssVars: {
+        winTopBar: '30px',
+        projTop: 'javascript:alert(1)',
+        drawerTop: 'calc(var(--ag-win-top-bar, 0px) + 48px)',
+        ovEffectiveReserve: '/Users/secret/path',
+      },
+      bgSidebars: [
+        {
+          tag: 'div',
+          testId: 'secret-project-name',
+          classes: ['bg-sidebar', 'flex-col', 'user-secret-class'],
+          rect: { left: 0.2, top: 29.8, right: 256.1, bottom: 1032, width: 256.1, height: 1002.2 },
+          anchors: { hasProjectsNav: 1 },
+          parentChain: [
+            {
+              tag: 'div',
+              overflow: 'hidden',
+              overflowX: 'evil',
+              transition: 'background url(file:///Users/alice/x.png)',
+              rect: { left: 0, top: 30, right: 256, bottom: 1032, width: 256, height: 1002 },
+            },
+          ],
+        },
+      ],
+      secretLeakedField: 'should-be-dropped',
+    },
+    { platform: 'win32', source: 'unit-test' }
+  );
+  assert.equal(sanitized.secretLeakedField, undefined);
+  assert.equal(sanitized.cssVars.winTopBar, '30px');
+  assert.equal(sanitized.cssVars.projTop, '');
+  assert.equal(sanitized.cssVars.ovEffectiveReserve, '');
+  assert.equal(sanitized.bgSidebars[0].testId, null);
+  assert.deepEqual(sanitized.bgSidebars[0].classes, ['bg-sidebar', 'flex-col']);
+  assert.equal(sanitized.bgSidebars[0].parentChain[0].overflowX, 'visible');
+  assert.equal(sanitized.bgSidebars[0].parentChain[0].transition, 'all');
+});

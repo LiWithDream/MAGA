@@ -16,6 +16,17 @@ import {
   tokenizeSegment,
 } from '../.githooks/guard-main-branch.mjs';
 import { checkStaleMerge } from '../.githooks/guard-stale-merge.mjs';
+import {
+  checkReleaseTagPush,
+  parseGitHubRepoSlug as parseTagGuardRepoSlug,
+  parsePrePushLines,
+} from '../.githooks/guard-release-tag.mjs';
+import {
+  evaluateLiveSmokeResult,
+  parseGitHubRepoSlug as parseSmokeRepoSlug,
+  postGitHubCommitStatus,
+  resolveSmokeContext,
+} from '../studio/smoke-live.mjs';
 
 const TEST_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(TEST_DIR, '..');
@@ -489,7 +500,7 @@ test('Git .githooks pre-commit and pre-push enforce branch, merge, force-push, a
 });
 
 test('repository guardrail scripts, permissions, package script, and .gitignore are properly configured', () => {
-  for (const name of ['guard-main-branch.mjs', 'guard-stale-merge.mjs', 'pre-commit', 'pre-merge-commit', 'pre-push']) {
+  for (const name of ['guard-main-branch.mjs', 'guard-stale-merge.mjs', 'guard-release-tag.mjs', 'pre-commit', 'pre-merge-commit', 'pre-push']) {
     const filePath = path.join(GITHOOKS_DIR, name);
     assert.equal(fs.existsSync(filePath), true, `${name} must exist in .githooks/`);
     if (process.platform !== 'win32') {
@@ -789,4 +800,262 @@ test('guard-stale-merge blocks stale or diverged origin refs while allowing sync
     fs.rmSync(devA, { recursive: true, force: true });
     fs.rmSync(devB, { recursive: true, force: true });
   }
+});
+
+test('guard-release-tag blocks v* tag pushes when unmerged remote branches exist (exempts wip/*) and enforces dual-OS GitHub smoke statuses', () => {
+  const bareOrigin = realpathNative(fs.mkdtempSync(path.join(os.tmpdir(), 'maga-tag-origin-')));
+  const devA = realpathNative(fs.mkdtempSync(path.join(os.tmpdir(), 'maga-tag-deva-')));
+  const devB = realpathNative(fs.mkdtempSync(path.join(os.tmpdir(), 'maga-tag-devb-')));
+
+  const setupClone = (dir) => {
+    git(dir, ['config', 'user.name', 'MAGA Test']);
+    git(dir, ['config', 'user.email', 'test@maga.local']);
+    git(dir, ['config', 'core.hooksPath', GITHOOKS_DIR]);
+  };
+
+  try {
+    execFileSync('git', ['init', '--bare', '-b', 'main', bareOrigin], { stdio: 'ignore' });
+    execFileSync('git', ['clone', bareOrigin, devA], { stdio: 'ignore' });
+    setupClone(devA);
+    git(devA, ['checkout', '-B', 'main']);
+    fs.writeFileSync(path.join(devA, 'README.md'), '# init\n', 'utf8');
+    git(devA, ['add', 'README.md']);
+    git(devA, ['commit', '-m', 'init main'], { MAGA_ALLOW_MAIN_COMMIT: '1' });
+    git(devA, ['push', '-u', 'origin', 'main']);
+
+    // Clone devB and create wip/scratch on remote — wip/* must NOT block tag push
+    execFileSync('git', ['clone', bareOrigin, devB], { stdio: 'ignore' });
+    setupClone(devB);
+    git(devA, ['checkout', '-b', 'wip/experiment']);
+    fs.writeFileSync(path.join(devA, 'wip.txt'), 'wip\n', 'utf8');
+    git(devA, ['add', 'wip.txt']);
+    git(devA, ['commit', '-m', 'wip commit']);
+    git(devA, ['push', '-u', 'origin', 'wip/experiment']);
+
+    git(devB, ['tag', '-a', 'v1.6.0', '-m', 'Release v1.6.0']);
+    const wipAllowed = gitResult(devB, ['push', 'origin', 'v1.6.0']);
+    assert.equal(wipAllowed.status, 0, wipAllowed.stderr);
+
+    // Now devA pushes an unmerged non-wip feature branch to origin
+    git(devA, ['checkout', 'main']);
+    git(devA, ['checkout', '-b', 'feat/stranded-win-fix']);
+    fs.writeFileSync(path.join(devA, 'win.txt'), 'fix\n', 'utf8');
+    git(devA, ['add', 'win.txt']);
+    git(devA, ['commit', '-m', 'stranded win fix']);
+    git(devA, ['push', '-u', 'origin', 'feat/stranded-win-fix']);
+
+    // Pushing v1.6.1 from devB without merging feat/stranded-win-fix is BLOCKED
+    git(devB, ['tag', '-a', 'v1.6.1', '-m', 'Release v1.6.1']);
+    const blockedTag = gitResult(devB, ['push', 'origin', 'v1.6.1']);
+    assert.notEqual(blockedTag.status, 0);
+    assert.match(blockedTag.stderr, /Refusing to push release tag 'v1\.6\.1'/);
+    assert.match(blockedTag.stderr, /feat\/stranded-win-fix/);
+
+    // Explicit override MAGA_ALLOW_STRANDED_TAG=1 succeeds
+    const overrideTag = gitResult(devB, ['push', 'origin', 'v1.6.1'], { MAGA_ALLOW_STRANDED_TAG: '1' });
+    assert.equal(overrideTag.status, 0, overrideTag.stderr);
+
+    // Unit-test GitHub Commit Status gate via injected execFile
+    const tagSha = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const commitSha = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+    const makeMockExec = ({ statuses, ghError = null } = {}) => (cmd, args) => {
+      if (cmd === 'git' && args.includes('rev-parse')) return `${commitSha}\n`;
+      if (cmd === 'git' && args.includes('ls-remote')) return `${commitSha}\trefs/heads/main\n`;
+      if (cmd === 'gh' && args[0] === 'api') {
+        if (ghError) throw new Error(ghError);
+        return JSON.stringify({ state: 'pending', statuses });
+      }
+      return '';
+    };
+
+    const parsedLines = parsePrePushLines(`refs/tags/v1.7.0 ${tagSha} refs/tags/v1.7.0 0000000000000000000000000000000000000000\n`);
+    assert.equal(parsedLines.length, 1);
+    assert.equal(parseTagGuardRepoSlug('https://github.com/Acme/agy-studio.git')?.slug, 'Acme/agy-studio');
+    assert.equal(parseTagGuardRepoSlug('git@github.com:Acme/agy-studio.git')?.slug, 'Acme/agy-studio');
+
+    // Missing smoke/win32 -> BLOCKED
+    const missingWin = checkReleaseTagPush({
+      cwd: devB,
+      remoteName: 'origin',
+      remoteUrl: 'https://github.com/Acme/agy-studio.git',
+      pushedRefs: parsedLines,
+      env: {},
+      execFile: makeMockExec({
+        statuses: [{ context: 'smoke/darwin', state: 'success' }],
+      }),
+    });
+    assert.equal(missingWin.allowed, false);
+    assert.equal(missingWin.reason, 'smoke_status_missing');
+    assert.match(missingWin.message, /smoke\/win32: missing/);
+
+    // Both smoke/darwin and smoke/win32 success -> ALLOWED
+    const bothGreen = checkReleaseTagPush({
+      cwd: devB,
+      remoteName: 'origin',
+      remoteUrl: 'https://github.com/Acme/agy-studio.git',
+      pushedRefs: parsedLines,
+      env: {},
+      execFile: makeMockExec({
+        statuses: [
+          { context: 'smoke/darwin', state: 'success' },
+          { context: 'smoke/win32', state: 'success' },
+        ],
+      }),
+    });
+    assert.equal(bothGreen.allowed, true);
+
+    // MAGA_SKIP_SMOKE=1 bypasses smoke gate
+    const skipSmoke = checkReleaseTagPush({
+      cwd: devB,
+      remoteName: 'origin',
+      remoteUrl: 'https://github.com/Acme/agy-studio.git',
+      pushedRefs: parsedLines,
+      env: { MAGA_SKIP_SMOKE: '1' },
+      execFile: makeMockExec({ statuses: [] }),
+    });
+    assert.equal(skipSmoke.allowed, true);
+
+    // gh api failure fails closed by default on GitHub remotes (use MAGA_SKIP_SMOKE=1 to override)
+    const ghFailClosed = checkReleaseTagPush({
+      cwd: devB,
+      remoteName: 'origin',
+      remoteUrl: 'https://github.com/Acme/agy-studio.git',
+      pushedRefs: parsedLines,
+      env: {},
+      execFile: makeMockExec({ ghError: 'gh not logged in' }),
+    });
+    assert.equal(ghFailClosed.allowed, false);
+    assert.equal(ghFailClosed.reason, 'smoke_check_unreachable');
+    assert.match(ghFailClosed.message, /MAGA_SKIP_SMOKE=1/);
+
+    const ghFailOverride = checkReleaseTagPush({
+      cwd: devB,
+      remoteName: 'origin',
+      remoteUrl: 'https://github.com/Acme/agy-studio.git',
+      pushedRefs: parsedLines,
+      env: { MAGA_SKIP_SMOKE: '1' },
+      execFile: makeMockExec({ ghError: 'gh not logged in' }),
+    });
+    assert.equal(ghFailOverride.allowed, true);
+  } finally {
+    fs.rmSync(bareOrigin, { recursive: true, force: true });
+    fs.rmSync(devA, { recursive: true, force: true });
+    fs.rmSync(devB, { recursive: true, force: true });
+  }
+});
+
+test('studio/smoke-live evaluates doctor + CDP invariants across OSes and formats GitHub Commit Status payloads', () => {
+  assert.equal(parseSmokeRepoSlug('https://github.com/Acme/agy-studio.git')?.slug, 'Acme/agy-studio');
+  assert.equal(parseSmokeRepoSlug('ssh://git@github.com/Acme/agy-studio.git')?.slug, 'Acme/agy-studio');
+  assert.equal(parseSmokeRepoSlug('/tmp/local-bare'), null);
+  assert.equal(resolveSmokeContext('darwin'), 'smoke/darwin');
+  assert.equal(resolveSmokeContext('win32'), 'smoke/win32');
+
+  const sha = '1234567890abcdef1234567890abcdef12345678';
+  const okDarwin = evaluateLiveSmokeResult({
+    platform: 'darwin',
+    targetSha: sha,
+    doctorReport: {
+      ok: true,
+      cdpStatus: 'ready',
+      daemonAlignedWithDeploy: true,
+      deployedFrom: { sha, dirty: false },
+    },
+    cdpResult: {
+      ok: true,
+      value: { observerCount: 1, isUsingKernel: true, ownHasCount: 0, detectedTopBarPx: 0, winTopBarCssPx: 0 },
+    },
+  });
+  assert.equal(okDarwin.ok, true);
+  assert.equal(okDarwin.failures.length, 0);
+  assert.ok(okDarwin.description.length <= 140);
+
+  // Win32 top bar CSS var mismatch must fail smoke
+  const badWinTopBar = evaluateLiveSmokeResult({
+    platform: 'win32',
+    targetSha: sha,
+    doctorReport: {
+      ok: true,
+      cdpStatus: 'ready',
+      daemonAlignedWithDeploy: true,
+      deployedFrom: { sha, dirty: false },
+    },
+    cdpResult: {
+      ok: true,
+      value: { observerCount: 1, isUsingKernel: true, ownHasCount: 0, detectedTopBarPx: 30, winTopBarCssPx: 0 },
+    },
+  });
+  assert.equal(badWinTopBar.ok, false);
+  assert.ok(badWinTopBar.failures.some((f) => f.includes('win_top_bar_mismatch')));
+
+  // Deployed SHA mismatch fails unless allowShaMismatch=true
+  const shaMismatch = evaluateLiveSmokeResult({
+    platform: 'darwin',
+    targetSha: sha,
+    doctorReport: {
+      ok: true,
+      cdpStatus: 'ready',
+      daemonAlignedWithDeploy: true,
+      deployedFrom: { sha: 'fedcba0987654321fedcba0987654321fedcba09', dirty: false },
+    },
+    cdpResult: {
+      ok: true,
+      value: { observerCount: 1, isUsingKernel: true, ownHasCount: 0, detectedTopBarPx: 0, winTopBarCssPx: 0 },
+    },
+  });
+  assert.equal(shaMismatch.ok, false);
+  assert.ok(shaMismatch.failures.some((f) => f.includes('deployed_sha_mismatch')));
+
+  // Missing deploy-meta SHA fails closed unless allowShaMismatch=true
+  const shaMissing = evaluateLiveSmokeResult({
+    platform: 'darwin',
+    targetSha: sha,
+    doctorReport: {
+      ok: true,
+      cdpStatus: 'ready',
+      daemonAlignedWithDeploy: true,
+      deployedFrom: null,
+    },
+    cdpResult: {
+      ok: true,
+      value: { observerCount: 1, isUsingKernel: true, ownHasCount: 0, detectedTopBarPx: 0, winTopBarCssPx: 0 },
+    },
+  });
+  assert.equal(shaMissing.ok, false);
+  assert.ok(shaMissing.failures.includes('deployed_sha_missing'));
+
+  const shaMissingAllowed = evaluateLiveSmokeResult({
+    platform: 'darwin',
+    targetSha: sha,
+    allowShaMismatch: true,
+    doctorReport: {
+      ok: true,
+      cdpStatus: 'ready',
+      daemonAlignedWithDeploy: true,
+      deployedFrom: null,
+    },
+    cdpResult: {
+      ok: true,
+      value: { observerCount: 1, isUsingKernel: true, ownHasCount: 0, detectedTopBarPx: 0, winTopBarCssPx: 0 },
+    },
+  });
+  assert.equal(shaMissingAllowed.ok, true);
+
+  // postGitHubCommitStatus truncates description <= 140 chars
+  let capturedArgs = null;
+  postGitHubCommitStatus({
+    slug: 'Acme/agy-studio',
+    sha,
+    context: 'smoke/darwin',
+    state: 'success',
+    description: 'x'.repeat(200),
+    execFile: (cmd, args) => {
+      assert.equal(cmd, 'gh');
+      capturedArgs = args;
+      return '{"state":"success"}';
+    },
+  });
+  const descFlag = capturedArgs.find((a) => a.startsWith('description='));
+  assert.ok(descFlag);
+  assert.equal(descFlag.slice('description='.length).length, 140);
 });

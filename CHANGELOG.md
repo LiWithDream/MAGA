@@ -5,6 +5,17 @@ All notable changes to **AGY Studio (`agy-studio`, formerly MAGA)** will be docu
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **`[cross]` Real-Machine Chrome DOM Geometry Fixtures & Dual-OS Regression Suite (`studio/cdp-probe.mjs`, `studio/capture-chrome-fixture.mjs`, `test/fixtures/{darwin,win32}/chrome-layout.json`, `test/windows.test.mjs`)**: Added `npm run capture:chrome-fixture` to capture sanitized, privacy-free Electron `.bg-sidebar` / sidebar-track / control rect snapshots over CDP and exercise `chrome-geometry.mjs` + `computeSettingsDrawerTopInset` against both macOS and Windows layouts in `npm test`.
+- **`[cross]` Live Smoke Verification & Release Tag Pre-Push Gate (`studio/smoke-live.mjs`, `.githooks/guard-release-tag.mjs`, `.githooks/pre-push`, `studio/setup-hooks.mjs`)**: Added `npm run smoke:live` to verify `doctor` + live CDP invariants and stamp GitHub Commit Statuses (`smoke/darwin`, `smoke/win32`), and extended `.githooks/pre-push` on `refs/tags/v*` to block stranded unmerged remote branches (`MAGA_ALLOW_STRANDED_TAG=1`) and missing dual-OS live smoke checks (`MAGA_SKIP_SMOKE=1`).
+- **`[cross]` Automated Tag GitHub Release Packaging (`.github/workflows/ci.yml`, `studio/pack-release.mjs`)**: Added `release` CI job on `v*` tags (`needs: [stranded-branches, test]`) that validates `package.json` version alignment, packs and checksum-verifies macOS `.tar.gz` + Windows `.zip`, extracts `CHANGELOG.md` notes via `extractChangelogNotes`, and creates/updates the GitHub Release idempotently.
+
+### Fixed
+- **`[cross]` Remote Control Quota Bars & Epoch Reset Countdowns (`remote/pwa/src/overview-panel.mjs`, `remote/pwa/src/ui-helpers.mjs`, `core/daemon/remote/studio-bridge.mjs`)**: Rendered quota/usage progress bars via CSSOM for strict CSP compliance and normalized epoch reset countdown formatting.
+- **`[cross]` Remote Control Native Slash Commands (`user/src/modules/remote-tap.mjs`)**: Encoded `/compact` and slash commands sent from Remote Control as native `SlashCommandScopeItem` payload chunks.
+
 ## [1.5.1] - 2026-11-27
 
 Restored all Windows UI, centering, daemon, and guardrail fixes from `origin/feat/windows-support` (`8b6f126`, `4c3a575`) that were omitted during the `v1.5.0` merge, extracted dual-OS Projects chrome geometry helpers, and added mechanical stale-merge and CI stranded-branch guardrails.

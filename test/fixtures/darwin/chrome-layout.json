@@ -1,0 +1,936 @@
+{
+  "schema": 1,
+  "platform": "darwin",
+  "source": "cdp-live",
+  "viewport": {
+    "innerWidth": 1440,
+    "innerHeight": 900,
+    "devicePixelRatio": 2
+  },
+  "cssVars": {
+    "winTopBar": "",
+    "projTop": "",
+    "drawerTop": "",
+    "ovEffectiveReserve": ""
+  },
+  "bgSidebars": [
+    {
+      "index": 0,
+      "tag": "DIV",
+      "testId": null,
+      "classes": [
+        "h-full",
+        "w-full",
+        "flex",
+        "flex-col",
+        "bg-sidebar"
+      ],
+      "rect": {
+        "left": 0,
+        "top": 0,
+        "right": 275,
+        "bottom": 900,
+        "width": 275,
+        "height": 900
+      },
+      "anchors": {
+        "hasProjectsNav": true,
+        "hasAutomationsBtn": true,
+        "hasProjectHeader": true,
+        "hasConversationListSidebar": true
+      },
+      "parentChain": [
+        {
+          "tag": "DIV",
+          "overflow": "visible",
+          "overflowX": "visible",
+          "transition": "all",
+          "rect": {
+            "left": 0,
+            "top": 0,
+            "right": 0,
+            "bottom": 0,
+            "width": 0,
+            "height": 0
+          }
+        },
+        {
+          "tag": "DIV",
+          "overflow": "visible",
+          "overflowX": "visible",
+          "transition": "all",
+          "rect": {
+            "left": 0,
+            "top": 0,
+            "right": 275,
+            "bottom": 900,
+            "width": 275,
+            "height": 900
+          }
+        },
+        {
+          "tag": "DIV",
+          "overflow": "hidden",
+          "overflowX": "hidden",
+          "transition": "width 0.5s cubic-bezier(0.16, 1, 0.3, 1), height 0.5s cubic-bezier(0.16, 1, 0.3, 1)",
+          "rect": {
+            "left": 0,
+            "top": 0,
+            "right": 275,
+            "bottom": 900,
+            "width": 275,
+            "height": 900
+          }
+        },
+        {
+          "tag": "DIV",
+          "overflow": "visible",
+          "overflowX": "visible",
+          "transition": "all",
+          "rect": {
+            "left": 0,
+            "top": 0,
+            "right": 1440,
+            "bottom": 900,
+            "width": 1440,
+            "height": 900
+          }
+        }
+      ]
+    },
+    {
+      "index": 1,
+      "tag": "DIV",
+      "testId": null,
+      "classes": [
+        "bg-sidebar"
+      ],
+      "rect": {
+        "left": 8,
+        "top": 211,
+        "right": 267,
+        "bottom": 235,
+        "width": 259,
+        "height": 24
+      },
+      "anchors": {
+        "hasProjectsNav": false,
+        "hasAutomationsBtn": false,
+        "hasProjectHeader": false,
+        "hasConversationListSidebar": false
+      },
+      "parentChain": [
+        {
+          "tag": "DIV",
+          "overflow": "visible",
+          "overflowX": "visible",
+          "transition": "all",
+          "rect": {
+            "left": 8,
+            "top": 211,
+            "right": 267,
+            "bottom": 1336,
+            "width": 259,
+            "height": 1125
+          }
+        },
+        {
+          "tag": "DIV",
+          "overflow": "auto",
+          "overflowX": "auto",
+          "transition": "box-shadow 0.15s cubic-bezier(0.4, 0, 0.2, 1)",
+          "rect": {
+            "left": 0,
+            "top": 211,
+            "right": 275,
+            "bottom": 839,
+            "width": 275,
+            "height": 628
+          }
+        },
+        {
+          "tag": "DIV",
+          "overflow": "visible",
+          "overflowX": "visible",
+          "transition": "all",
+          "rect": {
+            "left": 0,
+            "top": 211,
+            "right": 275,
+            "bottom": 839,
+            "width": 275,
+            "height": 628
+          }
+        },
+        {
+          "tag": "DIV",
+          "overflow": "visible",
+          "overflowX": "visible",
+          "transition": "all",
+          "rect": {
+            "left": 0,
+            "top": 211,
+            "right": 275,
+            "bottom": 839,
+            "width": 275,
+            "height": 628
+          }
+        }
+      ]
+    },
+    {
+      "index": 2,
+      "tag": "DIV",
+      "testId": null,
+      "classes": [
+        "flex",
+        "bg-sidebar"
+      ],
+      "rect": {
+        "left": 8,
+        "top": 211,
+        "right": 267,
+        "bottom": 235,
+        "width": 259,
+        "height": 24
+      },
+      "anchors": {
+        "hasProjectsNav": false,
+        "hasAutomationsBtn": false,
+        "hasProjectHeader": false,
+        "hasConversationListSidebar": false
+      },
+      "parentChain": [
+        {
+          "tag": "DIV",
+          "overflow": "visible",
+          "overflowX": "visible",
+          "transition": "all",
+          "rect": {
+            "left": 8,
+            "top": 211,
+            "right": 267,
+            "bottom": 235,
+            "width": 259,
+            "height": 24
+          }
+        },
+        {
+          "tag": "DIV",
+          "overflow": "visible",
+          "overflowX": "visible",
+          "transition": "all",
+          "rect": {
+            "left": 8,
+            "top": 211,
+            "right": 267,
+            "bottom": 235,
+            "width": 259,
+            "height": 24
+          }
+        },
+        {
+          "tag": "DIV",
+          "overflow": "visible",
+          "overflowX": "visible",
+          "transition": "all",
+          "rect": {
+            "left": 8,
+            "top": 211,
+            "right": 267,
+            "bottom": 1336,
+            "width": 259,
+            "height": 1125
+          }
+        },
+        {
+          "tag": "DIV",
+          "overflow": "auto",
+          "overflowX": "auto",
+          "transition": "box-shadow 0.15s cubic-bezier(0.4, 0, 0.2, 1)",
+          "rect": {
+            "left": 0,
+            "top": 211,
+            "right": 275,
+            "bottom": 839,
+            "width": 275,
+            "height": 628
+          }
+        }
+      ]
+    },
+    {
+      "index": 3,
+      "tag": "DIV",
+      "testId": null,
+      "classes": [
+        "bg-sidebar"
+      ],
+      "rect": {
+        "left": 8,
+        "top": 235,
+        "right": 267,
+        "bottom": 267,
+        "width": 259,
+        "height": 32
+      },
+      "anchors": {
+        "hasProjectsNav": false,
+        "hasAutomationsBtn": false,
+        "hasProjectHeader": true,
+        "hasConversationListSidebar": false
+      },
+      "parentChain": [
+        {
+          "tag": "DIV",
+          "overflow": "visible",
+          "overflowX": "visible",
+          "transition": "all",
+          "rect": {
+            "left": 8,
+            "top": 211,
+            "right": 267,
+            "bottom": 1336,
+            "width": 259,
+            "height": 1125
+          }
+        },
+        {
+          "tag": "DIV",
+          "overflow": "auto",
+          "overflowX": "auto",
+          "transition": "box-shadow 0.15s cubic-bezier(0.4, 0, 0.2, 1)",
+          "rect": {
+            "left": 0,
+            "top": 211,
+            "right": 275,
+            "bottom": 839,
+            "width": 275,
+            "height": 628
+          }
+        },
+        {
+          "tag": "DIV",
+          "overflow": "visible",
+          "overflowX": "visible",
+          "transition": "all",
+          "rect": {
+            "left": 0,
+            "top": 211,
+            "right": 275,
+            "bottom": 839,
+            "width": 275,
+            "height": 628
+          }
+        },
+        {
+          "tag": "DIV",
+          "overflow": "visible",
+          "overflowX": "visible",
+          "transition": "all",
+          "rect": {
+            "left": 0,
+            "top": 211,
+            "right": 275,
+            "bottom": 839,
+            "width": 275,
+            "height": 628
+          }
+        }
+      ]
+    },
+    {
+      "index": 4,
+      "tag": "BUTTON",
+      "testId": "project-header",
+      "classes": [
+        "flex",
+        "w-full",
+        "bg-sidebar"
+      ],
+      "rect": {
+        "left": 8,
+        "top": 238,
+        "right": 267,
+        "bottom": 265,
+        "width": 259,
+        "height": 27
+      },
+      "anchors": {
+        "hasProjectsNav": false,
+        "hasAutomationsBtn": false,
+        "hasProjectHeader": false,
+        "hasConversationListSidebar": false
+      },
+      "parentChain": [
+        {
+          "tag": "H3",
+          "overflow": "visible",
+          "overflowX": "visible",
+          "transition": "all",
+          "rect": {
+            "left": 8,
+            "top": 238,
+            "right": 267,
+            "bottom": 265,
+            "width": 259,
+            "height": 27
+          }
+        },
+        {
+          "tag": "DIV",
+          "overflow": "visible",
+          "overflowX": "visible",
+          "transition": "all",
+          "rect": {
+            "left": 8,
+            "top": 238,
+            "right": 267,
+            "bottom": 265,
+            "width": 259,
+            "height": 27
+          }
+        },
+        {
+          "tag": "DIV",
+          "overflow": "visible",
+          "overflowX": "visible",
+          "transition": "all",
+          "rect": {
+            "left": 8,
+            "top": 235,
+            "right": 267,
+            "bottom": 267,
+            "width": 259,
+            "height": 32
+          }
+        },
+        {
+          "tag": "DIV",
+          "overflow": "visible",
+          "overflowX": "visible",
+          "transition": "all",
+          "rect": {
+            "left": 8,
+            "top": 235,
+            "right": 267,
+            "bottom": 267,
+            "width": 259,
+            "height": 32
+          }
+        }
+      ]
+    },
+    {
+      "index": 5,
+      "tag": "DIV",
+      "testId": null,
+      "classes": [
+        "bg-sidebar"
+      ],
+      "rect": {
+        "left": 8,
+        "top": 295,
+        "right": 267,
+        "bottom": 336,
+        "width": 259,
+        "height": 41
+      },
+      "anchors": {
+        "hasProjectsNav": false,
+        "hasAutomationsBtn": false,
+        "hasProjectHeader": true,
+        "hasConversationListSidebar": false
+      },
+      "parentChain": [
+        {
+          "tag": "DIV",
+          "overflow": "visible",
+          "overflowX": "visible",
+          "transition": "all",
+          "rect": {
+            "left": 8,
+            "top": 211,
+            "right": 267,
+            "bottom": 1336,
+            "width": 259,
+            "height": 1125
+          }
+        },
+        {
+          "tag": "DIV",
+          "overflow": "auto",
+          "overflowX": "auto",
+          "transition": "box-shadow 0.15s cubic-bezier(0.4, 0, 0.2, 1)",
+          "rect": {
+            "left": 0,
+            "top": 211,
+            "right": 275,
+            "bottom": 839,
+            "width": 275,
+            "height": 628
+          }
+        },
+        {
+          "tag": "DIV",
+          "overflow": "visible",
+          "overflowX": "visible",
+          "transition": "all",
+          "rect": {
+            "left": 0,
+            "top": 211,
+            "right": 275,
+            "bottom": 839,
+            "width": 275,
+            "height": 628
+          }
+        },
+        {
+          "tag": "DIV",
+          "overflow": "visible",
+          "overflowX": "visible",
+          "transition": "all",
+          "rect": {
+            "left": 0,
+            "top": 211,
+            "right": 275,
+            "bottom": 839,
+            "width": 275,
+            "height": 628
+          }
+        }
+      ]
+    },
+    {
+      "index": 6,
+      "tag": "BUTTON",
+      "testId": "project-header",
+      "classes": [
+        "flex",
+        "w-full",
+        "bg-sidebar"
+      ],
+      "rect": {
+        "left": 8,
+        "top": 307,
+        "right": 267,
+        "bottom": 334,
+        "width": 259,
+        "height": 27
+      },
+      "anchors": {
+        "hasProjectsNav": false,
+        "hasAutomationsBtn": false,
+        "hasProjectHeader": false,
+        "hasConversationListSidebar": false
+      },
+      "parentChain": [
+        {
+          "tag": "H3",
+          "overflow": "visible",
+          "overflowX": "visible",
+          "transition": "all",
+          "rect": {
+            "left": 8,
+            "top": 307,
+            "right": 267,
+            "bottom": 334,
+            "width": 259,
+            "height": 27
+          }
+        },
+        {
+          "tag": "DIV",
+          "overflow": "visible",
+          "overflowX": "visible",
+          "transition": "all",
+          "rect": {
+            "left": 8,
+            "top": 307,
+            "right": 267,
+            "bottom": 334,
+            "width": 259,
+            "height": 27
+          }
+        },
+        {
+          "tag": "DIV",
+          "overflow": "visible",
+          "overflowX": "visible",
+          "transition": "all",
+          "rect": {
+            "left": 8,
+            "top": 295,
+            "right": 267,
+            "bottom": 336,
+            "width": 259,
+            "height": 41
+          }
+        },
+        {
+          "tag": "DIV",
+          "overflow": "visible",
+          "overflowX": "visible",
+          "transition": "all",
+          "rect": {
+            "left": 8,
+            "top": 295,
+            "right": 267,
+            "bottom": 336,
+            "width": 259,
+            "height": 41
+          }
+        }
+      ]
+    },
+    {
+      "index": 7,
+      "tag": "DIV",
+      "testId": null,
+      "classes": [
+        "bg-sidebar"
+      ],
+      "rect": {
+        "left": 8,
+        "top": 959,
+        "right": 267,
+        "bottom": 1000,
+        "width": 259,
+        "height": 41
+      },
+      "anchors": {
+        "hasProjectsNav": false,
+        "hasAutomationsBtn": false,
+        "hasProjectHeader": true,
+        "hasConversationListSidebar": false
+      },
+      "parentChain": [
+        {
+          "tag": "DIV",
+          "overflow": "visible",
+          "overflowX": "visible",
+          "transition": "all",
+          "rect": {
+            "left": 8,
+            "top": 211,
+            "right": 267,
+            "bottom": 1336,
+            "width": 259,
+            "height": 1125
+          }
+        },
+        {
+          "tag": "DIV",
+          "overflow": "auto",
+          "overflowX": "auto",
+          "transition": "box-shadow 0.15s cubic-bezier(0.4, 0, 0.2, 1)",
+          "rect": {
+            "left": 0,
+            "top": 211,
+            "right": 275,
+            "bottom": 839,
+            "width": 275,
+            "height": 628
+          }
+        },
+        {
+          "tag": "DIV",
+          "overflow": "visible",
+          "overflowX": "visible",
+          "transition": "all",
+          "rect": {
+            "left": 0,
+            "top": 211,
+            "right": 275,
+            "bottom": 839,
+            "width": 275,
+            "height": 628
+          }
+        },
+        {
+          "tag": "DIV",
+          "overflow": "visible",
+          "overflowX": "visible",
+          "transition": "all",
+          "rect": {
+            "left": 0,
+            "top": 211,
+            "right": 275,
+            "bottom": 839,
+            "width": 275,
+            "height": 628
+          }
+        }
+      ]
+    },
+    {
+      "index": 8,
+      "tag": "BUTTON",
+      "testId": "project-header",
+      "classes": [
+        "flex",
+        "w-full",
+        "bg-sidebar"
+      ],
+      "rect": {
+        "left": 8,
+        "top": 971,
+        "right": 267,
+        "bottom": 998,
+        "width": 259,
+        "height": 27
+      },
+      "anchors": {
+        "hasProjectsNav": false,
+        "hasAutomationsBtn": false,
+        "hasProjectHeader": false,
+        "hasConversationListSidebar": false
+      },
+      "parentChain": [
+        {
+          "tag": "H3",
+          "overflow": "visible",
+          "overflowX": "visible",
+          "transition": "all",
+          "rect": {
+            "left": 8,
+            "top": 971,
+            "right": 267,
+            "bottom": 998,
+            "width": 259,
+            "height": 27
+          }
+        },
+        {
+          "tag": "DIV",
+          "overflow": "visible",
+          "overflowX": "visible",
+          "transition": "all",
+          "rect": {
+            "left": 8,
+            "top": 971,
+            "right": 267,
+            "bottom": 998,
+            "width": 259,
+            "height": 27
+          }
+        },
+        {
+          "tag": "DIV",
+          "overflow": "visible",
+          "overflowX": "visible",
+          "transition": "all",
+          "rect": {
+            "left": 8,
+            "top": 959,
+            "right": 267,
+            "bottom": 1000,
+            "width": 259,
+            "height": 41
+          }
+        },
+        {
+          "tag": "DIV",
+          "overflow": "visible",
+          "overflowX": "visible",
+          "transition": "all",
+          "rect": {
+            "left": 8,
+            "top": 959,
+            "right": 267,
+            "bottom": 1000,
+            "width": 259,
+            "height": 41
+          }
+        }
+      ]
+    },
+    {
+      "index": 9,
+      "tag": "DIV",
+      "testId": null,
+      "classes": [
+        "bg-sidebar"
+      ],
+      "rect": {
+        "left": 8,
+        "top": 1048,
+        "right": 267,
+        "bottom": 1072,
+        "width": 259,
+        "height": 24
+      },
+      "anchors": {
+        "hasProjectsNav": false,
+        "hasAutomationsBtn": false,
+        "hasProjectHeader": false,
+        "hasConversationListSidebar": false
+      },
+      "parentChain": [
+        {
+          "tag": "DIV",
+          "overflow": "visible",
+          "overflowX": "visible",
+          "transition": "all",
+          "rect": {
+            "left": 8,
+            "top": 211,
+            "right": 267,
+            "bottom": 1336,
+            "width": 259,
+            "height": 1125
+          }
+        },
+        {
+          "tag": "DIV",
+          "overflow": "auto",
+          "overflowX": "auto",
+          "transition": "box-shadow 0.15s cubic-bezier(0.4, 0, 0.2, 1)",
+          "rect": {
+            "left": 0,
+            "top": 211,
+            "right": 275,
+            "bottom": 839,
+            "width": 275,
+            "height": 628
+          }
+        },
+        {
+          "tag": "DIV",
+          "overflow": "visible",
+          "overflowX": "visible",
+          "transition": "all",
+          "rect": {
+            "left": 0,
+            "top": 211,
+            "right": 275,
+            "bottom": 839,
+            "width": 275,
+            "height": 628
+          }
+        },
+        {
+          "tag": "DIV",
+          "overflow": "visible",
+          "overflowX": "visible",
+          "transition": "all",
+          "rect": {
+            "left": 0,
+            "top": 211,
+            "right": 275,
+            "bottom": 839,
+            "width": 275,
+            "height": 628
+          }
+        }
+      ]
+    },
+    {
+      "index": 10,
+      "tag": "DIV",
+      "testId": null,
+      "classes": [
+        "flex",
+        "bg-sidebar"
+      ],
+      "rect": {
+        "left": 8,
+        "top": 1048,
+        "right": 267,
+        "bottom": 1072,
+        "width": 259,
+        "height": 24
+      },
+      "anchors": {
+        "hasProjectsNav": false,
+        "hasAutomationsBtn": false,
+        "hasProjectHeader": false,
+        "hasConversationListSidebar": false
+      },
+      "parentChain": [
+        {
+          "tag": "DIV",
+          "overflow": "visible",
+          "overflowX": "visible",
+          "transition": "all",
+          "rect": {
+            "left": 8,
+            "top": 1048,
+            "right": 267,
+            "bottom": 1072,
+            "width": 259,
+            "height": 24
+          }
+        },
+        {
+          "tag": "DIV",
+          "overflow": "visible",
+          "overflowX": "visible",
+          "transition": "all",
+          "rect": {
+            "left": 8,
+            "top": 1048,
+            "right": 267,
+            "bottom": 1072,
+            "width": 259,
+            "height": 24
+          }
+        },
+        {
+          "tag": "DIV",
+          "overflow": "visible",
+          "overflowX": "visible",
+          "transition": "all",
+          "rect": {
+            "left": 8,
+            "top": 211,
+            "right": 267,
+            "bottom": 1336,
+            "width": 259,
+            "height": 1125
+          }
+        },
+        {
+          "tag": "DIV",
+          "overflow": "auto",
+          "overflowX": "auto",
+          "transition": "box-shadow 0.15s cubic-bezier(0.4, 0, 0.2, 1)",
+          "rect": {
+            "left": 0,
+            "top": 211,
+            "right": 275,
+            "bottom": 839,
+            "width": 275,
+            "height": 628
+          }
+        }
+      ]
+    }
+  ],
+  "controls": {
+    "overviewToggleRect": {
+      "left": 1372,
+      "top": 6,
+      "right": 1400,
+      "bottom": 34,
+      "width": 28,
+      "height": 28
+    },
+    "auxToggleRect": {
+      "left": 1404,
+      "top": 6,
+      "right": 1432,
+      "bottom": 34,
+      "width": 28,
+      "height": 28
+    },
+    "overviewPanelHostRect": {
+      "left": 276,
+      "top": 40,
+      "right": 1432,
+      "bottom": 892,
+      "width": 1156,
+      "height": 852
+    }
+  }
+}

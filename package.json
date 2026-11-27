@@ -7,12 +7,14 @@
     "node": ">=22"
   },
   "scripts": {
+    "test": "npm run build:user && node --test \"test/*.test.mjs\"",
     "install-all": "npm run build:user && node studio/cli.mjs install",
     "build:user": "node -e \"import('./studio/build.mjs').then(m => m.buildUserCustomJs()).then(r => console.log(JSON.stringify({ ok: true, bytes: r.bytes })))\"",
     "build:remote": "node -e \"import('./studio/build.mjs').then(m => m.buildRemotePwa()).then(r => console.log(JSON.stringify({ ok: true, outDir: r.outDir, files: r.files })))\"",
     "build:android": "node scripts/build-android-apk.mjs",
     "deploy": "node studio/cli.mjs deploy",
     "doctor": "node studio/cli.mjs doctor",
+    "smoke:live": "node studio/smoke-live.mjs",
     "sync-rules": "node studio/cli.mjs sync-rules",
     "rollback": "node studio/cli.mjs rollback",
     "setup:hooks": "node studio/setup-hooks.mjs",
@@ -22,7 +24,7 @@
     "release:pack": "node studio/pack-release.mjs",
     "release:pack:win": "node studio/pack-release.mjs --platform windows",
     "release:pack:all": "node studio/pack-release.mjs --platform all",
-    "test": "npm run build:user && node --test \"test/*.test.mjs\""
+    "capture:chrome-fixture": "node studio/capture-chrome-fixture.mjs"
   },
   "devDependencies": {
     "esbuild": "^0.28.2",

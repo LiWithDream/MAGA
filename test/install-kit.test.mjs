@@ -288,6 +288,8 @@ test('public hygiene: no personal domains in tracked Android sources or test fix
     path.join(REPO, 'remote', 'android', 'app', 'build.gradle.kts'),
     path.join(REPO, 'remote', 'android', 'app', 'src', 'main', 'AndroidManifest.xml'),
     path.join(REPO, 'test', 'remote-phase2.test.mjs'),
+    path.join(REPO, 'test', 'fixtures', 'darwin', 'chrome-layout.json'),
+    path.join(REPO, 'test', 'fixtures', 'win32', 'chrome-layout.json'),
   ];
   const personalDomain = ['agy.', 'miracle', 'li.com'].join('');
   const personalTenant = ['dark-unit', 'b0d1'].join('-');
@@ -296,4 +298,43 @@ test('public hygiene: no personal domains in tracked Android sources or test fix
     const content = readFileSync(filePath, 'utf8');
     assert.equal(personalRe.test(content), false, `Personal domain found in ${path.relative(REPO, filePath)}`);
   }
+});
+
+test('pack-release extractChangelogNotes and CI release workflow stay aligned for v* tags', async () => {
+  const { extractChangelogNotes } = await import(pathToFileURL(path.join(REPO, 'studio', 'pack-release.mjs')).href);
+
+  const sample = [
+    '# Changelog',
+    '',
+    '## [Unreleased]',
+    '- draft',
+    '',
+    '## [1.5.10] - 2026-12-01',
+    '### Fixed',
+    '- future patch',
+    '',
+    '## [1.5.1] - 2026-11-27',
+    '### Fixed',
+    '- exact target fix',
+    '',
+    '## [1.5.0] - 2026-11-27',
+    '- older release',
+  ].join('\n');
+
+  assert.equal(extractChangelogNotes(sample, 'v1.5.1'), '### Fixed\n- exact target fix');
+  assert.equal(extractChangelogNotes(sample, '1.5.10'), '### Fixed\n- future patch');
+  assert.equal(extractChangelogNotes(sample, '9.9.9'), '');
+
+  const realChangelog = readFileSync(path.join(REPO, 'CHANGELOG.md'), 'utf8');
+  const v151Notes = extractChangelogNotes(realChangelog, 'v1.5.1');
+  assert.match(v151Notes, /chrome-geometry\.mjs/);
+  assert.doesNotMatch(v151Notes, /## \[1\.5\.0\]/);
+
+  const ciYml = readFileSync(path.join(REPO, '.github', 'workflows', 'ci.yml'), 'utf8');
+  assert.match(ciYml, /if:\s*startsWith\(github\.ref,\s*'refs\/tags\/v'\)/);
+  assert.match(ciYml, /needs:\s*\[stranded-branches,\s*test\]/);
+  assert.match(ciYml, /contents:\s*write/);
+  assert.match(ciYml, /npm run release:pack:all/);
+  assert.match(ciYml, /sha256sum -c/);
+  assert.match(ciYml, /gh release upload "\$TAG" "\$\{ASSETS\[@\]\}" --clobber/);
 });

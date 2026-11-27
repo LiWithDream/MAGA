@@ -162,6 +162,20 @@ function stagePackageTree(stageRoot) {
   }
 }
 
+export function extractChangelogNotes(markdown, version) {
+  const cleanVer = String(version || '').replace(/^v/i, '').trim();
+  if (!cleanVer) return '';
+  const sections = String(markdown || '').split(/^## \[/m);
+  for (let i = 1; i < sections.length; i += 1) {
+    const sec = sections[i];
+    if (!sec.startsWith(`${cleanVer}]`)) continue;
+    const nl = sec.indexOf('\n');
+    if (nl < 0) return '';
+    return sec.slice(nl + 1).trim();
+  }
+  return '';
+}
+
 export async function packRelease({ outDir = DIST_DIR, versionOverride = '', platform = 'macos' } = {}) {
   const pkg = JSON.parse(readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf8'));
   const version = versionOverride || String(pkg.version || '0.0.0').trim();

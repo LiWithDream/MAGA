@@ -1,0 +1,203 @@
+{
+  "schema": 1,
+  "platform": "win32",
+  "source": "win32-baseline-8b6f126",
+  "viewport": {
+    "innerWidth": 1920,
+    "innerHeight": 1032,
+    "devicePixelRatio": 1
+  },
+  "cssVars": {
+    "winTopBar": "30px",
+    "projTop": "30px",
+    "drawerTop": "84px",
+    "ovEffectiveReserve": "0px"
+  },
+  "bgSidebars": [
+    {
+      "index": 0,
+      "tag": "DIV",
+      "testId": null,
+      "classes": [
+        "bg-sidebar",
+        "flex"
+      ],
+      "rect": {
+        "left": 0,
+        "top": 0,
+        "right": 1920,
+        "bottom": 30,
+        "width": 1920,
+        "height": 30
+      },
+      "anchors": {
+        "hasProjectsNav": false,
+        "hasAutomationsBtn": false,
+        "hasProjectHeader": false,
+        "hasConversationListSidebar": false
+      },
+      "parentChain": [
+        {
+          "tag": "DIV",
+          "overflow": "visible",
+          "overflowX": "visible",
+          "transition": "all",
+          "rect": {
+            "left": 0,
+            "top": 0,
+            "right": 1920,
+            "bottom": 1032,
+            "width": 1920,
+            "height": 1032
+          }
+        }
+      ]
+    },
+    {
+      "index": 1,
+      "tag": "DIV",
+      "testId": "conversation-list-sidebar",
+      "classes": [
+        "flex-col",
+        "bg-sidebar"
+      ],
+      "rect": {
+        "left": 0,
+        "top": 30,
+        "right": 256,
+        "bottom": 1032,
+        "width": 256,
+        "height": 1002
+      },
+      "anchors": {
+        "hasProjectsNav": true,
+        "hasAutomationsBtn": true,
+        "hasProjectHeader": true,
+        "hasConversationListSidebar": true
+      },
+      "parentChain": [
+        {
+          "tag": "DIV",
+          "overflow": "visible",
+          "overflowX": "visible",
+          "transition": "all",
+          "rect": {
+            "left": 0,
+            "top": 30,
+            "right": 256,
+            "bottom": 1032,
+            "width": 256,
+            "height": 1002
+          }
+        },
+        {
+          "tag": "DIV",
+          "overflow": "visible",
+          "overflowX": "visible",
+          "transition": "all",
+          "rect": {
+            "left": 0,
+            "top": 30,
+            "right": 256,
+            "bottom": 1032,
+            "width": 256,
+            "height": 1002
+          }
+        },
+        {
+          "tag": "DIV",
+          "overflow": "hidden",
+          "overflowX": "hidden",
+          "transition": "width 0.5s cubic-bezier(0.16, 1, 0.3, 1), height 0.5s cubic-bezier(0.16, 1, 0.3, 1)",
+          "rect": {
+            "left": 0,
+            "top": 30,
+            "right": 256,
+            "bottom": 1032,
+            "width": 256,
+            "height": 1002
+          }
+        },
+        {
+          "tag": "DIV",
+          "overflow": "visible",
+          "overflowX": "visible",
+          "transition": "all",
+          "rect": {
+            "left": 0,
+            "top": 30,
+            "right": 1920,
+            "bottom": 1032,
+            "width": 1920,
+            "height": 1002
+          }
+        }
+      ]
+    },
+    {
+      "index": 2,
+      "tag": "DIV",
+      "testId": null,
+      "classes": [
+        "bg-sidebar",
+        "sticky"
+      ],
+      "rect": {
+        "left": 8,
+        "top": 240,
+        "right": 248,
+        "bottom": 264,
+        "width": 240,
+        "height": 24
+      },
+      "anchors": {
+        "hasProjectsNav": false,
+        "hasAutomationsBtn": false,
+        "hasProjectHeader": false,
+        "hasConversationListSidebar": false
+      },
+      "parentChain": [
+        {
+          "tag": "DIV",
+          "overflow": "auto",
+          "overflowX": "auto",
+          "transition": "all",
+          "rect": {
+            "left": 0,
+            "top": 240,
+            "right": 256,
+            "bottom": 960,
+            "width": 256,
+            "height": 720
+          }
+        }
+      ]
+    }
+  ],
+  "controls": {
+    "overviewToggleRect": {
+      "left": 1848,
+      "top": 38,
+      "right": 1876,
+      "bottom": 64,
+      "width": 28,
+      "height": 26
+    },
+    "auxToggleRect": {
+      "left": 1882,
+      "top": 38,
+      "right": 1910,
+      "bottom": 64,
+      "width": 28,
+      "height": 26
+    },
+    "overviewPanelHostRect": {
+      "left": 1440,
+      "top": 76,
+      "right": 1920,
+      "bottom": 1032,
+      "width": 480,
+      "height": 956
+    }
+  }
+}

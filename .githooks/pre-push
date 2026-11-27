@@ -3,6 +3,7 @@ set -eu
 
 ZERO_SHA="0000000000000000000000000000000000000000"
 tag_count=0
+release_tag_lines=""
 
 while read -r local_ref local_sha remote_ref remote_sha; do
   [ -n "${remote_ref:-}" ] || continue
@@ -10,6 +11,18 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   case "$remote_ref" in
     refs/tags/*)
       tag_count=$((tag_count + 1))
+      case "$remote_ref" in
+        refs/tags/v*)
+          if [ "$local_sha" != "$ZERO_SHA" ]; then
+            if [ -n "$release_tag_lines" ]; then
+              release_tag_lines="${release_tag_lines}
+${local_ref} ${local_sha} ${remote_ref} ${remote_sha}"
+            else
+              release_tag_lines="${local_ref} ${local_sha} ${remote_ref} ${remote_sha}"
+            fi
+          fi
+          ;;
+      esac
       ;;
     refs/heads/main|refs/heads/master)
       if [ "$local_sha" = "$ZERO_SHA" ]; then
@@ -29,6 +42,13 @@ done
 if [ "$tag_count" -ge 3 ] && [ "${MAGA_ALLOW_MULTI_TAG_PUSH:-0}" != "1" ]; then
   echo "[MAGA pre-push] Pushing $tag_count tags at once is blocked (never run 'git push --tags'; push explicit release tags like 'git push origin vX.Y.Z')." >&2
   exit 1
+fi
+
+if [ -n "$release_tag_lines" ]; then
+  HOOK_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+  if [ -f "$HOOK_DIR/guard-release-tag.mjs" ]; then
+    printf '%s\n' "$release_tag_lines" | node "$HOOK_DIR/guard-release-tag.mjs" "${1:-origin}" "${2:-}"
+  fi
 fi
 
 exit 0

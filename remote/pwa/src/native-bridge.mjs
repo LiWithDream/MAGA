@@ -197,7 +197,7 @@ export function bindNativeAndroidBridge({
       onCloseOverlays?.();
       return true;
     }
-    if (state.newChatOpen && !state.newChatBusy) {
+    if (state.viewer?.open || (state.newChatOpen && !state.newChatBusy)) {
       onCloseModal?.();
       return true;
     }

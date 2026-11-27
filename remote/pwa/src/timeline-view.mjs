@@ -69,7 +69,15 @@ function appendPlainTextWithLinks(parent, text) {
   }
 }
 
-function appendInlineMarkdown(parent, line, depth = 0) {
+function extractBrainArtifactFromFileUrl(href) {
+  const m = /^file:\/\/.*\/brain\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/([A-Za-z0-9._-]{1,128}\.md)(?:#.*)?$/i.exec(
+    String(href || '')
+  );
+  if (!m) return null;
+  return { cascadeId: m[1], fileName: m[2] };
+}
+
+function appendInlineMarkdown(parent, line, depth = 0, mdOpts = null) {
   const tokenRe = /\[([^\]\n]+)\]\(([^)\s]+)\)|`([^`\n]+)`|\*\*([^*\n]+)\*\*|~~([^~\n]+)~~|\*([^*\n]+)\*/g;
   let lastIdx = 0;
   let match;
@@ -91,7 +99,20 @@ function appendInlineMarkdown(parent, line, depth = 0) {
           })
         );
       } else if (/^file:\/\//i.test(href)) {
-        parent.appendChild(el('code', { className: 'rc-md-file', text: label }));
+        const artifactRef = mdOpts?.onOpenArtifact ? extractBrainArtifactFromFileUrl(href) : null;
+        if (artifactRef) {
+          parent.appendChild(
+            el('button', {
+              type: 'button',
+              className: 'rc-md-artifact-link',
+              title: `查看文档 ${artifactRef.fileName}`,
+              text: `📄 ${label}`,
+              onClick: () => mdOpts.onOpenArtifact(artifactRef.cascadeId, artifactRef.fileName),
+            })
+          );
+        } else {
+          parent.appendChild(el('code', { className: 'rc-md-file', text: label }));
+        }
       } else {
         parent.appendChild(document.createTextNode(match[0]));
       }
@@ -100,7 +121,7 @@ function appendInlineMarkdown(parent, line, depth = 0) {
     } else if (match[4] !== undefined) {
       const strong = el('strong');
       if (depth < 2) {
-        appendInlineMarkdown(strong, match[4], depth + 1);
+        appendInlineMarkdown(strong, match[4], depth + 1, mdOpts);
       } else {
         strong.textContent = match[4];
       }
@@ -108,7 +129,7 @@ function appendInlineMarkdown(parent, line, depth = 0) {
     } else if (match[5] !== undefined) {
       const del = el('del', { className: 'rc-md-del' });
       if (depth < 2) {
-        appendInlineMarkdown(del, match[5], depth + 1);
+        appendInlineMarkdown(del, match[5], depth + 1, mdOpts);
       } else {
         del.textContent = match[5];
       }
@@ -116,7 +137,7 @@ function appendInlineMarkdown(parent, line, depth = 0) {
     } else if (match[6] !== undefined) {
       const em = el('em');
       if (depth < 2) {
-        appendInlineMarkdown(em, match[6], depth + 1);
+        appendInlineMarkdown(em, match[6], depth + 1, mdOpts);
       } else {
         em.textContent = match[6];
       }
@@ -166,7 +187,7 @@ function parseTableAlignments(line) {
   return aligns;
 }
 
-export function renderSafeMarkdown(text) {
+export function renderSafeMarkdown(text, mdOpts = null) {
   const root = el('div', { className: 'rc-md' });
   const src = String(text ?? '').replace(/\r\n?/g, '\n');
   const lines = src.split('\n');
@@ -178,7 +199,7 @@ export function renderSafeMarkdown(text) {
     const p = el('p', { className: 'rc-md-p' });
     paraLines.forEach((ln, idx) => {
       if (idx > 0) p.appendChild(document.createElement('br'));
-      appendInlineMarkdown(p, ln);
+      appendInlineMarkdown(p, ln, 0, mdOpts);
     });
     root.appendChild(p);
     paraLines = [];
@@ -486,7 +507,7 @@ function renderActivityGroup(stepsBatch, { hideThinkingProse = true } = {}) {
   );
 }
 
-export function renderStepCard(step, { hideThinkingProse = false, compact = false } = {}) {
+export function renderStepCard(step, { hideThinkingProse = false, compact = false, onOpenArtifact = null } = {}) {
   const typeStr = String(step.type || 'STEP');
   const statusInfo = normalizeStepStatus(step.status);
 
@@ -596,7 +617,7 @@ export function renderStepCard(step, { hideThinkingProse = false, compact = fals
   }
 
   if (step.text) {
-    card.appendChild(renderSafeMarkdown(String(step.text)));
+    card.appendChild(renderSafeMarkdown(String(step.text), onOpenArtifact ? { onOpenArtifact } : null));
   }
 
   if ((!compact || roleAttr !== 'assistant') && Array.isArray(step.toolCalls) && step.toolCalls.length > 0) {
@@ -900,6 +921,8 @@ export function renderDetailTimeline({
   refs,
   onSelectConversation,
   onApprove = null,
+  onOpenArtifact = null,
+  onOpenGitDiff = null,
 }) {
   const cid = state.selectedId;
   const convo = findConversationMeta(state, cid);
@@ -930,7 +953,16 @@ export function renderDetailTimeline({
     el('span', { className: 'rc-pill', 'data-tone': runInfo.tone, text: runInfo.label }),
     el('span', { className: 'rc-mono rc-desktop-only', text: cid.slice(0, 13) }),
     wtMeta?.branch
-      ? el('span', { className: 'rc-pill rc-branch-pill', 'data-tone': 'info', text: `⎇ ${wtMeta.branch}` })
+      ? onOpenGitDiff
+        ? el('button', {
+            type: 'button',
+            className: 'rc-pill rc-branch-pill is-clickable',
+            'data-tone': 'info',
+            title: '查看当前分支 Git 变更与 Diff',
+            text: `⎇ ${wtMeta.branch}`,
+            onClick: () => onOpenGitDiff({ cascadeId: cid, projectId: wtMeta?.projectId || '' }),
+          })
+        : el('span', { className: 'rc-pill rc-branch-pill', 'data-tone': 'info', text: `⎇ ${wtMeta.branch}` })
       : null,
     snap?.source ? el('span', { className: 'rc-desktop-only', text: `来源: ${snap.source}` }) : null
   );
@@ -990,7 +1022,7 @@ export function renderDetailTimeline({
         continue;
       }
       flushActivity();
-      refs.timeline.appendChild(renderStepCard(step, { hideThinkingProse, compact: true }));
+      refs.timeline.appendChild(renderStepCard(step, { hideThinkingProse, compact: true, onOpenArtifact }));
     }
     flushActivity();
   }

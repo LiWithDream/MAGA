@@ -105,13 +105,32 @@ function renderQuotaCard(quota) {
   );
 }
 
-function renderUsageCard(todayUsage) {
-  const tu = todayUsage || {};
-  const totalTokens = Number(tu.totalTokens || 0);
-  const requests = Number(tu.requests || 0);
-  const uncached = Number(tu.uncached || 0);
-  const cacheRead = Number(tu.cacheRead || 0);
-  const output = Number(tu.output || 0);
+function renderUsageCard(todayUsage, { usageDays = [], usageRange = 'day', onChangeUsageRange = null } = {}) {
+  const days = Array.isArray(usageDays) ? usageDays : [];
+  const mode = usageRange === '30d' ? '30d' : usageRange === '7d' ? '7d' : 'day';
+  const sliced = mode === '30d' ? days.slice(-30) : mode === '7d' ? days.slice(-7) : [];
+
+  let totalTokens = Number(todayUsage?.totalTokens || 0);
+  let requests = Number(todayUsage?.requests || 0);
+  let uncached = Number(todayUsage?.uncached || 0);
+  let cacheRead = Number(todayUsage?.cacheRead || 0);
+  let output = Number(todayUsage?.output || 0);
+
+  if (mode !== 'day' && sliced.length > 0) {
+    totalTokens = 0;
+    requests = 0;
+    uncached = 0;
+    cacheRead = 0;
+    output = 0;
+    for (const d of sliced) {
+      totalTokens += Number(d?.totalTokens || 0);
+      requests += Number(d?.requests || 0);
+      uncached += Number(d?.uncached || 0);
+      cacheRead += Number(d?.cacheRead || 0);
+      output += Number(d?.output || 0);
+    }
+  }
+
   const inputTotal = uncached + cacheRead;
   const hitPct = inputTotal > 0 ? Math.round((cacheRead / inputTotal) * 100) : 0;
 
@@ -120,14 +139,71 @@ function renderUsageCard(todayUsage) {
   const uncachedWidth = Math.round((uncached / denom) * 100);
   const outputWidth = Math.max(0, 100 - cacheWidth - uncachedWidth);
 
+  const rangeButtons =
+    days.length > 1 && onChangeUsageRange
+      ? el(
+          'div',
+          { className: 'rc-usage-tabs' },
+          ...[
+            { id: 'day', label: '今日' },
+            { id: '7d', label: '7天' },
+            { id: '30d', label: '30天' },
+          ].map((t) =>
+            el('button', {
+              type: 'button',
+              className: 'rc-usage-tab',
+              'aria-pressed': mode === t.id ? 'true' : 'false',
+              text: t.label,
+              onClick: () => onChangeUsageRange(t.id),
+            })
+          )
+        )
+      : el('span', { className: 'rc-ov-muted', text: todayUsage?.date || '今天' });
+
+  let trendChart = null;
+  if (mode !== 'day' && sliced.length > 0) {
+    const maxDayTok = Math.max(1, ...sliced.map((d) => Number(d?.totalTokens || 0)));
+    const barsWrap = el('div', { className: 'rc-usage-chart', 'data-range': mode });
+    for (const d of sliced) {
+      const tok = Number(d?.totalTokens || 0);
+      const heightPct = tok > 0 ? Math.max(6, Math.round((tok / maxDayTok) * 100)) : 2;
+      const dCache = Number(d?.cacheRead || 0);
+      const dUncached = Number(d?.uncached || 0);
+      const dOutput = Number(d?.output || 0);
+      const dDenom = Math.max(1, dCache + dUncached + dOutput);
+      const cPct = Math.round((dCache / dDenom) * 100);
+      const uPct = Math.round((dUncached / dDenom) * 100);
+      const oPct = Math.max(0, 100 - cPct - uPct);
+      const label = String(d?.date || '').slice(5);
+      barsWrap.appendChild(
+        el(
+          'div',
+          {
+            className: 'rc-usage-col',
+            title: `${d?.date || ''}: ${formatCompactTokens(tok)} tok (${Number(d?.requests || 0)} req)`,
+          },
+          el(
+            'div',
+            { className: 'rc-usage-col-bar', style: { height: `${heightPct}%` } },
+            el('div', { className: 'rc-usage-col-seg is-output', style: { height: `${tok > 0 ? oPct : 0}%` } }),
+            el('div', { className: 'rc-usage-col-seg is-uncached', style: { height: `${tok > 0 ? uPct : 0}%` } }),
+            el('div', { className: 'rc-usage-col-seg is-cache', style: { height: `${tok > 0 ? cPct : 0}%` } })
+          ),
+          mode === '7d' ? el('span', { className: 'rc-usage-col-label', text: label }) : null
+        )
+      );
+    }
+    trendChart = barsWrap;
+  }
+
   return el(
     'section',
     { className: 'rc-ov-card' },
     el(
       'div',
       { className: 'rc-ov-card-head' },
-      el('strong', { className: 'rc-ov-card-title', text: '今日用量' }),
-      el('span', { className: 'rc-ov-muted', text: tu.date || '今天' })
+      el('strong', { className: 'rc-ov-card-title', text: mode === 'day' ? '今日用量' : mode === '7d' ? '近 7 天用量' : '近 30 天用量' }),
+      rangeButtons
     ),
     el(
       'div',
@@ -138,13 +214,14 @@ function renderUsageCard(todayUsage) {
         { className: 'rc-ov-muted', text: `${requests} req${inputTotal > 0 ? ` · 缓存 ${hitPct}%` : ''}` }
       )
     ),
-    el(
-      'div',
-      { className: 'rc-usage-bar' },
-      el('div', { className: 'rc-usage-seg is-cache', style: { width: `${totalTokens > 0 ? cacheWidth : 0}%` } }),
-      el('div', { className: 'rc-usage-seg is-uncached', style: { width: `${totalTokens > 0 ? uncachedWidth : 0}%` } }),
-      el('div', { className: 'rc-usage-seg is-output', style: { width: `${totalTokens > 0 ? outputWidth : 0}%` } })
-    ),
+    trendChart ||
+      el(
+        'div',
+        { className: 'rc-usage-bar' },
+        el('div', { className: 'rc-usage-seg is-cache', style: { width: `${totalTokens > 0 ? cacheWidth : 0}%` } }),
+        el('div', { className: 'rc-usage-seg is-uncached', style: { width: `${totalTokens > 0 ? uncachedWidth : 0}%` } }),
+        el('div', { className: 'rc-usage-seg is-output', style: { width: `${totalTokens > 0 ? outputWidth : 0}%` } })
+      ),
     el(
       'div',
       { className: 'rc-ov-legend' },
@@ -241,7 +318,7 @@ function renderActiveSessionCard({
   );
 }
 
-function renderProjectsOverviewCard({ overview, selectedProjectId = '', onSelectProject }) {
+function renderProjectsOverviewCard({ overview, selectedProjectId = '', onSelectProject, onOpenProjectGit = null }) {
   const projects = Array.isArray(overview?.projects) ? overview.projects : [];
   const headActions = [];
   if (selectedProjectId) {
@@ -298,12 +375,25 @@ function renderProjectsOverviewCard({ overview, selectedProjectId = '', onSelect
           'div',
           { className: 'rc-convo-top' },
           el('span', { className: 'rc-ov-proj-name', text: proj.name || 'Project' }),
-          el('button', {
-            type: 'button',
-            className: 'rc-btn is-sm',
-            text: isSelected ? '取消' : '筛选',
-            onClick: () => onSelectProject?.(isSelected ? '' : proj.id),
-          })
+          el(
+            'div',
+            { className: 'rc-dock-group' },
+            proj.isGitRepo && onOpenProjectGit
+              ? el('button', {
+                  type: 'button',
+                  className: 'rc-btn is-sm',
+                  text: 'Git',
+                  title: '查看该项目 Git 状态与 Diff',
+                  onClick: () => onOpenProjectGit({ projectId: proj.id }),
+                })
+              : null,
+            el('button', {
+              type: 'button',
+              className: 'rc-btn is-sm',
+              text: isSelected ? '取消' : '筛选',
+              onClick: () => onSelectProject?.(isSelected ? '' : proj.id),
+            })
+          )
         ),
         proj.shortPath ? el('div', { className: 'rc-mono rc-ov-muted', text: proj.shortPath }) : null,
         wtList.length > 0 ? wtChips : null
@@ -326,7 +416,10 @@ export function renderOverviewPanel(
     deviceName = '',
     role = 'observe',
     selectedProjectId = '',
+    usageRange = 'day',
+    onChangeUsageRange = null,
     onSelectProject = null,
+    onOpenProjectGit = null,
     onCopyId = null,
   } = {}
 ) {
@@ -337,7 +430,11 @@ export function renderOverviewPanel(
   appendNodes(
     body,
     renderQuotaCard(overview?.quota || null),
-    renderUsageCard(overview?.todayUsage || null),
+    renderUsageCard(overview?.todayUsage || null, {
+      usageDays: overview?.usageDays || [],
+      usageRange,
+      onChangeUsageRange,
+    }),
     renderActiveSessionCard({
       overview,
       selectedConvo,
@@ -349,7 +446,7 @@ export function renderOverviewPanel(
       role,
       onCopyId,
     }),
-    renderProjectsOverviewCard({ overview, selectedProjectId, onSelectProject })
+    renderProjectsOverviewCard({ overview, selectedProjectId, onSelectProject, onOpenProjectGit })
   );
   container.appendChild(body);
 }

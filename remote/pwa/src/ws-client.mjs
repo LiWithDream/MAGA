@@ -794,6 +794,54 @@ export function createRemoteWsClient(identity, handlers = {}) {
     return request('studio.overview', cid ? { cascadeId: cid } : {}, 10_000);
   }
 
+  function fetchArtifacts(cascadeId) {
+    if (!cascadeId || !UUID_RE.test(cascadeId)) {
+      return Promise.reject(new Error('invalid_cascade_id'));
+    }
+    return request('convo.artifacts', { cascadeId }, 8_000);
+  }
+
+  function readArtifact(cascadeId, fileName) {
+    if (!cascadeId || !UUID_RE.test(cascadeId)) {
+      return Promise.reject(new Error('invalid_cascade_id'));
+    }
+    if (!fileName || typeof fileName !== 'string') {
+      return Promise.reject(new Error('invalid_artifact_name'));
+    }
+    return request('convo.artifactRead', { cascadeId, fileName: fileName.trim() }, 10_000);
+  }
+
+  function fetchProjectGitStatus({ projectId = '', cascadeId = '' } = {}) {
+    const pid = typeof projectId === 'string' ? projectId.trim() : '';
+    const cid = typeof cascadeId === 'string' && UUID_RE.test(cascadeId.trim()) ? cascadeId.trim() : '';
+    if (!pid && !cid) {
+      return Promise.reject(new Error('project_or_cascade_required'));
+    }
+    return request(
+      'project.gitStatus',
+      { ...(pid ? { projectId: pid } : {}), ...(cid ? { cascadeId: cid } : {}) },
+      10_000
+    );
+  }
+
+  function fetchProjectGitDiff({ projectId = '', cascadeId = '', filePath = '', commitHash = '' } = {}) {
+    const pid = typeof projectId === 'string' ? projectId.trim() : '';
+    const cid = typeof cascadeId === 'string' && UUID_RE.test(cascadeId.trim()) ? cascadeId.trim() : '';
+    if (!pid && !cid) {
+      return Promise.reject(new Error('project_or_cascade_required'));
+    }
+    return request(
+      'project.gitDiff',
+      {
+        ...(pid ? { projectId: pid } : {}),
+        ...(cid ? { cascadeId: cid } : {}),
+        ...(filePath ? { filePath: String(filePath).trim() } : {}),
+        ...(commitHash ? { commitHash: String(commitHash).trim() } : {}),
+      },
+      12_000
+    );
+  }
+
   function fetchResumeState(cascadeId) {
     if (!cascadeId || !UUID_RE.test(cascadeId)) {
       return Promise.reject(new Error('invalid_cascade_id'));
@@ -910,6 +958,10 @@ export function createRemoteWsClient(identity, handlers = {}) {
     approveWaitingStep,
     cancelConversation,
     fetchStudioOverview,
+    fetchArtifacts,
+    readArtifact,
+    fetchProjectGitStatus,
+    fetchProjectGitDiff,
     fetchResumeState,
     resumeConversation,
     compactConversation,

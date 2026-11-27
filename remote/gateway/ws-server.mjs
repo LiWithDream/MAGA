@@ -32,7 +32,77 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const IDEMPOTENCY_KEY_RE = /^[a-zA-Z0-9._:-]{8,128}$/;
 const WAITING_HASH_RE = /^[0-9a-f]{16}$/i;
 const PROPOSAL_ID_RE = /^[A-Za-z0-9._:-]{4,128}$/;
-const READ_METHODS = new Set(['convo.list', 'convo.snapshot', 'convo.watch', 'convo.resumeState', 'studio.overview', 'models.list']);
+const ARTIFACT_NAME_RE = /^[A-Za-z0-9._-]{1,128}\.md$/i;
+const COMMIT_HASH_RE = /^[0-9a-f]{7,40}$/i;
+const PROJECT_ID_RE = /^[A-Za-z0-9._:-]{1,128}$/;
+const READ_METHODS = new Set([
+  'convo.list',
+  'convo.snapshot',
+  'convo.watch',
+  'convo.resumeState',
+  'convo.artifacts',
+  'convo.artifactRead',
+  'project.gitStatus',
+  'project.gitDiff',
+  'studio.overview',
+  'models.list',
+]);
+const READ_PASSTHROUGH_SPECS = Object.freeze({
+  'convo.artifacts': {
+    timeoutMs: 6500,
+    build(params) {
+      const cascadeId = typeof params.cascadeId === 'string' ? params.cascadeId.trim() : '';
+      if (!UUID_RE.test(cascadeId)) return { error: 'invalid_cascade_id' };
+      return { params: { cascadeId } };
+    },
+  },
+  'convo.artifactRead': {
+    timeoutMs: 8000,
+    build(params) {
+      const cascadeId = typeof params.cascadeId === 'string' ? params.cascadeId.trim() : '';
+      if (!UUID_RE.test(cascadeId)) return { error: 'invalid_cascade_id' };
+      const fileName = typeof params.fileName === 'string' ? params.fileName.trim() : '';
+      if (!ARTIFACT_NAME_RE.test(fileName) || fileName.includes('..')) return { error: 'invalid_artifact_name' };
+      return { params: { cascadeId, fileName } };
+    },
+  },
+  'project.gitStatus': {
+    timeoutMs: 8000,
+    build(params) {
+      const projectId = typeof params.projectId === 'string' ? params.projectId.trim() : '';
+      const cascadeId = typeof params.cascadeId === 'string' ? params.cascadeId.trim() : '';
+      if (projectId && !PROJECT_ID_RE.test(projectId)) return { error: 'invalid_project_id' };
+      if (cascadeId && !UUID_RE.test(cascadeId)) return { error: 'invalid_cascade_id' };
+      if (!projectId && !cascadeId) return { error: 'project_or_cascade_required' };
+      return { params: { ...(projectId ? { projectId } : {}), ...(cascadeId ? { cascadeId } : {}) } };
+    },
+  },
+  'project.gitDiff': {
+    timeoutMs: 10_000,
+    build(params) {
+      const projectId = typeof params.projectId === 'string' ? params.projectId.trim() : '';
+      const cascadeId = typeof params.cascadeId === 'string' ? params.cascadeId.trim() : '';
+      const commitHash = typeof params.commitHash === 'string' ? params.commitHash.trim() : '';
+      const filePath = typeof params.filePath === 'string' ? params.filePath.trim() : '';
+      if (projectId && !PROJECT_ID_RE.test(projectId)) return { error: 'invalid_project_id' };
+      if (cascadeId && !UUID_RE.test(cascadeId)) return { error: 'invalid_cascade_id' };
+      if (!projectId && !cascadeId) return { error: 'project_or_cascade_required' };
+      if (commitHash && !COMMIT_HASH_RE.test(commitHash)) return { error: 'invalid_commit_hash' };
+      if (filePath && (filePath.length > 512 || filePath.startsWith('-') || filePath.includes('\0'))) {
+        return { error: 'invalid_file_path' };
+      }
+      if (!commitHash && !filePath) return { error: 'invalid_file_path' };
+      return {
+        params: {
+          ...(projectId ? { projectId } : {}),
+          ...(cascadeId ? { cascadeId } : {}),
+          ...(commitHash ? { commitHash } : {}),
+          ...(filePath ? { filePath } : {}),
+        },
+      };
+    },
+  },
+});
 const WRITE_METHODS = new Set(['convo.create', 'convo.send', 'convo.approve', 'convo.cancel', 'convo.resume', 'convo.compact', 'opus.dismiss', 'models.select']);
 const ROLE_RANK = Object.freeze({ observe: 0, steer: 1, admin: 2 });
 
@@ -1021,6 +1091,24 @@ export function createWsServer({
         ok: false,
         error: 'method_not_supported',
       });
+      return;
+    }
+
+    const readSpec = READ_PASSTHROUGH_SPECS[method];
+    if (readSpec) {
+      const built = readSpec.build(params);
+      if (built.error) {
+        client.sendJson({ type: 'res', reqId, ok: false, error: built.error });
+        return;
+      }
+      try {
+        const result = await udsClient.request(method, built.params, { timeoutMs: readSpec.timeoutMs });
+        if (!client.closed) client.sendJson({ type: 'res', reqId, ok: true, result });
+      } catch (err) {
+        if (!client.closed) {
+          client.sendJson({ type: 'res', reqId, ok: false, error: err?.code || err?.message || 'uds_error' });
+        }
+      }
       return;
     }
 

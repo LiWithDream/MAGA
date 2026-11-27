@@ -400,7 +400,11 @@ export function filterConversations(state) {
       if (state.filter === 'running' && !isRunningStatus(c.status)) return false;
       if (state.filter === 'waiting' && getEffectiveWaitingCount(state, c) === 0) return false;
       if (q) {
-        const hay = `${c.title || ''} ${c.summary || ''} ${c.id || ''}`.toLowerCase();
+        const wtMeta = state.studioOverview?.worktreeByCid?.[c.id];
+        const projects = Array.isArray(state.studioOverview?.projects) ? state.studioOverview.projects : [];
+        const pid = String(c.projectId || wtMeta?.projectId || '');
+        const projName = pid ? projects.find((p) => p.id === pid)?.name || '' : '';
+        const hay = `${c.title || ''} ${c.summary || ''} ${c.id || ''} ${wtMeta?.branch || ''} ${wtMeta?.repoName || ''} ${projName}`.toLowerCase();
         if (!hay.includes(q)) return false;
       }
       return true;

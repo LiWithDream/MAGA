@@ -151,8 +151,30 @@ export function createWorkspaceShellDom({ rootEl, state, layoutButtonLabel, hand
       el('button', {
         type: 'button',
         className: 'rc-btn is-sm rc-desktop-only',
+        text: '文档',
+        title: '查看当前会话 Markdown 文档 (Artifacts)',
+        onClick: () => handlers.onOpenArtifacts?.(),
+      }),
+      el('button', {
+        type: 'button',
+        className: 'rc-btn is-sm rc-desktop-only',
+        text: 'Git',
+        title: '查看仓库 Git 变更与 Diff',
+        onClick: () => handlers.onOpenGitDiff?.(),
+      }),
+      el('button', {
+        type: 'button',
+        className: 'rc-btn is-sm rc-desktop-only',
         text: '拉取快照',
         onClick: () => handlers.onRefreshSelectedSnapshot?.(),
+      }),
+      el('button', {
+        type: 'button',
+        className: 'rc-icon-btn rc-mobile-only',
+        'aria-label': '文档与代码变更',
+        title: '文档与 Git Diff',
+        text: '📄',
+        onClick: () => handlers.onOpenArtifacts?.(),
       }),
       el('button', {
         type: 'button',
@@ -349,8 +371,9 @@ export function createWorkspaceShellDom({ rootEl, state, layoutButtonLabel, hand
   );
 
   const newChatModal = el('div', { className: 'rc-new-chat-host rc-hidden' });
+  const viewerDrawer = el('div', { className: 'rc-viewer-host rc-hidden' });
   const main = el('main', { className: 'rc-main' }, sidebar, detail, overviewPane);
-  rootEl.append(topbar, moreMenu, noticeBar, studioStrip, projectsDrawer, main, mobileNav, newChatModal);
+  rootEl.append(topbar, moreMenu, noticeBar, studioStrip, projectsDrawer, main, mobileNav, newChatModal, viewerDrawer);
 
   return {
     topbar,
@@ -389,6 +412,7 @@ export function createWorkspaceShellDom({ rootEl, state, layoutButtonLabel, hand
     searchInput,
     newChatBtn,
     newChatModal,
+    viewerDrawer,
     filterRow,
     groupRow,
     sidebarList,

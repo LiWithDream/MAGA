@@ -6,6 +6,15 @@
  * Strict invariant: NEVER use unsafe HTML injection APIs; build DOM with createElement + textContent only.
  */
 import { appendNodes, clearNode, el, isRunningStatus } from './ui-helpers.mjs';
+import {
+  bindNativeAndroidBridge,
+  isNativeAndroidApp,
+  openNativeSettingsDialog,
+  requestNativeNotificationPermission,
+  sendNativeNotification,
+  vibrateNative,
+} from './native-bridge.mjs';
+export { bindNativeAndroidBridge };
 
 const ALERTS_STORAGE_KEY = 'rc:alertsEnabled';
 
@@ -120,6 +129,7 @@ export function createAlertManager({ baseTitle = 'AGY Studio Remote' } = {}) {
   const isDocHidden = () => typeof document !== 'undefined' && document.visibilityState === 'hidden';
 
   const vibratePattern = (pattern) => {
+    if (vibrateNative(pattern)) return;
     try {
       if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
         navigator.vibrate(pattern);
@@ -127,7 +137,8 @@ export function createAlertManager({ baseTitle = 'AGY Studio Remote' } = {}) {
     } catch {}
   };
 
-  const fireWebNotification = (title, body, tag) => {
+  const fireWebNotification = (title, body, tag, { category = 'completed', cascadeId = '' } = {}) => {
+    if (sendNativeNotification({ title, body, tag, category, cascadeId })) return;
     try {
       if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
       new Notification(title, { body, tag, silent: false });
@@ -197,13 +208,19 @@ export function createAlertManager({ baseTitle = 'AGY Studio Remote' } = {}) {
       const total = approvals.reduce((acc, a) => acc + a.count, 0);
       setDocTitle(`⏳ 待审批 (${total}) · ${baseTitle}`);
       vibratePattern([80, 60, 80]);
-      if (isDocHidden()) {
-        fireWebNotification('等待桌面端审批', `${approvals[0].title} 需要确认操作`, `agy-wait-${approvals[0].id}`);
+      if (isDocHidden() || isNativeAndroidApp()) {
+        fireWebNotification('等待桌面端审批', `${approvals[0].title} 需要确认操作`, `agy-wait-${approvals[0].id}`, {
+          category: 'approval',
+          cascadeId: approvals[0].id,
+        });
       }
     } else if (completed.length > 0) {
-      if (isDocHidden()) {
+      if (isDocHidden() || isNativeAndroidApp()) {
         setDocTitle(`✓ 已完成 · ${baseTitle}`);
-        fireWebNotification('任务已完成', completed[0].title, `agy-done-${completed[0].id}`);
+        fireWebNotification('任务已完成', completed[0].title, `agy-done-${completed[0].id}`, {
+          category: 'completed',
+          cascadeId: completed[0].id,
+        });
       }
       vibratePattern([35, 50, 35]);
     }
@@ -216,6 +233,7 @@ export function createAlertManager({ baseTitle = 'AGY Studio Remote' } = {}) {
     if (!enabled) {
       clearTitleBadge();
     } else {
+      requestNativeNotificationPermission();
       try {
         if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
           Promise.resolve(Notification.requestPermission()).catch(() => {});
@@ -703,6 +721,9 @@ export function createMobileHistoryController({
     enterModal,
     leaveModal,
     handlePopState,
+    closeOverlays: () => onCloseOverlays?.(),
+    closeModal: () => onCloseModal?.(),
+    navigateToList: () => onNavigateToList?.(),
   };
 }
 
@@ -755,6 +776,13 @@ export function createMoreMenuController({
         render();
         refreshAllData();
       },
+      onOpenNativeSettings: isNativeAndroidApp()
+        ? () => {
+            state.moreMenuOpen = false;
+            render();
+            openNativeSettingsDialog();
+          }
+        : null,
       onUnpair: () => handleUnpairDevice(),
     });
   }

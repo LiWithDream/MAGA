@@ -27,6 +27,7 @@ import {
 } from './studio-panel.mjs';
 import {
   STORAGE_KEYS,
+  bindNativeAndroidBridge,
   bindViewportHeightSync,
   createAlertManager,
   createMobileHistoryController,
@@ -1931,6 +1932,7 @@ function startWorkspaceSession() {
 
 async function boot() {
   bindViewportHeightSync();
+  bindNativeAndroidBridge({ state, canSteer, createIdempotencyKey, uuidRe: UUID_RE, selectConversation, syncComposerControls, setActionNotice, onCloseOverlays: mobileHistory.closeOverlays, onCloseModal: mobileHistory.closeModal, onNavigateToList: mobileHistory.navigateToList });
   if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
     const hadController = Boolean(navigator.serviceWorker.controller);
     if (typeof navigator.serviceWorker.addEventListener === 'function') {

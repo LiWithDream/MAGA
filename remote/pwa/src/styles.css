@@ -489,7 +489,7 @@ input {
   display: none;
   grid-template-columns: repeat(3, 1fr);
   gap: 6px;
-  padding: 6px 10px calc(8px + env(safe-area-inset-bottom, 0px));
+  padding: 6px 10px calc(8px + var(--rc-inset-bottom, env(safe-area-inset-bottom, 0px)));
   background: var(--rc-bg);
   border-top: 1px solid var(--rc-border);
 }
@@ -2616,7 +2616,7 @@ button.rc-footer-pill:disabled {
 
 .rc-more-menu {
   position: absolute;
-  top: calc(max(8px, env(safe-area-inset-top)) + 44px);
+  top: calc(max(8px, var(--rc-inset-top, env(safe-area-inset-top, 0px))) + 44px);
   right: 10px;
   z-index: 40;
   min-width: 216px;
@@ -2698,7 +2698,7 @@ button.rc-footer-pill:disabled {
 }
 
 .rc-app[data-layout-mode="mobile"] .rc-topbar {
-  padding: max(8px, env(safe-area-inset-top)) 12px 8px;
+  padding: max(8px, var(--rc-inset-top, env(safe-area-inset-top, 0px))) 12px 8px;
   min-height: 48px;
 }
 
@@ -2708,7 +2708,7 @@ button.rc-footer-pill:disabled {
 }
 
 .rc-app[data-layout-mode="mobile"] .rc-detail-head {
-  padding: max(8px, env(safe-area-inset-top)) 10px 8px;
+  padding: max(8px, var(--rc-inset-top, env(safe-area-inset-top, 0px))) 10px 8px;
   min-height: 52px;
   gap: 8px;
   background: var(--rc-surface);
@@ -2782,7 +2782,7 @@ button.rc-footer-pill:disabled {
 }
 
 .rc-app[data-layout-mode="mobile"] .rc-bottom-dock {
-  padding: 5px 10px calc(8px + env(safe-area-inset-bottom, 0px));
+  padding: 5px 10px calc(8px + var(--rc-inset-bottom, env(safe-area-inset-bottom, 0px)));
   background: var(--rc-bg);
 }
 

@@ -279,6 +279,7 @@ export function renderMobileMoreMenu(
     onCycleLayout = null,
     onOpenOverview = null,
     onRefreshAll = null,
+    onOpenNativeSettings = null,
     onUnpair = null,
   } = {}
 ) {
@@ -297,6 +298,17 @@ export function renderMobileMoreMenu(
       el('div', { className: 'rc-more-meta-line', text: `${hostLine} · ${String(role || 'observe').toUpperCase()}` }),
       el('div', { className: 'rc-more-meta-sub', text: `权限策略：${presetLabel || '--'}` })
     ),
+    onOpenNativeSettings
+      ? el('button', {
+          type: 'button',
+          className: 'rc-more-item',
+          text: '原生应用设置（服务器 / 缓存）',
+          onClick: (ev) => {
+            ev?.stopPropagation?.();
+            onOpenNativeSettings?.();
+          },
+        })
+      : null,
     alertLabel && onToggleAlerts
       ? el('button', {
           type: 'button',

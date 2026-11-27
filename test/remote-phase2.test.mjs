@@ -2244,6 +2244,70 @@ test('Remote Mobile Polish V2: stale worktree branch cleanup, Markdown tables, a
       }
     );
     assert.match(longStreamFooter.textContent, /生成中 2m05s/);
+
+    // 10. Native Android shell bridge: insets, back gesture, shared images, focus conversation & native alerts
+    const nativeBridgeMod = await import(pathToFileURL(path.join(PWA_DIR, 'src', 'native-bridge.mjs')).href);
+    const nativeNotifs = [];
+    const nativeVibs = [];
+    let nativeSettingsOpened = 0;
+    dom.window.__agyNative = {
+      isNative: () => true,
+      notify: (title, body, tag, category, cascadeId) => nativeNotifs.push({ title, body, tag, category, cascadeId }),
+      vibrate: (patternJson) => nativeVibs.push(patternJson),
+      requestNotificationPermission: () => {},
+      openNativeSettings: () => { nativeSettingsOpened += 1; },
+    };
+    const bridgeState = {
+      mobileView: 'detail',
+      modelPopoverOpen: true,
+      contextPopoverOpen: false,
+      moreMenuOpen: false,
+      newChatOpen: false,
+      newChatBusy: false,
+      draftMedia: [],
+      draftIdempotencyKey: '',
+      actionError: '',
+    };
+    let bridgeFocusedCid = '';
+    let bridgeListNavs = 0;
+    const unbindNative = nativeBridgeMod.bindNativeAndroidBridge({
+      state: bridgeState,
+      canSteer: () => true,
+      createIdempotencyKey: () => 'key-share-1',
+      uuidRe: /^[0-9a-f-]{36}$/i,
+      selectConversation: (id) => { bridgeFocusedCid = id; },
+      syncComposerControls: () => {},
+      setActionNotice: () => {},
+      onCloseOverlays: () => { bridgeState.modelPopoverOpen = false; },
+      onCloseModal: () => { bridgeState.newChatOpen = false; },
+      onNavigateToList: () => { bridgeState.mobileView = 'list'; bridgeListNavs += 1; },
+    });
+    dom.window.__agyApplyNativeInsets({ top: 34, bottom: 24, left: 0, right: 0 });
+    assert.equal(doc.documentElement.style.getPropertyValue('--rc-inset-top'), '34px');
+    assert.equal(doc.documentElement.style.getPropertyValue('--rc-inset-bottom'), '24px');
+    assert.equal(dom.window.__agyNativeBack(), true, 'first back closes open popover');
+    assert.equal(bridgeState.modelPopoverOpen, false);
+    assert.equal(dom.window.__agyNativeBack(), true, 'second back returns to list');
+    assert.equal(bridgeListNavs, 1);
+    assert.equal(dom.window.__agyNativeBack(), false, 'third back on list delegates exit to Android');
+    assert.equal(dom.window.__agyFocusConversation(liveCid), true);
+    assert.equal(bridgeFocusedCid, liveCid);
+    const receivedCount = dom.window.__agyReceiveSharedMedia([
+      { name: 'shot.jpg', dataUrl: 'data:image/jpeg;base64,/9j/4AAQSkZJRg==' },
+    ]);
+    assert.equal(receivedCount, 1);
+    assert.equal(bridgeState.draftMedia.length, 1);
+    const nativeAlerts = mobileEnhMod.createAlertManager({ baseTitle: 'AGY Native' });
+    nativeAlerts.observeConversations([{ id: liveCid, title: 'Build APK', status: 'RUNNING', waitingSteps: [] }]);
+    nativeAlerts.observeConversations([{ id: liveCid, title: 'Build APK', status: 'WAITING_FOR_USER', waitingSteps: [{ stepIndex: 1 }] }]);
+    assert.equal(nativeNotifs.length, 1);
+    assert.equal(nativeNotifs[0].category, 'approval');
+    assert.equal(nativeNotifs[0].cascadeId, liveCid);
+    assert.ok(nativeVibs.length >= 1);
+    nativeBridgeMod.openNativeSettingsDialog();
+    assert.equal(nativeSettingsOpened, 1);
+    unbindNative();
+    delete dom.window.__agyNative;
   } finally {
     dom.window.close();
     if (prevDoc) Object.defineProperty(globalThis, 'document', prevDoc);

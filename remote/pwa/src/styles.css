@@ -1,4 +1,5 @@
 :root {
+  color-scheme: light dark;
   --rc-bg: #ffffff;
   --rc-chat-bg: #f4f4f1;
   --rc-sidebar-bg: #f9f9f8;
@@ -488,8 +489,8 @@ input {
   display: none;
   grid-template-columns: repeat(3, 1fr);
   gap: 6px;
-  padding: 6px 10px max(8px, env(safe-area-inset-bottom));
-  background: var(--rc-surface);
+  padding: 6px 10px calc(8px + env(safe-area-inset-bottom, 0px));
+  background: var(--rc-bg);
   border-top: 1px solid var(--rc-border);
 }
 
@@ -2781,7 +2782,7 @@ button.rc-footer-pill:disabled {
 }
 
 .rc-app[data-layout-mode="mobile"] .rc-bottom-dock {
-  padding: 5px 10px max(12px, env(safe-area-inset-bottom));
+  padding: 5px 10px calc(8px + env(safe-area-inset-bottom, 0px));
   background: var(--rc-bg);
 }
 

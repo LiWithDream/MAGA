@@ -58,15 +58,38 @@ export function bindViewportHeightSync() {
       apply();
     }
   };
+  const darkMql =
+    typeof window.matchMedia === 'function' ? window.matchMedia('(prefers-color-scheme: dark)') : null;
+  const syncThemeMeta = () => {
+    try {
+      const dark = Boolean(darkMql?.matches);
+      const color = dark ? '#212120' : '#ffffff';
+      let liveMeta = document.getElementById('rc-theme-color-live');
+      if (!liveMeta && document.head) {
+        liveMeta = document.createElement('meta');
+        liveMeta.id = 'rc-theme-color-live';
+        liveMeta.setAttribute('name', 'theme-color');
+        document.head.appendChild(liveMeta);
+      }
+      if (liveMeta) liveMeta.setAttribute('content', color);
+    } catch {}
+  };
   apply();
+  syncThemeMeta();
   window.addEventListener('resize', schedule);
   window.addEventListener('orientationchange', schedule);
+  if (darkMql && typeof darkMql.addEventListener === 'function') {
+    darkMql.addEventListener('change', syncThemeMeta);
+  }
   if (window.visualViewport && typeof window.visualViewport.addEventListener === 'function') {
     window.visualViewport.addEventListener('resize', schedule);
   }
   return () => {
     window.removeEventListener('resize', schedule);
     window.removeEventListener('orientationchange', schedule);
+    if (darkMql && typeof darkMql.removeEventListener === 'function') {
+      darkMql.removeEventListener('change', syncThemeMeta);
+    }
     if (window.visualViewport && typeof window.visualViewport.removeEventListener === 'function') {
       window.visualViewport.removeEventListener('resize', schedule);
     }

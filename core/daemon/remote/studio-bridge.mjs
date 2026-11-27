@@ -25,6 +25,7 @@ import {
   loadQuotaState,
 } from '../../../studio/daemon/opus-gate-service.mjs';
 import { getAutoCompactStatus } from '../../../studio/daemon/auto-compact-service.mjs';
+import { getAnchorsStatus } from '../../../studio/daemon/anchors-service.mjs';
 import { collectUsageStatsAsync } from '../../../studio/daemon/usage-service.mjs';
 import { isCascadeWriteActiveOrRecent } from './cascade-lock.mjs';
 
@@ -362,6 +363,26 @@ export async function collectStudioOverview(params = {}, opts = {}) {
         : null,
     };
 
+    const ancRaw = (opts.getAnchorsStatus || getAnchorsStatus)(
+      { cascadeId },
+      { ...(opts.anchorOpts || {}), stripThinking: true }
+    );
+    const anchors = {
+      enabled: Boolean(ancRaw?.pluginInstalled),
+      compactionCount: Number(ancRaw?.compactionCount || 0),
+      handoffRecommended: Boolean(ancRaw?.handoffRecommended),
+      pendingCount: Array.isArray(ancRaw?.proposals) ? ancRaw.proposals.length : 0,
+      proposals: Array.isArray(ancRaw?.proposals)
+        ? ancRaw.proposals.map((p) => ({
+            id: String(p.id || ''),
+            verbatimQuote: String(p.verbatimQuote || '').slice(0, 280),
+            stepIndex: Number(p.stepIndex || 0),
+            ts: Number(p.ts || 0),
+          }))
+        : [],
+      tokenBudget: ancRaw?.tokenBudget || { usedTokens: 0, maxTokens: 400 },
+    };
+
     let metrics = null;
     try {
       const convDir = opts.conversationsDir || path.join(HOME, '.gemini', 'antigravity', 'conversations');
@@ -392,6 +413,7 @@ export async function collectStudioOverview(params = {}, opts = {}) {
       cascadeId,
       opusGate,
       autoCompact,
+      anchors,
       ...(metrics ? { metrics } : {}),
     };
   }

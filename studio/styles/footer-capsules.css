@@ -404,7 +404,7 @@ button[data-testid="subagent-tab-open-full-view"] + button[data-testid="sidebar-
 }
 
 /* Order 7: Any unknown extra native chip (excludes our styled subagent, resume, opus-gate & auto-compact capsules) */
-.agy-composer-footer > div:first-child > *:not(button:first-of-type):not(input):not([data-agy-picker-host]):not([data-agy-sub-pill]):not(#ag-claude-ctx-ring):not(#ag-live-metrics-pill):not(#agy-main-subagent-pill):not(#agy-resume-pill):not(#agy-opus-gate-pill):not(#agy-auto-compact-pill):not([data-agy-native-sub-chip="1"]):not([data-agy-model-wrap="1"]):not([data-deck-model-bubble="hidden"]) {
+.agy-composer-footer > div:first-child > *:not(button:first-of-type):not(input):not([data-agy-picker-host]):not([data-agy-sub-pill]):not(#ag-claude-ctx-ring):not(#ag-live-metrics-pill):not(#agy-main-subagent-pill):not(#agy-resume-pill):not(#agy-opus-gate-pill):not(#agy-auto-compact-pill):not(#agy-anchors-pill):not([data-agy-native-sub-chip="1"]):not([data-agy-model-wrap="1"]):not([data-deck-model-bubble="hidden"]) {
   order: 7 !important;
   display: inline-flex !important;
   align-items: center !important;
@@ -424,7 +424,7 @@ button[data-testid="subagent-tab-open-full-view"] + button[data-testid="sidebar-
   white-space: nowrap !important;
   transition: background-color 140ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 140ms cubic-bezier(0.22, 1, 0.36, 1), color 140ms ease !important;
 }
-.agy-composer-footer > div:first-child > *:not(button:first-of-type):not(input):not([data-agy-picker-host]):not([data-agy-sub-pill]):not(#ag-claude-ctx-ring):not(#ag-live-metrics-pill):not(#agy-main-subagent-pill):not(#agy-resume-pill):not(#agy-opus-gate-pill):not(#agy-auto-compact-pill):not([data-agy-native-sub-chip="1"]):not([data-agy-model-wrap="1"]):not([data-deck-model-bubble="hidden"]):hover {
+.agy-composer-footer > div:first-child > *:not(button:first-of-type):not(input):not([data-agy-picker-host]):not([data-agy-sub-pill]):not(#ag-claude-ctx-ring):not(#ag-live-metrics-pill):not(#agy-main-subagent-pill):not(#agy-resume-pill):not(#agy-opus-gate-pill):not(#agy-auto-compact-pill):not(#agy-anchors-pill):not([data-agy-native-sub-chip="1"]):not([data-agy-model-wrap="1"]):not([data-deck-model-bubble="hidden"]):hover {
   background-color: var(--agy-pill-bg-hover) !important;
   box-shadow: inset 0 0 0 1px var(--agy-pill-border-hover) !important;
 }

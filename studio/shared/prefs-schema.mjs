@@ -42,6 +42,8 @@ export const DEFAULT_STUDIO_PREFS = Object.freeze({
   autoCompactMinWaitSec: 300,
   autoCompactHighWaterPct: 0,
   autoCompactTriggers: { longTimer: true, modelRequest: true, highWater: false },
+  // Anti-Drift Anchors & Locks
+  anchorsMode: 'semi',
   // Appearance & Motion
   motionLevel: 'full',
   effortMotion: 'full',
@@ -60,6 +62,7 @@ export const STUDIO_PREFS_ENUMS = {
   opusGateMode: new Set(['off', 'semi', 'auto']),
   opusGateModel: new Set(['carbon', 'opus']),
   autoCompactMode: new Set(['off', 'semi', 'auto']),
+  anchorsMode: new Set(['off', 'semi']),
   motionLevel: new Set(['full', 'reduced', 'off']),
   effortMotion: new Set(['fast', 'full']),
 };
@@ -171,6 +174,7 @@ export function sanitizeStudioPrefs(raw, defaults = DEFAULT_STUDIO_PREFS) {
     autoCompactMinWaitSec: clampInt(src.autoCompactMinWaitSec, 60, 3600, def.autoCompactMinWaitSec),
     autoCompactHighWaterPct: sanitizeHighWaterPct(src.autoCompactHighWaterPct, def.autoCompactHighWaterPct),
     autoCompactTriggers: sanitizeAutoCompactTriggers(src.autoCompactTriggers, def),
+    anchorsMode: enumOr('anchorsMode', def.anchorsMode ?? 'semi'),
     motionLevel: enumOr('motionLevel', def.motionLevel),
     effortMotion: enumOr('effortMotion', def.effortMotion),
   };

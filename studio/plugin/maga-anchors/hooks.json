@@ -1,0 +1,35 @@
+{
+  "maga-anchors": {
+    "PreToolUse": [
+      {
+        "matcher": "run_command|edit_file|write_file|write_to_file|replace_file_content|multi_replace_file_content",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ./hooks/anchor-guard.mjs",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "run_command|edit_file|write_file",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ./hooks/anchor-guard.mjs",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "type": "command",
+        "command": "node ./hooks/anchor-guard.mjs",
+        "timeout": 5
+      }
+    ]
+  }
+}

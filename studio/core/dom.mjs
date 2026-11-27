@@ -10,6 +10,7 @@ export const OWN_ROW1_PILL_IDS = new Set([
   'agy-resume-pill',
   'agy-opus-gate-pill',
   'agy-auto-compact-pill',
+  'agy-anchors-pill',
 ]);
 
 export const OWN_FOOTER_PILL_IDS = new Set([
@@ -27,6 +28,8 @@ export const OWN_HOST_IDS = new Set([
   'agy-opus-gate-pill',
   'agy-opus-gate-menu',
   'agy-auto-compact-pill',
+  'agy-anchors-pill',
+  'agy-anchors-menu',
   'agy-ov-usage-card',
   'agy-pd-usage-slot',
   'agy-pd-usage-card',

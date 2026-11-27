@@ -1,0 +1,5 @@
+{
+  "name": "maga-anchors",
+  "displayName": "AGY Studio · Anti-Drift Anchors & Locks",
+  "description": "Compaction generation tracker, verbatim user-correction & CoT comprehension proposals, and zero-LLM .agents/locks.json PreToolUse guard."
+}

@@ -61,6 +61,7 @@ const STYLE_FILES = [
   'quota-popover.css',
   'overview-usage.css',
   'studio-settings.css',
+  'anchors-pill.css',
 ];
 
 const DEFAULT_PREFS = DEFAULT_STUDIO_PREFS;

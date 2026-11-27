@@ -405,7 +405,19 @@ export function parseConversationMetrics(cascadeId, conversationsDir) {
       const userStepsCount = userStat?.cnt ?? 0;
       const turnStat = db.prepare('SELECT COUNT(*) AS cnt FROM steps WHERE step_type = 15 AND idx > ?').get(lastUserIdx);
       const rawTurnSteps = turnStat?.cnt ?? 0;
-      return { empty: false, rows, userStepsCount, rawTurnSteps };
+      let compactionCount = 0;
+      try {
+        const cpStat = db
+          .prepare('SELECT COUNT(*) AS cnt FROM steps WHERE step_type = 23 AND status > 0 AND status <= 3')
+          .get();
+        compactionCount = cpStat?.cnt ?? 0;
+      } catch {
+        try {
+          const cpFallback = db.prepare('SELECT COUNT(*) AS cnt FROM steps WHERE step_type = 23').get();
+          compactionCount = cpFallback?.cnt ?? 0;
+        } catch {}
+      }
+      return { empty: false, rows, userStepsCount, rawTurnSteps, compactionCount };
     });
 
     if (dbRes.empty) {
@@ -555,6 +567,7 @@ export function parseConversationMetrics(cascadeId, conversationsDir) {
       sessionCacheRate: Number(sessionCacheRate),
       turns: dbRes.userStepsCount,
       calls: valid.length,
+      compactions: dbRes.compactionCount || 0,
       totalThink,
       totalResp,
       totalOut,
@@ -582,6 +595,7 @@ export function parseConversationMetrics(cascadeId, conversationsDir) {
       lastCacheRate: Number(lastCacheRate),
       sessionCacheRate: Number(sessionCacheRate),
       genIdx: last.idx + 1,
+      compactionCount: dbRes.compactionCount || 0,
       turnSteps,
       turnOut,
       turnThink,

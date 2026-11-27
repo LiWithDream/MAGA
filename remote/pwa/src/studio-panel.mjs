@@ -296,6 +296,7 @@ export function renderMobileMoreMenu(
     presetLabel = '',
     layoutLabel = '',
     alertLabel = '',
+    onReconnectNow = null,
     onToggleAlerts = null,
     onCycleLayout = null,
     onOpenOverview = null,
@@ -319,6 +320,17 @@ export function renderMobileMoreMenu(
       el('div', { className: 'rc-more-meta-line', text: `${hostLine} · ${String(role || 'observe').toUpperCase()}` }),
       el('div', { className: 'rc-more-meta-sub', text: `权限策略：${presetLabel || '--'}` })
     ),
+    onReconnectNow
+      ? el('button', {
+          type: 'button',
+          className: 'rc-more-item',
+          text: '立即重新连接',
+          onClick: (ev) => {
+            ev?.stopPropagation?.();
+            onReconnectNow?.();
+          },
+        })
+      : null,
     onOpenNativeSettings
       ? el('button', {
           type: 'button',

@@ -798,9 +798,182 @@ export function createOpusGateActions({
   return { dismiss, triggerReview };
 }
 
+const DRAFTS_STORAGE_KEY = 'agy_remote_drafts_v1';
+const AUTH_RELOAD_TS_KEY = 'agy_remote_auth_reload_ts';
+const MAX_SAVED_DRAFTS = 30;
+const MAX_DRAFT_CHARS = 8000;
+const SLASH_COMMANDS = [
+  { cmd: '/compact', desc: '压缩上下文', trailingSpace: false },
+  { cmd: '/plan', desc: '先规划方案', trailingSpace: true },
+  { cmd: '/goal', desc: '持续执行到底', trailingSpace: true },
+  { cmd: '/grill-me', desc: '交互式对齐需求', trailingSpace: true },
+  { cmd: '/boost', desc: '深度分析与验证', trailingSpace: true },
+  { cmd: '/teamwork', desc: '多智能体协作', trailingSpace: true },
+];
+
+function readDraftStore() {
+  try {
+    if (typeof window === 'undefined' || !window.localStorage) return {};
+    const raw = window.localStorage.getItem(DRAFTS_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+export function loadConversationDraft(cascadeId) {
+  if (!cascadeId) return '';
+  const store = readDraftStore();
+  const entry = store[cascadeId];
+  return typeof entry?.text === 'string' ? entry.text : '';
+}
+
+export function saveConversationDraft(cascadeId, text) {
+  if (!cascadeId) return;
+  try {
+    if (typeof window === 'undefined' || !window.localStorage) return;
+    const store = readDraftStore();
+    const clean = String(text || '');
+    if (!clean.trim()) {
+      if (!(cascadeId in store)) return;
+      delete store[cascadeId];
+    } else {
+      store[cascadeId] = {
+        text: clean.slice(0, MAX_DRAFT_CHARS),
+        ts: Date.now(),
+      };
+      const entries = Object.entries(store);
+      if (entries.length > MAX_SAVED_DRAFTS) {
+        entries.sort((a, b) => Number(b[1]?.ts || 0) - Number(a[1]?.ts || 0));
+        const pruned = Object.fromEntries(entries.slice(0, MAX_SAVED_DRAFTS));
+        window.localStorage.setItem(DRAFTS_STORAGE_KEY, JSON.stringify(pruned));
+        return;
+      }
+    }
+    window.localStorage.setItem(DRAFTS_STORAGE_KEY, JSON.stringify(store));
+  } catch {}
+}
+
+export function triggerGuardedAuthReload({ hasUnsentDraft = false } = {}) {
+  if (hasUnsentDraft || typeof window === 'undefined') return false;
+  try {
+    const now = Date.now();
+    const last = Number(window.sessionStorage?.getItem(AUTH_RELOAD_TS_KEY) || 0);
+    if (Number.isFinite(last) && now - last < 60_000) return false;
+    window.sessionStorage?.setItem(AUTH_RELOAD_TS_KEY, String(now));
+    window.location.reload();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function renderConnectionNoticeBar(noticeBar, { state, onRepair, onReconnect, onRelogin } = {}) {
+  if (!noticeBar || !state) return;
+  clearNode(noticeBar);
+  if (state.wsStatus === 'revoked') {
+    noticeBar.classList.remove('rc-hidden');
+    noticeBar.setAttribute('data-tone', 'danger');
+    noticeBar.append(
+      el('span', { text: `当前设备密钥已吊销或网关身份已变更（${state.wsDetail || '请重新配对'}）。` }),
+      el('button', {
+        type: 'button',
+        className: 'rc-btn is-sm is-primary',
+        text: '重新配对',
+        onClick: () => onRepair?.(),
+      })
+    );
+  } else if (state.wsStatus === 'auth_expired') {
+    noticeBar.classList.remove('rc-hidden');
+    noticeBar.setAttribute('data-tone', 'danger');
+    noticeBar.append(
+      el('span', { text: 'Cloudflare Access 登录会话已过期，需要重新验证后恢复连接。' }),
+      el('button', {
+        type: 'button',
+        className: 'rc-btn is-sm is-primary',
+        text: '重新登录',
+        onClick: () => onRelogin?.(),
+      })
+    );
+  } else if (state.wsStatus === 'offline') {
+    noticeBar.classList.remove('rc-hidden');
+    noticeBar.setAttribute('data-tone', 'warn');
+    noticeBar.append(
+      el('span', { text: '当前网络已断开，网络恢复后将自动重连。' }),
+      el('button', {
+        type: 'button',
+        className: 'rc-btn is-sm',
+        text: '立即重试',
+        onClick: () => onReconnect?.(),
+      })
+    );
+  } else if (state.wsStatus === 'reconnecting' || state.wsStatus === 'error') {
+    noticeBar.classList.remove('rc-hidden');
+    noticeBar.setAttribute('data-tone', state.wsStatus === 'error' ? 'danger' : 'warn');
+    noticeBar.append(
+      el('span', { text: `远程连接中断（${state.wsDetail || '正在自动重连…'}）。` }),
+      el('button', {
+        type: 'button',
+        className: 'rc-btn is-sm',
+        text: '立即重连',
+        onClick: () => onReconnect?.(),
+      })
+    );
+  } else if (!state.hostAttached && state.wsStatus === 'connected') {
+    noticeBar.classList.remove('rc-hidden');
+    noticeBar.setAttribute('data-tone', 'warn');
+    noticeBar.append(
+      el('span', {
+        text: 'Antigravity 桌面窗口当前未挂载 CDP，已自动降级为 SQLite / Transcript 只读历史模式（无实时流与审批态）。',
+      })
+    );
+  } else {
+    noticeBar.classList.add('rc-hidden');
+  }
+}
+
+export function renderSlashCommandBar(container, { draftText = '', writable = false, online = false, onPick = null } = {}) {
+  if (!container) return;
+  const raw = String(draftText || '');
+  const show = Boolean(writable && online && raw.startsWith('/') && !raw.includes('\n') && raw.length <= 16);
+  if (!show) {
+    if (!container.classList.contains('rc-hidden')) {
+      clearNode(container);
+      container.classList.add('rc-hidden');
+    }
+    return;
+  }
+  const needle = raw.trim().toLowerCase();
+  const matches = SLASH_COMMANDS.filter((item) => item.cmd.startsWith(needle) && item.cmd !== needle);
+  if (matches.length === 0) {
+    clearNode(container);
+    container.classList.add('rc-hidden');
+    return;
+  }
+  clearNode(container);
+  container.classList.remove('rc-hidden');
+  for (const item of matches) {
+    container.appendChild(
+      el(
+        'button',
+        {
+          type: 'button',
+          className: 'rc-slash-chip',
+          onClick: () => onPick?.(item.trailingSpace ? `${item.cmd} ` : item.cmd),
+        },
+        el('span', { className: 'rc-slash-cmd', text: item.cmd }),
+        el('span', { className: 'rc-slash-desc', text: item.desc })
+      )
+    );
+  }
+}
+
 export function createMoreMenuController({
   state,
   getMenuEl,
+  getWsClient,
   renderMenu,
   formatPresetBadge,
   layoutButtonLabel,
@@ -814,13 +987,29 @@ export function createMoreMenuController({
   handleUnpairDevice,
 }) {
   function render() {
+    const rttSuffix = state.wsStatus === 'connected' && state.wsRttMs > 0 ? ` · ${state.wsRttMs}ms` : '';
+    const baseHostLine = state.hostAttached ? `CDP 在线 (${state.source || 'cdp'})` : '宿主离线 · 只读';
     renderMenu(getMenuEl(), {
       open: state.moreMenuOpen,
-      hostLine: state.hostAttached ? `CDP 在线 (${state.source || 'cdp'})` : '宿主离线 · 只读',
+      hostLine: `${baseHostLine}${rttSuffix}`,
       role: state.identity?.role || 'observe',
       presetLabel: formatPresetBadge(state.globalPreset).label,
       layoutLabel: layoutButtonLabel(state.layoutPref),
       alertLabel: alertManager.getAlertLabel(),
+      onReconnectNow:
+        state.wsStatus !== 'connected'
+          ? () => {
+              state.moreMenuOpen = false;
+              render();
+              if (state.wsStatus === 'auth_expired') {
+                try {
+                  window.location.reload();
+                } catch {}
+              } else {
+                getWsClient?.()?.reconnectNow?.();
+              }
+            }
+          : null,
       onToggleAlerts: () => {
         const next = alertManager.toggleAlerts();
         render();

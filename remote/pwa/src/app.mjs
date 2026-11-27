@@ -37,8 +37,13 @@ import {
   createOpusGateActions,
   defaultOverviewCollapsed,
   formatWriteError,
+  loadConversationDraft,
   readStoredPref,
+  renderConnectionNoticeBar,
+  renderSlashCommandBar,
+  saveConversationDraft,
   syncTurboConfirmBar,
+  triggerGuardedAuthReload,
   writeStoredPref,
 } from './mobile-enhancements.mjs';
 import { renderDetailTimeline as renderTimelineView } from './timeline-view.mjs';
@@ -74,6 +79,7 @@ const state = {
   showFullFingerprint: false,
   wsStatus: 'disconnected',
   wsDetail: '',
+  wsRttMs: null,
   hostAttached: false,
   source: 'cdp',
   globalPreset: null,
@@ -137,7 +143,6 @@ let snapshotRefreshTimer = null;
 let studioOverviewSeq = 0;
 let modelReqSeq = 0;
 let studioOverviewRetryTimer = null;
-let streamTickTimer = null;
 let cancelConfirmTimer = null;
 let actionNoticeTimer = null;
 let swReloading = false;
@@ -159,31 +164,6 @@ function setActionNotice(msg) {
         syncComposerControls();
       }
     }, 3400);
-  }
-}
-
-function clearStreamTickTimer() {
-  if (streamTickTimer) {
-    clearInterval(streamTickTimer);
-    streamTickTimer = null;
-  }
-}
-
-function syncStreamTimer(isStreaming) {
-  if (isStreaming) {
-    if (!state.streamStartedAt) state.streamStartedAt = Date.now();
-    if (!streamTickTimer) {
-      streamTickTimer = setInterval(() => {
-        if (!state.identity || !workspaceRefs) {
-          clearStreamTickTimer();
-          return;
-        }
-        syncComposerControls();
-      }, 1000);
-    }
-  } else {
-    state.streamStartedAt = 0;
-    clearStreamTickTimer();
   }
 }
 
@@ -357,7 +337,6 @@ async function handleUnpairDevice() {
   state.modelSelectBusy = false;
   state.streamStartedAt = 0;
   setActionNotice('');
-  clearStreamTickTimer();
   clearStudioOverviewRetry();
   resetCancelConfirm();
   workspaceRefs = null;
@@ -367,6 +346,7 @@ async function handleUnpairDevice() {
 const moreMenuCtrl = createMoreMenuController({
   state,
   getMenuEl: () => workspaceRefs?.moreMenu,
+  getWsClient: () => wsClient,
   renderMenu: renderMobileMoreMenu,
   formatPresetBadge,
   layoutButtonLabel,
@@ -655,6 +635,7 @@ function ensureWorkspaceShell() {
     value: state.draftText,
     onInput: (ev) => {
       state.draftText = ev.target.value;
+      if (state.selectedId) saveConversationDraft(state.selectedId, state.draftText);
       state.draftIdempotencyKey = createIdempotencyKey();
       state.actionError = '';
       autoResizeTextarea(ev.target);
@@ -708,6 +689,7 @@ function ensureWorkspaceShell() {
     onClick: () => handleCancelConvo(),
   });
   const composerRow = el('div', { className: 'rc-composer-row' }, draftInput, sendBtn, cancelBtn);
+  const slashBar = el('div', { className: 'rc-slash-bar rc-hidden' });
   const mediaStrip = el('div', { className: 'rc-media-strip rc-hidden' });
   const modelPopover = el('div', { className: 'rc-model-popover rc-hidden' });
   const contextPopover = el('div', { className: 'rc-ctx-popover rc-hidden' });
@@ -719,6 +701,7 @@ function ensureWorkspaceShell() {
     modelPopover,
     contextPopover,
     mediaStrip,
+    slashBar,
     turboWriteLabel,
     composerRow,
     composerFooter,
@@ -822,6 +805,7 @@ function ensureWorkspaceShell() {
     turboWriteText,
     turboWriteCheckbox,
     composerRow,
+    slashBar,
     draftInput,
     sendBtn,
     cancelBtn,
@@ -1105,6 +1089,20 @@ function syncComposerControls() {
     refs.draftInput.value = state.draftText;
   }
   autoResizeTextarea(refs.draftInput);
+  renderSlashCommandBar(refs.slashBar, {
+    draftText: state.draftText,
+    writable,
+    online: Boolean(online && hasSelection && !state.sendBusy),
+    onPick: (nextCmd) => {
+      state.draftText = nextCmd;
+      if (state.selectedId) saveConversationDraft(state.selectedId, nextCmd);
+      state.draftIdempotencyKey = createIdempotencyKey();
+      refs.draftInput.value = nextCmd;
+      autoResizeTextarea(refs.draftInput);
+      syncComposerControls();
+      refs.draftInput.focus();
+    },
+  });
   refs.draftInput.disabled = !writable || !online || !hasSelection || state.sendBusy;
   refs.sendBtn.textContent = state.sendBusy ? '发送中…' : '发送';
   const hasDraftPayload = Boolean(state.draftText.trim()) || state.draftMedia.length > 0;
@@ -1142,7 +1140,6 @@ function syncComposerControls() {
     isStreaming || state.cancelBusy || (state.cancelConfirmArmedCid && state.cancelConfirmArmedCid === state.selectedId)
   );
   refs.composerCard.setAttribute('data-streaming', showCancelControl ? 'true' : 'false');
-  clearStreamTickTimer();
   const activeMetrics =
     hasSelection && state.studioOverview?.activeCascade?.cascadeId === state.selectedId
       ? state.studioOverview.activeCascade.metrics || null
@@ -1256,6 +1253,7 @@ async function handleSendDraft() {
       state.draftIdempotencyKey = createIdempotencyKey();
       setActionNotice(mediaSnapshot.length > 0 ? '指令与图片已发送至桌面端' : '指令已发送至桌面端');
     }
+    saveConversationDraft(targetCid, '');
     fetchAndRenderSnapshot(targetCid);
   } catch (err) {
     if (err?.code === 'idempotency_key_conflict' || err?.code === 'outcome_unknown') {
@@ -1467,7 +1465,8 @@ function renderTopStatus() {
   const wsInfo = normalizeWsStatus(state.wsStatus, state.wsDetail);
   refs.brandDot.setAttribute('data-state', state.wsStatus);
   refs.wsPill.setAttribute('data-tone', wsInfo.tone);
-  refs.wsPill.textContent = wsInfo.label;
+  refs.wsPill.textContent =
+    state.wsStatus === 'connected' && state.wsRttMs > 0 ? `${wsInfo.label} · ${state.wsRttMs}ms` : wsInfo.label;
 
   refs.hostPill.setAttribute('data-tone', state.hostAttached ? 'ok' : 'warn');
   refs.hostPill.textContent = state.hostAttached
@@ -1482,43 +1481,16 @@ function renderTopStatus() {
   const role = state.identity?.role || 'observe';
   refs.devicePill.textContent = `${devName} (${role})`;
 
-  clearNode(refs.noticeBar);
-  if (state.wsStatus === 'revoked') {
-    refs.noticeBar.classList.remove('rc-hidden');
-    refs.noticeBar.setAttribute('data-tone', 'danger');
-    refs.noticeBar.append(
-      el('span', { text: `当前设备密钥已吊销或网关身份已变更（${state.wsDetail || '请重新配对'}）。` }),
-      el('button', {
-        type: 'button',
-        className: 'rc-btn is-sm is-primary',
-        text: '重新配对',
-        onClick: async () => {
-          await clearDeviceIdentity().catch(() => {});
-          state.identity = null;
-          state.turboWriteConfirmed = false;
-          state.pendingApproveKeys.clear();
-          state.pendingResumeKeys.clear();
-          state.studioOverview = null;
-          state.studioDrawerOpen = false;
-          state.selectedProjectId = '';
-          state.resumeState = null;
-          resetCancelConfirm();
-          workspaceRefs = null;
-          pairView.loadHealthForPairing();
-        },
-      })
-    );
-  } else if (!state.hostAttached && state.wsStatus === 'connected') {
-    refs.noticeBar.classList.remove('rc-hidden');
-    refs.noticeBar.setAttribute('data-tone', 'warn');
-    refs.noticeBar.append(
-      el('span', {
-        text: 'Antigravity 桌面窗口当前未挂载 CDP，已自动降级为 SQLite / Transcript 只读历史模式（无实时流与审批态）。',
-      })
-    );
-  } else {
-    refs.noticeBar.classList.add('rc-hidden');
-  }
+  renderConnectionNoticeBar(refs.noticeBar, {
+    state,
+    onRepair: () => handleUnpairDevice(),
+    onReconnect: () => wsClient?.reconnectNow?.(),
+    onRelogin: () => {
+      try {
+        window.location.reload();
+      } catch {}
+    },
+  });
   syncComposerControls();
 }
 
@@ -1698,6 +1670,8 @@ function scheduleSelectedSnapshotRefresh() {
 async function selectConversation(cascadeId, { skipHistoryPush = false } = {}) {
   if (!cascadeId || !UUID_RE.test(cascadeId)) return;
   if (state.selectedId !== cascadeId) {
+    if (state.selectedId) saveConversationDraft(state.selectedId, state.draftText);
+    state.draftText = loadConversationDraft(cascadeId);
     state.draftIdempotencyKey = createIdempotencyKey();
     state.draftMedia = [];
     state.turboWriteConfirmed = false;
@@ -1705,7 +1679,6 @@ async function selectConversation(cascadeId, { skipHistoryPush = false } = {}) {
     state.modelPopoverOpen = false;
     state.contextPopoverOpen = false;
     state.streamStartedAt = 0;
-    clearStreamTickTimer();
     state.actionError = '';
     state.actionNotice = '';
     resetCancelConfirm();
@@ -1868,10 +1841,19 @@ function startWorkspaceSession() {
     onStatus: (status, detail) => {
       state.wsStatus = status;
       state.wsDetail = detail || '';
+      if (status !== 'connected') state.wsRttMs = null;
       if (state.identity) {
         renderTopStatus();
         renderStudioPanels();
       }
+      if (status === 'auth_expired') {
+        const hasDraft = Boolean((state.draftText && state.draftText.trim()) || state.draftMedia.length > 0);
+        triggerGuardedAuthReload({ hasUnsentDraft: hasDraft });
+      }
+    },
+    onRtt: (rttMs) => {
+      state.wsRttMs = rttMs;
+      if (state.identity) renderTopStatus();
     },
     onHealth: (health) => {
       if (!health || typeof health !== 'object') return;
@@ -1927,7 +1909,23 @@ function startWorkspaceSession() {
 
 async function boot() {
   bindViewportHeightSync();
-  bindNativeAndroidBridge({ state, canSteer, createIdempotencyKey, uuidRe: UUID_RE, selectConversation, syncComposerControls, setActionNotice, onCloseOverlays: mobileHistory.closeOverlays, onCloseModal: mobileHistory.closeModal, onNavigateToList: mobileHistory.navigateToList });
+  bindNativeAndroidBridge({
+    state,
+    canSteer,
+    createIdempotencyKey,
+    uuidRe: UUID_RE,
+    selectConversation,
+    syncComposerControls,
+    setActionNotice,
+    onCloseOverlays: mobileHistory.closeOverlays,
+    onCloseModal: mobileHistory.closeModal,
+    onNavigateToList: mobileHistory.navigateToList,
+    onNativeResume: () => {
+      wsClient?.handleNativeResume?.();
+      if (state.selectedId && state.wsStatus === 'connected') scheduleSelectedSnapshotRefresh();
+    },
+    onNativeNetworkChange: (info) => wsClient?.handleNetworkChange?.(info),
+  });
   if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
     const hadController = Boolean(navigator.serviceWorker.controller);
     if (typeof navigator.serviceWorker.addEventListener === 'function') {

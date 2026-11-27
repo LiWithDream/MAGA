@@ -2115,6 +2115,29 @@ test('Remote Mobile Polish V2: stale worktree branch cleanup, Markdown tables, a
       manifestJson.icons.map((i) => i.src),
       ['/icon-192.png', '/icon-512.png']
     );
+
+    // 6. Real boot smoke test: evaluate compiled dist/app.js in JSDOM to catch any boot-time ReferenceError / blank screen
+    const bootHtml = fs.readFileSync(path.join(distOut, 'index.html'), 'utf8');
+    const bootJs = fs.readFileSync(path.join(distOut, 'app.js'), 'utf8');
+    const bootDom = new JSDOM(bootHtml, { url: 'http://127.0.0.1/', runScripts: 'outside-only' });
+    const bootErrors = [];
+    bootDom.window.addEventListener('error', (ev) => bootErrors.push(String(ev.error || ev.message)));
+    bootDom.window.fetch = async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ ok: true, hostAttached: false, globalPreset: 2 }),
+    });
+    try {
+      bootDom.window.eval(bootJs);
+      await new Promise((r) => setTimeout(r, 30));
+      assert.deepEqual(bootErrors, [], 'compiled dist/app.js must boot cleanly with zero uncaught errors');
+      assert.ok(
+        (bootDom.window.document.getElementById('app')?.children?.length || 0) > 0,
+        'compiled dist/app.js must mount UI into #app (no blank page)'
+      );
+    } finally {
+      bootDom.window.close();
+    }
   } finally {
     dom.window.close();
     if (prevDoc) Object.defineProperty(globalThis, 'document', prevDoc);

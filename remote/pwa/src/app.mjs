@@ -900,7 +900,7 @@ const newChatCtrl = createNewChatController({
   getRefs: () => workspaceRefs,
   getWsClient: () => wsClient,
   canSteer,
-  isTurboPreset,
+  isTurboPreset: requiresTurboAck,
   createIdempotencyKey,
   uuidRe: UUID_RE,
   setActionNotice,

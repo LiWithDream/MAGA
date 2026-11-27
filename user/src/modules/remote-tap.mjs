@@ -20,6 +20,7 @@ export function createRemoteTapModule(rt, modelApi = null) {
   const EFFORT_DISPLAY = { XHigh: 'Extra' };
   const INVOKE_METHODS = new Set([
     'convo.owns',
+    'convo.create',
     'convo.send',
     'convo.approve',
     'convo.cancel',
@@ -777,6 +778,10 @@ export function createRemoteTapModule(rt, modelApi = null) {
         reduxSummaries: Boolean(store && typeof store.getState === 'function'),
         agentStream: Boolean(lsClient && typeof lsClient.createAgentStateProviderForConvo === 'function'),
         sendMessage: Boolean(lsClient && typeof lsClient.sendUserCascadeMessage === 'function'),
+        createConversation: Boolean(
+          typeof rt?.hooks?.startNewChatInProjectById === 'function' ||
+            (typeof window !== 'undefined' && typeof window.__agClaudeUxBridge?.startNewChatInProjectById === 'function')
+        ),
         cancel: Boolean(lsClient && typeof lsClient.cancelCascadeInvocation === 'function'),
         approval: Boolean(lsClient && typeof lsClient.handleCascadeUserInteraction === 'function'),
         compact: Boolean(
@@ -1514,6 +1519,71 @@ export function createRemoteTapModule(rt, modelApi = null) {
     }
   }
 
+  async function createConversation(payload) {
+    const text = typeof payload?.text === 'string' ? payload.text : '';
+    if (!text.trim() || text.length > MAX_FIELD_CHARS) {
+      return { ok: false, error: 'invalid_text_length' };
+    }
+    const projectId = typeof payload?.projectId === 'string' ? payload.projectId.trim() : '';
+    if (projectId && !/^[A-Za-z0-9._:-]{1,128}$/.test(projectId)) {
+      return { ok: false, error: 'invalid_project_id' };
+    }
+
+    let { store, prefStore } = locateHandles();
+    if (!store) {
+      ({ store, prefStore } = locateHandles(true));
+    }
+    const st = store ? safeCall(() => store.getState()) : null;
+    const { globalPreset } = readPresetInfo(st, prefStore);
+    if (isTurboLikePreset(globalPreset) && payload?.turboWriteConfirmed !== true) {
+      return { ok: false, error: 'turbo_write_confirmation_required', globalPreset: globalPreset ?? null };
+    }
+
+    const starter =
+      typeof rt?.hooks?.startNewChatInProjectById === 'function'
+        ? rt.hooks.startNewChatInProjectById
+        : typeof window !== 'undefined' && typeof window.__agClaudeUxBridge?.startNewChatInProjectById === 'function'
+          ? window.__agClaudeUxBridge.startNewChatInProjectById
+          : null;
+    if (!starter) {
+      return { ok: false, error: 'create_not_supported' };
+    }
+
+    const beforeIds = new Set(Object.keys(st?.trajectorySummaries?.summaries || {}));
+    try {
+      const started = starter(projectId || '', text);
+      if (started === false) {
+        return { ok: false, error: 'project_not_found' };
+      }
+    } catch (err) {
+      return { ok: false, error: String(err?.message || err || 'create_failed') };
+    }
+
+    let createdCid = '';
+    if (store && typeof store.getState === 'function') {
+      const deadline = Date.now() + 3200;
+      while (Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 140));
+        const cur = safeCall(() => store.getState()?.trajectorySummaries?.summaries) || {};
+        for (const id of Object.keys(cur)) {
+          if (UUID_RE.test(id) && !beforeIds.has(id)) {
+            createdCid = id;
+            break;
+          }
+        }
+        if (createdCid) break;
+      }
+    }
+
+    return {
+      ok: true,
+      cascadeId: createdCid,
+      pending: !createdCid,
+      projectId,
+      globalPreset: globalPreset ?? null,
+    };
+  }
+
   async function invoke(method, payload) {
     if (rtState.disposed) return { ok: false, error: 'disposed' };
     if (typeof method !== 'string' || !INVOKE_METHODS.has(method)) {
@@ -1523,6 +1593,7 @@ export function createRemoteTapModule(rt, modelApi = null) {
       return { ok: false, error: 'invalid_invoke_payload' };
     }
     if (method === 'convo.owns') return checkOwnsConversation(payload);
+    if (method === 'convo.create') return createConversation(payload);
     if (method === 'convo.send') return sendMessage(payload);
     if (method === 'convo.approve') return approveInteraction(payload);
     if (method === 'convo.cancel') return cancelConversation(payload);

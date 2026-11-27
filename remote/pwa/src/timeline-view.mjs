@@ -15,7 +15,7 @@ import {
 } from './ui-helpers.mjs';
 
 function appendInlineMarkdown(parent, line, depth = 0) {
-  const tokenRe = /\[([^\]\n]+)\]\(([^)\s]+)\)|`([^`\n]+)`|\*\*([^*\n]+)\*\*/g;
+  const tokenRe = /\[([^\]\n]+)\]\(([^)\s]+)\)|`([^`\n]+)`|\*\*([^*\n]+)\*\*|~~([^~\n]+)~~|\*([^*\n]+)\*/g;
   let lastIdx = 0;
   let match;
   while ((match = tokenRe.exec(line)) !== null) {
@@ -50,12 +50,65 @@ function appendInlineMarkdown(parent, line, depth = 0) {
         strong.textContent = match[4];
       }
       parent.appendChild(strong);
+    } else if (match[5] !== undefined) {
+      const del = el('del', { className: 'rc-md-del' });
+      if (depth < 2) {
+        appendInlineMarkdown(del, match[5], depth + 1);
+      } else {
+        del.textContent = match[5];
+      }
+      parent.appendChild(del);
+    } else if (match[6] !== undefined) {
+      const em = el('em');
+      if (depth < 2) {
+        appendInlineMarkdown(em, match[6], depth + 1);
+      } else {
+        em.textContent = match[6];
+      }
+      parent.appendChild(em);
     }
     lastIdx = tokenRe.lastIndex;
   }
   if (lastIdx < line.length) {
     parent.appendChild(document.createTextNode(line.slice(lastIdx)));
   }
+}
+
+function parseTableCells(line) {
+  const trimmed = String(line || '').trim();
+  if (!trimmed || !trimmed.includes('|')) return null;
+  let inner = trimmed;
+  if (inner.startsWith('|')) inner = inner.slice(1);
+  if (inner.endsWith('|') && !inner.endsWith('\\|')) inner = inner.slice(0, -1);
+  const cells = [];
+  let cur = '';
+  for (let idx = 0; idx < inner.length; idx++) {
+    if (inner[idx] === '\\' && inner[idx + 1] === '|') {
+      cur += '|';
+      idx += 1;
+    } else if (inner[idx] === '|') {
+      cells.push(cur.trim());
+      cur = '';
+    } else {
+      cur += inner[idx];
+    }
+  }
+  cells.push(cur.trim());
+  return cells;
+}
+
+function parseTableAlignments(line) {
+  const cells = parseTableCells(line);
+  if (!cells || cells.length === 0) return null;
+  const aligns = [];
+  for (const cell of cells) {
+    const clean = cell.replace(/\s+/g, '');
+    if (!/^:?-{3,}:?$/.test(clean)) return null;
+    if (clean.startsWith(':') && clean.endsWith(':')) aligns.push('center');
+    else if (clean.endsWith(':')) aligns.push('right');
+    else aligns.push('left');
+  }
+  return aligns;
 }
 
 export function renderSafeMarkdown(text) {
@@ -163,6 +216,42 @@ export function renderSafeMarkdown(text) {
       );
       i += 1;
       continue;
+    }
+
+    if (i + 1 < lines.length && line.includes('|') && lines[i + 1].includes('-')) {
+      const headerCells = parseTableCells(line);
+      const aligns = parseTableAlignments(lines[i + 1]);
+      if (headerCells && aligns && headerCells.length >= 2 && headerCells.length === aligns.length) {
+        flushParagraph();
+        const theadRow = el('tr');
+        headerCells.forEach((cellText, colIdx) => {
+          const th = el('th', { 'data-align': aligns[colIdx] });
+          appendInlineMarkdown(th, cellText);
+          theadRow.appendChild(th);
+        });
+        const tbody = el('tbody');
+        i += 2;
+        while (i < lines.length && lines[i].trim() && lines[i].includes('|')) {
+          const rowCells = parseTableCells(lines[i]);
+          if (!rowCells || rowCells.length === 0) break;
+          const tr = el('tr');
+          for (let colIdx = 0; colIdx < aligns.length; colIdx++) {
+            const td = el('td', { 'data-align': aligns[colIdx] });
+            appendInlineMarkdown(td, rowCells[colIdx] ?? '');
+            tr.appendChild(td);
+          }
+          tbody.appendChild(tr);
+          i += 1;
+        }
+        root.appendChild(
+          el(
+            'div',
+            { className: 'rc-md-table-wrap' },
+            el('table', { className: 'rc-md-table' }, el('thead', {}, theadRow), tbody)
+          )
+        );
+        continue;
+      }
     }
 
     paraLines.push(line);
@@ -466,11 +555,23 @@ export function renderStepCard(step, { hideThinkingProse = false, compact = fals
     card.appendChild(el('pre', { className: 'rc-pre', text: errText }));
   }
 
-  if (useCompactChatBubble && (step.createdAt || !isDoneStep)) {
+  const showAssistantCopy =
+    useCompactChatBubble && roleAttr === 'assistant' && Boolean(String(step.text || '').trim());
+  if (useCompactChatBubble && (step.createdAt || !isDoneStep || showAssistantCopy)) {
+    const copyReplyBtn = showAssistantCopy
+      ? el('button', {
+          type: 'button',
+          className: 'rc-step-copy',
+          title: '复制整条回复',
+          text: '复制',
+          onClick: () => copyTextWithFeedback(copyReplyBtn, String(step.text)),
+        })
+      : null;
     card.appendChild(
       el(
         'div',
         { className: 'rc-step-foot' },
+        copyReplyBtn,
         !isDoneStep
           ? el('span', {
               className: 'rc-pill rc-step-status-pill',

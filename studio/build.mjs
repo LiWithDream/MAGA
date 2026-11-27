@@ -397,6 +397,7 @@ export async function buildRemotePwa({ outDir = REMOTE_PWA_DIST, allowPrebuilt =
   writeFileSync(cssDest, cssOut, 'utf8');
 
   const staticFileNames = ['index.html', 'manifest.webmanifest', 'sw.js'];
+  const binaryStaticFiles = ['icon-192.png', 'icon-512.png', 'apple-touch-icon.png'];
   const staticSources = {};
   for (const staticFile of staticFileNames) {
     const src = path.join(REMOTE_PWA_DIR, staticFile);
@@ -414,6 +415,8 @@ export async function buildRemotePwa({ outDir = REMOTE_PWA_DIST, allowPrebuilt =
     .update(staticSources['index.html'])
     .update('\0')
     .update(staticSources['sw.js'])
+    .update('\0')
+    .update(staticSources['manifest.webmanifest'])
     .digest('hex')
     .slice(0, 8);
 
@@ -440,6 +443,14 @@ export async function buildRemotePwa({ outDir = REMOTE_PWA_DIST, allowPrebuilt =
       copyFileSync(src, dst);
     }
     files[staticFile] = readFileSync(dst).byteLength;
+  }
+
+  for (const iconFile of binaryStaticFiles) {
+    const src = path.join(REMOTE_PWA_DIR, iconFile);
+    if (!existsSync(src)) continue;
+    const dst = path.join(outDir, iconFile);
+    copyFileSync(src, dst);
+    files[iconFile] = readFileSync(dst).byteLength;
   }
 
   return {

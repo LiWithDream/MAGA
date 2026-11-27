@@ -51,8 +51,8 @@ const MAX_MEDIA_B64_ITEM = 620_000;
 const MAX_MEDIA_B64_TOTAL = 1_400_000;
 const ALLOWED_MEDIA_MIMES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
 const BASE64_RE = /^[A-Za-z0-9+/=]+$/;
-const WRITE_UDS_METHODS = new Set(['convo.send', 'convo.approve', 'convo.cancel', 'convo.resume', 'convo.compact', 'opus.dismiss', 'models.select']);
-const TAP_INVOKE_METHODS = new Set(['convo.owns', 'convo.send', 'convo.approve', 'convo.cancel', 'convo.compact', 'models.list', 'models.select']);
+const WRITE_UDS_METHODS = new Set(['convo.create', 'convo.send', 'convo.approve', 'convo.cancel', 'convo.resume', 'convo.compact', 'opus.dismiss', 'models.select']);
+const TAP_INVOKE_METHODS = new Set(['convo.owns', 'convo.create', 'convo.send', 'convo.approve', 'convo.cancel', 'convo.compact', 'models.list', 'models.select']);
 
 let bridgeState = null;
 
@@ -245,6 +245,7 @@ export async function probeRemoteCapabilities({ bypassCache = false } = {}) {
       reduxSummaries: false,
       agentStream: false,
       sendMessage: false,
+      createConversation: false,
       cancel: false,
       approval: false,
       compact: false,
@@ -272,6 +273,7 @@ export async function probeRemoteCapabilities({ bypassCache = false } = {}) {
       reduxSummaries: Boolean(tapCap.capabilities?.reduxSummaries),
       agentStream: Boolean(tapCap.capabilities?.agentStream),
       sendMessage: Boolean(tapCap.capabilities?.sendMessage),
+      createConversation: Boolean(tapCap.capabilities?.createConversation),
       cancel: Boolean(tapCap.capabilities?.cancel),
       approval: Boolean(tapCap.capabilities?.approval),
       compact: Boolean(tapCap.capabilities?.compact),
@@ -599,6 +601,46 @@ function validateRemoteMediaList(rawMedia) {
     out.push({ name, mimeType, dataBase64 });
   }
   return out;
+}
+
+async function handleConvoCreate(params = {}) {
+  if (typeof params?.text !== 'string') {
+    throw Object.assign(new Error('invalid_text'), { code: 'invalid_text' });
+  }
+  const text = params.text;
+  if (!text.trim() || text.length > MAX_FIELD_CHARS) {
+    throw Object.assign(new Error('invalid_text_length'), { code: 'invalid_text_length' });
+  }
+  const projectId = typeof params?.projectId === 'string' ? params.projectId.trim() : '';
+  if (projectId && !/^[A-Za-z0-9._:-]{1,128}$/.test(projectId)) {
+    throw Object.assign(new Error('invalid_project_id'), { code: 'invalid_project_id' });
+  }
+
+  const host = await resolvePrimaryHostEntry({ maxCacheAgeMs: 0 });
+  if (!host) {
+    throw Object.assign(new Error('host_offline'), { code: 'host_offline' });
+  }
+  const capRes = await evalOnHost(host, 'window.__agRemoteTap ? window.__agRemoteTap.getCapabilities() : null', 2000);
+  const preset = capRes.ok && capRes.value && typeof capRes.value === 'object' ? capRes.value.globalPreset : null;
+  if (isTurboPreset(preset) && params.turboWriteConfirmed !== true) {
+    throw Object.assign(new Error('turbo_write_confirmation_required'), { code: 'turbo_write_confirmation_required' });
+  }
+
+  const r = await invokeTapOnHost(
+    host,
+    'convo.create',
+    {
+      text,
+      ...(projectId ? { projectId } : {}),
+      turboWriteConfirmed: Boolean(params.turboWriteConfirmed),
+    },
+    12_000
+  );
+  if (!r.ok || !r.value?.ok) {
+    const errCode = r.value?.error || r.error || 'create_failed';
+    throw Object.assign(new Error(errCode), { code: errCode });
+  }
+  return r.value;
 }
 
 async function handleConvoSend(params = {}) {
@@ -932,6 +974,9 @@ async function dispatchUdsRpc(client, req) {
       reply(true, res, null);
     } else if (method === 'convo.watch') {
       const res = await handleConvoWatch(client, params);
+      reply(true, res, null);
+    } else if (method === 'convo.create') {
+      const res = await handleConvoCreate(params);
       reply(true, res, null);
     } else if (method === 'convo.send') {
       const res = await handleConvoSend(params);

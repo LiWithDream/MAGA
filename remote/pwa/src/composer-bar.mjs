@@ -654,6 +654,17 @@ function renderContextPopoverPanel(
         )
       );
     }
+    if (Number(metrics.ttft || 0) > 0) {
+      const durLabel = metrics.useStream ? '首字延迟 (TTFT)' : '响应等待 (Hold)';
+      kvRows.push(
+        el(
+          'div',
+          { className: 'rc-ctx-pop-kv' },
+          el('span', { className: 'rc-ctx-pop-k', text: durLabel }),
+          el('span', { className: 'rc-ctx-pop-v', text: `${Number(metrics.ttft).toFixed(1)}s` })
+        )
+      );
+    }
   }
 
   let actionsSection = null;
@@ -899,14 +910,28 @@ export function renderComposerFooterBar(
       )
     );
   } else if (metrics && (Number(metrics.displayTps) > 0 || Number(metrics.ttft) > 0)) {
-    const tpsText = Number(metrics.displayTps) > 0 ? `${Math.round(Number(metrics.displayTps))} tok/s` : '';
+    const hasTps = Number(metrics.displayTps) > 0;
+    const tpsText = hasTps ? `${Math.round(Number(metrics.displayTps))} tok/s` : '';
     const durLabel = metrics.useStream ? 'TTFT' : 'Hold';
     const durText = Number(metrics.ttft) > 0 ? `${durLabel} ${Number(metrics.ttft).toFixed(1)}s` : '';
-    const textParts = [tpsText, durText].filter(Boolean).join(' · ');
-    if (textParts) {
+    if (tpsText || durText) {
       const mTitle = `累计 ${metrics.turns || 0} 轮 / ${metrics.calls || 0} 次调用 · 会话缓存 ${Number(metrics.sessionCacheRate || 0).toFixed(1)}%`;
       leftCluster.appendChild(
-        el('span', { className: 'rc-footer-pill rc-metrics-pill', title: mTitle, text: textParts })
+        el(
+          'span',
+          {
+            className: 'rc-footer-pill rc-metrics-pill',
+            'data-has-tps': hasTps ? 'true' : 'false',
+            title: mTitle,
+          },
+          tpsText ? el('span', { className: 'rc-metrics-tps', text: tpsText }) : null,
+          durText
+            ? el('span', {
+                className: 'rc-metrics-ttft',
+                text: tpsText ? ` · ${durText}` : durText,
+              })
+            : null
+        )
       );
     }
   }

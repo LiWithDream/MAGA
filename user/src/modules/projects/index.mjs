@@ -824,10 +824,16 @@ export function createProjectsModule(rt, modelApi) {
     later(trySubmit, 110);
   }
 
-  function startNewChatInProjectById(projectId) {
-    if (!projectId) return;
+  function startNewChatInProjectById(projectId, initialPrompt = '') {
+    const prompt = String(initialPrompt || '').trim();
+    if (!projectId) {
+      startNewChatInProject(null, prompt);
+      return true;
+    }
     const proj = collectNativeProjects().find((p) => p.id === projectId);
-    if (proj) startNewChatInProject(proj);
+    if (!proj) return false;
+    startNewChatInProject(proj, prompt);
+    return true;
   }
 
   function syncConvProjectTopbar() {

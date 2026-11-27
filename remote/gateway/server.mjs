@@ -499,6 +499,7 @@ if (isMainModule) {
   const shutdown = async () => {
     if (shuttingDown) return;
     shuttingDown = true;
+    setTimeout(() => process.exit(0), 2000).unref();
     try {
       await gw?.close();
     } catch {}

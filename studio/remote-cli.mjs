@@ -6,6 +6,7 @@ import { existsSync, lstatSync, readFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { REMOTE_PWA_DIST } from './build.mjs';
 import { PID_FILE as DAEMON_PID_FILE, STATE_DIR } from '../core/daemon/env.mjs';
+import { WIN_TASK_NAME, getWinStartupVbsPath, inspectWinCoreDaemon } from '../core/daemon/win-service.mjs';
 import {
   getRemotePaths,
   isPidAlive,
@@ -339,7 +340,17 @@ export async function handleRemoteCommand(subArgs) {
     const hints = [];
     if (!daemonRunning) {
       if (process.platform === 'win32') {
-        hints.push('Daemon is not running; start with: schtasks /run /tn AGYStudioDaemon (or re-run powershell -ExecutionPolicy Bypass -File .\\install.ps1)');
+        let winDiag = null;
+        try {
+          winDiag = inspectWinCoreDaemon();
+        } catch {}
+        if (winDiag?.mode === 'vbs' || (!winDiag?.installed && existsSync(getWinStartupVbsPath()))) {
+          const vbs = winDiag?.startupVbs || getWinStartupVbsPath();
+          hints.push(`Daemon is not running; start with: wscript "${vbs}" (or re-run powershell -ExecutionPolicy Bypass -File .\\install.ps1)`);
+        } else {
+          const tn = winDiag?.taskName || WIN_TASK_NAME;
+          hints.push(`Daemon is not running; start with: schtasks /run /tn ${tn} (or re-run powershell -ExecutionPolicy Bypass -File .\\install.ps1)`);
+        }
       } else if (process.platform === 'darwin') {
         hints.push(`Daemon is not running; start with: launchctl kickstart -k "gui/${uid}/com.antigravity.anti-claude.daemon"`);
       } else {

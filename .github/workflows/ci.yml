@@ -31,3 +31,14 @@ jobs:
 
       - name: Build Remote PWA and run test suite
         run: npm run build:remote && npm test
+
+      - name: Smoke check macOS installer
+        if: runner.os == 'macOS'
+        run: bash -n install.sh uninstall.sh && bash install.sh --dry-run
+
+      - name: Smoke check Windows installer syntax
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          [void][scriptblock]::Create((Get-Content -Raw install.ps1))
+          [void][scriptblock]::Create((Get-Content -Raw uninstall.ps1))

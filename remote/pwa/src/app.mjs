@@ -141,6 +141,7 @@ const alertManager = createAlertManager();
 let wsClient = null;
 let snapshotRefreshTimer = null;
 let studioOverviewSeq = 0;
+let lastOverviewRefreshAt = 0;
 let modelReqSeq = 0;
 let studioOverviewRetryTimer = null;
 let cancelConfirmTimer = null;
@@ -549,7 +550,10 @@ function ensureWorkspaceShell() {
         className: 'rc-btn is-sm rc-desktop-only',
         text: '拉取快照',
         onClick: () => {
-          if (state.selectedId) fetchAndRenderSnapshot(state.selectedId);
+          if (state.selectedId) {
+            fetchAndRenderSnapshot(state.selectedId);
+            refreshStudioOverview(state.selectedId);
+          }
         },
       }),
       el('button', {
@@ -559,7 +563,10 @@ function ensureWorkspaceShell() {
         title: '刷新快照',
         text: '↻',
         onClick: () => {
-          if (state.selectedId) fetchAndRenderSnapshot(state.selectedId);
+          if (state.selectedId) {
+            fetchAndRenderSnapshot(state.selectedId);
+            refreshStudioOverview(state.selectedId);
+          }
         },
       }),
       el('button', {
@@ -1574,6 +1581,7 @@ function applyConvoListResult(result) {
 
 function refreshStudioOverview(cascadeId = state.selectedId) {
   if (!wsClient) return;
+  lastOverviewRefreshAt = Date.now();
   const reqSeq = ++studioOverviewSeq;
   const reqCid = cascadeId || '';
   wsClient
@@ -1653,6 +1661,7 @@ function scheduleSelectedSnapshotRefresh() {
     snapshotRefreshTimer = null;
     if (state.selectedId && wsClient) {
       const targetId = state.selectedId;
+      if (Date.now() - lastOverviewRefreshAt > 1200) refreshStudioOverview(targetId);
       wsClient
         .fetchSnapshot(targetId)
         .then((snap) => {

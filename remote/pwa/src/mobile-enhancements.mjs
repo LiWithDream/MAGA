@@ -777,8 +777,7 @@ export function createOpusGateActions({
     syncComposerControls();
     try {
       const prompt = buildPrompt(prop, reviewerModel);
-      await wsClient.sendMessage(targetCid, {
-        text: prompt,
+      await wsClient.sendMessage(targetCid, prompt, {
         turboWriteConfirmed: confirmed,
         idempotencyKey: createIdempotencyKey(),
       });

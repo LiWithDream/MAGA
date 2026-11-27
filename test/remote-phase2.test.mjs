@@ -2494,6 +2494,41 @@ test('Remote Mobile Polish V2: stale worktree branch cleanup, Markdown tables, a
       clientUnderTest?.dispose();
       globalThis.fetch = origFetch;
     }
+
+    // createOpusGateActions.triggerReview sends prompt string as 2nd positional arg to sendMessage
+    const studioPanelMod = await import(pathToFileURL(path.join(PWA_DIR, 'src', 'studio-panel.mjs')).href);
+    const opusSendCalls = [];
+    const opusDismissCalls = [];
+    const opusState = {
+      selectedId: liveCid,
+      globalPreset: 2,
+      turboWriteConfirmed: false,
+      opusDismissBusy: false,
+      actionError: '',
+      actionNotice: '',
+    };
+    const opusActions = mobileEnhMod.createOpusGateActions({
+      state: opusState,
+      getWsClient: () => ({
+        sendMessage: async (cid, text, opts) => opusSendCalls.push({ cid, text, opts }),
+        dismissOpusProposal: async (cid, id, opts) => opusDismissCalls.push({ cid, id, opts }),
+      }),
+      canSteer: () => true,
+      requiresTurboAck: () => false,
+      createIdempotencyKey: () => 'opus-rev-key-1',
+      buildPrompt: studioPanelMod.buildOpusReviewPrompt,
+      setActionNotice: (msg) => { opusState.actionNotice = msg; },
+      syncComposerControls: () => {},
+      refreshStudioOverview: () => {},
+      refreshAllData: () => {},
+    });
+    await opusActions.triggerReview({ id: 'prop-merge-1', kind: 'stop', reason: 'Pre-merge review', ts: 12345 }, 'carbon');
+    assert.equal(opusSendCalls.length, 1);
+    assert.equal(opusSendCalls[0].cid, liveCid);
+    assert.equal(typeof opusSendCalls[0].text, 'string');
+    assert.match(opusSendCalls[0].text, /gemini-4-carbon-high/);
+    assert.equal(opusSendCalls[0].opts.idempotencyKey, 'opus-rev-key-1');
+    assert.equal(opusDismissCalls.length, 1);
   } finally {
     dom.window.close();
     if (prevDoc) Object.defineProperty(globalThis, 'document', prevDoc);

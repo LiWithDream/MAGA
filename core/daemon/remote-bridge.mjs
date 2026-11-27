@@ -34,6 +34,8 @@ import {
   handleRemoteOpusDismiss,
   readRemoteStudioPrefs
 } from './remote/studio-bridge.mjs';
+import { listConversationArtifacts, readConversationArtifact } from './remote/artifacts-bridge.mjs';
+import { getRemoteGitDiff, getRemoteProjectGitStatus } from './remote/git-bridge.mjs';
 import { collectResumeState } from '../../studio/daemon/resume-detector.mjs';
 
 export {
@@ -286,7 +288,8 @@ export async function probeRemoteCapabilities({ bypassCache = false } = {}) {
     agVersion: tapCap.agVersion || null,
     globalPreset: tapCap.globalPreset ?? null,
     tapActive: Boolean(state ? state.tapActive && tapCap.tapActive : tapCap.tapActive),
-    activeStreams: state ? Array.from(state.watchedStreams.keys()) : tapCap.activeStreams || []
+    activeStreams: state ? Array.from(state.watchedStreams.keys()) : tapCap.activeStreams || [],
+    ...(Array.isArray(tapCap.slashCommands) ? { slashCommands: tapCap.slashCommands } : {}),
   };
 }
 
@@ -972,6 +975,22 @@ async function handleOpusDismiss(params = {}) {
   return handleRemoteOpusDismiss(params, bridgeState?.studioOpts);
 }
 
+async function handleConvoArtifacts(params = {}) {
+  return listConversationArtifacts(params?.cascadeId, bridgeState?.studioOpts);
+}
+
+async function handleConvoArtifactRead(params = {}) {
+  return readConversationArtifact(params?.cascadeId, params?.fileName, bridgeState?.studioOpts);
+}
+
+async function handleProjectGitStatus(params = {}) {
+  return getRemoteProjectGitStatus(params, bridgeState?.studioOpts);
+}
+
+async function handleProjectGitDiff(params = {}) {
+  return getRemoteGitDiff(params, bridgeState?.studioOpts);
+}
+
 async function dispatchUdsRpc(client, req) {
   const id = req?.id;
   const method = req?.method;
@@ -1041,6 +1060,18 @@ async function dispatchUdsRpc(client, req) {
       reply(true, res, null);
     } else if (method === 'opus.dismiss') {
       const res = await handleOpusDismiss(params);
+      reply(true, res, null);
+    } else if (method === 'convo.artifacts') {
+      const res = await handleConvoArtifacts(params);
+      reply(true, res, null);
+    } else if (method === 'convo.artifactRead') {
+      const res = await handleConvoArtifactRead(params);
+      reply(true, res, null);
+    } else if (method === 'project.gitStatus') {
+      const res = await handleProjectGitStatus(params);
+      reply(true, res, null);
+    } else if (method === 'project.gitDiff') {
+      const res = await handleProjectGitDiff(params);
       reply(true, res, null);
     } else {
       reply(false, null, 'method_not_supported');

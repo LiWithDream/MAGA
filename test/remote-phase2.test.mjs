@@ -521,20 +521,35 @@ test('Phase 2 End-to-End (Gateway + Bridge + Tap): studio.overview, convo.resume
     assert.equal(afterCooldownRs.result.interrupted, false);
     assert.equal(afterCooldownRs.result.reason, 'remote_write_active');
 
-    // convo.compact checks active pane & requireEmptyDraft
+    // convo.compact now submits native SlashCommandScopeItem directly via lsClient RPC:
+    // works for background conversations & ignores desktop draft, while still rejecting running/waiting cascades.
+    const sentBeforeCompact = sentMessages.length;
+    const cmpBgOk = await callRpc(cSteer, 's-6', 'convo.compact', {
+      cascadeId: otherCid,
+      idempotencyKey: 'k-cmp-bg-rpc',
+    });
+    assert.equal(cmpBgOk.ok, true);
+    assert.equal(cmpBgOk.result.mode, 'rpc');
+    assert.equal(sentMessages.length, sentBeforeCompact + 1);
+    assert.equal(sentMessages.at(-1).cascadeId, otherCid);
+    assert.equal(sentMessages.at(-1).items[0].chunk.value.scopeItem.case, 'slashCommand');
+    assert.equal(sentMessages.at(-1).items[0].chunk.value.scopeItem.value.info.name, 'compact');
+
+    // Rejects compact when cascade is currently RUNNING
+    cidStatus = 2;
     assert.equal(
-      (await callRpc(cSteer, 's-6', 'convo.compact', { cascadeId: otherCid, idempotencyKey: 'k-cmp-inactive' })).error,
-      'compact_requires_active_pane'
-    );
-    hasDraft = true;
-    assert.equal(
-      (await callRpc(cSteer, 's-7', 'convo.compact', { cascadeId: cid, idempotencyKey: 'k-cmp-draft' })).error,
+      (await callRpc(cSteer, 's-7', 'convo.compact', { cascadeId: cid, idempotencyKey: 'k-cmp-running' })).error,
       'compact_rejected_or_busy'
     );
-    hasDraft = false;
+    cidStatus = 1;
+
+    // Succeeds on active cascade via native RPC even while desktop composer holds a draft
+    hasDraft = true;
     const cmpOk = await callRpc(cSteer, 's-8', 'convo.compact', { cascadeId: cid, idempotencyKey: 'k-cmp-ok-1' });
     assert.equal(cmpOk.ok, true);
-    assert.deepEqual(compactCalls.at(-1), { expectedCid: cid, requireEmptyDraft: true });
+    assert.equal(cmpOk.result.mode, 'rpc');
+    assert.equal(compactCalls.length, 0, 'native RPC compact should not touch desktop DOM composer');
+    hasDraft = false;
 
     // opus.dismiss via Gateway -> Bridge -> opus-gate-service.mjs
     // First test idempotency payloadHash binds `ts` too

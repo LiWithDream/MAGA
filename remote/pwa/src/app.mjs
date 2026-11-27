@@ -46,6 +46,7 @@ import {
   writeStoredPref,
 } from './mobile-enhancements.mjs';
 import { renderDetailTimeline as renderTimelineView } from './timeline-view.mjs';
+import { createInitialViewerState, createViewerController } from './viewer-drawer.mjs';
 import {
   DESKTOP_BREAKPOINT_PX,
   UUID_RE,
@@ -116,6 +117,9 @@ const state = {
   selectedProjectId: '',
   resumeState: null,
   modelCatalog: null,
+  slashCommands: null,
+  usageRange: 'day',
+  viewer: createInitialViewerState(),
   modelPopoverOpen: false,
   contextPopoverOpen: false,
   showHiddenModels: false,
@@ -226,13 +230,15 @@ function ensureGlobalUiListeners() {
     });
   });
   window.addEventListener('keydown', (ev) => {
-    if (ev.key === 'Escape' && (state.modelPopoverOpen || state.contextPopoverOpen || state.moreMenuOpen || state.newChatOpen)) {
+    if (ev.key === 'Escape' && (state.modelPopoverOpen || state.contextPopoverOpen || state.moreMenuOpen || state.newChatOpen || state.viewer.open)) {
       state.modelPopoverOpen = false;
       state.contextPopoverOpen = false;
       state.moreMenuOpen = false;
       if (!state.newChatBusy) state.newChatOpen = false;
+      if (state.viewer.open) state.viewer.open = false;
       renderMoreMenu();
       renderNewChatOverlay();
+      viewerCtrl.render();
       syncComposerControls();
       return;
     }
@@ -324,6 +330,8 @@ async function handleUnpairDevice() {
   state.selectedProjectId = '';
   state.resumeState = null;
   state.modelCatalog = null;
+  state.slashCommands = null;
+  state.viewer = createInitialViewerState();
   state.modelPopoverOpen = false;
   state.contextPopoverOpen = false;
   state.newChatOpen = false;
@@ -412,6 +420,8 @@ function ensureWorkspaceShell() {
         renderNewChatOverlay();
       },
       onBackToList: () => mobileHistory.leaveDetail(),
+      onOpenArtifacts: () => viewerCtrl.openArtifacts(state.selectedId || ''),
+      onOpenGitDiff: () => viewerCtrl.openGit({ cascadeId: state.selectedId || '' }),
       onRefreshSelectedSnapshot: () => {
         if (state.selectedId) {
           fetchAndRenderSnapshot(state.selectedId);
@@ -461,6 +471,29 @@ function canSteer() {
   const role = state.identity?.role || 'observe';
   return role === 'steer' || role === 'admin';
 }
+
+const viewerCtrl = createViewerController({
+  state,
+  getHostEl: () => workspaceRefs?.viewerDrawer || null,
+  getWsClient: () => wsClient,
+  canSteer,
+  onEnterModal: () => mobileHistory.enterModal(),
+  onLeaveModal: () => {
+    if (typeof window !== 'undefined' && window.history?.state?.rcView === 'modal') {
+      try {
+        window.history.back();
+      } catch {}
+    }
+  },
+  onInsertQuickReply: (text) => {
+    if (!state.selectedId || !text) return;
+    state.draftText = text;
+    saveConversationDraft(state.selectedId, text);
+    state.draftIdempotencyKey = createIdempotencyKey();
+    syncComposerControls();
+    workspaceRefs?.draftInput?.focus();
+  },
+});
 
 const convoActions = createConvoActionHandlers({
   state,
@@ -517,6 +550,11 @@ const mobileHistory = createMobileHistoryController({
     syncComposerControls();
   },
   onCloseModal: () => {
+    if (state.viewer.open) {
+      state.viewer.open = false;
+      viewerCtrl.render();
+      return;
+    }
     if (state.newChatBusy) return;
     state.newChatOpen = false;
     state.newChatError = '';
@@ -534,6 +572,9 @@ function refreshModels(cascadeId = state.selectedId) {
       if (!res?.ok || !wsClient || seq !== modelReqSeq) return;
       if (reqCid && state.selectedId !== reqCid) return;
       state.modelCatalog = res;
+      if (Array.isArray(res.slashCommands) && res.slashCommands.length > 0) {
+        state.slashCommands = res.slashCommands;
+      }
       if (state.identity) syncComposerControls();
     })
     .catch(() => {});
@@ -577,10 +618,18 @@ function renderStudioPanels() {
     deviceName: state.identity?.deviceName || '',
     role: state.identity?.role || 'observe',
     selectedProjectId: state.selectedProjectId,
+    usageRange: state.usageRange,
+    onChangeUsageRange: (nextRange) => {
+      state.usageRange = nextRange;
+      renderStudioPanels();
+    },
     onSelectProject: (nextPid) => {
       state.selectedProjectId = nextPid || '';
       renderStudioPanels();
       renderSidebarList();
+    },
+    onOpenProjectGit: ({ projectId }) => {
+      viewerCtrl.openGit({ projectId, cascadeId: '' });
     },
     onCopyId: (cid, btn) => copyTextWithFeedback(btn, cid, { idleText: '复制 ID', doneText: '已复制' }),
   });
@@ -682,6 +731,7 @@ function syncComposerControls() {
   autoResizeTextarea(refs.draftInput);
   renderSlashCommandBar(refs.slashBar, {
     draftText: state.draftText,
+    slashCommands: state.slashCommands,
     writable,
     online: Boolean(online && hasSelection && !state.sendBusy),
     onPick: (nextCmd) => {
@@ -885,6 +935,8 @@ function renderDetailTimeline() {
     refs: ensureWorkspaceShell(),
     onSelectConversation: selectConversation,
     onApprove: handleApproveStep,
+    onOpenArtifact: (cid, fileName) => viewerCtrl.openArtifacts(cid, fileName),
+    onOpenGitDiff: ({ cascadeId, projectId }) => viewerCtrl.openGit({ cascadeId, projectId }),
   });
 }
 
@@ -1238,6 +1290,9 @@ function startWorkspaceSession() {
         state.hostAttached = Boolean(msg.health.hostAttached);
         if (msg.health.globalPreset !== undefined) updateGlobalPreset(msg.health.globalPreset);
         state.capabilities = msg.health.capabilities ?? state.capabilities;
+        if (Array.isArray(msg.health.slashCommands) && msg.health.slashCommands.length > 0) {
+          state.slashCommands = msg.health.slashCommands;
+        }
       }
       if (Array.isArray(msg.conversations)) {
         applyConvoListResult({

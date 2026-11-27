@@ -501,8 +501,12 @@ export function formatWriteError(err) {
   if (code === 'cascade_write_busy') return '桌面端或另一请求正在操作该会话，请稍后再试';
   if (code === 'resume_state_changed') return '会话状态已更新，当前无需续跑，已自动刷新状态';
   if (code === 'compact_requires_active_pane') return '请先在桌面端激活对应会话窗口，或使用发送框触发压缩';
-  if (code === 'compact_rejected_or_busy') return '当前无法执行上下文压缩（可能正在运行、已压缩或输入框仍有草稿）';
+  if (code === 'compact_rejected_or_busy') return '当前会话正在运行或等待审批，请稍后再压缩上下文';
   if (code === 'compact_unavailable') return '当前宿主版本暂不支持远程触发 /compact';
+  if (code === 'artifact_not_found') return '未找到对应的文档 Artifact';
+  if (code === 'sensitive_file_blocked') return '该文件属于敏感凭据/环境变量，已按安全策略禁止查看';
+  if (code === 'not_a_git_repo') return '当前目录不是 Git 仓库';
+  if (code === 'project_not_authorized') return '该项目目录未在桌面端授权列表中';
   if (code === 'create_not_supported') return '当前宿主版本暂不支持远程新建会话，请重启桌面端后重试';
   if (code === 'project_not_found') return '未找到目标项目，请刷新后重试';
   if (code === 'model_not_found' || code === 'invalid_model') return '未找到目标模型选项，已保持当前模型';
@@ -694,8 +698,8 @@ export function createMobileHistoryController({
       return;
     }
 
-    // 2. If new-chat modal is open, back gesture closes the modal cleanly
-    if (state.newChatOpen && nextState.rcView !== 'modal') {
+    // 2. If viewer drawer or new-chat modal is open, back gesture closes it cleanly
+    if ((state.viewer?.open || state.newChatOpen) && nextState.rcView !== 'modal') {
       onCloseModal?.();
       return;
     }
@@ -965,10 +969,13 @@ export function renderConnectionNoticeBar(noticeBar, { state, onRepair, onReconn
   }
 }
 
-export function renderSlashCommandBar(container, { draftText = '', writable = false, online = false, onPick = null } = {}) {
+export function renderSlashCommandBar(
+  container,
+  { draftText = '', slashCommands = null, writable = false, online = false, onPick = null } = {}
+) {
   if (!container) return;
   const raw = String(draftText || '');
-  const show = Boolean(writable && online && raw.startsWith('/') && !raw.includes('\n') && raw.length <= 16);
+  const show = Boolean(writable && online && raw.startsWith('/') && !raw.includes('\n') && !/\s/.test(raw) && raw.length <= 48);
   if (!show) {
     if (!container.classList.contains('rc-hidden')) {
       clearNode(container);
@@ -976,8 +983,20 @@ export function renderSlashCommandBar(container, { draftText = '', writable = fa
     }
     return;
   }
+  const source =
+    Array.isArray(slashCommands) && slashCommands.length > 0 ? slashCommands : SLASH_COMMANDS;
   const needle = raw.trim().toLowerCase();
-  const matches = SLASH_COMMANDS.filter((item) => item.cmd.startsWith(needle) && item.cmd !== needle);
+  const needleBare = needle.slice(1);
+  const matches = source
+    .filter((item) => {
+      if (!item) return false;
+      const cmd = String(item.cmd || (item.name ? `/${item.name}` : '')).toLowerCase();
+      if (!cmd || cmd === needle) return false;
+      if (!needleBare) return true;
+      const desc = String(item.desc || '').toLowerCase();
+      return cmd.startsWith(needle) || cmd.includes(needleBare) || desc.includes(needleBare);
+    })
+    .slice(0, 16);
   if (matches.length === 0) {
     clearNode(container);
     container.classList.add('rc-hidden');
@@ -986,16 +1005,19 @@ export function renderSlashCommandBar(container, { draftText = '', writable = fa
   clearNode(container);
   container.classList.remove('rc-hidden');
   for (const item of matches) {
+    const cmdText = String(item.cmd || `/${item.name}`);
+    const kindLabel = item.kind === 'skill' ? '技能' : '';
     container.appendChild(
       el(
         'button',
         {
           type: 'button',
           className: 'rc-slash-chip',
-          onClick: () => onPick?.(item.trailingSpace ? `${item.cmd} ` : item.cmd),
+          onClick: () => onPick?.(item.trailingSpace !== false ? `${cmdText} ` : cmdText),
         },
-        el('span', { className: 'rc-slash-cmd', text: item.cmd }),
-        el('span', { className: 'rc-slash-desc', text: item.desc })
+        el('span', { className: 'rc-slash-cmd', text: cmdText }),
+        kindLabel ? el('span', { className: 'rc-slash-kind', text: kindLabel }) : null,
+        el('span', { className: 'rc-slash-desc', text: String(item.desc || '') })
       )
     );
   }

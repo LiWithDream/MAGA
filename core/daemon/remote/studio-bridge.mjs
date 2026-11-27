@@ -309,6 +309,20 @@ export async function collectStudioOverview(params = {}, opts = {}) {
       output,
     };
   }
+  const usageDays = days.slice(-30).map((d) => {
+    const uncached = Number(d?.uncached || 0);
+    const cacheRead = Number(d?.cacheRead || 0);
+    const cacheWrite = Number(d?.cacheWrite || 0);
+    const output = Number(d?.output || 0);
+    return {
+      date: String(d?.date || ''),
+      requests: Number(d?.requests || 0),
+      totalTokens: uncached + cacheRead + cacheWrite + output,
+      uncached,
+      cacheRead,
+      output,
+    };
+  });
 
   let activeCascade;
   if (cascadeId) {
@@ -389,6 +403,7 @@ export async function collectStudioOverview(params = {}, opts = {}) {
     worktreeByCid,
     quota,
     todayUsage,
+    usageDays,
     studioPrefs: readRemoteStudioPrefs(opts),
     ...(activeCascade ? { activeCascade } : {}),
   };

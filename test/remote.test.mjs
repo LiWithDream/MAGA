@@ -420,10 +420,20 @@ test('Static security & MAGA architecture invariants for remote control modules'
     assert.ok(src.split('\n').length < 2000, `${rel} must stay < 2000 lines`);
   }
 
-  const tapSrc = fs.readFileSync(path.join(REPO, 'user', 'src', 'modules', 'remote-tap.mjs'), 'utf8');
-  const tapCodeOnly = tapSrc.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
-  assert.equal(/\bMutationObserver\b/.test(tapCodeOnly), false, 'remote-tap.mjs must never spawn MutationObserver');
-  assert.ok(tapSrc.split('\n').length < 2000, 'remote-tap.mjs must stay < 2000 lines');
+  const userModDir = path.join(REPO, 'user', 'src', 'modules');
+  const tapFiles = fs
+    .readdirSync(userModDir)
+    .filter((f) => f.startsWith('remote-tap') && f.endsWith('.mjs'))
+    .sort();
+  assert.ok(tapFiles.includes('remote-tap.mjs'), 'remote-tap.mjs must exist');
+  for (const tf of tapFiles) {
+    const absTap = path.join(userModDir, tf);
+    execFileSync(process.execPath, ['--check', absTap], { stdio: 'pipe' });
+    const tapSrc = fs.readFileSync(absTap, 'utf8');
+    const tapCodeOnly = tapSrc.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+    assert.equal(/\bMutationObserver\b/.test(tapCodeOnly), false, `${tf} must never spawn MutationObserver`);
+    assert.ok(tapSrc.split('\n').length < 2000, `${tf} must stay < 2000 lines`);
+  }
 
   const daemonSrc = fs.readFileSync(path.join(REPO, 'core', 'daemon.mjs'), 'utf8');
   assert.ok(daemonSrc.split('\n').length < 350, 'core/daemon.mjs must stay < 350 lines');

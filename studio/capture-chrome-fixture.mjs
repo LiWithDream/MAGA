@@ -31,6 +31,7 @@ const SAFE_LAYOUT_CLASS_RE = /^(?:bg-sidebar|flex|flex-col|fixed|sticky|relative
 const SAFE_TAG_RE = /^[A-Z][A-Z0-9-]{0,20}$/;
 const SAFE_OVERFLOW_RE = /^(?:visible|hidden|clip|scroll|auto)(?:\s+(?:visible|hidden|clip|scroll|auto))?$/;
 const SAFE_CSS_VAR_RE = /^(?:calc\([^;{}]{1,80}\)|-?\d+(?:\.\d+)?px|0)$/;
+const SAFE_HOST_VERSION_RE = /^[0-9]+(?:\.[0-9A-Za-z._-]+){0,5}$/;
 
 export const CHROME_CAPTURE_EXPRESSION = `(() => {
   const rect = (el) => {
@@ -78,7 +79,9 @@ export const CHROME_CAPTURE_EXPRESSION = `(() => {
   const rootStyle = getComputedStyle(document.documentElement);
   const projEl = document.getElementById('ag-claude-projects-view');
   const drawerEl = document.getElementById('agy-maga-settings-drawer');
+  const appCfg = window.__APP_CONFIG__ && typeof window.__APP_CONFIG__ === 'object' ? window.__APP_CONFIG__ : {};
   return {
+    hostVersion: typeof appCfg.appVersion === 'string' ? appCfg.appVersion.trim() : '',
     viewport: {
       innerWidth: Math.round(window.innerWidth || 0),
       innerHeight: Math.round(window.innerHeight || 0),
@@ -132,7 +135,12 @@ function sanitizeCssVar(raw) {
   return SAFE_CSS_VAR_RE.test(s) ? s : '';
 }
 
-export function sanitizeFixtureSnapshot(raw, { platform = process.platform, source = 'cdp-live' } = {}) {
+function sanitizeHostVersion(raw) {
+  const s = String(raw || '').trim().slice(0, 32);
+  return SAFE_HOST_VERSION_RE.test(s) ? s : 'unknown';
+}
+
+export function sanitizeFixtureSnapshot(raw, { platform = process.platform, source = 'cdp-live', hostVersion = '' } = {}) {
   const normalizedPlatform = platform === 'win32' ? 'win32' : platform === 'darwin' ? 'darwin' : String(platform || 'linux');
   const vp = raw?.viewport && typeof raw.viewport === 'object' ? raw.viewport : {};
   const innerWidth = Math.max(0, Math.round(Number(vp.innerWidth) || 0));
@@ -179,6 +187,7 @@ export function sanitizeFixtureSnapshot(raw, { platform = process.platform, sour
   return {
     schema: 1,
     platform: normalizedPlatform,
+    hostVersion: sanitizeHostVersion(hostVersion || raw?.hostVersion),
     source: String(source || 'cdp-live').slice(0, 64),
     viewport: { innerWidth, innerHeight, devicePixelRatio },
     cssVars: {

@@ -1,6 +1,7 @@
 {
   "schema": 1,
   "platform": "darwin",
+  "hostVersion": "2.35.2",
   "source": "cdp-live",
   "viewport": {
     "innerWidth": 1440,

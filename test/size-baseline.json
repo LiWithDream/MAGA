@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "defaultMaxLines": 2000,
+  "excludedPrefixes": [
+    "vendor/",
+    "test/"
+  ],
+  "excludedRationale": {
+    "vendor/": "Vendored third-party MIT snapshot (agy-capsule); preserved verbatim for upstream diffability.",
+    "test/": "Hermetic regression test suites; governed by domain splits rather than runtime module ceiling."
+  },
+  "oversizeRatchet": {
+    "user/custom.css": 8950,
+    "remote/pwa/src/styles.css": 3502,
+    "install.mjs": 2406,
+    "studio/styles/footer-capsules.css": 2160
+  }
+}

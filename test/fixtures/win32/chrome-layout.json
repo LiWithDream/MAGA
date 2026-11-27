@@ -1,6 +1,7 @@
 {
   "schema": 1,
   "platform": "win32",
+  "hostVersion": "2.35.1",
   "source": "win32-baseline-8b6f126",
   "viewport": {
     "innerWidth": 1920,

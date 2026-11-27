@@ -2219,25 +2219,47 @@ test('Stage 5: user/src modular decomposition, zero legacy dead code, and MagaKe
     assert.equal(shimPattern.test(text), false, `Removed Pre-1.0 shim found in ${path.relative(REPO, f)}`);
   }
 
-  // Enforce < 2,000-line ceiling and valid syntax across all studio/ & core/ source modules (excluding generated prebuilt/)
-  const collectRepoModules = (dir) => {
-    const out = [];
-    for (const ent of readdirSync(dir, { withFileTypes: true })) {
-      const full = path.join(dir, ent.name);
-      if (ent.isDirectory()) {
-        if (ent.name === 'prebuilt' || ent.name === 'node_modules') continue;
-        out.push(...collectRepoModules(full));
-      } else if (/\.(mjs|js)$/.test(ent.name)) {
-        out.push(full);
-      }
+  // Enforce repo-wide < 2,000-line ceiling + shrink-only size-baseline.json ratchet across ALL git-tracked source files
+  const sizeBaseline = JSON.parse(readFileSync(path.join(REPO, 'test', 'size-baseline.json'), 'utf8'));
+  assert.equal(sizeBaseline.schema, 1);
+  assert.equal(sizeBaseline.defaultMaxLines, 2000);
+  const excludedPrefixes = Array.isArray(sizeBaseline.excludedPrefixes) ? sizeBaseline.excludedPrefixes : [];
+  const ratchetMap = sizeBaseline.oversizeRatchet || {};
+  const trackedFiles = execFileSync('git', ['-C', REPO, 'ls-files'], { encoding: 'utf8' })
+    .split(/\r?\n/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const trackedSet = new Set(trackedFiles);
+
+  for (const [ratchetRel, cap] of Object.entries(ratchetMap)) {
+    assert.equal(trackedSet.has(ratchetRel), true, `Stale size-baseline.json entry (not in git ls-files): ${ratchetRel}`);
+    const absRatchet = path.join(REPO, ratchetRel);
+    const ratchetLines = readFileSync(absRatchet, 'utf8').replace(/\r\n/g, '\n').split('\n').length;
+    assert.ok(
+      ratchetLines >= sizeBaseline.defaultMaxLines,
+      `Ratcheted file ${ratchetRel} is now ${ratchetLines} lines (< ${sizeBaseline.defaultMaxLines}); remove it from test/size-baseline.json so the standard cap applies!`
+    );
+    assert.ok(
+      ratchetLines <= cap,
+      `Monotonic ratchet violated: ${ratchetRel} grew from baseline ${cap} to ${ratchetLines} lines (place new rules/code in modular files)`
+    );
+  }
+
+  for (const rel of trackedFiles) {
+    if (excludedPrefixes.some((p) => rel.startsWith(p))) continue;
+    if (!/\.(mjs|js|css|kt)$/.test(rel)) continue;
+    const abs = path.join(REPO, rel);
+    if (!existsSync(abs)) continue;
+    const lineCount = readFileSync(abs, 'utf8').replace(/\r\n/g, '\n').split('\n').length;
+    if (!(rel in ratchetMap)) {
+      assert.ok(
+        lineCount < sizeBaseline.defaultMaxLines,
+        `Tracked source ${rel} must be < ${sizeBaseline.defaultMaxLines} lines (got ${lineCount})`
+      );
     }
-    return out;
-  };
-  for (const abs of [...collectRepoModules(path.join(REPO, 'studio')), ...collectRepoModules(path.join(REPO, 'core'))]) {
-    const rel = path.relative(REPO, abs);
-    const lineCount = readFileSync(abs, 'utf8').split('\n').length;
-    assert.ok(lineCount < 2000, `Source module ${rel} must be < 2000 lines (got ${lineCount})`);
-    execFileSync(process.execPath, ['--check', abs], { stdio: 'pipe' });
+    if (/\.(mjs|js)$/.test(rel)) {
+      execFileSync(process.execPath, ['--check', abs], { stdio: 'pipe' });
+    }
   }
 
   const customJsSrc = readFileSync(path.join(REPO, 'user', 'custom.js'), 'utf8');

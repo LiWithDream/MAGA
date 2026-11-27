@@ -47,7 +47,6 @@ const INCLUDE_FILES = [
 const INCLUDE_DIRS = [
   'core',
   'cli',
-  'rules',
   'assets',
   'vendor',
   'studio',

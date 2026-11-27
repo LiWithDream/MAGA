@@ -365,10 +365,14 @@ test('PreToolUse run_command enforces commit, force-push, and --tags guardrails'
   }
 });
 
-test('CLI subprocess reads stdin JSON and outputs expected decision JSON', () => {
+test('CLI subprocess reads stdin JSON and outputs expected decision JSON without mutating live user state', () => {
   const repo = createTempRepo('main');
   const wtParent = realpathNative(fs.mkdtempSync(path.join(os.tmpdir(), 'maga-wt-sub-')));
   const wtDir = path.join(wtParent, 'feat-subproc');
+  const stateDir = realpathNative(fs.mkdtempSync(path.join(os.tmpdir(), 'maga-guard-state-')));
+  const subEnv = { ...process.env, ANTI_CLAUDE_STATE_DIR: stateDir };
+  const liveEventsPath = path.join(os.homedir(), '.gemini', 'antigravity', 'anti-claude', 'git-workflow-events.json');
+  const beforeLiveEvents = fs.existsSync(liveEventsPath) ? fs.readFileSync(liveEventsPath, 'utf8') : null;
   try {
     const denyOut = execFileSync(process.execPath, [HOOK_SCRIPT], {
       input: JSON.stringify({
@@ -376,6 +380,7 @@ test('CLI subprocess reads stdin JSON and outputs expected decision JSON', () =>
         cwd: repo,
         toolCall: { name: 'edit_file', args: { Path: path.join(repo, 'README.md') } },
       }),
+      env: subEnv,
       encoding: 'utf8',
     });
     const denyJson = JSON.parse(denyOut);
@@ -387,6 +392,7 @@ test('CLI subprocess reads stdin JSON and outputs expected decision JSON', () =>
         cwd: repo,
         toolCall: { name: 'run_command', args: { CommandLine: 'git status' } },
       }),
+      env: subEnv,
       encoding: 'utf8',
     });
     assert.deepEqual(JSON.parse(runAllowOut), { decision: 'allow' });
@@ -399,6 +405,7 @@ test('CLI subprocess reads stdin JSON and outputs expected decision JSON', () =>
         cwd: repo,
         toolCall: { name: 'edit_file', args: { Path: path.join(repo, 'README.md') } },
       }),
+      env: subEnv,
       encoding: 'utf8',
     });
     assert.equal(JSON.parse(primaryFeatDeny).decision, 'deny');
@@ -412,13 +419,20 @@ test('CLI subprocess reads stdin JSON and outputs expected decision JSON', () =>
         cwd: repo,
         toolCall: { name: 'edit_file', args: { Path: path.join(wtDir, 'README.md') } },
       }),
+      env: subEnv,
       encoding: 'utf8',
     });
     assert.deepEqual(JSON.parse(allowOut), { decision: 'allow' });
+
+    const isolatedEvents = JSON.parse(fs.readFileSync(path.join(stateDir, 'git-workflow-events.json'), 'utf8'));
+    assert.equal(isolatedEvents.events.length, 2, 'deny telemetry stays inside isolated ANTI_CLAUDE_STATE_DIR');
+    const afterLiveEvents = fs.existsSync(liveEventsPath) ? fs.readFileSync(liveEventsPath, 'utf8') : null;
+    assert.equal(afterLiveEvents, beforeLiveEvents, 'live ~/.gemini/antigravity/anti-claude/git-workflow-events.json must stay untouched');
   } finally {
     gitResult(repo, ['worktree', 'remove', '--force', wtDir]);
     fs.rmSync(wtParent, { recursive: true, force: true });
     fs.rmSync(repo, { recursive: true, force: true });
+    fs.rmSync(stateDir, { recursive: true, force: true });
   }
 });
 

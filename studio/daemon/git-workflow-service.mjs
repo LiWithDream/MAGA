@@ -116,16 +116,39 @@ export function loadGitWorkflowPolicy(opts = {}) {
   return readWorkflowPolicy({ stateDir: path.dirname(policyFile) });
 }
 
+function sanitizeLocalOnlyPaths(rawList) {
+  if (!Array.isArray(rawList)) return null;
+  const cleaned = [];
+  const seen = new Set();
+  for (const item of rawList) {
+    if (typeof item !== 'string') continue;
+    const trimmed = item
+      .trim()
+      .replace(/\\/g, '/')
+      .replace(/^\/+|\/+$/g, '')
+      .replace(/\/\*\*$/, '');
+    if (!trimmed) continue;
+    if (path.isAbsolute(trimmed) || trimmed.split('/').includes('..')) continue;
+    if (trimmed === '.agents/hooks' || trimmed === '.agents/hooks.json' || trimmed.startsWith('.agents/hooks/')) continue;
+    if (!seen.has(trimmed)) {
+      seen.add(trimmed);
+      cleaned.push(trimmed);
+    }
+  }
+  return cleaned;
+}
+
 function normalizeProjectPolicyEntry(key, val) {
   if (!val || typeof val !== 'object') return null;
   if (!VALID_WORKFLOW_MODES.includes(val.mode)) return null;
+  const cleanLocalOnly = sanitizeLocalOnlyPaths(val.localOnlyPaths);
   return {
     mode: val.mode,
     displayRoot: typeof val.displayRoot === 'string' ? val.displayRoot : '',
     commonDir: typeof val.commonDir === 'string' ? val.commonDir : key,
     ...(Array.isArray(val.protectedBranches) ? { protectedBranches: val.protectedBranches.filter(Boolean) } : {}),
     ...(typeof val.blockPushTags === 'boolean' ? { blockPushTags: val.blockPushTags } : {}),
-    ...(Array.isArray(val.localOnlyPaths) ? { localOnlyPaths: val.localOnlyPaths.filter(Boolean) } : {}),
+    ...(cleanLocalOnly && cleanLocalOnly.length > 0 ? { localOnlyPaths: cleanLocalOnly } : {}),
     updatedAt: Number(val.updatedAt) > 0 ? Number(val.updatedAt) : Date.now(),
   };
 }
@@ -355,10 +378,17 @@ export async function setGitWorkflowPolicy(payload = {}, opts = {}) {
           delete draft.projects[normRoot];
         }
       } else {
+        const prevEntry = draft.projects[gitCtx.commonDirKey] || {};
+        const nextLocalOnly = Array.isArray(payload.localOnlyPaths)
+          ? sanitizeLocalOnlyPaths(payload.localOnlyPaths)
+          : sanitizeLocalOnlyPaths(prevEntry.localOnlyPaths);
         draft.projects[gitCtx.commonDirKey] = {
           mode: nextMode,
           displayRoot: gitCtx.mainRoot,
           commonDir: gitCtx.commonDir,
+          ...(Array.isArray(prevEntry.protectedBranches) ? { protectedBranches: prevEntry.protectedBranches } : {}),
+          ...(typeof prevEntry.blockPushTags === 'boolean' ? { blockPushTags: prevEntry.blockPushTags } : {}),
+          ...(nextLocalOnly && nextLocalOnly.length > 0 ? { localOnlyPaths: nextLocalOnly } : {}),
           updatedAt: Date.now(),
         };
       }

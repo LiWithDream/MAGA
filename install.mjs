@@ -97,12 +97,12 @@ const LEGACY_THEME_DAEMON_PLIST = path.join(HOME, 'Library', 'LaunchAgents', `${
 const LEGACY_DAEMON_WRAPPER_FILE = path.join(AGY_DIR, 'scripts', 'antigravity-font-daemon.mjs');
 const LEGACY_AG2_SYNC_SCRIPT = path.join(AGY_DIR, 'scripts', 'sync-antigravity-2.mjs');
 
-const SELF_REPO = 'https://github.com/hongqi7/Anti-Claude.git';
+const SELF_REPO = 'https://github.com/LiWithDream/agy-studio.git';
+const FAST_IO_RULE_BEGIN = '<!-- BEGIN agy-fast-io-pruned -->';
 const RULE_BEGIN = '<!-- BEGIN anti-claude -->';
 const RULE_END = '<!-- END anti-claude -->';
 const LEGACY_RULE_BEGIN = '<!-- BEGIN antigravity-claude-ux -->';
 const LEGACY_RULE_END = '<!-- END antigravity-claude-ux -->';
-const LEGACY_HEADING = '## 执行过程同步（Claude 式边做边汇报）';
 const USER_LAYER_FILES = ['config.json', 'custom.css', 'custom.js', 'i18n.override.json'];
 const STUB_CONTENT = { 'custom.css': '/* user/custom.css */\n', 'custom.js': '/* user/custom.js */\n' };
 
@@ -807,7 +807,6 @@ export function validateSourceRoot(root = __dirname) {
     }
   }
   if (!fs.existsSync(path.join(root, 'core', 'base.css'))) problems.push('core/base.css missing');
-  if (!fs.existsSync(path.join(root, 'rules', 'claude-execution-sync.md'))) problems.push('rules/claude-execution-sync.md missing');
   return { ok: problems.length === 0, problems };
 }
 
@@ -1098,21 +1097,8 @@ function findMarkedRuleSpan(text) {
   return null;
 }
 
-function injectAgentsMdRule(state, { allowInsert }) {
-  const ruleBlock = fs.readFileSync(path.join(__dirname, 'rules', 'claude-execution-sync.md'), 'utf8').trim();
-  const existing = readTextSafe(AGENTS_MD) || '';
-  const span = findMarkedRuleSpan(existing);
-  if (span) {
-    const next = existing.slice(0, span.begin) + ruleBlock + existing.slice(span.end);
-    if (next !== existing) writeFileAtomic(AGENTS_MD, next);
-    return next !== existing ? 'updated_marked_block' : 'unchanged';
-  }
-  if (existing.includes(LEGACY_HEADING)) return 'already_present_unmarked';
-  if (!allowInsert) return 'absent_respected';
-  const sep = existing.trim() ? '\n\n---\n\n' : '';
-  writeFileAtomic(AGENTS_MD, `${ruleBlock}${sep}${existing}`);
-  state.agentsRule = { inserted: true };
-  return 'prepended_rule_block';
+function retireLegacyAgentsMdRule() {
+  return removeAgentsMdRule() ? 'retired_legacy_block' : 'absent_respected';
 }
 
 function removeAgentsMdRule() {
@@ -2053,7 +2039,7 @@ async function cmdDoctor() {
       fonts: checkFontsInstalled(),
       developerStepSkinUnlocked: pbtxt.includes('PRODUCT_SKIN_DEVELOPER'),
       verboseConversationSteps: cfg?.userSettings?.verboseConversationSteps ?? null,
-      agentsRuleConfigured: agentsRaw.includes(RULE_BEGIN) || agentsRaw.includes(LEGACY_RULE_BEGIN) || agentsRaw.includes(LEGACY_HEADING)
+      agentsRuleConfigured: agentsRaw.includes(FAST_IO_RULE_BEGIN)
     },
     { warnings }
   );
@@ -2110,7 +2096,7 @@ async function cmdInstall(flags) {
     if (cliLayer.conflict) {
       warnings.push(`local edits kept, new version saved to ${INCOMING_DIR}: ${AGY_CLI_STATUSLINE_NAME} (use --overwrite-local to replace)`);
     }
-    const ruleStatus = state.options.agentsRule ? injectAgentsMdRule(state, { allowInsert: true }) : 'disabled_by_option';
+    const ruleStatus = state.options.agentsRule ? retireLegacyAgentsMdRule() : 'disabled_by_option';
     state.sync = Object.assign({}, state.sync, { cliVersion: antigravityCli.version, lastAppliedAt: Date.now() });
     saveState(state);
     return finalize(
@@ -2149,7 +2135,7 @@ async function cmdInstall(flags) {
     stepUnlock = await applyStepUnlock(state);
     if (!stepUnlock.live.ok && stepUnlock.live.appRunning !== false) warnings.push(`live step unlock: ${stepUnlock.live.reason}`);
   }
-  const ruleStatus = state.options.agentsRule ? injectAgentsMdRule(state, { allowInsert: true }) : 'disabled_by_option';
+  const ruleStatus = state.options.agentsRule ? retireLegacyAgentsMdRule() : 'disabled_by_option';
 
   let cliLayer = { skipped: noCli ? 'disabled_by_option' : 'agy_cli_not_detected' };
   if (state.options.cli) {
@@ -2258,7 +2244,7 @@ async function cmdSyncUpgrade(flags) {
     if (cliLayer.conflict) warnings.push(`local edits kept, new version in ${INCOMING_DIR}: ${AGY_CLI_STATUSLINE_NAME}`);
   }
 
-  const ruleStatus = state.options.agentsRule ? injectAgentsMdRule(state, { allowInsert: false }) : 'disabled_by_option';
+  const ruleStatus = state.options.agentsRule ? retireLegacyAgentsMdRule() : 'disabled_by_option';
 
   if (!isDesktop) {
     const antigravityCli = detectAntigravityCli();

@@ -650,6 +650,31 @@ test('git-workflow-service syncs plugin with pinned Node, manages policy atomica
 
     const settingsCss = fs.readFileSync(path.join(REPO_ROOT, 'studio', 'styles', 'studio-settings.css'), 'utf8');
     assert.equal(settingsCss.includes(':has('), false, 'studio-settings.css has zero :has()');
+
+    // setGitWorkflowPolicy accepts, sanitizes (strips /**, rejects .. and .agents/hooks), and preserves localOnlyPaths across mode switches
+    const polStateDir = path.join(tmpRoot, 'policy-local-only');
+    const nativeProjDir = path.join(tmpRoot, 'native-proj-local-only');
+    createNativeProj(nativeProjDir, 'pyRepo', pyRepo);
+    const setRes1 = await setGitWorkflowPolicy(
+      {
+        dirPath: pyRepo,
+        mode: 'worktree-only',
+        localOnlyPaths: ['scratch/**', 'analysis/', '../escape', '.agents/hooks', '.agents/hooks.json', 'ENV.md', 'GEMINI.md'],
+      },
+      { stateDir: polStateDir, nativeProjectsDir: nativeProjDir }
+    );
+    assert.equal(setRes1.ok, true);
+    const pyEntry1 = Object.values(setRes1.policy.projects)[0];
+    assert.deepEqual(pyEntry1.localOnlyPaths, ['scratch', 'analysis', 'ENV.md', 'GEMINI.md']);
+
+    const setRes2 = await setGitWorkflowPolicy(
+      { dirPath: pyRepo, mode: 'protect-main' },
+      { stateDir: polStateDir, nativeProjectsDir: nativeProjDir }
+    );
+    assert.equal(setRes2.ok, true);
+    const pyEntry2 = Object.values(setRes2.policy.projects)[0];
+    assert.equal(pyEntry2.mode, 'protect-main');
+    assert.deepEqual(pyEntry2.localOnlyPaths, ['scratch', 'analysis', 'ENV.md', 'GEMINI.md'], 'mode toggle preserves existing localOnlyPaths');
   } finally {
     fs.rmSync(`${pyRepo}-wt`, { recursive: true, force: true });
     fs.rmSync(`${nodeRepo}-wt`, { recursive: true, force: true });

@@ -21,6 +21,15 @@ export const SAFE_SLUG_RE = /^[a-z0-9][a-z0-9._-]{0,48}$/;
 export const ACTIVE_CID_TTL_MS = 10 * 60 * 1000;
 export const CASE_INSENSITIVE_FS = process.platform === 'darwin' || process.platform === 'win32';
 export const DEFAULT_PROTECTED_BRANCHES = new Set(['main', 'master']);
+export const LOCAL_GOVERNANCE_ALLOWLIST = Object.freeze([
+  'AGENTS.md',
+  'GEMINI.md',
+  'ENV.md',
+  '.agents/skills',
+  '.agents/rules',
+]);
+const LOCAL_GOVERNANCE_MANIFEST_FILE = 'maga-wt-governance.json';
+const MAX_GOVERNANCE_FILE_BYTES = 512 * 1024;
 
 const realpathNative = fs.realpathSync.native || fs.realpathSync;
 
@@ -362,6 +371,238 @@ export async function ensureNodeModulesExcludedIfNeededAsync(mainReal, targetWor
   return { needed: true };
 }
 
+function sha256Buffer(buf) {
+  return crypto.createHash('sha256').update(buf).digest('hex');
+}
+
+export function isAllowedLocalGovernanceFileRel(relPath) {
+  if (typeof relPath !== 'string') return false;
+  const norm = relPath.trim().replace(/\\/g, '/');
+  if (!norm || norm.startsWith('/') || norm.endsWith('/')) return false;
+  const segs = norm.split('/');
+  if (segs.some((s) => !s || s === '.' || s === '..' || s === '*' || s === '**')) return false;
+  if (norm === 'AGENTS.md' || norm === 'GEMINI.md' || norm === 'ENV.md') return true;
+  if (norm.startsWith('.agents/skills/') && segs.length >= 3) return true;
+  if (norm.startsWith('.agents/rules/') && segs.length >= 3) return true;
+  return false;
+}
+
+async function isPathTrackedInGitAsync(repoDir, relPath) {
+  const res = await execGitAsyncWithRaw(repoDir, ['ls-files', '--error-unmatch', '--', relPath], 1000);
+  if (res.ok) return true;
+  // Also check directory contents for directory entries like `.agents/skills`
+  const listRes = await execGitAsyncWithRaw(repoDir, ['ls-files', '--', relPath], 1000);
+  return Boolean(listRes.ok && listRes.stdout.trim());
+}
+
+function ensureExcludeEntries(commonDir, entriesToAdd) {
+  if (!commonDir || !Array.isArray(entriesToAdd) || entriesToAdd.length === 0) return;
+  const excludeFile = path.join(commonDir, 'info', 'exclude');
+  try {
+    const existing = fs.existsSync(excludeFile) ? fs.readFileSync(excludeFile, 'utf8') : '';
+    const lines = existing.split(/\r?\n/).map((l) => l.trim());
+    const lineSet = new Set(lines);
+    const hasDotAgentsUmbrella = lineSet.has('/.agents') || lineSet.has('/.agents/') || lineSet.has('.agents') || lineSet.has('.agents/');
+    const missing = [];
+    for (const rawEntry of entriesToAdd) {
+      const entry = rawEntry.startsWith('/') ? rawEntry : `/${rawEntry}`;
+      const bare = entry.slice(1);
+      if (bare.startsWith('.agents/') && hasDotAgentsUmbrella) continue;
+      if (lineSet.has(entry) || lineSet.has(bare) || lineSet.has(`${entry}/`) || lineSet.has(`${bare}/`)) continue;
+      lineSet.add(entry);
+      missing.push(entry);
+    }
+    if (missing.length > 0) {
+      const prefix = existing && !existing.endsWith('\n') ? '\n' : '';
+      writeAtomicUtf8(excludeFile, `${existing}${prefix}${missing.join('\n')}\n`);
+    }
+  } catch {}
+}
+
+function collectSafeGovernanceDirFiles(baseDir, relPrefix, outFiles) {
+  let entries = [];
+  try {
+    entries = fs.readdirSync(baseDir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const ent of entries) {
+    if (ent.name === '.DS_Store' || ent.name.endsWith('.tmp') || ent.name.endsWith('.lock')) continue;
+    const abs = path.join(baseDir, ent.name);
+    const rel = `${relPrefix}/${ent.name}`;
+    let lst = null;
+    try {
+      lst = fs.lstatSync(abs, { throwIfNoEntry: false });
+    } catch {}
+    if (!lst || lst.isSymbolicLink()) continue;
+    if (lst.isDirectory()) {
+      collectSafeGovernanceDirFiles(abs, rel, outFiles);
+    } else if (lst.isFile() && lst.size <= MAX_GOVERNANCE_FILE_BYTES && isAllowedLocalGovernanceFileRel(rel)) {
+      outFiles.push({ abs, rel });
+    }
+  }
+}
+
+export async function materializeLocalGovernanceAsync(mainReal, targetWorktreeDir, commonDir = '') {
+  if (!mainReal || !targetWorktreeDir) return { materialized: [] };
+  const gitDirRes = await execGitAsyncWithRaw(targetWorktreeDir, ['rev-parse', '--git-dir'], 1000);
+  if (!gitDirRes.ok || !gitDirRes.stdout.trim()) return { materialized: [] };
+  const wtGitDir = path.resolve(targetWorktreeDir, gitDirRes.stdout.trim());
+  const resolvedCommon =
+    commonDir || (await resolveCommonGitDirAsync(mainReal))?.commonDir || path.join(mainReal, '.git');
+
+  const filesToCopy = [];
+  const excludeCandidates = [];
+
+  for (const item of LOCAL_GOVERNANCE_ALLOWLIST) {
+    const srcAbs = path.join(mainReal, item);
+    const lstat = fs.lstatSync(srcAbs, { throwIfNoEntry: false });
+    if (!lstat) continue;
+
+    // Never touch paths tracked in either primary checkout or worktree branch HEAD
+    if ((await isPathTrackedInGitAsync(mainReal, item)) || (await isPathTrackedInGitAsync(targetWorktreeDir, item))) {
+      continue;
+    }
+
+    const destCheck = path.join(targetWorktreeDir, item);
+    if (fs.lstatSync(destCheck, { throwIfNoEntry: false })) continue;
+
+    if (item === 'AGENTS.md' || item === 'GEMINI.md' || item === 'ENV.md') {
+      if (lstat.isSymbolicLink()) {
+        // Dereference symlink ONLY for AGENTS.md / GEMINI.md pointing to a regular .md file (e.g. ~/Research/GEMINI.md); never ENV.md
+        if (item === 'ENV.md') continue;
+        try {
+          const targetReal = realpathNative(srcAbs);
+          const targetStat = fs.statSync(targetReal);
+          if (!targetStat.isFile() || targetStat.size > MAX_GOVERNANCE_FILE_BYTES || !targetReal.toLowerCase().endsWith('.md')) {
+            continue;
+          }
+          filesToCopy.push({ abs: targetReal, rel: item });
+          excludeCandidates.push(item);
+        } catch {}
+      } else if (lstat.isFile() && lstat.size <= MAX_GOVERNANCE_FILE_BYTES) {
+        filesToCopy.push({ abs: srcAbs, rel: item });
+        excludeCandidates.push(item);
+      }
+    } else if (lstat.isDirectory() && !lstat.isSymbolicLink()) {
+      const beforeLen = filesToCopy.length;
+      collectSafeGovernanceDirFiles(srcAbs, item, filesToCopy);
+      if (filesToCopy.length > beforeLen) {
+        excludeCandidates.push(item);
+      }
+    }
+  }
+
+  if (filesToCopy.length === 0) return { materialized: [] };
+
+  ensureExcludeEntries(resolvedCommon, excludeCandidates);
+
+  const recordedFiles = [];
+  for (const f of filesToCopy) {
+    if (!isAllowedLocalGovernanceFileRel(f.rel)) continue;
+    const dstAbs = path.join(targetWorktreeDir, ...f.rel.split('/'));
+    if (fs.lstatSync(dstAbs, { throwIfNoEntry: false })) continue;
+    try {
+      const buf = fs.readFileSync(f.abs);
+      fs.mkdirSync(path.dirname(dstAbs), { recursive: true });
+      fs.writeFileSync(dstAbs, buf);
+      recordedFiles.push({ rel: f.rel, sha256: sha256Buffer(buf) });
+    } catch {}
+  }
+
+  if (recordedFiles.length > 0) {
+    try {
+      writeAtomicUtf8(
+        path.join(wtGitDir, LOCAL_GOVERNANCE_MANIFEST_FILE),
+        `${JSON.stringify({ schema: 1, mainDirPath: mainReal, files: recordedFiles }, null, 2)}\n`
+      );
+    } catch {}
+  }
+
+  return { materialized: recordedFiles.map((r) => r.rel) };
+}
+
+async function cleanupLocalGovernanceBeforeRemoveAsync(worktreeRealPath) {
+  const removedBackups = [];
+  const skippedModified = [];
+  const gitDirRes = await execGitAsyncWithRaw(worktreeRealPath, ['rev-parse', '--git-dir'], 1000);
+  if (!gitDirRes.ok || !gitDirRes.stdout.trim()) {
+    return { restore: () => {}, skippedModified };
+  }
+  const wtGitDir = path.resolve(worktreeRealPath, gitDirRes.stdout.trim());
+  const manifestPath = path.join(wtGitDir, LOCAL_GOVERNANCE_MANIFEST_FILE);
+  if (!fs.existsSync(manifestPath)) {
+    return { restore: () => {}, skippedModified };
+  }
+
+  let manifest = null;
+  try {
+    manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  } catch {
+    return { restore: () => {}, skippedModified };
+  }
+
+  const files = Array.isArray(manifest?.files) ? manifest.files : [];
+  for (const item of files) {
+    const rel = typeof item?.rel === 'string' ? item.rel.trim() : '';
+    const expectedSha = typeof item?.sha256 === 'string' ? item.sha256.trim().toLowerCase() : '';
+    if (!isAllowedLocalGovernanceFileRel(rel) || !/^[0-9a-f]{64}$/.test(expectedSha)) continue;
+    const targetAbs = path.join(worktreeRealPath, ...rel.split('/'));
+    const lst = fs.lstatSync(targetAbs, { throwIfNoEntry: false });
+    if (!lst || lst.isSymbolicLink() || !lst.isFile()) continue;
+    try {
+      const buf = fs.readFileSync(targetAbs);
+      if (sha256Buffer(buf) !== expectedSha) {
+        skippedModified.push(rel);
+        continue;
+      }
+      fs.rmSync(targetAbs, { force: true });
+      removedBackups.push({ targetAbs, buf });
+    } catch {}
+  }
+
+  // Prune empty governance directories bottom-up so `git worktree remove` succeeds cleanly
+  const pruneEmptyUpTo = (relDir) => {
+    const absDir = path.join(worktreeRealPath, ...relDir.split('/'));
+    const walkEmpty = (dir) => {
+      let ents = [];
+      try {
+        ents = fs.readdirSync(dir, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const e of ents) {
+        if (e.isDirectory() && !e.isSymbolicLink()) walkEmpty(path.join(dir, e.name));
+      }
+      try {
+        if (fs.readdirSync(dir).length === 0) fs.rmdirSync(dir);
+      } catch {}
+    };
+    if (fs.lstatSync(absDir, { throwIfNoEntry: false })?.isDirectory()) walkEmpty(absDir);
+  };
+  pruneEmptyUpTo('.agents/skills');
+  pruneEmptyUpTo('.agents/rules');
+  try {
+    const dotAgents = path.join(worktreeRealPath, '.agents');
+    if (fs.lstatSync(dotAgents, { throwIfNoEntry: false })?.isDirectory() && fs.readdirSync(dotAgents).length === 0) {
+      fs.rmdirSync(dotAgents);
+    }
+  } catch {}
+
+  const restore = () => {
+    for (const bak of removedBackups) {
+      try {
+        if (!fs.lstatSync(bak.targetAbs, { throwIfNoEntry: false })) {
+          fs.mkdirSync(path.dirname(bak.targetAbs), { recursive: true });
+          fs.writeFileSync(bak.targetAbs, bak.buf);
+        }
+      } catch {}
+    }
+  };
+
+  return { restore, skippedModified };
+}
+
 function validateSafeDirSlug(slug) {
   const s = String(slug || '').trim().toLowerCase();
   if (!SAFE_SLUG_RE.test(s) || s.includes('..') || s.endsWith('.lock') || s.endsWith('.') || s.startsWith('.')) {
@@ -493,6 +734,7 @@ export async function createRepoWorktreeCore(
 
   const destReal = getRealPathPreserveCase(dest);
   await ensureNodeModulesExcludedIfNeededAsync(mainReal, destReal);
+  const govRes = await materializeLocalGovernanceAsync(mainReal, destReal, resolvedCommon);
 
   return {
     ok: true,
@@ -500,6 +742,7 @@ export async function createRepoWorktreeCore(
     branch: fullBranch,
     baseBranch: targetBase,
     mainDirPath: mainReal,
+    ...(govRes.materialized.length > 0 ? { governanceMaterialized: govRes.materialized } : {}),
   };
 }
 
@@ -538,6 +781,16 @@ export async function removeRepoWorktreeCore(
   }
 
   await ensureNodeModulesExcludedIfNeededAsync(mainReal, entry.realPath);
+  const govCleanup = await cleanupLocalGovernanceBeforeRemoveAsync(entry.realPath);
+  if (govCleanup.skippedModified.length > 0) {
+    govCleanup.restore();
+    return {
+      ok: false,
+      error: 'modified_governance_files',
+      detail: `Refusing to remove worktree with modified local governance files: ${govCleanup.skippedModified.join(', ')}`,
+      modifiedGovernanceFiles: govCleanup.skippedModified,
+    };
+  }
 
   const wtNodeModules = path.join(entry.realPath, 'node_modules');
   const mainNodeModules = path.join(mainReal, 'node_modules');
@@ -556,6 +809,7 @@ export async function removeRepoWorktreeCore(
 
   const rmRes = await execGitWithStatusAsync(mainReal, ['worktree', 'remove', '--', entry.realPath], 8000);
   if (!rmRes.ok) {
+    govCleanup.restore();
     if (unlinkedNodeModules && fs.existsSync(mainNodeModules) && !fs.lstatSync(wtNodeModules, { throwIfNoEntry: false })) {
       try {
         fs.symlinkSync(mainNodeModules, wtNodeModules, process.platform === 'win32' ? 'junction' : 'dir');
@@ -565,6 +819,7 @@ export async function removeRepoWorktreeCore(
       ok: false,
       error: 'git_worktree_remove_failed',
       detail: rmRes.stderr.trim() || 'worktree may be dirty',
+      ...(govCleanup.skippedModified.length > 0 ? { modifiedGovernanceFiles: govCleanup.skippedModified } : {}),
     };
   }
 

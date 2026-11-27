@@ -14,6 +14,7 @@
     "build:android": "node scripts/build-android-apk.mjs",
     "deploy": "node studio/cli.mjs deploy",
     "doctor": "node studio/cli.mjs doctor",
+    "probe:host": "node studio/probe-host.mjs",
     "smoke:live": "node studio/smoke-live.mjs",
     "sync-rules": "node studio/cli.mjs sync-rules",
     "rollback": "node studio/cli.mjs rollback",

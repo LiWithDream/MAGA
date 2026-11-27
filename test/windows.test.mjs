@@ -1040,8 +1040,10 @@ test('dual-OS Chrome DOM geometry fixtures pass privacy hygiene and end-to-end J
   const win32Fixture = JSON.parse(win32Raw);
   assert.equal(darwinFixture.schema, 1);
   assert.equal(darwinFixture.platform, 'darwin');
+  assert.match(darwinFixture.hostVersion, /^\d+\.\d+/);
   assert.equal(win32Fixture.schema, 1);
   assert.equal(win32Fixture.platform, 'win32');
+  assert.match(win32Fixture.hostVersion, /^\d+\.\d+/);
 
   // 1. Real macOS live fixture regression
   {
@@ -1212,6 +1214,15 @@ test('cdp-probe and capture-chrome-fixture sanitize untrusted fields and skip no
     { platform: 'win32', source: 'unit-test' }
   );
   assert.equal(sanitized.secretLeakedField, undefined);
+  assert.equal(sanitized.hostVersion, 'unknown');
+  assert.equal(
+    sanitizeFixtureSnapshot({ hostVersion: '2.35.2' }, { platform: 'darwin', source: 'unit' }).hostVersion,
+    '2.35.2'
+  );
+  assert.equal(
+    sanitizeFixtureSnapshot({ hostVersion: 'file:///Users/alice/bad' }, { platform: 'darwin', source: 'unit' }).hostVersion,
+    'unknown'
+  );
   assert.equal(sanitized.cssVars.winTopBar, '30px');
   assert.equal(sanitized.cssVars.projTop, '');
   assert.equal(sanitized.cssVars.ovEffectiveReserve, '');

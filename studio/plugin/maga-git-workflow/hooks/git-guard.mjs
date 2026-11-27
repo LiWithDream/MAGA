@@ -77,7 +77,7 @@ const FILE_EDIT_TOOLS = new Set([
 
 const PROTECTED_REFSPEC_BASE_RE = /^\+?([^:]*:)?(refs\/heads\/)?([^\s]+)$/;
 const ENGINE_MARKER_RE = /studio[\\/]plugin[\\/]maga-git-workflow[\\/]hooks[\\/]git-guard\.mjs|\.githooks[\\/]guard-main-branch\.mjs/;
-const SHELL_TAMPER_SUSPECT_RE = /git-workflow-policy\.json|maga-git-workflow|\.agents[\\/]hooks/;
+const SHELL_TAMPER_SUSPECT_RE = /git-workflow-policy\.json|maga-git-workflow|\.agents[\\/](?:hooks|locks\.json)/;
 
 function gitExecEnv() {
   return { ...process.env, GIT_OPTIONAL_LOCKS: '0' };
@@ -395,6 +395,16 @@ function isRepoHooksTamperPath(absPath, mainRoot) {
   const a = CASE_INSENSITIVE_FS ? realTarget.toLowerCase() : realTarget;
   const hj = CASE_INSENSITIVE_FS ? hooksJson.toLowerCase() : hooksJson;
   return a === hj || isInsideDir(realTarget, hooksDir);
+}
+
+function isRepoLocksTamperPath(absPath, rootDir) {
+  if (!absPath || !rootDir) return false;
+  const realTarget = resolveExistingPrefixRealpath(absPath);
+  const realRoot = resolveExistingPrefixRealpath(rootDir);
+  const locksJson = path.join(realRoot, '.agents', 'locks.json');
+  const a = CASE_INSENSITIVE_FS ? realTarget.toLowerCase() : realTarget;
+  const lj = CASE_INSENSITIVE_FS ? locksJson.toLowerCase() : locksJson;
+  return a === lj || a.startsWith(`${lj}.`);
 }
 
 function isPrimaryLocalOnlyPath(absPath, mainRoot, localOnlyPaths = []) {
@@ -933,6 +943,45 @@ function evaluateShellTamperCommand(commandLine, initialCwd, payload, policy, op
         }
       }
     }
+
+    // 3. Repository `.agents/locks.json` tamper via shell unless MAGA_ALLOW_LOCKS_EDIT=1
+    if (
+      process.env.MAGA_ALLOW_LOCKS_EDIT !== '1' &&
+      env.MAGA_ALLOW_LOCKS_EDIT !== '1' &&
+      shellVars.get('MAGA_ALLOW_LOCKS_EDIT') !== '1' &&
+      (/\.agents[\\/]locks\.json/.test(expandedText) ||
+        resolvedCandidates.some((c) => /\.agents[\\/]locks\.json/i.test(c.expanded)))
+    ) {
+      const probeDirs = new Set([currentDir, initialCwd]);
+      for (const c of resolvedCandidates) {
+        if (/\.agents[\\/]locks\.json/i.test(c.expanded)) {
+          probeDirs.add(path.dirname(c.absPath));
+        }
+      }
+      for (const probeDir of probeDirs) {
+        const detailed = resolveGitContextDetailed(probeDir);
+        const ctx = detailed.ctx || (detailed.error ? buildFailClosedFallbackCtx(probeDir, detailed) : null);
+        if (!ctx) continue;
+        const eff = resolveEffectiveProjectPolicy(ctx, policy, opts);
+        const hasLocal = shouldDeferToLocalGuardrail(ctx, opts);
+        const locksExists =
+          fs.existsSync(path.join(ctx.mainRoot, '.agents', 'locks.json')) ||
+          fs.existsSync(path.join(ctx.topLevel, '.agents', 'locks.json'));
+        if (eff.mode !== 'protect-main' && eff.mode !== 'worktree-only' && !hasLocal && !locksExists) continue;
+        const hitsRepoLocks =
+          resolvedCandidates.some(
+            (c) => isRepoLocksTamperPath(c.absPath, ctx.mainRoot) || isRepoLocksTamperPath(c.absPath, ctx.topLevel)
+          ) ||
+          ((inlineScript || /\$(?:\(|\{|[A-Za-z_])/.test(expandedText)) &&
+            /\.agents[\\/]locks\.json/.test(expandedText));
+        if (hitsRepoLocks) {
+          return makeDeny(
+            `Blocked by AGY Studio Lock Guard: modifying '.agents/locks.json' via shell is forbidden unless authorized by the user (MAGA_ALLOW_LOCKS_EDIT=1).`,
+            { ctx, eff, tool: 'run_command', payload }
+          );
+        }
+      }
+    }
   }
   return null;
 }
@@ -1197,6 +1246,21 @@ export function evaluateHookPayloadDetailed(payload, opts = {}) {
     if ((eff.mode === 'protect-main' || eff.mode === 'worktree-only' || hasLocal) && isRepoHooksTamperPath(absPath, ctx.mainRoot)) {
       return makeDeny(
         `Blocked by AGY Studio Git Workflow (${eff.mode}): editing '.agents/hooks.json' or '.agents/hooks/**' in an enforced repository is forbidden.`,
+        { ctx, eff, tool: toolName, payload }
+      );
+    }
+
+    if (
+      process.env.MAGA_ALLOW_LOCKS_EDIT !== '1' &&
+      (isRepoLocksTamperPath(absPath, ctx.mainRoot) || isRepoLocksTamperPath(absPath, ctx.topLevel)) &&
+      (eff.mode === 'protect-main' ||
+        eff.mode === 'worktree-only' ||
+        hasLocal ||
+        fs.existsSync(path.join(ctx.mainRoot, '.agents', 'locks.json')) ||
+        fs.existsSync(path.join(ctx.topLevel, '.agents', 'locks.json')))
+    ) {
+      return makeDeny(
+        `Blocked by AGY Studio Lock Guard: editing '.agents/locks.json' directly via agent file tools is forbidden unless authorized by the user (MAGA_ALLOW_LOCKS_EDIT=1).`,
         { ctx, eff, tool: toolName, payload }
       );
     }

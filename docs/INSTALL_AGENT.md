@@ -15,47 +15,40 @@ Use this guide when a user asks Antigravity or Claude Code to install **AGY Stud
    - Do **not** touch `/Applications/Antigravity.app` (macOS) or `Antigravity.exe` / `app.asar` (Windows) — AGY Studio never patches client binaries or signatures.
    - Do **not** delete existing Antigravity chats, plugins, or `~/.gemini/antigravity/anti-claude/studio-prefs.json`.
 
-## Preferred Install Flow (macOS — Idempotent)
+## Preferred Install Flow (macOS — Idempotent & Channel-Safe)
 
-1. Choose an install folder (for example `~/Developer/agy-studio` or `~/.local/share/agy-studio`). If `.git` already exists there, update it safely instead of failing on `git clone`:
+1. Choose an install folder (for example `~/.local/share/agy-studio` or `~/Developer/agy-studio`). **Do not run `git pull --ff-only` directly** — stable installs check out detached Release tags (`vX.Y.Z`). Delegate channel sync to `install.sh` (`--channel stable` is the default; pass `--channel edge` only if the user explicitly asks for `main`):
    ```bash
    if [ -d ~/Developer/agy-studio/.git ]; then
-     git -C ~/Developer/agy-studio pull --ff-only --autostash
+     cd ~/Developer/agy-studio && bash ./install.sh --channel stable
+   elif [ -d ~/.local/share/agy-studio/.git ]; then
+     cd ~/.local/share/agy-studio && bash ./install.sh --channel stable
    else
-     git clone https://github.com/LiWithDream/agy-studio.git ~/Developer/agy-studio
+     curl -fsSL https://raw.githubusercontent.com/LiWithDream/agy-studio/main/install.sh | bash
    fi
    ```
    *(Prebuilt Release tarball fallback: if `npm ci` / `npm install` fails due to proxy or firewall restrictions downloading `esbuild`, download `agy-studio-v*-macos.tar.gz` from GitHub Releases and extract it — `install.sh` detects `user/custom.js` + `studio/prebuilt/studio-entry.js` and skips `npm` automatically.)*
-2. Run the unified installer script from the directory:
-   ```bash
-   cd ~/Developer/agy-studio
-   bash ./install.sh
-   ```
-   This installs dependencies cleanly (`npm ci` when `package-lock.json` is present, or skips `npm` in prebuilt tarballs), registers the local LaunchAgent daemon (`com.antigravity.anti-claude.daemon`), deploys the UI runtime into `~/.gemini/antigravity/anti-claude/user/`, and syncs the 7-line `fast-io` rules into `~/.gemini/AGENTS.md`.
-3. Verify health before reporting back:
+2. What `install.sh` performs automatically: resolves the latest GitHub Release tag (on `stable`), installs dependencies cleanly (`npm ci` when `package-lock.json` is present, or skips `npm` in prebuilt tarballs), registers the local LaunchAgent daemon (`com.antigravity.anti-claude.daemon`), deploys the UI runtime into `~/.gemini/antigravity/anti-claude/user/`, and syncs the 7-line `fast-io` rules into `~/.gemini/AGENTS.md`.
+3. Verify health from the installed directory before reporting back:
    ```bash
    node studio/cli.mjs doctor
    ```
 
-## Preferred Install Flow (Windows PowerShell — Idempotent)
+## Preferred Install Flow (Windows PowerShell — Idempotent & Channel-Safe)
 
-1. Choose a permanent folder (for example `%LOCALAPPDATA%\agy-studio` or `C:\Users\<you>\Developer\agy-studio`). If `.git` already exists there, update it safely instead of failing on `git clone`:
+1. Choose a permanent folder (for example `%LOCALAPPDATA%\agy-studio`). **Do not run `git pull --ff-only` directly** — stable installs check out detached Release tags (`vX.Y.Z`). Delegate channel sync to `install.ps1` (`-Channel stable` is the default; pass `-Channel edge` only if the user explicitly asks for `main`):
    ```powershell
    $dest = "$env:LOCALAPPDATA\agy-studio"
    if (Test-Path (Join-Path $dest '.git')) {
-     git -C $dest pull --ff-only --autostash
+     Set-Location $dest
+     powershell -ExecutionPolicy Bypass -File .\install.ps1 -Channel stable
    } else {
-     git clone https://github.com/LiWithDream/agy-studio.git $dest
+     irm https://raw.githubusercontent.com/LiWithDream/agy-studio/main/install.ps1 | iex
    }
    ```
    *(Prebuilt Release zip fallback: if `npm ci` / `npm install` fails due to proxy or firewall restrictions downloading `esbuild`, download `agy-studio-v*-windows.zip` from GitHub Releases and extract it — `install.ps1` detects `user\custom.js` + `studio\prebuilt\studio-entry.js` and skips `npm` automatically.)*
-2. Run the unified PowerShell installer from the directory (note `-ExecutionPolicy Bypass` avoids PowerShell 5.1 script execution errors):
-   ```powershell
-   cd "$env:LOCALAPPDATA\agy-studio"
-   powershell -ExecutionPolicy Bypass -File .\install.ps1
-   ```
-   This installs dependencies cleanly (`npm ci` when `package-lock.json` is present, or skips `npm` in prebuilt zips), registers the user-level Scheduled Task `AGYStudioDaemon` (running headlessly via `conhost.exe --headless`, with automatic Startup `.vbs` fallback on restricted GPOs), creates the optional Start Menu launcher `Antigravity (AGY Studio)` (`--remote-debugging-port=0`), deploys the UI runtime into `%USERPROFILE%\.gemini\antigravity\anti-claude\user\`, and syncs the `fast-io` rules into `%USERPROFILE%\.gemini\AGENTS.md`.
-3. Verify health before reporting back:
+2. What `install.ps1` performs automatically (using `-ExecutionPolicy Bypass` on PowerShell 5.1): resolves the latest GitHub Release tag (on `stable`), installs dependencies cleanly (`npm ci` when `package-lock.json` is present, or skips `npm` in prebuilt zips), registers the user-level Scheduled Task `AGYStudioDaemon` (running headlessly via `conhost.exe --headless`, with automatic Startup `.vbs` fallback on restricted GPOs), creates the optional Start Menu launcher `Antigravity (AGY Studio)` (`--remote-debugging-port=0`), deploys the UI runtime into `%USERPROFILE%\.gemini\antigravity\anti-claude\user\`, and syncs the `fast-io` rules into `%USERPROFILE%\.gemini\AGENTS.md`.
+3. Verify health from the installed directory before reporting back:
    ```powershell
    node studio/cli.mjs doctor
    ```

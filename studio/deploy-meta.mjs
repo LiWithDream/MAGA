@@ -37,13 +37,43 @@ function runGitRead(repoRoot, args) {
   }
 }
 
+const RELEASE_TAG_RE = /^v(\d+)\.(\d+)\.(\d+)(?:-[0-9A-Za-z.-]+)?$/;
+
+export function isReleaseTagRef(ref) {
+  return RELEASE_TAG_RE.test(String(ref || '').trim());
+}
+
+function pickExactReleaseTag(repoRoot) {
+  const raw = runGitRead(repoRoot, ['tag', '--points-at', 'HEAD']);
+  if (!raw) return '';
+  const tags = raw
+    .split(/\r?\n/)
+    .map((s) => s.trim())
+    .filter((t) => RELEASE_TAG_RE.test(t));
+  if (!tags.length) return '';
+  tags.sort((a, b) => {
+    const ma = a.match(RELEASE_TAG_RE);
+    const mb = b.match(RELEASE_TAG_RE);
+    for (let i = 1; i <= 3; i += 1) {
+      const diff = Number(mb[i]) - Number(ma[i]);
+      if (diff !== 0) return diff;
+    }
+    const aPre = a.includes('-');
+    const bPre = b.includes('-');
+    if (aPre !== bPre) return aPre ? 1 : -1;
+    return b.localeCompare(a);
+  });
+  return tags[0];
+}
+
 export function collectGitDeployProvenance(repoRoot) {
   const absRoot = path.resolve(String(repoRoot || process.cwd()));
   let branch = runGitRead(absRoot, ['symbolic-ref', '--short', 'HEAD']);
   const sha = runGitRead(absRoot, ['rev-parse', 'HEAD']);
   const shortSha = runGitRead(absRoot, ['rev-parse', '--short', 'HEAD']);
   const topLevel = runGitRead(absRoot, ['rev-parse', '--show-toplevel']) || absRoot;
-  if (!branch && sha) branch = 'HEAD';
+  const releaseTag = sha ? pickExactReleaseTag(absRoot) : '';
+  if (!branch && sha) branch = releaseTag || 'HEAD';
   const statusOut = runGitRead(absRoot, ['status', '--porcelain']);
   let isLinkedWorktree = false;
   try {
@@ -52,6 +82,7 @@ export function collectGitDeployProvenance(repoRoot) {
   return {
     schema: 1,
     branch,
+    releaseTag,
     sha,
     shortSha,
     worktreePath: topLevel,
@@ -90,8 +121,11 @@ export function readDeployMeta(metaPath = DEPLOY_META_PATH) {
       return { present: false, meta: null, nonMainWarning: null };
     }
     const branch = String(meta.branch || '').trim();
+    const releaseTag = String(meta.releaseTag || '').trim();
+    const isMainOrTag =
+      branch === 'main' || branch === 'master' || isReleaseTagRef(releaseTag || branch);
     const nonMainWarning =
-      branch && branch !== 'main' && branch !== 'master'
+      branch && !isMainOrTag
         ? `Live bundle was deployed from branch '${branch}' (${meta.worktreePath || 'unknown'}), not 'main'.`
         : null;
     return { present: true, meta, nonMainWarning };
@@ -108,7 +142,10 @@ export function evaluateDeployGuard(
     platform === 'darwin' ? 'LaunchAgent daemon' : platform === 'win32' ? 'Windows daemon' : 'systemd daemon';
   const provenance = collectGitDeployProvenance(repoRoot);
   const live = readDeployMeta(metaPath);
-  const isNonMainBranch = Boolean(provenance.branch && provenance.branch !== 'main' && provenance.branch !== 'master');
+  const isExactReleaseTag = Boolean(provenance.releaseTag && isReleaseTagRef(provenance.releaseTag));
+  const isNonMainBranch = Boolean(
+    provenance.branch && provenance.branch !== 'main' && provenance.branch !== 'master' && !isExactReleaseTag
+  );
   const needsBranchOrWtGuard = provenance.isLinkedWorktree || isNonMainBranch;
   const needsGuard = needsBranchOrWtGuard || provenance.dirty;
 

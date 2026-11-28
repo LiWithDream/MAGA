@@ -226,7 +226,10 @@ Antigravity Desktop 2.0 is built around **one agent in one chat**. Once you jugg
 Paste this prompt directly into Antigravity or Claude Code:
 
 ```text
-Check Node.js >= 22 (`node -v`). On macOS, if ~/Developer/agy-studio/.git exists run `git -C ~/Developer/agy-studio pull --ff-only --autostash`, else clone https://github.com/LiWithDream/agy-studio.git to ~/Developer/agy-studio, and run `bash ./install.sh`. On Windows 10/11 (PowerShell), if %LOCALAPPDATA%\agy-studio\.git exists run `git -C "$env:LOCALAPPDATA\agy-studio" pull --ff-only --autostash`, else clone there, and run `powershell -ExecutionPolicy Bypass -File .\install.ps1`. Read docs/INSTALL_AGENT.md first and verify with `node studio/cli.mjs doctor`. Do NOT modify Antigravity app binaries, delete existing chats, or quit/relaunch Antigravity from inside an active Antigravity session (if doctor reports pending_restart, ask me to restart Antigravity manually).
+Check Node.js >= 22 (`node -v`). Install or update AGY Studio on the stable release channel (do NOT use `git pull --ff-only` directly — stable installs check out release tags):
+- On macOS: if ~/Developer/agy-studio/.git or ~/.local/share/agy-studio/.git exists, cd there and run `bash ./install.sh --channel stable`; otherwise run `curl -fsSL https://raw.githubusercontent.com/LiWithDream/agy-studio/main/install.sh | bash`.
+- On Windows 10/11 (PowerShell): if %LOCALAPPDATA%\agy-studio\.git exists, cd there and run `powershell -ExecutionPolicy Bypass -File .\install.ps1 -Channel stable`; otherwise run `irm https://raw.githubusercontent.com/LiWithDream/agy-studio/main/install.ps1 | iex`.
+After install, read docs/INSTALL_AGENT.md and verify with `node studio/cli.mjs doctor`. Do NOT modify Antigravity app binaries, delete existing chats, or quit/relaunch Antigravity from inside an active Antigravity session (if doctor reports pending_restart, ask me to restart Antigravity manually).
 ```
 
 > **Safe by design**: Never modifies `/Applications/Antigravity.app` or Windows `Antigravity.exe` / `app.asar`, keeps all data local, and reverts cleanly at any time with `bash ./uninstall.sh` (macOS) or `.\uninstall.ps1` (Windows) → [See how it works](#safe-fast). *(Note: `install.ps1` via `irm ... | iex` cannot trust `$PWD` and clones to `%LOCALAPPDATA%\agy-studio`; PowerShell 5.1 requires `-ExecutionPolicy Bypass`.)*
@@ -251,20 +254,24 @@ cd .\agy-studio-v*-windows
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-#### Install from Source
+#### Install from Source (`stable` Release vs `edge` Main)
+
+`install.sh` / `install.ps1` default to **`stable`** (latest GitHub Release tag) when cloning or when `--channel` / `-Channel` is passed. Pass `--channel edge` (`-Channel edge`) only if you want bleeding-edge `main`:
 
 ```bash
-# macOS
+# macOS (stable release channel by default; pass `--channel edge` for main)
+curl -fsSL https://raw.githubusercontent.com/LiWithDream/agy-studio/main/install.sh | bash
+# Or from a manual clone:
 git clone https://github.com/LiWithDream/agy-studio.git ~/Developer/agy-studio
-cd ~/Developer/agy-studio
-bash ./install.sh
+cd ~/Developer/agy-studio && bash ./install.sh --channel stable
 ```
 
 ```powershell
-# Windows (PowerShell)
+# Windows (PowerShell — stable release channel by default; pass `-Channel edge` for main)
+irm https://raw.githubusercontent.com/LiWithDream/agy-studio/main/install.ps1 | iex
+# Or from a manual clone:
 git clone https://github.com/LiWithDream/agy-studio.git "$env:LOCALAPPDATA\agy-studio"
-cd "$env:LOCALAPPDATA\agy-studio"
-powershell -ExecutionPolicy Bypass -File .\install.ps1
+cd "$env:LOCALAPPDATA\agy-studio"; powershell -ExecutionPolicy Bypass -File .\install.ps1 -Channel stable
 ```
 
 Pass `--no-rules` (or `-NoRules` on Windows) if you prefer not to sync the optional `fast-io` rules into `~/.gemini/AGENTS.md`.
@@ -394,8 +401,10 @@ This comes from Antigravity's native `language_server` when its TLS/proxy connec
 
 ## Architecture & Contributing
 
+External contributors: see **[CONTRIBUTING.md](./CONTRIBUTING.md)** (standard Fork → PR against `main`, `npm run build:remote && npm test`, no local hooks or worktrees required).
+
 <details>
-<summary><b>Directory layout &amp; contributor commands</b></summary>
+<summary><b>Directory layout &amp; developer commands</b></summary>
 
 ```text
 .
@@ -419,12 +428,13 @@ This comes from Antigravity's native `language_server` when its TLS/proxy connec
 └── uninstall.ps1          # Clean Windows rollback & uninstaller (-DryRun, -Purge)
 ```
 
-| Contributor Command | Purpose |
-| :--- | :--- |
-| `npm run wt:new -- feat/slug` | Create an isolated sibling Git worktree with symlinked/junctioned `node_modules` |
-| `npm test` | Compile `user/custom.js` and run the full 255+ test & invariant suite |
-| `npm run deploy` | Hot-reload UI changes into running Antigravity from clean `main` (no app restart) |
-| `npm run release:pack:all` | Build zero-`npm-install` macOS `.tar.gz` and Windows `.zip` archives + SHA-256 in `dist/` |
+| Command | Scope | Purpose |
+| :--- | :--- | :--- |
+| `npm run build:remote && npm test` | **All contributors** | Build Remote PWA & `user/custom.js`, run all 255+ regression & invariant tests |
+| `npm run probe:host` | **If touching host coupling** | Read-only check of Antigravity selectors, React fibers, and SQLite contracts |
+| `npm run wt:new -- feat/slug` | Maintainer local flow | Create an isolated sibling Git worktree with symlinked/junctioned `node_modules` |
+| `npm run deploy` | Maintainer local flow | Hot-reload UI changes into running Antigravity from clean `main` (no app restart) |
+| `npm run release:pack:all` | Release packaging | Build zero-`npm-install` macOS `.tar.gz` and Windows `.zip` archives + SHA-256 in `dist/` |
 
 </details>
 

@@ -227,7 +227,10 @@
 把下面这段话直接发给 Antigravity 或 Claude Code：
 
 ```text
-先检查 Node.js >= 22（`node -v`）。macOS 若 ~/Developer/agy-studio/.git 已存在则执行 `git -C ~/Developer/agy-studio pull --ff-only --autostash`，否则克隆 https://github.com/LiWithDream/agy-studio.git 到 ~/Developer/agy-studio 并运行 `bash ./install.sh`；Windows 10/11（PowerShell）若 %LOCALAPPDATA%\agy-studio\.git 已存在则执行 `git -C "$env:LOCALAPPDATA\agy-studio" pull --ff-only --autostash`，否则克隆到该目录并运行 `powershell -ExecutionPolicy Bypass -File .\install.ps1`。先阅读 docs/INSTALL_AGENT.md，最后运行 `node studio/cli.mjs doctor` 验证。不要修改客户端二进制，不要删除现有对话和配置，也不要在当前 Antigravity 对话内部退出或重启客户端（若 doctor 返回 pending_restart，请提示我手动重启一次 Antigravity）。
+先检查 Node.js >= 22（`node -v`）。按稳定版通道安装或更新 AGY Studio（不要手动执行 `git pull --ff-only`，稳定通道会自动检出最新 Release 标签）：
+- macOS：若 ~/Developer/agy-studio/.git 或 ~/.local/share/agy-studio/.git 已存在，进入该目录运行 `bash ./install.sh --channel stable`；否则直接运行 `curl -fsSL https://raw.githubusercontent.com/LiWithDream/agy-studio/main/install.sh | bash`。
+- Windows 10/11（PowerShell）：若 %LOCALAPPDATA%\agy-studio\.git 已存在，进入该目录运行 `powershell -ExecutionPolicy Bypass -File .\install.ps1 -Channel stable`；否则直接运行 `irm https://raw.githubusercontent.com/LiWithDream/agy-studio/main/install.ps1 | iex`。
+安装后先阅读 docs/INSTALL_AGENT.md，并运行 `node studio/cli.mjs doctor` 验证。不要修改客户端二进制，不要删除现有对话和配置，也不要在当前 Antigravity 对话内部退出或重启客户端（若 doctor 返回 pending_restart，请提示我手动重启一次 Antigravity）。
 ```
 
 > **安全无侵入**：不修改 macOS `/Applications/Antigravity.app` 或 Windows `Antigravity.exe` / `app.asar`，所有数据留在本地，随时执行 `bash ./uninstall.sh`（macOS）或 `.\uninstall.ps1`（Windows）即可无痕还原 → [了解安全与性能设计](#safe-fast)。*（提示：Windows 通过 `irm ... | iex` 执行时无法读取 `$PWD`，会自动克隆至 `%LOCALAPPDATA%\agy-studio`；PowerShell 5.1 需附加 `-ExecutionPolicy Bypass`。）*
@@ -252,20 +255,24 @@ cd .\agy-studio-v*-windows
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-#### 方式三：从源码克隆安装
+#### 方式三：从源码安装（默认 `stable` 稳定发布版，可选 `edge` 主干版）
+
+`install.sh` / `install.ps1` 在远程安装或显式传入 `--channel` / `-Channel` 时默认锁定最新 GitHub Release（`stable`）；如需尝鲜 `main` 主干可传 `--channel edge`（Windows 为 `-Channel edge`）：
 
 ```bash
-# macOS
+# macOS（默认安装最新稳定 Release 标签；尝鲜 main 可附加 --channel edge）
+curl -fsSL https://raw.githubusercontent.com/LiWithDream/agy-studio/main/install.sh | bash
+# 或手动克隆后切换至 stable 通道：
 git clone https://github.com/LiWithDream/agy-studio.git ~/Developer/agy-studio
-cd ~/Developer/agy-studio
-bash ./install.sh
+cd ~/Developer/agy-studio && bash ./install.sh --channel stable
 ```
 
 ```powershell
-# Windows (PowerShell)
+# Windows (PowerShell，默认安装最新稳定 Release 标签；尝鲜 main 可附加 -Channel edge)
+irm https://raw.githubusercontent.com/LiWithDream/agy-studio/main/install.ps1 | iex
+# 或手动克隆后切换至 stable 通道：
 git clone https://github.com/LiWithDream/agy-studio.git "$env:LOCALAPPDATA\agy-studio"
-cd "$env:LOCALAPPDATA\agy-studio"
-powershell -ExecutionPolicy Bypass -File .\install.ps1
+cd "$env:LOCALAPPDATA\agy-studio"; powershell -ExecutionPolicy Bypass -File .\install.ps1 -Channel stable
 ```
 
 若不想同步 `fast-io` 执行规则到 `~/.gemini/AGENTS.md`，安装时附加 `--no-rules`（Windows 为 `-NoRules`）即可。
@@ -395,6 +402,8 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 
 ## 架构与贡献指南
 
+外部开发者欢迎直接提交 PR：详见 **[CONTRIBUTING.md](./CONTRIBUTING.md)**（标准 Fork → 提 PR 至 `main`，本地跑通 `npm run build:remote && npm test` 即可，无需安装本机 Git Hooks 或使用 Worktree）。
+
 <details>
 <summary><b>目录结构与开发者常用命令</b></summary>
 
@@ -420,12 +429,13 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 └── uninstall.ps1          # 一键 Windows 无痕回滚卸载脚本（支持 -DryRun / -Purge）
 ```
 
-| 开发者命令 | 作用 |
-| :--- | :--- |
-| `npm run wt:new -- feat/slug` | 创建隔离开发用 Git Worktree 并自动软链 / Junction `node_modules` |
-| `npm test` | 编译 `user/custom.js` 并运行全部 255+ 项回归与不变量测试 |
-| `npm run deploy` | 在干净 `main` 上秒级热更新至运行中的 Antigravity（无需重启客户端） |
-| `npm run release:pack:all` | 生成零 `npm install` 的 macOS `.tar.gz` 与 Windows `.zip` 及 SHA-256 校验文件到 `dist/` |
+| 命令 | 适用对象 | 作用 |
+| :--- | :--- | :--- |
+| `npm run build:remote && npm test` | **所有贡献者** | 构建 Remote PWA 与 `user/custom.js` 并运行全部 255+ 项回归与架构守卫测试 |
+| `npm run probe:host` | **改动宿主耦合时** | 只读探测本机 Antigravity 选择器、React Fiber 与 SQLite 契约是否完整 |
+| `npm run wt:new -- feat/slug` | 维护者本地流程 | 创建隔离开发用 Git Worktree 并自动软链 / Junction `node_modules` |
+| `npm run deploy` | 维护者本地流程 | 在干净 `main` 上秒级热更新至运行中的 Antigravity（无需重启客户端） |
+| `npm run release:pack:all` | 发版打包 | 生成零 `npm install` 的 macOS `.tar.gz` 与 Windows `.zip` 及 SHA-256 校验文件到 `dist/` |
 
 </details>
 

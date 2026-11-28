@@ -686,7 +686,14 @@ test('install.ps1 and uninstall.ps1 isolate scope via & { } and guard exit for i
   assert.match(installPs1, /\[switch\]\$NoShortcut/);
   assert.match(installPs1, /\[switch\]\$Preview/);
   assert.match(installPs1, /\[switch\]\$Force/);
+  assert.match(installPs1, /\[string\]\$Channel/);
+  assert.match(installPs1, /AGY_STUDIO_RELEASE_TAG/);
+  assert.match(installPs1, /releases\/latest/);
+  assert.match(installPs1, /checkout --detach/);
+  assert.match(installPs1, /checkout -B/);
+  assert.doesNotMatch(installPs1, /'pull',\s*'--ff-only'/);
   assert.match(installPs1, /\[dry-run\] os=Windows/);
+  assert.match(installPs1, /\[dry-run\] channel=/);
   assert.match(installPs1, /MAGA_USE_PREBUILT = '1'/);
   assert.match(installPs1, /\$ScriptSource = \$PSCommandPath/);
   assert.match(installPs1, /&\s*\{/);

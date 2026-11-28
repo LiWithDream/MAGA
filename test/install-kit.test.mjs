@@ -35,6 +35,14 @@ test('install.sh / install.ps1 and uninstall --dry-run and pipe-mode isolation r
         { cwd: REPO, env, encoding: 'utf8', windowsHide: true }
       );
       assert.match(installPreviewOut, /studio\/cli\.mjs install --preview/);
+      assert.match(installPreviewOut, /\[dry-run\] channel=stable/);
+
+      const installEdgeOut = execFileSync(
+        'powershell',
+        ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(REPO, 'install.ps1'), '-DryRun', '-Channel', 'edge'],
+        { cwd: REPO, env, encoding: 'utf8', windowsHide: true }
+      );
+      assert.match(installEdgeOut, /\[dry-run\] channel=edge/);
 
       const uninstallOut = execFileSync(
         'powershell',
@@ -54,8 +62,25 @@ test('install.sh / install.ps1 and uninstall --dry-run and pipe-mode isolation r
       encoding: 'utf8',
     });
     assert.match(installOut, /\[dry-run\] os=Darwin/);
+    assert.match(installOut, /\[dry-run\] channel=stable/);
     assert.match(installOut, /\[dry-run\] mode=(prebuilt|source|source-bootstrap)/);
     assert.match(installOut, /studio\/cli\.mjs install/);
+
+    const installEdgeOut = execFileSync('bash', [path.join(REPO, 'install.sh'), '--dry-run', '--channel', 'edge'], {
+      cwd: REPO,
+      env,
+      encoding: 'utf8',
+    });
+    assert.match(installEdgeOut, /\[dry-run\] channel=edge/);
+
+    assert.throws(() => {
+      execFileSync('bash', [path.join(REPO, 'install.sh'), '--dry-run', '--channel', 'bogus'], {
+        cwd: REPO,
+        env,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    }, /non-zero|status 2|invalid --channel/i);
 
     const installNoRulesOut = execFileSync('bash', [path.join(REPO, 'install.sh'), '--dry-run', '--no-rules'], {
       cwd: REPO,
@@ -79,8 +104,19 @@ test('install.sh / install.ps1 and uninstall --dry-run and pipe-mode isolation r
       input: pipedScript,
       encoding: 'utf8',
     });
+    assert.match(pipedOut, /\[dry-run\] channel=stable/);
     assert.match(pipedOut, /\[dry-run\] mode=remote-clone/);
+    assert.match(pipedOut, /checkout --detach/);
     assert.match(pipedOut, /npm ci --no-audit --no-fund/);
+
+    const pipedEdgeOut = execFileSync('bash', ['-s', '--', '--dry-run', '--channel', 'edge'], {
+      cwd: REPO,
+      env,
+      input: pipedScript,
+      encoding: 'utf8',
+    });
+    assert.match(pipedEdgeOut, /\[dry-run\] channel=edge/);
+    assert.match(pipedEdgeOut, /checkout -B main origin\/main/);
 
     const uninstallOut = execFileSync('bash', [path.join(REPO, 'uninstall.sh'), '--dry-run'], {
       cwd: REPO,
@@ -337,4 +373,17 @@ test('pack-release extractChangelogNotes and CI release workflow stay aligned fo
   assert.match(ciYml, /npm run release:pack:all/);
   assert.match(ciYml, /sha256sum -c/);
   assert.match(ciYml, /gh release upload "\$TAG" "\$\{ASSETS\[@\]\}" --clobber/);
+});
+
+test('OSS contributor docs (CONTRIBUTING.md and PR template) exist and separate external vs maintainer flows', () => {
+  const contributing = readFileSync(path.join(REPO, 'CONTRIBUTING.md'), 'utf8');
+  const prTemplate = readFileSync(path.join(REPO, '.github', 'pull_request_template.md'), 'utf8');
+  assert.match(contributing, /npm run build:remote && npm test/);
+  assert.match(contributing, /CHANGELOG\.md/);
+  assert.match(contributing, /probe:host/);
+  assert.match(contributing, /do \*\*not\*\* need to install local `\.githooks`/i);
+  assert.match(contributing, /smoke\/darwin/);
+  assert.match(prTemplate, /npm run build:remote && npm test/);
+  assert.match(prTemplate, /CHANGELOG\.md/);
+  assert.match(prTemplate, /npm run probe:host/);
 });

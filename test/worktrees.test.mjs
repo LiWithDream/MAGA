@@ -497,6 +497,31 @@ test('deploy-meta provenance, single-desktop deploy guard & standalone studio/wt
     assert.ok(dirtyMainForced.warnings.length >= 1);
     gitSync(mainRepo, ['checkout', '--', 'README.md']);
 
+    // Exact release tag detached HEAD (`v1.5.1`) is clean in install & deploy; untagged detached HEAD remains guarded
+    gitSync(mainRepo, ['tag', 'v1.5.1']);
+    gitSync(mainRepo, ['checkout', '--detach', 'v1.5.1']);
+    const tagInstallGuard = evaluateDeployGuard(mainRepo, { mode: 'install', metaPath });
+    assert.equal(tagInstallGuard.allowed, true);
+    assert.equal(tagInstallGuard.provenance.releaseTag, 'v1.5.1');
+    assert.equal(tagInstallGuard.provenance.branch, 'v1.5.1');
+    assert.equal(
+      tagInstallGuard.warnings.some((w) => /^Installing from /.test(w)),
+      false,
+      'exact release tag checkout must not emit non-main branch warning'
+    );
+    const tagDeployGuard = evaluateDeployGuard(mainRepo, { metaPath });
+    assert.equal(tagDeployGuard.allowed, true);
+    assert.equal(tagDeployGuard.preview, false);
+    writeDeployMeta(mainRepo, metaPath);
+    assert.equal(readDeployMeta(metaPath).nonMainWarning, null);
+
+    gitSync(mainRepo, ['commit', '--allow-empty', '-m', 'untagged detached']);
+    const untaggedGuard = evaluateDeployGuard(mainRepo, { metaPath });
+    assert.equal(untaggedGuard.provenance.releaseTag, '');
+    assert.equal(untaggedGuard.provenance.branch, 'HEAD');
+    assert.equal(untaggedGuard.allowed, false);
+    gitSync(mainRepo, ['checkout', 'main']);
+
     const listOut = execFileSync(process.execPath, [wtCliPath, 'list', '--repo', mainRepo], { encoding: 'utf8' });
     const listJson = JSON.parse(listOut);
     assert.equal(listJson.ok, true);

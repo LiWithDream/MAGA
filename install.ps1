@@ -5,6 +5,7 @@ param(
   [switch]$NoShortcut,
   [switch]$Preview,
   [switch]$Force,
+  [string]$Channel = "",
   [string]$Dir = "",
   [string]$RepoUrl = "",
   [switch]$Help
@@ -21,6 +22,7 @@ try {
       [bool]$NoShortcutArg,
       [bool]$PreviewArg,
       [bool]$ForceArg,
+      [string]$ChannelArg,
       [string]$DirArg,
       [string]$RepoUrlArg,
       [bool]$HelpArg,
@@ -35,12 +37,13 @@ try {
 Usage: install.ps1 [options]
 
 Options:
-  -DryRun          Print resolved Node binary, mode, and commands without modifying files
+  -DryRun          Print resolved Node binary, mode, channel, and commands without modifying files
+  -Channel <name>  Release channel when syncing git clones: stable (default, latest Release tag) or edge (main)
   -Dir <path>      Target directory when cloning via irm | iex (default: %LOCALAPPDATA%\agy-studio)
   -NoRules         Skip syncing 7-line phase-sync rules into ~\.gemini\AGENTS.md
   -NoShortcut      Skip creating the Start Menu "Antigravity (AGY Studio)" shortcut
   -Preview         Allow preview install from a non-main branch or linked worktree (--preview)
-  -Force           Allow install from a dirty working tree (--force)
+  -Force           Allow install from a dirty working tree (auto-stashes during channel switch)
   -RepoUrl <url>   Override repository clone URL
   -Help            Show this help message
 "@
@@ -68,6 +71,23 @@ Options:
     if ($HelpArg) {
       Show-Usage
       return
+    }
+
+    $ChannelExplicit = $false
+    $ChannelRaw = ''
+    if ($ChannelArg) {
+      $ChannelRaw = $ChannelArg
+      $ChannelExplicit = $true
+    } elseif ($env:AGY_STUDIO_CHANNEL) {
+      $ChannelRaw = $env:AGY_STUDIO_CHANNEL
+      $ChannelExplicit = $true
+    } else {
+      $ChannelRaw = 'stable'
+    }
+    $ChannelVal = $ChannelRaw.Trim().ToLowerInvariant()
+    if ($ChannelVal -ne 'stable' -and $ChannelVal -ne 'edge') {
+      Show-Usage
+      Fail-Install "Invalid -Channel '$ChannelRaw' (expected 'stable' or 'edge')." 2
     }
 
     $InstallDir = if ($DirArg) {
@@ -196,9 +216,130 @@ Options:
     if ($ForceArg) { $CliArgs.Add('--force') }
     $CliArgStr = ($CliArgs.ToArray()) -join ' '
 
+    function Resolve-StableTag([string]$GitTargetDir, [string]$RepoCloneUrl) {
+      $resolverJs = @'
+import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+
+const targetDir = process.argv[2] || '';
+const repoUrl = process.argv[3] || '';
+const TAG_RE = /^v(\d+)\.(\d+)\.(\d+)(?:-[0-9A-Za-z.-]+)?$/;
+
+const envTag = String(process.env.AGY_STUDIO_RELEASE_TAG || '').trim();
+if (TAG_RE.test(envTag)) {
+  process.stdout.write(`${envTag}\n`);
+  process.exit(0);
+}
+
+const ghMatch = repoUrl.match(/github\.com[:/]([^/]+)\/([^/]+?)(?:\.git)?\/?$/i);
+if (ghMatch && typeof fetch === 'function') {
+  try {
+    const apiUrl = `https://api.github.com/repos/${ghMatch[1]}/${ghMatch[2]}/releases/latest`;
+    const res = await fetch(apiUrl, {
+      headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'agy-studio-installer' },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      const tag = String(data?.tag_name || '').trim();
+      if (TAG_RE.test(tag)) {
+        process.stdout.write(`${tag}\n`);
+        process.exit(0);
+      }
+    }
+  } catch {}
+}
+
+let expectedMajor = 1;
+try {
+  const pkgRaw = execFileSync('git', ['-C', targetDir, 'show', 'origin/main:package.json'], {
+    encoding: 'utf8',
+    windowsHide: true,
+    stdio: ['ignore', 'pipe', 'ignore'],
+  });
+  const m = String(JSON.parse(pkgRaw)?.version || '').match(/^(\d+)\./);
+  if (m) expectedMajor = Number(m[1]);
+} catch {
+  try {
+    const localPkg = JSON.parse(fs.readFileSync(path.join(targetDir, 'package.json'), 'utf8'));
+    const m = String(localPkg?.version || '').match(/^(\d+)\./);
+    if (m) expectedMajor = Number(m[1]);
+  } catch {}
+}
+
+let lsOut = '';
+try {
+  lsOut = execFileSync('git', ['ls-remote', '--tags', '--refs', repoUrl, 'refs/tags/v*'], {
+    encoding: 'utf8',
+    windowsHide: true,
+    stdio: ['ignore', 'pipe', 'ignore'],
+  });
+} catch {}
+
+const parsed = [];
+for (const line of lsOut.split(/\r?\n/)) {
+  const m = line.match(/refs\/tags\/(v(\d+)\.(\d+)\.(\d+))$/);
+  if (!m) continue;
+  const tag = m[1];
+  const major = Number(m[2]);
+  if (major > expectedMajor) continue;
+  parsed.push({ tag, major, minor: Number(m[3]), patch: Number(m[4]) });
+}
+parsed.sort((a, b) => (b.major - a.major) || (b.minor - a.minor) || (b.patch - a.patch));
+if (parsed[0]) {
+  process.stdout.write(`${parsed[0].tag}\n`);
+  process.exit(0);
+}
+process.exit(1);
+'@
+      $prevEap = $ErrorActionPreference
+      $ErrorActionPreference = 'Continue'
+      try {
+        $resolved = $resolverJs | & $NodeBin --input-type=module - $GitTargetDir $RepoCloneUrl
+        $rc = $LASTEXITCODE
+      } finally {
+        $ErrorActionPreference = $prevEap
+      }
+      if ($rc -ne 0 -or -not $resolved) {
+        return ''
+      }
+      return ($resolved | Select-Object -Last 1).ToString().Trim()
+    }
+
+    function Sync-GitChannel([string]$GitExe, [string]$GitTargetDir, [string]$RepoCloneUrl, [string]$ChannelName) {
+      $statusOut = & $GitExe -C $GitTargetDir status --porcelain
+      if ($LASTEXITCODE -ne 0) {
+        Fail-Install "git status failed in $GitTargetDir." $LASTEXITCODE
+      }
+      if ($statusOut) {
+        if ($ForceArg) {
+          Write-Output "Stashing local uncommitted changes in $GitTargetDir (-Force)..."
+          Invoke-NativeStep 'git stash' $GitExe @('-C', $GitTargetDir, 'stash', 'push', '-u', '-m', 'agy-studio-installer-autostash')
+        } else {
+          Fail-Install "$GitTargetDir has local uncommitted changes. Commit/stash them or re-run with -Force." 1
+        }
+      }
+      Invoke-NativeStep 'git fetch main' $GitExe @('-C', $GitTargetDir, 'fetch', '--prune', 'origin', 'main')
+      if ($ChannelName -eq 'edge') {
+        Write-Output "Switching $GitTargetDir to edge channel (origin/main)..."
+        Invoke-NativeStep 'git checkout main' $GitExe @('-C', $GitTargetDir, 'checkout', '-B', 'main', 'origin/main')
+      } else {
+        $stableTag = Resolve-StableTag $GitTargetDir $RepoCloneUrl
+        if (-not $stableTag) {
+          Fail-Install "Could not resolve latest stable release tag from $RepoCloneUrl (pass -Channel edge to track main)." 1
+        }
+        Write-Output "Switching $GitTargetDir to stable release $stableTag..."
+        $refSpec = "refs/tags/${stableTag}:refs/tags/${stableTag}"
+        Invoke-NativeStep 'git fetch tag' $GitExe @('-C', $GitTargetDir, 'fetch', '--prune', 'origin', $refSpec)
+        Invoke-NativeStep 'git checkout tag' $GitExe @('-C', $GitTargetDir, 'checkout', '--detach', "refs/tags/$stableTag")
+      }
+    }
+
     if ($DryRunArg) {
       $NodeVer = (& $NodeBin -v).Trim()
       Write-Output "[dry-run] os=Windows"
+      Write-Output "[dry-run] channel=$ChannelVal"
       Write-Output "[dry-run] node=$NodeBin ($NodeVer)"
       Write-Output "[dry-run] mode=$Mode"
       Write-Output "[dry-run] targetDir=$TargetDir"
@@ -207,6 +348,11 @@ Options:
         'npm ci --no-audit --no-fund'
       } else {
         'npm install --no-audit --no-fund'
+      }
+      $channelStep = if ($ChannelVal -eq 'edge') {
+        "git -C `"$TargetDir`" checkout -B main origin/main"
+      } else {
+        "git -C `"$TargetDir`" checkout --detach <latest-stable-tag>"
       }
       switch ($Mode) {
         'prebuilt' {
@@ -219,7 +365,7 @@ Options:
           Write-Output "[dry-run] exec: $npmBootCmd && `"$NodeBin`" studio/cli.mjs $CliArgStr"
         }
         'remote-clone' {
-          Write-Output "[dry-run] exec: git clone `"$EffectiveRepoUrl`" `"$TargetDir`" && cd `"$TargetDir`" && $npmBootCmd && `"$NodeBin`" studio/cli.mjs $CliArgStr"
+          Write-Output "[dry-run] exec: git clone `"$EffectiveRepoUrl`" `"$TargetDir`" && $channelStep && cd `"$TargetDir`" && $npmBootCmd && `"$NodeBin`" studio/cli.mjs $CliArgStr"
         }
       }
       return
@@ -232,7 +378,6 @@ Options:
       }
       if (Test-Path -LiteralPath (Join-Path $TargetDir '.git') -PathType Container) {
         Write-Output "Updating existing AGY Studio clone at $TargetDir..."
-        Invoke-NativeStep 'git pull' $gitCmd.Source @('-C', $TargetDir, 'pull', '--ff-only', '--autostash')
       } else {
         $parentDir = Split-Path -Parent $TargetDir
         if ($parentDir -and -not (Test-Path -LiteralPath $parentDir)) {
@@ -241,6 +386,22 @@ Options:
         Write-Output "Cloning AGY Studio into $TargetDir..."
         Invoke-NativeStep 'git clone' $gitCmd.Source @('clone', $EffectiveRepoUrl, $TargetDir)
       }
+      Sync-GitChannel $gitCmd.Source $TargetDir $EffectiveRepoUrl $ChannelVal
+      $hasCustomJs = Test-Path -LiteralPath (Join-Path $TargetDir 'user\custom.js') -PathType Leaf
+      $hasPrebuiltStudio = Test-Path -LiteralPath (Join-Path $TargetDir 'studio\prebuilt\studio-entry.js') -PathType Leaf
+      if ($hasCustomJs -and $hasPrebuiltStudio) {
+        $Mode = 'prebuilt'
+      } elseif (Test-Path -LiteralPath (Join-Path $TargetDir 'node_modules\esbuild') -PathType Container) {
+        $Mode = 'source'
+      } else {
+        $Mode = 'source-bootstrap'
+      }
+    } elseif ($ChannelExplicit -and (Test-Path -LiteralPath (Join-Path $TargetDir '.git') -PathType Container)) {
+      $gitCmd = Get-Command git -ErrorAction SilentlyContinue
+      if (-not $gitCmd) {
+        Fail-Install "git is required to switch release channels. Install via: winget install Git.Git" 1
+      }
+      Sync-GitChannel $gitCmd.Source $TargetDir $EffectiveRepoUrl $ChannelVal
       $hasCustomJs = Test-Path -LiteralPath (Join-Path $TargetDir 'user\custom.js') -PathType Leaf
       $hasPrebuiltStudio = Test-Path -LiteralPath (Join-Path $TargetDir 'studio\prebuilt\studio-entry.js') -PathType Leaf
       if ($hasCustomJs -and $hasPrebuiltStudio) {
@@ -282,7 +443,7 @@ Options:
     }
 
     Write-Output "Done. Run 'node `"$TargetDir\studio\cli.mjs`" doctor' to verify live status."
-  } ([bool]$DryRun) ([bool]$NoRules) ([bool]$NoShortcut) ([bool]$Preview) ([bool]$Force) $Dir $RepoUrl ([bool]$Help) $ScriptSource $ExitState
+  } ([bool]$DryRun) ([bool]$NoRules) ([bool]$NoShortcut) ([bool]$Preview) ([bool]$Force) $Channel $Dir $RepoUrl ([bool]$Help) $ScriptSource $ExitState
 } catch {
   if ($ScriptSource) {
     [Console]::Error.WriteLine($_.Exception.Message)

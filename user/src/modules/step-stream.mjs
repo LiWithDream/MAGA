@@ -75,8 +75,24 @@ export function createStepStreamModule(rt) {
     let span = btn.querySelector(':scope > .ag-worked-inline-summary');
     const clean = String(summaryText || '').trim();
     if (!clean) {
+      if (btn.hasAttribute('data-ag-has-summary')) btn.removeAttribute('data-ag-has-summary');
       if (span) span.remove();
       return;
+    }
+    const nativeSpan = Array.from(btn.children || []).find(
+      (ch) => ch.tagName === 'SPAN' && !ch.classList.contains('ag-worked-inline-summary')
+    );
+    const nativeText = nativeSpan
+      ? nativeSpan.textContent || ''
+      : Array.from(btn.childNodes || [])
+          .filter((n) => n !== span && !(n.classList && n.classList.contains('ag-worked-inline-summary')))
+          .map((n) => n.textContent || '')
+          .join(' ');
+    const durMatch = nativeText.match(/\b(\d+[hms](?:\s+\d+s)?)\b/);
+    const duration = durMatch ? durMatch[1] : '';
+    const finalSummary = duration ? `${clean} · ${duration}` : clean;
+    if (btn.getAttribute('data-ag-has-summary') !== '1') {
+      btn.setAttribute('data-ag-has-summary', '1');
     }
     if (!span) {
       span = document.createElement('span');
@@ -87,7 +103,7 @@ export function createStepStreamModule(rt) {
       if (chevron) btn.insertBefore(span, chevron);
       else btn.appendChild(span);
     }
-    setLeafText(span, `· ${clean}`);
+    setLeafText(span, finalSummary);
   }
 
   function isWorkedTurnActive(btn, panel, panesArg) {
@@ -315,6 +331,7 @@ export function createStepStreamModule(rt) {
       let timerEl = el.querySelector(':scope > .ag-elapsed-timer');
 
       if (isRunning) {
+        if (el.getAttribute('data-maga-running') !== '1') el.setAttribute('data-maga-running', '1');
         activeCount += 1;
         let startTs = runningTimers.get(el);
         if (!startTs) {
@@ -346,6 +363,7 @@ export function createStepStreamModule(rt) {
           setLeafText(timerEl, txt);
         }
       } else {
+        if (el.hasAttribute('data-maga-running')) el.removeAttribute('data-maga-running');
         if (orbit) orbit.remove();
         if (timerEl) timerEl.remove();
         runningTimers.delete(el);
@@ -354,6 +372,7 @@ export function createStepStreamModule(rt) {
     /* stale indicators on rows that are no longer candidates */
     if (!FEAT.runningTimer) {
       document.querySelectorAll('.ag-orbit-dots, .ag-elapsed-timer').forEach((n) => n.remove());
+      document.querySelectorAll('[data-maga-running]').forEach((el) => el.removeAttribute('data-maga-running'));
     }
 
     const keepPolling = activeCount > 0;
@@ -709,6 +728,8 @@ export function createStepStreamModule(rt) {
     syncAttrTargetSet('data-maga-has-browser-hole', browserHoles);
 
     const actionCards = new Set();
+    const actionCardWraps = new Set();
+    const CHROME_RE = /\b(?:border|rounded-(?:md|lg|xl)|bg-(?:muted|secondary|card|accent|background|zinc|neutral|stone|slate))\b/;
     const ACTION_CARD_RE = /(?:^|\b)(?:Ran|Running)\b|已运行|正在运行|Exited with code/i;
     document.querySelectorAll('[data-testid="agent-response"] button').forEach((btn) => {
       if (btn.hasAttribute('data-maga-own')) return;
@@ -726,35 +747,37 @@ export function createStepStreamModule(rt) {
       if (btn.matches('[role="combobox"], [aria-haspopup]')) return;
       if (
         btn.closest(
-          '[data-markdown-root], [data-testid="planner-response-text"], .context-scope-mention, [data-maga-own]'
+          '[data-markdown-root], [data-testid="planner-response-text"], .context-scope-mention, [data-maga-own], [data-testid="changed-files-card"]'
         )
       ) {
         return;
       }
+      if (btn.querySelector('pre, table')) return;
       const cls = typeof btn.className === 'string' ? btn.className : '';
       const p = btn.parentElement;
       const pCls = p && typeof p.className === 'string' ? p.className : '';
-      const hasBorderContainer =
-        /\bborder\b/.test(cls) || /\bborder\b/.test(pCls) || /\brounded-(?:md|lg|xl)\b/.test(pCls);
-      if (!hasBorderContainer) return;
-      const txt = btn.textContent || '';
-      if (!ACTION_CARD_RE.test(txt)) return;
+      const hasCardChrome = CHROME_RE.test(cls) || CHROME_RE.test(pCls);
+      if (!hasCardChrome) return;
+      const txt = (btn.textContent || '').trim();
+      if (!txt || txt.length > 240 || !ACTION_CARD_RE.test(txt)) return;
       actionCards.add(btn);
       if (
         p &&
         p.tagName === 'DIV' &&
         !p.hasAttribute('data-maga-own') &&
-        /\brounded-(?:md|lg|xl)\b/.test(pCls) &&
-        /\bborder\b/.test(pCls) &&
-        (p.children ? p.children.length : 0) <= 2 &&
+        p.children &&
+        p.children.length === 1 &&
+        btn.getAttribute('aria-expanded') !== 'true' &&
+        CHROME_RE.test(pCls) &&
         !p.querySelector(
           'p, pre, [data-markdown-root], [data-testid="planner-response-text"], [data-testid="changed-files-card"]'
         )
       ) {
-        actionCards.add(p);
+        actionCardWraps.add(p);
       }
     });
     syncAttrTargetSet('data-maga-action-card', actionCards);
+    syncAttrTargetSet('data-maga-action-card-wrap', actionCardWraps);
   }
 
   function handleAriaExpandedMutation(t) {
@@ -810,6 +833,7 @@ export function createStepStreamModule(rt) {
       el.removeAttribute('data-ag-has-plan-chip');
     });
     document.querySelectorAll('[data-ag-inline-worked]').forEach((el) => el.removeAttribute('data-ag-inline-worked'));
+    document.querySelectorAll('[data-ag-has-summary]').forEach((el) => el.removeAttribute('data-ag-has-summary'));
   }
 
   function sync() {
@@ -883,6 +907,8 @@ export function createStepStreamModule(rt) {
     restoreInlinePillBoundaries();
     document.querySelectorAll('.ag-collapse-ghost, .ag-orbit-dots, .ag-elapsed-timer').forEach((el) => el.remove());
     document.querySelectorAll('[data-maga-action-card]').forEach((el) => el.removeAttribute('data-maga-action-card'));
+    document.querySelectorAll('[data-maga-action-card-wrap]').forEach((el) => el.removeAttribute('data-maga-action-card-wrap'));
+    document.querySelectorAll('[data-maga-running]').forEach((el) => el.removeAttribute('data-maga-running'));
     teardownWorkedInlineState();
   }
 

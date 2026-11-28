@@ -613,7 +613,7 @@ export function renderStepStreamPreviewHtml(mode, hideThinking, L) {
     canvasHtml = `
       ${thinkHtml}
       <div class="agy-ms-sp-prose">${esc(briefText)}</div>
-      <div class="agy-ms-sp-action is-summary"><span>▸ ${esc(L('已工作 28s · 已探索文件、已编辑文件、已运行命令', 'Worked for 28s · Explored files, Edited file, Ran command'))}</span></div>
+      <div class="agy-ms-sp-action is-summary"><span>▸ ${esc(L('已探索文件、已编辑文件、已运行命令 · 28s', 'Explored files, Edited file, Ran command · 28s'))}</span></div>
       <div class="agy-ms-sp-prose is-final">${esc(finalText)}</div>`;
   }
 

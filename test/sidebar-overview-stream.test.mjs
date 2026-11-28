@@ -296,6 +296,8 @@ test('studio-prefs supports 3-mode stepStreamMode (inline default) & sidebar pro
     assert.match(streamHtml, /agy-ms-stream-preview[^>]*data-mode="inline"[^>]*data-hide-thinking="1"/);
     assert.match(streamHtml, /agy-ms-sp-prose/);
     assert.match(streamHtml, /agy-ms-sp-action is-summary/);
+    assert.match(streamHtml, /Explored files, Edited file, Ran command · 28s/);
+    assert.doesNotMatch(streamHtml, /Worked for 28s · Explored/);
     assert.doesNotMatch(streamHtml, /agy-ms-sp-think/);
 
     await prefsRt.setStepStreamMode('compact');
@@ -350,6 +352,14 @@ test('step-stream keeps prose open while compressing pure-tool worked-for blocks
             </div>
           </div>
         </div>
+        <div id="tools-cjk-wrap">
+          <button id="btn-tools-cjk" type="button" data-testid="worked-for-collapsible" aria-expanded="false"><span class="native-worked-lbl">已工作 42s</span></button>
+          <div id="tools-cjk-panel">
+            <div data-step-rows="true">
+              <button type="button" data-testid="tool-group-collapsible" aria-expanded="false">已探索文件、已运行命令</button>
+            </div>
+          </div>
+        </div>
         <div id="active-tools-wrap">
           <button id="btn-active-tools" type="button" data-testid="worked-for-collapsible" aria-expanded="true">Worked for 9s</button>
           <div id="active-tools-panel">
@@ -360,10 +370,10 @@ test('step-stream keeps prose open while compressing pure-tool worked-for blocks
           </div>
         </div>
         <div id="standalone-action-wrap" class="rounded-lg border">
-          <button id="btn-ran-card" type="button">Ran build · Exited with code 1</button>
+          <button id="btn-ran-card" type="button" aria-expanded="false">Ran build · Exited with code 1</button>
         </div>
-        <div id="cjk-action-wrap" class="rounded-lg border">
-          <button id="btn-cjk-ran" type="button">已运行 重新运行构建与全量测试套件</button>
+        <div id="cjk-action-wrap" class="rounded-lg bg-muted">
+          <button id="btn-cjk-ran" type="button" aria-expanded="false">已运行 重新运行构建与全量测试套件</button>
         </div>
         <div id="combo-guard-wrap" class="rounded-lg border">
           <button id="btn-combo-guard" type="button" role="combobox" aria-haspopup="listbox" aria-expanded="false">Model choice</button>
@@ -383,10 +393,11 @@ test('step-stream keeps prose open while compressing pure-tool worked-for blocks
     const btnDirect = doc.getElementById('btn-direct');
     const btnTrailing = doc.getElementById('btn-trailing');
     const btnTools = doc.getElementById('btn-tools');
+    const btnToolsCjk = doc.getElementById('btn-tools-cjk');
     const btnActiveTools = doc.getElementById('btn-active-tools');
     const btnRan = doc.getElementById('btn-ran-card');
     const btnCjkRan = doc.getElementById('btn-cjk-ran');
-    for (const btn of [btnDirect, btnTrailing, btnTools, btnActiveTools]) {
+    for (const btn of [btnDirect, btnTrailing, btnTools, btnToolsCjk, btnActiveTools]) {
       btn.addEventListener('click', () => {
         const next = btn.getAttribute('aria-expanded') === 'true' ? 'false' : 'true';
         btn.setAttribute('aria-expanded', next);
@@ -418,10 +429,30 @@ test('step-stream keeps prose open while compressing pure-tool worked-for blocks
     assert.equal(doc.getElementById('direct-wrap').getAttribute('data-ag-inline-kind'), 'prose');
     assert.equal(doc.getElementById('trailing-host').getAttribute('data-ag-inline-stream'), 'true', 'trailing wrapper marks outer host');
 
-    // Pure-tool block probed & compressed to 1 line with inline summary
+    // Pure-tool block probed & compressed to 1 line with action-first inline summary + duration
     assert.equal(doc.getElementById('tools-only-wrap').getAttribute('data-ag-inline-kind'), 'tools');
     assert.equal(btnTools.getAttribute('aria-expanded'), 'false', 'pure-tool worked block stays compressed');
-    assert.match(btnTools.querySelector('.ag-worked-inline-summary')?.textContent || '', /Explored files, Ran command · Edited file/);
+    assert.equal(btnTools.getAttribute('data-ag-has-summary'), '1');
+    assert.equal(
+      btnTools.querySelector('.ag-worked-inline-summary')?.textContent,
+      'Explored files, Ran command · Edited file · 41s'
+    );
+    assert.equal(btnToolsCjk.getAttribute('data-ag-has-summary'), '1');
+    assert.equal(
+      btnToolsCjk.querySelector('.ag-worked-inline-summary')?.textContent,
+      '已探索文件、已运行命令 · 42s'
+    );
+    assert.equal(btnToolsCjk.querySelector('.native-worked-lbl')?.textContent, '已工作 42s', 'native span stays untouched');
+
+    // Mode switch teardown removes data-ag-has-summary cleanly, then restores on re-enable
+    rt.FEAT.stepUnfold = false;
+    mod.sync();
+    assert.equal(btnToolsCjk.hasAttribute('data-ag-has-summary'), false);
+    assert.equal(btnToolsCjk.querySelector('.ag-worked-inline-summary'), null);
+    rt.FEAT.stepUnfold = true;
+    mod.sync();
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(btnToolsCjk.getAttribute('data-ag-has-summary'), '1');
 
     // Active tool-first turn must NOT be sealed as 'tools'; late prose arriving before turn-end collapse keeps it expanded
     assert.equal(doc.getElementById('active-tools-wrap').getAttribute('data-ag-inline-kind'), null);
@@ -437,15 +468,26 @@ test('step-stream keeps prose open while compressing pure-tool worked-for blocks
     assert.equal(btnActiveTools.getAttribute('aria-expanded'), 'true', 'late prose turn re-expands cleanly after active tools');
     assert.equal(doc.getElementById('active-tools-wrap').getAttribute('data-ag-inline-kind'), 'prose');
 
-    // Standalone bordered command action (EN + CJK) tagged while markdown/combobox guards excluded
+    // Standalone command buttons (border and bg-muted without border) tag btn + collapsed wrapper
     assert.equal(btnRan.getAttribute('data-maga-action-card'), '1');
-    assert.equal(doc.getElementById('standalone-action-wrap').getAttribute('data-maga-action-card'), '1');
+    assert.equal(doc.getElementById('standalone-action-wrap').hasAttribute('data-maga-action-card'), false);
+    assert.equal(doc.getElementById('standalone-action-wrap').getAttribute('data-maga-action-card-wrap'), '1');
     assert.equal(btnCjkRan.getAttribute('data-maga-action-card'), '1');
-    assert.equal(doc.getElementById('cjk-action-wrap').getAttribute('data-maga-action-card'), '1');
+    assert.equal(doc.getElementById('cjk-action-wrap').hasAttribute('data-maga-action-card'), false);
+    assert.equal(doc.getElementById('cjk-action-wrap').getAttribute('data-maga-action-card-wrap'), '1');
     assert.equal(doc.getElementById('btn-combo-guard').hasAttribute('data-maga-action-card'), false);
-    assert.equal(doc.getElementById('combo-guard-wrap').hasAttribute('data-maga-action-card'), false);
+    assert.equal(doc.getElementById('combo-guard-wrap').hasAttribute('data-maga-action-card-wrap'), false);
     assert.equal(doc.getElementById('btn-md-guard').hasAttribute('data-maga-action-card'), false);
-    assert.equal(doc.getElementById('md-btn-wrap').hasAttribute('data-maga-action-card'), false);
+    assert.equal(doc.getElementById('md-btn-wrap').hasAttribute('data-maga-action-card-wrap'), false);
+
+    // Expanding standalone command card removes wrapper flattening attribute
+    btnRan.setAttribute('aria-expanded', 'true');
+    const expandedOut = doc.createElement('pre');
+    expandedOut.textContent = '18 passed';
+    doc.getElementById('standalone-action-wrap').appendChild(expandedOut);
+    mod.syncCustomDomFlags();
+    assert.equal(btnRan.getAttribute('data-maga-action-card'), '1');
+    assert.equal(doc.getElementById('standalone-action-wrap').hasAttribute('data-maga-action-card-wrap'), false);
 
     // Manual user expand on pure-tool block stays open across syncs
     const evTools = new dom.window.MouseEvent('click', { bubbles: true, cancelable: true });
@@ -472,9 +514,22 @@ test('step-stream keeps prose open while compressing pure-tool worked-for blocks
     mod.dispose();
     assert.equal(doc.querySelector('[data-ag-inline-stream]'), null);
     assert.equal(doc.querySelector('[data-ag-inline-worked]'), null);
+    assert.equal(doc.querySelector('[data-ag-has-summary]'), null);
     assert.equal(doc.querySelector('.ag-worked-inline-summary'), null);
     assert.equal(doc.querySelector('[data-maga-action-card]'), null);
+    assert.equal(doc.querySelector('[data-maga-action-card-wrap]'), null);
+    assert.equal(doc.querySelector('[data-maga-running]'), null);
   });
+});
+
+test('typography.css enforces borderless leading-triangle action rows & zero parent-selector pseudo-class', () => {
+  const css = readFileSync(path.join(REPO, 'studio', 'styles', 'typography.css'), 'utf8');
+  assert.doesNotMatch(css, /:has\s*\(/);
+  assert.match(css, /button\[data-maga-action-card="1"\]/);
+  assert.match(css, /\[data-maga-action-card-wrap="1"\]\s*\{[^}]*border:\s*0 !important/);
+  assert.match(css, /button\[data-testid="worked-for-collapsible"\]\[data-ag-has-summary="1"\]\[aria-expanded="false"\] > span:not\(\.ag-worked-inline-summary\)/);
+  assert.match(css, /content:\s*'▸'/);
+  assert.match(css, /\[data-maga-running="1"\]::before/);
 });
 
 test('built user/custom.js enforces sidebar 4/8 cap with native Pinned preservation & rich project overview cards', async () => {

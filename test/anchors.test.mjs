@@ -336,3 +336,115 @@ test('Pillar 1, 2 & 3B: UTF-8 tail cursor, CoT redaction, zero-CoT rule file, 40
     fs.rmSync(stateDir, { recursive: true, force: true });
   }
 });
+
+test('Row 1 pill class invariant: #agy-anchors-pill and all OWN_ROW1_PILL_IDS use <div> wrappers and never hijack native + button:first-of-type', async () => {
+  const { JSDOM } = await import('jsdom');
+  const { OWN_ROW1_PILL_IDS } = await import(pathToFileURL(path.join(REPO_ROOT, 'studio', 'core', 'dom.mjs')).href);
+  const { createAnchorsPillRuntime } = await import(
+    pathToFileURL(path.join(REPO_ROOT, 'studio', 'modules', 'anchors-pill.mjs')).href
+  );
+
+  // 1. Static class-level guard across all Row 1 pill modules: top-level PILL_ID must never be a <button>
+  const row1Modules = [
+    ['agy-resume-pill', path.join(REPO_ROOT, 'studio', 'modules', 'resume-banner.mjs')],
+    ['agy-opus-gate-pill', path.join(REPO_ROOT, 'studio', 'modules', 'opus-gate-pill.mjs')],
+    ['agy-auto-compact-pill', path.join(REPO_ROOT, 'studio', 'modules', 'auto-compact.mjs')],
+    ['agy-anchors-pill', path.join(REPO_ROOT, 'studio', 'modules', 'anchors-pill.mjs')],
+  ];
+  assert.deepEqual(
+    row1Modules.map(([id]) => id).sort(),
+    Array.from(OWN_ROW1_PILL_IDS).sort(),
+    'every OWN_ROW1_PILL_IDS entry must be covered by the non-button container guard'
+  );
+  for (const [pillId, modPath] of row1Modules) {
+    const src = fs.readFileSync(modPath, 'utf8');
+    assert.match(
+      src,
+      /pill\s*=\s*document\.createElement\(['"]div['"]\)/,
+      `${pillId} (${path.basename(modPath)}) must create a <div> wrapper so it never steals :scope > button:first-of-type from the native + button`
+    );
+    assert.doesNotMatch(
+      src,
+      /pill\s*=\s*document\.createElement\(['"]button['"]\)/,
+      `${pillId} (${path.basename(modPath)}) must not create a top-level <button>`
+    );
+  }
+
+  // 2. CSS invariants for anchors-pill.css
+  const css = fs.readFileSync(path.join(REPO_ROOT, 'studio', 'styles', 'anchors-pill.css'), 'utf8');
+  assert.doesNotMatch(css, /:has\s*\(/, 'anchors-pill.css must contain zero :has()');
+  assert.match(css, /#agy-anchors-pill#agy-anchors-pill[\s\S]*?order:\s*0\s*!important/);
+  assert.match(css, /#agy-anchors-pill#agy-anchors-pill[\s\S]*?height:\s*28px\s*!important/);
+  assert.match(css, /#agy-anchors-pill#agy-anchors-pill[\s\S]*?white-space:\s*nowrap\s*!important/);
+  assert.match(css, /#agy-anchors-pill#agy-anchors-pill\[hidden\][\s\S]*?display:\s*none\s*!important/);
+
+  // 3. JSDOM runtime regression: preserves native + button:first-of-type, replaces stale <button>, and opens non-empty G>=3 menu
+  const dom = new JSDOM(
+    '<!doctype html><html><body>' +
+      '<div id="antigravity.agentSidePanelInputBox">' +
+      '  <div class="agy-composer-footer" data-agy-has-row2="true">' +
+      '    <div class="left-group">' +
+      '      <button id="agy-anchors-pill" type="button">stale</button>' +
+      '      <button id="native-add-ctx" aria-label="Add context">+</button>' +
+      '      <input type="file" class="hidden" />' +
+      '    </div>' +
+      '    <div class="right-group"><button id="turbo-btn">Turbo</button></div>' +
+      '  </div>' +
+      '</div></body></html>',
+    { url: 'https://127.0.0.1:60000/c/conv-g3-ui-test' }
+  );
+
+  const prevWindow = globalThis.window;
+  const prevDocument = globalThis.document;
+  const prevLocation = globalThis.location;
+  globalThis.window = dom.window;
+  globalThis.document = dom.window.document;
+  globalThis.location = dom.window.location;
+
+  try {
+    dom.window.__ag_last_metrics = { metrics: { compactionCount: 3 } };
+    const rt = createAnchorsPillRuntime({ studioPrefs: { get: () => ({ anchorsMode: 'semi' }) } });
+    const leftGroup = dom.window.document.querySelector('.left-group');
+    const nativeAddBtn = dom.window.document.getElementById('native-add-ctx');
+
+    // Visible at G=3: stale <button> replaced by <div>, native + button stays button:first-of-type
+    const plan = rt.read({ cid: 'conv-g3-ui-test', isRunning: false });
+    rt.write({ cid: 'conv-g3-ui-test', isRunning: false }, plan);
+
+    const pill = dom.window.document.getElementById('agy-anchors-pill');
+    assert.ok(pill, '#agy-anchors-pill must mount');
+    assert.equal(pill.tagName, 'DIV', '#agy-anchors-pill root must be a DIV');
+    assert.equal(pill.hidden, false);
+    assert.equal(pill.getAttribute('data-warn'), '1');
+    assert.ok(pill.querySelector('button.agy-anchors-go'), 'must render inner button.agy-anchors-go');
+    assert.equal(
+      leftGroup.querySelector(':scope > button:first-of-type'),
+      nativeAddBtn,
+      'native + button must remain :scope > button:first-of-type when #agy-anchors-pill is visible'
+    );
+
+    // Clicking pill opens non-empty handoff popover even before async status RPC resolves
+    pill.getBoundingClientRect = () => ({ left: 40, top: 700, right: 160, bottom: 728, width: 120, height: 28 });
+    pill.querySelector('button.agy-anchors-go').click();
+    const menu = dom.window.document.getElementById('agy-anchors-menu');
+    assert.equal(menu?.getAttribute('data-open'), 'true');
+    assert.ok(menu?.querySelector('.agy-anc-handoff-btn'), 'G>=3 handoff button must render even before status RPC returns');
+
+    // Hidden at G=0: native + button STILL remains :scope > button:first-of-type
+    dom.window.history.replaceState({}, '', '/c/conv-g0-ui-test');
+    dom.window.__ag_last_metrics = { metrics: { compactionCount: 0 } };
+    rt.write({ cid: 'conv-g0-ui-test', isRunning: false }, { cid: 'conv-g0-ui-test', running: false });
+    assert.equal(pill.hidden, true);
+    assert.equal(
+      leftGroup.querySelector(':scope > button:first-of-type'),
+      nativeAddBtn,
+      'native + button must remain :scope > button:first-of-type when #agy-anchors-pill is hidden'
+    );
+
+    rt.dispose();
+  } finally {
+    globalThis.window = prevWindow;
+    globalThis.document = prevDocument;
+    globalThis.location = prevLocation;
+  }
+});

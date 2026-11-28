@@ -395,13 +395,18 @@ class MainActivity : AppCompatActivity(), NativeBridge.HostActions {
                 }
                 val targetHost = uri.host?.lowercase()?.trim()
                 val currentHost = view?.url?.let { runCatching { Uri.parse(it).host?.lowercase()?.trim() }.getOrNull() }
-                if (isAccessHost(targetHost) || (isServerHost(currentHost) && req.isRedirect && !isServerHost(targetHost))) {
+                val onNonServerAuthPage =
+                    !currentHost.isNullOrEmpty() && !isServerHost(currentHost) && (authRedirectActive || isKnownAuthHost(currentHost))
+                if (isAccessHost(targetHost) ||
+                    (isServerHost(currentHost) && req.isRedirect && !isServerHost(targetHost)) ||
+                    onNonServerAuthPage
+                ) {
                     authRedirectActive = true
                 }
                 // Always keep exact server host, Cloudflare Access, and active IdP OAuth flows inside WebView;
                 // user-tapped external links inside chat open in external browser/app.
                 if (isServerOrAccessHost(targetHost) ||
-                    (authRedirectActive && (req.isRedirect || !req.hasGesture() || isKnownAuthHost(targetHost)))
+                    (authRedirectActive && (req.isRedirect || !req.hasGesture() || isKnownAuthHost(targetHost) || onNonServerAuthPage))
                 ) {
                     return false
                 }
@@ -435,7 +440,7 @@ class MainActivity : AppCompatActivity(), NativeBridge.HostActions {
                 super.onPageFinished(view, url)
                 val origin = extractOrigin(url)
                 currentMainFrameOrigin = origin
-                if (isTrustedServerOrigin(origin)) {
+                if (isTrustedServerOrigin(origin) && !isAccessCallbackPath(url)) {
                     authRedirectActive = false
                 } else {
                     webReady = false
@@ -504,18 +509,27 @@ class MainActivity : AppCompatActivity(), NativeBridge.HostActions {
         return target == "cloudflareaccess.com" || target.endsWith(".cloudflareaccess.com")
     }
 
+    private fun isAccessCallbackPath(rawUrl: String?): Boolean {
+        val path = rawUrl?.let { runCatching { Uri.parse(it).path?.lowercase() }.getOrNull() }.orEmpty()
+        return path.startsWith("/cdn-cgi/access/")
+    }
+
     private fun isServerOrAccessHost(host: String?): Boolean = isServerHost(host) || isAccessHost(host)
 
     private fun isKnownAuthHost(host: String?): Boolean {
         val target = host?.lowercase()?.trim() ?: return false
         if (isAccessHost(target)) return true
-        return target == "accounts.google.com" ||
+        return target == "cloudflare.com" || target.endsWith(".cloudflare.com") ||
+            target == "accounts.google.com" ||
             target == "google.com" || target.endsWith(".google.com") ||
             target.endsWith(".googleapis.com") ||
+            target.endsWith(".googleusercontent.com") ||
             target.endsWith(".gstatic.com") ||
+            target == "youtube.com" || target.endsWith(".youtube.com") ||
             target == "login.microsoftonline.com" ||
             target == "login.live.com" ||
             target == "github.com" || target.endsWith(".github.com") ||
+            target.endsWith(".githubusercontent.com") ||
             target == "appleid.apple.com" ||
             target.endsWith(".okta.com") ||
             target.endsWith(".auth0.com")
@@ -713,7 +727,12 @@ class MainActivity : AppCompatActivity(), NativeBridge.HostActions {
         if (intent.action == Intent.ACTION_VIEW) {
             val viewUri = intent.data
             if (viewUri != null && (viewUri.scheme == "https" || viewUri.scheme == "http") && isServerHost(viewUri.host)) {
-                pendingLaunchUrl = viewUri.toString()
+                val rawUrl = viewUri.toString()
+                pendingLaunchUrl = if (isAccessCallbackPath(rawUrl)) {
+                    ServerPrefs.getServerUrl(this)
+                } else {
+                    rawUrl
+                }
             }
         }
         val focusCid = intent.getStringExtra(NotificationHelper.EXTRA_CASCADE_ID)?.trim()

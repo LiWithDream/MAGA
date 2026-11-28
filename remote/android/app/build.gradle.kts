@@ -1,3 +1,5 @@
+import java.net.URI
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -14,7 +16,7 @@ val defaultServerUrlProp = (
         ?: "https://example.invalid"
 ).removeSuffix("/")
 val defaultServerHost = try {
-    java.net.URI(defaultServerUrlProp).host ?: "example.invalid"
+    URI(defaultServerUrlProp).host ?: "example.invalid"
 } catch (_: Exception) {
     "example.invalid"
 }
@@ -27,8 +29,8 @@ android {
         applicationId = "com.agystudio.remote"
         minSdk = 26
         targetSdk = 35
-        versionCode = 10501
-        versionName = "1.5.1"
+        versionCode = 10600
+        versionName = "1.6.0"
         buildConfigField("String", "DEFAULT_SERVER_URL", "\"${defaultServerUrlProp.replace("\"", "\\\"")}\"")
         manifestPlaceholders["agyServerHost"] = defaultServerHost
     }

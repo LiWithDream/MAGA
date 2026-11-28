@@ -336,6 +336,19 @@ test('public hygiene: no personal domains in tracked Android sources or test fix
   }
 });
 
+test('android WebView keeps Cloudflare and IdP OAuth flows inside WebView and guards /cdn-cgi/access/ deep links', () => {
+  const mainActivity = readFileSync(
+    path.join(REPO, 'remote', 'android', 'app', 'src', 'main', 'java', 'com', 'agystudio', 'remote', 'MainActivity.kt'),
+    'utf8'
+  );
+  assert.match(mainActivity, /target == "cloudflare\.com"\s*\|\|\s*target\.endsWith\("\.cloudflare\.com"\)/);
+  assert.match(mainActivity, /onNonServerAuthPage/);
+  assert.match(mainActivity, /fun isAccessCallbackPath\(/);
+  assert.match(mainActivity, /path\.startsWith\("\/cdn-cgi\/access\/"\)/);
+  assert.match(mainActivity, /isTrustedServerOrigin\(origin\)\s*&&\s*!isAccessCallbackPath\(url\)/);
+  assert.match(mainActivity, /if\s*\(isAccessCallbackPath\(rawUrl\)\)/);
+});
+
 test('pack-release extractChangelogNotes and CI release workflow stay aligned for v* tags', async () => {
   const { extractChangelogNotes } = await import(pathToFileURL(path.join(REPO, 'studio', 'pack-release.mjs')).href);
 

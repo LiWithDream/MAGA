@@ -1,10 +1,15 @@
 #!/usr/bin/env node
 /**
  * Release Tag Pre-Push Guardrail (.githooks/guard-release-tag.mjs).
- * Enforces two mechanical checks whenever pushing a `refs/tags/v*` release tag:
- *   1. No stranded unmerged remote branches outside `main`, `master`, or `wip/*`
+ * Enforces four mechanical checks whenever pushing a `refs/tags/v*` release tag:
+ *   1. Target commit is an ancestor of remote `<remote>/main` (or local `main` when offline),
+ *      blocking unmerged branch tags or non-main historical tags (override: `MAGA_ALLOW_NON_MAIN_TAG=1`).
+ *   2. When `main` has `package.json`, the tagged commit's `package.json` must match `main`'s
+ *      package `name` (blocks legacy upstream `anti-claude` v2/v3 tags even when in `main` ancestry)
+ *      and `version === tag.slice(1)` (override: `MAGA_ALLOW_TAG_MISMATCH=1`).
+ *   3. No stranded unmerged remote branches outside `main`, `master`, or `wip/*`
  *      (live `git ls-remote --heads <remote>`, override: `MAGA_ALLOW_STRANDED_TAG=1`).
- *   2. Both `smoke/darwin` and `smoke/win32` GitHub Commit Statuses are `success` on the
+ *   4. Both `smoke/darwin` and `smoke/win32` GitHub Commit Statuses are `success` on the
  *      dereferenced target commit SHA (GitHub remotes only; override: `MAGA_SKIP_SMOKE=1`).
  */
 import { execFileSync } from 'node:child_process';
@@ -88,7 +93,7 @@ function resolveRemoteUrl(cwd, remoteName, fallbackUrl, { execFile, childEnv }) 
   }
 }
 
-function checkStrandedBranchesForCommit({ cwd, remoteName, tagName, targetCommitSha, strictRemote, execFile, childEnv }) {
+function fetchRemoteHeads({ cwd, remoteName, strictRemote, execFile, childEnv }) {
   let lsRemoteOut = '';
   try {
     lsRemoteOut = execFile('git', ['-C', cwd, 'ls-remote', '--heads', remoteName], {
@@ -108,29 +113,204 @@ function checkStrandedBranchesForCommit({ cwd, remoteName, tagName, targetCommit
     }
     return {
       ok: true,
+      reachable: false,
+      heads: [],
+      mainSha: '',
       warning: `[MAGA release-tag guard] Warning: could not verify remote branches on '${remoteName}' (${errMsg}); proceeding offline.`,
     };
   }
 
-  const stranded = [];
+  const heads = [];
+  let mainSha = '';
   for (const rawLine of lsRemoteOut.split(/\r?\n/)) {
     const m = rawLine.trim().match(/^([0-9a-f]{40})\trefs\/heads\/(.+)$/i);
     if (!m) continue;
     const remoteSha = m[1].toLowerCase();
     const branch = m[2];
-    if (isExemptRemoteBranch(branch)) continue;
-    let isMerged = false;
+    heads.push({ branch, remoteSha });
+    if (branch === 'main') mainSha = remoteSha;
+  }
+  return { ok: true, reachable: true, heads, mainSha };
+}
+
+function resolveLocalMainRef(cwd, remoteName, { execFile, childEnv }) {
+  const candidates = [
+    { label: `${remoteName}/main`, ref: `refs/remotes/${remoteName}/main` },
+    { label: 'main', ref: 'refs/heads/main' },
+    { label: `${remoteName}/master`, ref: `refs/remotes/${remoteName}/master` },
+    { label: 'master', ref: 'refs/heads/master' },
+  ];
+  for (const cand of candidates) {
     try {
-      execFile('git', ['-C', cwd, 'merge-base', '--is-ancestor', remoteSha, targetCommitSha], {
+      const sha = execFile('git', ['-C', cwd, 'rev-parse', '--verify', '--quiet', `${cand.ref}^{commit}`], {
+        encoding: 'utf8',
+        env: childEnv,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      })
+        .trim()
+        .toLowerCase();
+      if (/^[0-9a-f]{40}$/i.test(sha)) {
+        return { label: cand.label, sha };
+      }
+    } catch {}
+  }
+  return null;
+}
+
+function isCommitAncestor(cwd, ancestorSha, descendantSha, { execFile, childEnv }) {
+  try {
+    execFile('git', ['-C', cwd, 'merge-base', '--is-ancestor', ancestorSha, descendantSha], {
+      encoding: 'utf8',
+      env: childEnv,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function checkMainAncestryForCommit({ cwd, remoteName, tagName, targetCommitSha, remoteHeadsRes, execFile, childEnv }) {
+  let mainRef = '';
+  let mainSha = '';
+
+  if (remoteHeadsRes?.reachable && remoteHeadsRes.mainSha) {
+    mainRef = `${remoteName}/main`;
+    mainSha = remoteHeadsRes.mainSha;
+    let hasRemoteMainObj = false;
+    try {
+      execFile('git', ['-C', cwd, 'cat-file', '-e', `${mainSha}^{commit}`], {
         encoding: 'utf8',
         env: childEnv,
         stdio: ['ignore', 'pipe', 'pipe'],
       });
-      isMerged = true;
+      hasRemoteMainObj = true;
     } catch {
-      isMerged = false;
+      hasRemoteMainObj = false;
     }
-    if (!isMerged) {
+    if (!hasRemoteMainObj) {
+      return {
+        ok: false,
+        reason: 'main_ref_not_fetched',
+        mainRef,
+        mainSha,
+        message: [
+          `[MAGA release-tag guard] Remote '${mainRef}' (${mainSha.slice(0, 7)}) is not present in local git objects; cannot verify '${tagName}' (${targetCommitSha.slice(0, 7)}) ancestry.`,
+          `Run \`git fetch ${remoteName} main\` and retry.`,
+          `To override intentionally: MAGA_ALLOW_NON_MAIN_TAG=1 git push ${remoteName} ${tagName}`,
+        ].join('\n'),
+      };
+    }
+  } else {
+    const localMain = resolveLocalMainRef(cwd, remoteName, { execFile, childEnv });
+    if (!localMain) {
+      return {
+        ok: false,
+        reason: 'main_branch_missing',
+        message: [
+          `[MAGA release-tag guard] Refusing to push release tag '${tagName}' (${targetCommitSha.slice(0, 7)}): could not resolve '${remoteName}/main' or local 'main' to verify ancestry.`,
+          `To override intentionally: MAGA_ALLOW_NON_MAIN_TAG=1 git push ${remoteName} ${tagName}`,
+        ].join('\n'),
+      };
+    }
+    mainRef = localMain.label;
+    mainSha = localMain.sha;
+  }
+
+  if (!isCommitAncestor(cwd, targetCommitSha, mainSha, { execFile, childEnv })) {
+    return {
+      ok: false,
+      reason: 'tag_not_on_main',
+      mainRef,
+      mainSha,
+      message: [
+        `[MAGA release-tag guard] Refusing to push release tag '${tagName}' (${targetCommitSha.slice(0, 7)}): commit is not reachable from ${mainRef} (${mainSha.slice(0, 7)}).`,
+        `Release tags must point to commits merged into 'main' (prevents pushing unmerged branches or non-main historical tags).`,
+        `To override intentionally: MAGA_ALLOW_NON_MAIN_TAG=1 git push ${remoteName} ${tagName}`,
+      ].join('\n'),
+    };
+  }
+
+  return { ok: true, mainRef, mainSha };
+}
+
+function readPackageJsonAtCommit(cwd, commitSha, { execFile, childEnv }) {
+  if (!commitSha) return null;
+  try {
+    const raw = execFile('git', ['-C', cwd, 'show', `${commitSha}:package.json`], {
+      encoding: 'utf8',
+      env: childEnv,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    if (!raw || !raw.trim()) return null;
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function checkTagPackageIdentityForCommit({ cwd, remoteName, tagName, targetCommitSha, mainSha, remoteHeadsRes, execFile, childEnv }) {
+  const refMainSha =
+    mainSha ||
+    (remoteHeadsRes?.reachable && remoteHeadsRes.mainSha ? remoteHeadsRes.mainSha : '') ||
+    resolveLocalMainRef(cwd, remoteName, { execFile, childEnv })?.sha ||
+    '';
+  const mainPkg = readPackageJsonAtCommit(cwd, refMainSha, { execFile, childEnv });
+  if (!mainPkg) return { ok: true };
+
+  const targetPkg = readPackageJsonAtCommit(cwd, targetCommitSha, { execFile, childEnv });
+  if (!targetPkg) {
+    return {
+      ok: false,
+      reason: 'tag_package_missing',
+      message: [
+        `[MAGA release-tag guard] Refusing to push release tag '${tagName}' (${targetCommitSha.slice(0, 7)}): commit has no valid package.json.`,
+        `To override intentionally: MAGA_ALLOW_TAG_MISMATCH=1 git push ${remoteName} ${tagName}`,
+      ].join('\n'),
+    };
+  }
+
+  const expectedName = String(mainPkg.name || '').trim();
+  const actualName = String(targetPkg.name || '').trim();
+  if (expectedName && actualName !== expectedName) {
+    return {
+      ok: false,
+      reason: 'tag_package_name_mismatch',
+      expectedName,
+      actualName,
+      message: [
+        `[MAGA release-tag guard] Refusing to push release tag '${tagName}' (${targetCommitSha.slice(0, 7)}): package.json name is '${actualName || '<missing>'}', expected '${expectedName}'.`,
+        `This blocks legacy upstream tags (e.g. anti-claude v2.x/v3.x) even when their commits lie in 'main' ancestry.`,
+        `To override intentionally: MAGA_ALLOW_TAG_MISMATCH=1 git push ${remoteName} ${tagName}`,
+      ].join('\n'),
+    };
+  }
+
+  const expectedVersion = tagName.replace(/^v/, '');
+  const actualVersion = String(targetPkg.version || '').trim();
+  if (actualVersion !== expectedVersion) {
+    return {
+      ok: false,
+      reason: 'tag_package_version_mismatch',
+      expectedVersion,
+      actualVersion,
+      message: [
+        `[MAGA release-tag guard] Refusing to push release tag '${tagName}' (${targetCommitSha.slice(0, 7)}): package.json version is '${actualVersion || '<missing>'}', expected '${expectedVersion}'.`,
+        `Ensure package.json version matches '${tagName}' before pushing the tag.`,
+        `To override intentionally: MAGA_ALLOW_TAG_MISMATCH=1 git push ${remoteName} ${tagName}`,
+      ].join('\n'),
+    };
+  }
+
+  return { ok: true };
+}
+
+function checkStrandedBranchesForCommit({ cwd, remoteName, tagName, targetCommitSha, remoteHeadsRes, execFile, childEnv }) {
+  const stranded = [];
+  for (const { branch, remoteSha } of remoteHeadsRes?.heads || []) {
+    if (isExemptRemoteBranch(branch)) continue;
+    if (!isCommitAncestor(cwd, remoteSha, targetCommitSha, { execFile, childEnv })) {
       stranded.push({ branch, remoteSha });
     }
   }
@@ -252,22 +432,85 @@ export function checkReleaseTagPush({
     '';
 
   const warnings = [];
+  const allowNonMainTag = effectiveEnv.MAGA_ALLOW_NON_MAIN_TAG === '1';
+  const allowTagMismatch = effectiveEnv.MAGA_ALLOW_TAG_MISMATCH === '1';
+  const allowStrandedTag = effectiveEnv.MAGA_ALLOW_STRANDED_TAG === '1';
+  let remoteHeadsRes = null;
+  if (!allowNonMainTag || !allowTagMismatch || !allowStrandedTag) {
+    remoteHeadsRes = fetchRemoteHeads({ cwd, remoteName, strictRemote, execFile, childEnv });
+    if (remoteHeadsRes.warning) warnings.push(remoteHeadsRes.warning);
+    if (!remoteHeadsRes.ok) {
+      return {
+        allowed: false,
+        reason: remoteHeadsRes.reason,
+        warnings,
+        message: remoteHeadsRes.message,
+      };
+    }
+  }
 
   for (const ref of releaseTags) {
     const tagName = ref.remoteRef.slice('refs/tags/'.length);
     const targetCommitSha = resolveCommitSha(cwd, ref.localSha, { execFile, childEnv });
+    let verifiedMainSha = '';
 
-    if (effectiveEnv.MAGA_ALLOW_STRANDED_TAG !== '1') {
+    if (!allowNonMainTag) {
+      const mainRes = checkMainAncestryForCommit({
+        cwd,
+        remoteName,
+        tagName,
+        targetCommitSha,
+        remoteHeadsRes,
+        execFile,
+        childEnv,
+      });
+      if (!mainRes.ok) {
+        return {
+          allowed: false,
+          reason: mainRes.reason,
+          tagName,
+          targetCommitSha,
+          warnings,
+          message: mainRes.message,
+          ...(mainRes.mainRef ? { mainRef: mainRes.mainRef, mainSha: mainRes.mainSha } : {}),
+        };
+      }
+      verifiedMainSha = mainRes.mainSha || '';
+    }
+
+    if (!allowTagMismatch) {
+      const pkgRes = checkTagPackageIdentityForCommit({
+        cwd,
+        remoteName,
+        tagName,
+        targetCommitSha,
+        mainSha: verifiedMainSha,
+        remoteHeadsRes,
+        execFile,
+        childEnv,
+      });
+      if (!pkgRes.ok) {
+        return {
+          allowed: false,
+          reason: pkgRes.reason,
+          tagName,
+          targetCommitSha,
+          warnings,
+          message: pkgRes.message,
+        };
+      }
+    }
+
+    if (!allowStrandedTag) {
       const strandedRes = checkStrandedBranchesForCommit({
         cwd,
         remoteName,
         tagName,
         targetCommitSha,
-        strictRemote,
+        remoteHeadsRes,
         execFile,
         childEnv,
       });
-      if (strandedRes.warning) warnings.push(strandedRes.warning);
       if (!strandedRes.ok) {
         return {
           allowed: false,

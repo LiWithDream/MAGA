@@ -423,22 +423,23 @@ function reconcileStatusWithLocal(status, local, ctx) {
   return reconciled;
 }
 
-async function resolveLatestTagViaGitLsRemote(local, ctx) {
-  const expectedMajor = parseSemverParts(local?.version)?.major || 1;
-  const lsRes = await execGit(local.repoRoot, ['ls-remote', '--tags', '--refs', 'origin', 'refs/tags/v*'], ctx, 6000);
-  if (!lsRes.ok || !lsRes.stdout) return null;
+export function pickLatestStableTagFromLsRemote(stdout) {
   const parsed = [];
-  for (const line of lsRes.stdout.split(/\r?\n/)) {
-    const m = line.match(/refs\/tags\/(v(\d+)\.(\d+)\.(\d+))$/);
+  for (const line of String(stdout || '').split(/\r?\n/)) {
+    const m = line.trim().match(/\trefs\/tags\/(v\d+\.\d+\.\d+)$/);
     if (!m) continue;
     const tag = m[1];
-    const major = Number(m[2]);
-    if (major > expectedMajor) continue;
     parsed.push({ tag, version: tag.slice(1) });
   }
   if (parsed.length === 0) return null;
   parsed.sort((a, b) => compareSemver(b.version, a.version));
   return parsed[0];
+}
+
+async function resolveLatestTagViaGitLsRemote(local, ctx) {
+  const lsRes = await execGit(local.repoRoot, ['ls-remote', '--tags', '--refs', 'origin', 'refs/tags/v*'], ctx, 6000);
+  if (!lsRes.ok || !lsRes.stdout) return null;
+  return pickLatestStableTagFromLsRemote(lsRes.stdout);
 }
 
 async function fetchLatestGithubRelease(ctx, local) {

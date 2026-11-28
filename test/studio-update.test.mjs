@@ -68,10 +68,32 @@ function createBareAndClone(tmpBase, { version = '1.6.0', tag = 'v1.6.0' } = {})
 
 test('pure helpers: compareSemver, parseSha256File, isAllowedDownloadUrl, parseReleaseNotesSummary, resolveNpmInvocation', () => {
   assert.equal(serviceMod.compareSemver('1.7.0', '1.6.0'), 1);
+  assert.equal(serviceMod.compareSemver('2.0.0', '1.6.0'), 1);
   assert.equal(serviceMod.compareSemver('v1.10.0', 'v1.9.9'), 1);
   assert.equal(serviceMod.compareSemver('1.6.0', '1.6.0'), 0);
   assert.equal(serviceMod.compareSemver('1.7.0-rc.1', '1.7.0'), -1);
   assert.equal(serviceMod.compareSemver('1.7.0-beta', '1.7.0-alpha'), 1);
+
+  assert.deepEqual(
+    serviceMod.pickLatestStableTagFromLsRemote(
+      [
+        '1111111111111111111111111111111111111111\trefs/tags/v1.6.0',
+        '2222222222222222222222222222222222222222\trefs/tags/v1.10.0',
+        '3333333333333333333333333333333333333333\trefs/tags/v2.0.0-rc.1',
+        '4444444444444444444444444444444444444444\trefs/tags/v2.0.0',
+        '5555555555555555555555555555555555555555\trefs/tags/v2.1.0-beta.1',
+        '6666666666666666666666666666666666666666\trefs/tags/nested/v9.9.9',
+      ].join('\n')
+    ),
+    { tag: 'v2.0.0', version: '2.0.0' }
+  );
+  assert.equal(
+    serviceMod.pickLatestStableTagFromLsRemote(
+      '1111111111111111111111111111111111111111\trefs/tags/v2.0.0-rc.1\n' +
+        '2222222222222222222222222222222222222222\trefs/tags/v2.1.0-alpha.1\n'
+    ),
+    null
+  );
 
   assert.equal(
     workerMod.parseSha256File('a'.repeat(64) + '  agy-studio-v1.7.0-macos.tar.gz\n', 'agy-studio-v1.7.0-macos.tar.gz'),
@@ -390,6 +412,35 @@ test('checkStudioUpdate handles stable/prebuilt, caching, rate-limit git ls-remo
     assert.equal(stableFallback.check.source, 'git-ls-remote');
     assert.equal(stableFallback.check.latestTag, 'v1.7.0');
     assert.equal(stableFallback.check.updateAvailable, true);
+
+    // Cross-major fallback (1.6.0 -> 2.0.0) while ignoring prerelease tags (v2.0.0-rc.1 / v2.1.0-beta.1)
+    for (const [ver, tag] of [
+      ['2.0.0-rc.1', 'v2.0.0-rc.1'],
+      ['2.0.0', 'v2.0.0'],
+      ['2.1.0-beta.1', 'v2.1.0-beta.1'],
+    ]) {
+      fs.writeFileSync(path.join(seedDir, 'package.json'), JSON.stringify({ name: 'agy-studio', version: ver }) + '\n');
+      git(seedDir, ['add', 'package.json']);
+      git(seedDir, ['commit', '-m', `bump ${ver}`]);
+      git(seedDir, ['tag', '-a', tag, '-m', tag]);
+    }
+    git(seedDir, ['push', 'origin', 'main', '--tags']);
+
+    const crossMajorFallback = await serviceMod.checkStudioUpdate(
+      { force: true },
+      {
+        repoRoot: cloneDir,
+        stateDir,
+        platform: 'darwin',
+        fetchImpl: rateLimitFetch,
+        readDeployMetaFn: () => ({ present: false, meta: null }),
+      }
+    );
+    assert.equal(crossMajorFallback.ok, true);
+    assert.equal(crossMajorFallback.check.source, 'git-ls-remote');
+    assert.equal(crossMajorFallback.check.latestTag, 'v2.0.0');
+    assert.equal(crossMajorFallback.check.latestVersion, '2.0.0');
+    assert.equal(crossMajorFallback.check.updateAvailable, true);
   } finally {
     serviceMod.clearUpdateCheckCache();
     fs.rmSync(tmp, { recursive: true, force: true });

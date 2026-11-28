@@ -688,6 +688,8 @@ test('install.ps1 and uninstall.ps1 isolate scope via & { } and guard exit for i
   assert.match(installPs1, /\[switch\]\$Force/);
   assert.match(installPs1, /\[string\]\$Channel/);
   assert.match(installPs1, /AGY_STUDIO_RELEASE_TAG/);
+  assert.match(installPs1, /STABLE_TAG_RE\s*=\s*\/\^v\(\\d\+\)\\\.\(\\d\+\)\\\.\(\\d\+\)\$\//);
+  assert.doesNotMatch(installPs1, /expectedMajor|major > expectedMajor/);
   assert.match(installPs1, /releases\/latest/);
   assert.match(installPs1, /checkout --detach/);
   assert.match(installPs1, /checkout -B/);

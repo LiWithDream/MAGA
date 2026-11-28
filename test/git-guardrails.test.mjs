@@ -958,6 +958,170 @@ test('guard-release-tag blocks v* tag pushes when unmerged remote branches exist
   }
 });
 
+test('guard-release-tag enforces main-branch ancestry reachability for v* tags (live remote and offline fallback)', () => {
+  const bareOrigin = realpathNative(fs.mkdtempSync(path.join(os.tmpdir(), 'maga-tag-main-origin-')));
+  const dev = realpathNative(fs.mkdtempSync(path.join(os.tmpdir(), 'maga-tag-main-dev-')));
+
+  try {
+    execFileSync('git', ['init', '--bare', '-b', 'main', bareOrigin], { stdio: 'ignore' });
+    execFileSync('git', ['clone', bareOrigin, dev], { stdio: 'ignore' });
+    git(dev, ['config', 'user.name', 'MAGA Test']);
+    git(dev, ['config', 'user.email', 'test@maga.local']);
+    git(dev, ['config', 'core.hooksPath', GITHOOKS_DIR]);
+
+    git(dev, ['checkout', '-B', 'main']);
+    fs.writeFileSync(path.join(dev, 'README.md'), '# v1\n', 'utf8');
+    git(dev, ['add', 'README.md']);
+    git(dev, ['commit', '-m', 'main commit 1'], { MAGA_ALLOW_MAIN_COMMIT: '1' });
+    const mainCommit1 = git(dev, ['rev-parse', 'HEAD']);
+
+    fs.writeFileSync(path.join(dev, 'README.md'), '# v2\n', 'utf8');
+    git(dev, ['add', 'README.md']);
+    git(dev, ['commit', '-m', 'main commit 2'], { MAGA_ALLOW_MAIN_COMMIT: '1' });
+    git(dev, ['push', '-u', 'origin', 'main']);
+
+    // 1. Tag on unmerged local branch (not pushed to origin) -> BLOCKED
+    git(dev, ['checkout', '-b', 'feat/unmerged']);
+    fs.writeFileSync(path.join(dev, 'feat.txt'), 'off-main\n', 'utf8');
+    git(dev, ['add', 'feat.txt']);
+    git(dev, ['commit', '-m', 'off-main commit']);
+    git(dev, ['tag', '-a', 'v1.6.2', '-m', 'Off-main v1.6.2']);
+    const featTagSha = git(dev, ['rev-parse', 'refs/tags/v1.6.2']);
+
+    const offMainPush = gitResult(dev, ['push', 'origin', 'v1.6.2']);
+    assert.notEqual(offMainPush.status, 0);
+    assert.match(offMainPush.stderr, /not reachable from origin\/main/);
+
+    // 2. Tag on unrelated orphan branch (simulating non-main historical tag) -> BLOCKED
+    git(dev, ['checkout', '--orphan', 'legacy/upstream']);
+    fs.writeFileSync(path.join(dev, 'legacy.txt'), 'orphan\n', 'utf8');
+    git(dev, ['add', 'legacy.txt']);
+    git(dev, ['commit', '-m', 'legacy upstream']);
+    git(dev, ['tag', 'v2.9.9']);
+    const orphanPush = gitResult(dev, ['push', 'origin', 'v2.9.9']);
+    assert.notEqual(orphanPush.status, 0);
+    assert.match(orphanPush.stderr, /not reachable from origin\/main/);
+
+    // 3. Tag on local commit on main that hasn't been pushed to origin/main yet -> BLOCKED
+    git(dev, ['checkout', 'main']);
+    fs.writeFileSync(path.join(dev, 'unpushed.txt'), 'unpushed\n', 'utf8');
+    git(dev, ['add', 'unpushed.txt']);
+    git(dev, ['commit', '-m', 'unpushed main commit'], { MAGA_ALLOW_MAIN_COMMIT: '1' });
+    git(dev, ['tag', '-a', 'v1.6.3', '-m', 'Unpushed v1.6.3']);
+    const unpushedMainPush = gitResult(dev, ['push', 'origin', 'v1.6.3']);
+    assert.notEqual(unpushedMainPush.status, 0);
+    assert.match(unpushedMainPush.stderr, /not reachable from origin\/main/);
+
+    // 4. Tag on historical ancestor of origin/main -> ALLOWED
+    git(dev, ['tag', '-a', 'v1.0.1', '-m', 'Ancestor v1.0.1', mainCommit1]);
+    const ancestorPush = gitResult(dev, ['push', 'origin', 'v1.0.1']);
+    assert.equal(ancestorPush.status, 0, ancestorPush.stderr);
+
+    // 5. Explicit override MAGA_ALLOW_NON_MAIN_TAG=1 -> ALLOWED
+    const overridePush = gitResult(dev, ['push', 'origin', 'v1.6.2'], { MAGA_ALLOW_NON_MAIN_TAG: '1' });
+    assert.equal(overridePush.status, 0, overridePush.stderr);
+
+    // 6. Offline fallback: still enforces local main ancestry when remote ls-remote fails
+    const offlineFailExec = (cmd, args, opts) => {
+      if (cmd === 'git' && args.includes('ls-remote')) {
+        throw new Error('offline');
+      }
+      return execFileSync(cmd, args, opts);
+    };
+    const offlineBlocked = checkReleaseTagPush({
+      cwd: dev,
+      remoteName: 'origin',
+      remoteUrl: bareOrigin,
+      pushedRefs: parsePrePushLines(`refs/tags/v2.9.9 ${git(dev, ['rev-parse', 'refs/tags/v2.9.9'])} refs/tags/v2.9.9 0000000000000000000000000000000000000000\n`),
+      env: {},
+      execFile: offlineFailExec,
+    });
+    assert.equal(offlineBlocked.allowed, false);
+    assert.equal(offlineBlocked.reason, 'tag_not_on_main');
+    assert.ok(offlineBlocked.warnings.some((w) => w.includes('proceeding offline')));
+
+    const offlineAllowed = checkReleaseTagPush({
+      cwd: dev,
+      remoteName: 'origin',
+      remoteUrl: bareOrigin,
+      pushedRefs: parsePrePushLines(`refs/tags/v1.0.1 ${git(dev, ['rev-parse', 'refs/tags/v1.0.1'])} refs/tags/v1.0.1 0000000000000000000000000000000000000000\n`),
+      env: {},
+      execFile: offlineFailExec,
+    });
+    assert.equal(offlineAllowed.allowed, true);
+    assert.ok(offlineAllowed.warnings.some((w) => w.includes('proceeding offline')));
+
+    // 7. Remote origin/main missing from local objects -> fails closed with main_ref_not_fetched
+    const unfetchedMainRes = checkReleaseTagPush({
+      cwd: dev,
+      remoteName: 'origin',
+      remoteUrl: bareOrigin,
+      pushedRefs: parsePrePushLines(`refs/tags/v1.6.2 ${featTagSha} refs/tags/v1.6.2 0000000000000000000000000000000000000000\n`),
+      env: {},
+      execFile: (cmd, args, opts) => {
+        if (cmd === 'git' && args.includes('ls-remote')) {
+          return 'cccccccccccccccccccccccccccccccccccccccc\trefs/heads/main\n';
+        }
+        return execFileSync(cmd, args, opts);
+      },
+    });
+    assert.equal(unfetchedMainRes.allowed, false);
+    assert.equal(unfetchedMainRes.reason, 'main_ref_not_fetched');
+  } finally {
+    fs.rmSync(bareOrigin, { recursive: true, force: true });
+    fs.rmSync(dev, { recursive: true, force: true });
+  }
+});
+
+test('guard-release-tag blocks legacy upstream package names (even in main ancestry) and package.json version mismatches', () => {
+  const bareOrigin = realpathNative(fs.mkdtempSync(path.join(os.tmpdir(), 'maga-tag-pkg-origin-')));
+  const dev = realpathNative(fs.mkdtempSync(path.join(os.tmpdir(), 'maga-tag-pkg-dev-')));
+
+  try {
+    execFileSync('git', ['init', '--bare', '-b', 'main', bareOrigin], { stdio: 'ignore' });
+    execFileSync('git', ['clone', bareOrigin, dev], { stdio: 'ignore' });
+    git(dev, ['config', 'user.name', 'MAGA Test']);
+    git(dev, ['config', 'user.email', 'test@maga.local']);
+    git(dev, ['config', 'core.hooksPath', GITHOOKS_DIR]);
+
+    // Ancestor commit with legacy upstream package name "anti-claude" v3.1.5
+    git(dev, ['checkout', '-B', 'main']);
+    fs.writeFileSync(path.join(dev, 'package.json'), JSON.stringify({ name: 'anti-claude', version: '3.1.5' }) + '\n');
+    git(dev, ['add', 'package.json']);
+    git(dev, ['commit', '-m', 'upstream v3.1.5'], { MAGA_ALLOW_MAIN_COMMIT: '1' });
+    git(dev, ['tag', 'v3.1.5']);
+
+    // AGY Studio main advances to agy-studio 2.0.0-rc.1 (v3.1.5 remains an ancestor of main!)
+    fs.writeFileSync(path.join(dev, 'package.json'), JSON.stringify({ name: 'agy-studio', version: '2.0.0-rc.1' }) + '\n');
+    git(dev, ['add', 'package.json']);
+    git(dev, ['commit', '-m', 'agy-studio 2.0.0-rc.1'], { MAGA_ALLOW_MAIN_COMMIT: '1' });
+    git(dev, ['push', '-u', 'origin', 'main']);
+
+    // 1. Pushing legacy upstream tag v3.1.5 is BLOCKED even though it is an ancestor of origin/main
+    const legacyPush = gitResult(dev, ['push', 'origin', 'v3.1.5'], { MAGA_SKIP_SMOKE: '1' });
+    assert.notEqual(legacyPush.status, 0);
+    assert.match(legacyPush.stderr, /package\.json name is 'anti-claude', expected 'agy-studio'/);
+
+    // 2. Pushing a tag whose version does not match package.json at HEAD is BLOCKED
+    git(dev, ['tag', '-a', 'v2.0.0', '-m', 'Mismatched v2.0.0']);
+    const versionMismatchPush = gitResult(dev, ['push', 'origin', 'v2.0.0']);
+    assert.notEqual(versionMismatchPush.status, 0);
+    assert.match(versionMismatchPush.stderr, /package\.json version is '2\.0\.0-rc\.1', expected '2\.0\.0'/);
+
+    // 3. Pushing matching tag v2.0.0-rc.1 on agy-studio 2.0.0-rc.1 SUCCEEDS
+    git(dev, ['tag', '-a', 'v2.0.0-rc.1', '-m', 'Release v2.0.0-rc.1']);
+    const validPush = gitResult(dev, ['push', 'origin', 'v2.0.0-rc.1']);
+    assert.equal(validPush.status, 0, validPush.stderr);
+
+    // 4. Explicit override MAGA_ALLOW_TAG_MISMATCH=1 succeeds
+    const overridePush = gitResult(dev, ['push', 'origin', 'v2.0.0'], { MAGA_ALLOW_TAG_MISMATCH: '1' });
+    assert.equal(overridePush.status, 0, overridePush.stderr);
+  } finally {
+    fs.rmSync(bareOrigin, { recursive: true, force: true });
+    fs.rmSync(dev, { recursive: true, force: true });
+  }
+});
+
 test('studio/smoke-live evaluates doctor + CDP invariants across OSes and formats GitHub Commit Status payloads', () => {
   assert.equal(parseSmokeRepoSlug('https://github.com/Acme/agy-studio.git')?.slug, 'Acme/agy-studio');
   assert.equal(parseSmokeRepoSlug('ssh://git@github.com/Acme/agy-studio.git')?.slug, 'Acme/agy-studio');

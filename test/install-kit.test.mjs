@@ -387,6 +387,166 @@ test('pack-release extractChangelogNotes and CI release workflow stay aligned fo
   assert.match(ciYml, /sha256sum -c/);
   assert.doesNotMatch(ciYml, /\b(?:tar|unzip)\b[^\n]*\|\s*grep\s+[^\n]*-[a-zA-Z]*q/);
   assert.match(ciYml, /gh release upload "\$TAG" "\$\{ASSETS\[@\]\}" --clobber/);
+  assert.match(ciYml, /\[\[ "\$TAG" == \*-\* \]\]/);
+  assert.match(ciYml, /RELEASE_FLAGS\+\=\(--prerelease --latest=false\)/);
+  assert.equal((ciYml.match(/gh release create "\$TAG"[^\n]*RELEASE_FLAGS/g) || []).length, 2);
+
+  if (process.platform !== 'win32') {
+    // Execute the exact Create or update GitHub Release bash block with a stub gh binary
+    const stepMatch = ciYml.match(
+      /- name: Create or update GitHub Release[\s\S]*?run: \|\n([\s\S]*?)(?:\n\s*- name:|\n*$)/
+    );
+    assert.ok(stepMatch, 'expected Create or update GitHub Release run block in ci.yml');
+    const stepScript = stepMatch[1].replace(/^ {10}/gm, '');
+    const ciTmp = mkdtempSync(path.join(tmpdir(), 'agy-ci-release-'));
+    try {
+      const binDir = path.join(ciTmp, 'bin');
+      const workDir = path.join(ciTmp, 'work');
+      const notesPath = path.join(ciTmp, 'release-notes.md');
+      const ghLogPath = path.join(ciTmp, 'gh-calls.log');
+      mkdirSync(binDir, { recursive: true });
+      mkdirSync(path.join(workDir, 'dist'), { recursive: true });
+
+      const ghStub = path.join(binDir, 'gh');
+      writeFileSync(
+        ghStub,
+        `#!/usr/bin/env bash
+set -eu
+if [[ "\${1:-}" == "release" && "\${2:-}" == "view" ]]; then
+  if [[ "\${STUB_RELEASE_EXISTS:-0}" == "1" ]]; then
+    exit 0
+  fi
+  exit 1
+fi
+printf '%s\\n' "$*" >> "${ghLogPath}"
+`,
+        { mode: 0o755 }
+      );
+
+      const isolatedScript = stepScript.replaceAll('/tmp/release-notes.md', notesPath);
+      const runCase = (tag, withNotes, { exists = false } = {}) => {
+        const ver = tag.replace(/^v/, '');
+        for (const asset of [
+          `agy-studio-v${ver}-macos.tar.gz`,
+          `agy-studio-v${ver}-macos.tar.gz.sha256`,
+          `agy-studio-v${ver}-windows.zip`,
+          `agy-studio-v${ver}-windows.zip.sha256`,
+        ]) {
+          writeFileSync(path.join(workDir, 'dist', asset), 'stub\n');
+        }
+        rmSync(ghLogPath, { force: true });
+        if (withNotes) writeFileSync(notesPath, '### Notes\n- test\n', 'utf8');
+        else rmSync(notesPath, { force: true });
+
+        execFileSync('bash', ['-euo', 'pipefail', '-c', isolatedScript], {
+          cwd: workDir,
+          env: {
+            ...process.env,
+            PATH: `${binDir}:${process.env.PATH}`,
+            GITHUB_REF_NAME: tag,
+            GH_TOKEN: 'stub-token',
+            STUB_RELEASE_EXISTS: exists ? '1' : '0',
+          },
+          encoding: 'utf8',
+        });
+        return readFileSync(ghLogPath, 'utf8').trim();
+      };
+
+      const rcWithNotes = runCase('v2.0.0-rc.1', true);
+      assert.match(rcWithNotes, /^release create v2\.0\.0-rc\.1\b/);
+      assert.match(rcWithNotes, /--notes-file/);
+      assert.match(rcWithNotes, /--prerelease --latest=false$/);
+
+      const rcExisting = runCase('v2.0.0-rc.1', true, { exists: true });
+      assert.match(rcExisting, /^release edit v2\.0\.0-rc\.1 --prerelease --latest=false\nrelease upload v2\.0\.0-rc\.1\b/);
+
+      const betaGenNotes = runCase('v2.0.0-beta.1', false);
+      assert.match(betaGenNotes, /^release create v2\.0\.0-beta\.1\b/);
+      assert.match(betaGenNotes, /--generate-notes/);
+      assert.match(betaGenNotes, /--prerelease --latest=false$/);
+
+      const stableWithNotes = runCase('v2.0.0', true);
+      assert.match(stableWithNotes, /^release create v2\.0\.0\b/);
+      assert.match(stableWithNotes, /--notes-file/);
+      assert.doesNotMatch(stableWithNotes, /--prerelease/);
+      assert.doesNotMatch(stableWithNotes, /--latest=false/);
+
+      const stableExisting = runCase('v2.0.0', true, { exists: true });
+      assert.match(stableExisting, /^release upload v2\.0\.0\b/);
+      assert.doesNotMatch(stableExisting, /release edit/);
+    } finally {
+      rmSync(ciTmp, { recursive: true, force: true });
+    }
+  }
+});
+
+test('install.sh and install.ps1 git ls-remote stable fallback crosses major versions (1.6.0 -> 2.0.0) and excludes prereleases', () => {
+  const installSh = readFileSync(path.join(REPO, 'install.sh'), 'utf8');
+  const installPs1 = readFileSync(path.join(REPO, 'install.ps1'), 'utf8');
+  assert.doesNotMatch(installSh, /expectedMajor|major > expectedMajor/);
+  assert.doesNotMatch(installPs1, /expectedMajor|major > expectedMajor/);
+
+  const psMatch = installPs1.match(/\$resolverJs = @'\r?\n([\s\S]*?)\r?\n'@/);
+  assert.ok(psMatch, 'expected $resolverJs block in install.ps1');
+  const psResolverJs = psMatch[1].replace(/\r\n/g, '\n');
+
+  const tmp = mkdtempSync(path.join(tmpdir(), 'agy-installer-major-'));
+  try {
+    const bareDir = path.join(tmp, 'origin.git');
+    const seedDir = path.join(tmp, 'seed');
+    const cloneDir = path.join(tmp, 'clone');
+    execFileSync('git', ['init', '--bare', '-b', 'main', bareDir], { stdio: 'ignore' });
+    execFileSync('git', ['init', '-b', 'main', seedDir], { stdio: 'ignore' });
+    execFileSync('git', ['-C', seedDir, 'config', 'user.name', 'Test']);
+    execFileSync('git', ['-C', seedDir, 'config', 'user.email', 'test@example.local']);
+
+    const commitAndTag = (version, tag) => {
+      writeFileSync(path.join(seedDir, 'package.json'), JSON.stringify({ name: 'agy-studio', version }) + '\n');
+      execFileSync('git', ['-C', seedDir, 'add', 'package.json']);
+      execFileSync('git', ['-C', seedDir, 'commit', '-m', `rel ${tag}`], { stdio: 'ignore' });
+      execFileSync('git', ['-C', seedDir, 'tag', '-a', tag, '-m', tag]);
+    };
+
+    commitAndTag('1.6.0', 'v1.6.0');
+    commitAndTag('1.7.0', 'v1.7.0');
+    commitAndTag('2.0.0-rc.1', 'v2.0.0-rc.1');
+    commitAndTag('2.0.0', 'v2.0.0');
+    commitAndTag('2.1.0-beta.1', 'v2.1.0-beta.1');
+    execFileSync('git', ['-C', seedDir, 'push', bareDir, 'main', '--tags'], { stdio: 'ignore' });
+    execFileSync('git', ['clone', bareDir, cloneDir], { stdio: 'ignore' });
+    execFileSync('git', ['-C', cloneDir, 'checkout', '--detach', 'refs/tags/v1.6.0'], { stdio: 'ignore' });
+
+    const psResolved = execFileSync(process.execPath, ['--input-type=module', '-', cloneDir, bareDir], {
+      input: psResolverJs,
+      env: { ...process.env, AGY_STUDIO_RELEASE_TAG: '' },
+      encoding: 'utf8',
+    }).trim();
+    assert.equal(psResolved, 'v2.0.0');
+
+    if (process.platform !== 'win32') {
+      const shFuncMatch = installSh.match(/resolve_stable_tag\(\) \{[\s\S]*?\nEOF\r?\n\}/);
+      assert.ok(shFuncMatch, 'expected resolve_stable_tag function in install.sh');
+      const shResolved = execFileSync(
+        'bash',
+        [
+          '-euo',
+          'pipefail',
+          '-c',
+          `NODE_BIN="${process.execPath}"\n${shFuncMatch[0]}\nresolve_stable_tag "$1" "$2"`,
+          '--',
+          cloneDir,
+          bareDir,
+        ],
+        {
+          env: { ...process.env, AGY_STUDIO_RELEASE_TAG: '' },
+          encoding: 'utf8',
+        }
+      ).trim();
+      assert.equal(shResolved, 'v2.0.0');
+    }
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
 });
 
 test('OSS contributor docs (CONTRIBUTING.md and PR template) exist and separate external vs maintainer flows', () => {

@@ -219,15 +219,13 @@ Options:
     function Resolve-StableTag([string]$GitTargetDir, [string]$RepoCloneUrl) {
       $resolverJs = @'
 import { execFileSync } from 'node:child_process';
-import fs from 'node:fs';
-import path from 'node:path';
 
-const targetDir = process.argv[2] || '';
 const repoUrl = process.argv[3] || '';
-const TAG_RE = /^v(\d+)\.(\d+)\.(\d+)(?:-[0-9A-Za-z.-]+)?$/;
+const ENV_TAG_RE = /^v(\d+)\.(\d+)\.(\d+)(?:-[0-9A-Za-z.-]+)?$/;
+const STABLE_TAG_RE = /^v(\d+)\.(\d+)\.(\d+)$/;
 
 const envTag = String(process.env.AGY_STUDIO_RELEASE_TAG || '').trim();
-if (TAG_RE.test(envTag)) {
+if (ENV_TAG_RE.test(envTag)) {
   process.stdout.write(`${envTag}\n`);
   process.exit(0);
 }
@@ -243,28 +241,11 @@ if (ghMatch && typeof fetch === 'function') {
     if (res.ok) {
       const data = await res.json();
       const tag = String(data?.tag_name || '').trim();
-      if (TAG_RE.test(tag)) {
+      if (!data?.draft && !data?.prerelease && STABLE_TAG_RE.test(tag)) {
         process.stdout.write(`${tag}\n`);
         process.exit(0);
       }
     }
-  } catch {}
-}
-
-let expectedMajor = 1;
-try {
-  const pkgRaw = execFileSync('git', ['-C', targetDir, 'show', 'origin/main:package.json'], {
-    encoding: 'utf8',
-    windowsHide: true,
-    stdio: ['ignore', 'pipe', 'ignore'],
-  });
-  const m = String(JSON.parse(pkgRaw)?.version || '').match(/^(\d+)\./);
-  if (m) expectedMajor = Number(m[1]);
-} catch {
-  try {
-    const localPkg = JSON.parse(fs.readFileSync(path.join(targetDir, 'package.json'), 'utf8'));
-    const m = String(localPkg?.version || '').match(/^(\d+)\./);
-    if (m) expectedMajor = Number(m[1]);
   } catch {}
 }
 
@@ -279,12 +260,10 @@ try {
 
 const parsed = [];
 for (const line of lsOut.split(/\r?\n/)) {
-  const m = line.match(/refs\/tags\/(v(\d+)\.(\d+)\.(\d+))$/);
+  const m = line.trim().match(/\trefs\/tags\/(v(\d+)\.(\d+)\.(\d+))$/);
   if (!m) continue;
   const tag = m[1];
-  const major = Number(m[2]);
-  if (major > expectedMajor) continue;
-  parsed.push({ tag, major, minor: Number(m[3]), patch: Number(m[4]) });
+  parsed.push({ tag, major: Number(m[2]), minor: Number(m[3]), patch: Number(m[4]) });
 }
 parsed.sort((a, b) => (b.major - a.major) || (b.minor - a.minor) || (b.patch - a.patch));
 if (parsed[0]) {

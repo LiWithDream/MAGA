@@ -11,6 +11,14 @@ import {
   pickDominantRunningSubkind,
   renderRunningGlyphHtml,
 } from './sidebar-status.mjs';
+import {
+  attachConversationDragTransfer as attachConversationDragTransferRaw,
+  attachFileDragTransfer,
+  buildCiderConversationPayload as buildCiderConversationPayloadRaw,
+  buildCiderFilePayload,
+  extractDroppedContextMentions,
+  hasDroppedContextPayload,
+} from './sidebar-dnd.mjs';
 
 export function createSidebarRecentsModule(rt) {
   const { FEAT, L, CFG_UI_STATE, trustLocalOverrides, docRoot, state: rtState, frame, later, cancelLater, escapeHtml, persistUiPrefsToDaemon, syncAttrTargetSet, hooks } = rt;
@@ -75,191 +83,12 @@ export function createSidebarRecentsModule(rt) {
   });
 
   /* ---- v2.34+ Conversation & File Drag-to-Composer (`application/context-scope-item-cider`) ---- */
-  function buildCiderConversationPayload(id, title) {
-    const cleanTitle = String(title || '').trim() || L('对话', 'Conversation');
-    return JSON.stringify({ conversation: { id: String(id || ''), title: cleanTitle } });
-  }
-
-  function buildCiderFilePayload(absPathOrUri) {
-    const raw = String(absPathOrUri || '').trim();
-    if (!raw) return '';
-    const uri = /^file:\/\//i.test(raw) ? raw : `file://${encodeURI(raw.startsWith('/') ? raw : `/${raw}`)}`;
-    return JSON.stringify({ file: { absoluteUri: uri } });
-  }
-
-  function attachConversationDragTransfer(dt, id, title) {
-    if (!dt || !id) return false;
-    const payload = buildCiderConversationPayload(id, title);
-    try {
-      dt.effectAllowed = 'copyMove';
-    } catch {}
-    try {
-      dt.setData('application/context-scope-item-cider', payload);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  function attachFileDragTransfer(dt, absPathOrUri) {
-    if (!dt || !absPathOrUri) return false;
-    const payload = buildCiderFilePayload(absPathOrUri);
-    if (!payload) return false;
-    const raw = String(absPathOrUri || '').trim();
-    const uri = /^file:\/\//i.test(raw) ? raw : `file://${encodeURI(raw.startsWith('/') ? raw : `/${raw}`)}`;
-    try {
-      dt.effectAllowed = 'copyMove';
-    } catch {}
-    try {
-      dt.setData('application/context-scope-item-cider', payload);
-      dt.setData('application/vnd.code.uri-list', uri);
-      dt.setData('text/uri-list', uri);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  function hasDroppedContextPayload(dt) {
-    if (!dt) return false;
-    const types = Array.from(dt.types || [], (t) => String(t || '').toLowerCase());
-    return (
-      types.includes('application/context-scope-item-cider') ||
-      types.includes('application/vnd.code.uri-list') ||
-      types.includes('resourceurls')
-    );
-  }
-
-  function extractDroppedContextMentions(dt) {
-    if (!dt) return [];
-    const out = [];
-    let rawCider = '';
-    try {
-      rawCider = dt.getData('application/context-scope-item-cider') || '';
-    } catch {}
-    if (rawCider && rawCider.trim()) {
-      try {
-        const parsed = JSON.parse(rawCider.trim());
-        const arr = Array.isArray(parsed) ? parsed : [parsed];
-        for (let entry of arr) {
-          if (typeof entry === 'string') {
-            try {
-              entry = JSON.parse(entry);
-            } catch {
-              continue;
-            }
-          }
-          if (!entry || typeof entry !== 'object') continue;
-          const conv =
-            entry.conversation ||
-            (entry.scopeItem && entry.scopeItem.case === 'conversation' ? entry.scopeItem.value : null);
-          if (conv && conv.id) {
-            const label = String(conv.title || '').trim() || conv.id.slice(0, 8);
-            out.push({
-              kind: 'conversation',
-              label,
-              scopeItem: {
-                $typeName: 'exa.codeium_common_pb.ContextScopeItem',
-                scopeItem: {
-                  case: 'conversation',
-                  value: {
-                    $typeName: 'exa.codeium_common_pb.ConversationScopeItem',
-                    id: String(conv.id),
-                    title: label,
-                    source: String(conv.source || '')
-                  }
-                }
-              }
-            });
-            continue;
-          }
-          const fileObj =
-            entry.file ||
-            entry.fileLineRange ||
-            (entry.scopeItem && (entry.scopeItem.case === 'file' || entry.scopeItem.case === 'fileLineRange')
-              ? entry.scopeItem.value
-              : null);
-          if (fileObj && fileObj.absoluteUri) {
-            const uri = String(fileObj.absoluteUri);
-            let label = uri.split('/').pop() || uri;
-            try {
-              label = decodeURIComponent(label);
-            } catch {}
-            out.push({
-              kind: 'file',
-              label,
-              scopeItem: {
-                $typeName: 'exa.codeium_common_pb.ContextScopeItem',
-                scopeItem: {
-                  case: 'file',
-                  value: {
-                    $typeName: 'exa.codeium_common_pb.FileScopeItem',
-                    absoluteUri: uri
-                  }
-                }
-              }
-            });
-            continue;
-          }
-          const dirObj =
-            entry.directory ||
-            (entry.scopeItem && entry.scopeItem.case === 'directory' ? entry.scopeItem.value : null);
-          if (dirObj && dirObj.absoluteUri) {
-            const uri = String(dirObj.absoluteUri);
-            let label = uri.replace(/\/+$/, '').split('/').pop() || uri;
-            try {
-              label = decodeURIComponent(label);
-            } catch {}
-            out.push({
-              kind: 'directory',
-              label,
-              scopeItem: {
-                $typeName: 'exa.codeium_common_pb.ContextScopeItem',
-                scopeItem: {
-                  case: 'directory',
-                  value: {
-                    $typeName: 'exa.codeium_common_pb.DirectoryScopeItem',
-                    absoluteUri: uri
-                  }
-                }
-              }
-            });
-          }
-        }
-      } catch {}
-    }
-    if (out.length) return out;
-
-    let uriList = '';
-    try {
-      uriList = dt.getData('application/vnd.code.uri-list') || '';
-    } catch {}
-    if (uriList && uriList.trim()) {
-      for (const line of uriList.split(/\r?\n/)) {
-        const u = line.trim();
-        if (!u || u.startsWith('#') || !/^file:\/\//i.test(u)) continue;
-        let label = u.split('/').pop() || u;
-        try {
-          label = decodeURIComponent(label);
-        } catch {}
-        out.push({
-          kind: 'file',
-          label,
-          scopeItem: {
-            $typeName: 'exa.codeium_common_pb.ContextScopeItem',
-            scopeItem: {
-              case: 'file',
-              value: {
-                $typeName: 'exa.codeium_common_pb.FileScopeItem',
-                absoluteUri: u
-              }
-            }
-          }
-        });
-      }
-    }
-    return out;
-  }
+  const buildCiderConversationPayload = (id, title) =>
+    buildCiderConversationPayloadRaw(id, title, L('对话', 'Conversation'));
+  const attachConversationDragTransfer = (dt, id, title) =>
+    attachConversationDragTransferRaw(dt, id, title, L('对话', 'Conversation'));
+  void buildCiderConversationPayload;
+  void buildCiderFilePayload;
 
   /* Bridge native pointer-dragged Pinned Sidebar rows (`[data-testid="conversation-row-sidebar"]`) into composers */
   let pinnedDragState = null;
@@ -1079,21 +908,26 @@ export function createSidebarRecentsModule(rt) {
     }
   }
 
-  function closeRecentRowMenu() {
+  function onRecentMenuResize() {
+    closeRecentRowMenu();
+  }
+
+  function closeRecentRowMenu(onlySource = '') {
+    if (onlySource && recentMenuState && recentMenuState.source !== onlySource) return;
     recentMenuState = null;
     const menu = document.getElementById('ag-recent-row-menu');
     if (menu) menu.remove();
     if (recentMenuDocBound) {
       document.removeEventListener('mousedown', onRecentMenuDocDown, true);
       document.removeEventListener('keydown', onRecentMenuDocKey, true);
-      window.removeEventListener('resize', closeRecentRowMenu);
+      window.removeEventListener('resize', onRecentMenuResize);
       recentMenuDocBound = false;
     }
   }
 
   function onRecentMenuDocDown(ev) {
     const t = ev && ev.target;
-    if (t && t.closest && t.closest('#ag-recent-row-menu, [data-ag-recent-menu]')) return;
+    if (t && t.closest && t.closest('#ag-recent-row-menu, [data-ag-recent-menu], [data-ag-sbp-menu]')) return;
     closeRecentRowMenu();
   }
 
@@ -1146,6 +980,7 @@ export function createSidebarRecentsModule(rt) {
       menu = document.createElement('div');
       menu.id = 'ag-recent-row-menu';
       menu.setAttribute('role', 'menu');
+      menu.setAttribute('data-maga-own', '1');
       menu.setAttribute('data-ag-i18n-ignore', '1');
       menu.addEventListener('click', (ev) => {
         const btn = ev.target && ev.target.closest && ev.target.closest('[data-ag-rm-act]');
@@ -1166,7 +1001,12 @@ export function createSidebarRecentsModule(rt) {
           return;
         }
         if (act === 'rename') {
-          startRecentInlineRename(cur.id);
+          if (cur.source === 'sbp' && typeof hooks.startSidebarProjectInlineRename === 'function') {
+            closeRecentRowMenu();
+            hooks.startSidebarProjectInlineRename(cur.id);
+          } else {
+            startRecentInlineRename(cur.id);
+          }
           return;
         }
         if (act === 'archive') {
@@ -1220,7 +1060,7 @@ export function createSidebarRecentsModule(rt) {
     }
   }
 
-  function openRecentRowMenu(item, x, y) {
+  function openRecentRowMenu(item, x, y, source = 'recent') {
     if (!item || !item.id) return;
     if (recentMenuState && recentMenuState.id === item.id) {
       closeRecentRowMenu();
@@ -1233,13 +1073,14 @@ export function createSidebarRecentsModule(rt) {
       projectName: item.project || '',
       x,
       y,
-      confirmDelete: false
+      confirmDelete: false,
+      source: source || 'recent',
     };
     renderRecentRowMenu();
   }
 
   function removeRecentSection() {
-    closeRecentRowMenu();
+    closeRecentRowMenu('recent');
     recentRenamingId = '';
     const el = document.getElementById('ag-claude-recent-section');
     if (el) el.remove();
@@ -1522,10 +1363,10 @@ export function createSidebarRecentsModule(rt) {
                 isUnified && !isRenaming
                   ? `<div class="ag-recent-actions"><button type="button" class="ag-recent-act-btn" data-ag-recent-pin="${escapeHtml(it.id)}" title="${escapeHtml(L('置顶对话', 'Pin'))}" aria-label="${escapeHtml(L('置顶对话', 'Pin'))}">${RECENT_PIN_SVG}</button><button type="button" class="ag-recent-act-btn" data-ag-recent-menu="${escapeHtml(it.id)}" title="${escapeHtml(L('更多选项', 'More options'))}" aria-label="${escapeHtml(L('更多选项', 'More options'))}">${RECENT_MORE_SVG}</button></div>`
                   : '';
-              const branchPillHtml = wtBranch ? `<span class="ag-recent-branch">${escapeHtml(wtBranch)}</span>` : '';
+              const branchPillHtml = '';
               const mainInner = isRenaming
                 ? `<input type="text" class="ag-recent-rename-input" data-ag-recent-rename-input="${escapeHtml(it.id)}" data-orig-title="${escapeHtml(it.title)}" value="${escapeHtml(it.title)}" />`
-                : `<div class="ag-recent-title">${escapeHtml(it.title)}</div>${branchPillHtml}`;
+                : `<div class="ag-recent-title">${escapeHtml(it.title)}</div>`;
               return `<div class="ag-recent-row" role="button" tabindex="0"${isRenaming ? '' : ' draggable="true"'} data-ag-recent-id="${escapeHtml(it.id)}" data-ag-recent-title="${escapeHtml(it.title)}" data-active="${isAct ? 'true' : 'false'}"${it.project ? ` data-has-project="true"` : ''}${isRenaming ? ' data-renaming="true"' : ''} title="${escapeHtml(tip)}"><div class="ag-recent-main">${mainInner}</div>${isRenaming ? '' : `<div class="ag-recent-side">${sideHtml}</div>${actionsHtml}`}</div>`;
             })
             .join('')}</div>` + moreHtml

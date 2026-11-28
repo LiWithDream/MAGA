@@ -48,6 +48,8 @@ export const OWN_HOST_IDS = new Set([
   'ag-claude-recent-section',
   'ag-claude-sidebar-projects',
   'ag-sbp-sort-menu',
+  'ag-recent-row-menu',
+  'ag-project-action-menu',
   'ag-claude-ctx-ring',
   'ag-claude-quota-popover',
   'ag-live-metrics-pill',

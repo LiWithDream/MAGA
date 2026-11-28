@@ -503,10 +503,20 @@ test('built user/custom.js enforces sidebar anti-jump sort controls and 5-state 
       },
       dispatch: () => {},
     };
+    const updatedTitles = [];
     doc.querySelector('[data-testid="conversation-list-sidebar"]').firstElementChild.__reactFiber$sb = {
       memoizedProps: {
         sidebarStore: store,
         sidebarRouter: { state: { location: { pathname: '/' } }, navigate: () => {} },
+        sidebarActions: {
+          updateConversationAnnotations: async (id, patch) => {
+            updatedTitles.push({ id, patch });
+            if (patch?.title && storeState.trajectorySummaries.summaries[id]) {
+              storeState.trajectorySummaries.summaries[id].annotations.title = patch.title;
+            }
+          },
+          deleteCascadeTrajectory: async () => {},
+        },
       },
     };
 
@@ -520,6 +530,14 @@ test('built user/custom.js enforces sidebar anti-jump sort controls and 5-state 
             [cidCmd]: { kind: 'command', detail: 'npm test', toolName: 'run_command' },
             [cidTimer]: { kind: 'timer', detail: 'Cron: 0 * * * *', toolName: 'schedule' },
             [cidBgWait]: { kind: 'bg-wait', detail: '', toolName: '' },
+          },
+        };
+      }
+      if (action === 'getConvWorktreeMap') {
+        return {
+          ok: true,
+          entries: {
+            [cidCmd]: { cid: cidCmd, worktreePath: '/tmp/beta-wt/cmd', branch: 'feat/cmd-wt', repoRoot: '/tmp/beta', source: 'hook', updatedAt: Date.now() },
           },
         };
       }
@@ -561,7 +579,7 @@ test('built user/custom.js enforces sidebar anti-jump sort controls and 5-state 
       Array.from(sbSec.querySelectorAll('.ag-sbp-proj-block')).map((el) => el.getAttribute('data-proj-id'));
     assert.deepEqual(getProjOrder(), ['p-zulu', 'p-alpha', 'p-beta', 'p-gamma']);
 
-    // 2. Verify 5 distinct running glyphs in sidebar rows + tooltips
+    // 2. Verify 5 distinct running glyphs, tooltips (with Worktree branch), and clean rows without inline `.ag-sbp-branch`
     assert.ok(sbSec.querySelector(`[data-ag-sbp-id="${cidOrbit}"] .ag-folder-orbit`));
     assert.ok(sbSec.querySelector(`[data-ag-sbp-id="${cidSub}"] .ag-run-ico-subagent svg`));
     assert.ok(sbSec.querySelector(`[data-ag-sbp-id="${cidCmd}"] .ag-run-ico-command svg`));
@@ -569,6 +587,42 @@ test('built user/custom.js enforces sidebar anti-jump sort controls and 5-state 
     assert.ok(sbSec.querySelector(`[data-ag-sbp-id="${cidBgWait}"] .ag-run-bg-dot`));
     assert.match(sbSec.querySelector(`[data-ag-sbp-id="${cidCmd}"]`).getAttribute('title'), /后台命令运行中 · npm test/);
     assert.match(sbSec.querySelector(`[data-ag-sbp-id="${cidTimer}"]`).getAttribute('title'), /等待定时器 \/ Cron · Cron: 0 \* \* \* \*/);
+    await waitFor(() => /Worktree:\s*feat\/cmd-wt/.test(sbSec.querySelector(`[data-ag-sbp-id="${cidCmd}"]`)?.getAttribute('title') || ''));
+    assert.equal(sbSec.querySelector('.ag-sbp-branch'), null, 'sidebar rows omit distracting inline worktree branch badges');
+    assert.match(sbSec.querySelector(`[data-ag-sbp-id="${cidCmd}"]`).getAttribute('title'), /Worktree:\s*feat\/cmd-wt/);
+
+    // 2b. Verify `⋯` menu & contextmenu open #ag-recent-row-menu with data-maga-own="1", survive syncs, toggle, and support inline rename
+    const cmdMenuBtn = sbSec.querySelector(`[data-ag-sbp-menu="${cidCmd}"]`);
+    assert.ok(cmdMenuBtn);
+    cmdMenuBtn.click();
+    const rowMenu = doc.getElementById('ag-recent-row-menu');
+    assert.ok(rowMenu, 'clicking ⋯ opens #ag-recent-row-menu');
+    assert.equal(rowMenu.getAttribute('data-maga-own'), '1');
+    for (const fn of listeners) fn();
+    await new Promise((r) => setTimeout(r, 120));
+    assert.ok(rowMenu.isConnected && doc.getElementById('ag-recent-row-menu') === rowMenu, 'row menu stays open across sidebar syncs');
+    cmdMenuBtn.click();
+    assert.equal(doc.getElementById('ag-recent-row-menu'), null, 'clicking ⋯ again closes row menu');
+
+    const timerRow = sbSec.querySelector(`[data-ag-sbp-id="${cidTimer}"]`);
+    timerRow.dispatchEvent(new window.MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 80, clientY: 120 }));
+    const ctxMenu = doc.getElementById('ag-recent-row-menu');
+    assert.ok(ctxMenu, 'right-click opens #ag-recent-row-menu');
+    for (const fn of listeners) fn();
+    await new Promise((r) => setTimeout(r, 120));
+    assert.ok(ctxMenu.isConnected, 'context menu stays open across sidebar syncs');
+
+    ctxMenu.querySelector('[data-ag-rm-act="rename"]').click();
+    assert.equal(doc.getElementById('ag-recent-row-menu'), null);
+    const renameInput = sbSec.querySelector(`[data-ag-sbp-rename-input="${cidTimer}"]`);
+    assert.ok(renameInput, 'clicking Rename renders inline input inside #ag-claude-sidebar-projects');
+    renameInput.value = 'Timer Renamed';
+    renameInput.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    await waitFor(
+      () =>
+        updatedTitles.some((u) => u.id === cidTimer && u.patch?.title === 'Timer Renamed') &&
+        sbSec.querySelector(`[data-ag-sbp-id="${cidTimer}"] .ag-sbp-title`)?.textContent === 'Timer Renamed'
+    );
 
     // 3. Anti-jump check: background timer update on p-gamma within cooldown MUST NOT jump project order
     storeState.trajectorySummaries.summaries[cidTimer].lastModifiedTime = { seconds: nowSec };

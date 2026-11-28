@@ -3,6 +3,7 @@
  * Replaces overgrown native per-project lists while preserving Pinned/Coordinators above.
  * ============================================================================ */
 
+div[data-ag-sb-unified="pinned"],
 #ag-claude-recent-section[data-mode="compact"] + div[data-ag-sb-unified="pinned"] {
   flex: 0 0 auto !important;
   height: var(--ag-sb-pinned-height, auto) !important;
@@ -10,6 +11,7 @@
   overflow: hidden !important;
 }
 
+div[data-ag-sb-unified="empty"],
 #ag-claude-recent-section[data-mode="compact"] + div[data-ag-sb-unified="empty"] {
   display: none !important;
 }

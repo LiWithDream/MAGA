@@ -127,8 +127,16 @@ export function createStepStreamModule(rt) {
     const panel = resolveWorkedPanel(btn);
     if (panelHasIntermediateProse(panel)) {
       workedKind.set(btn, 'prose');
-      if (wrap) wrap.setAttribute('data-ag-inline-kind', 'prose');
+      if (wrap && wrap.getAttribute('data-ag-inline-kind') !== 'prose') {
+        wrap.setAttribute('data-ag-inline-kind', 'prose');
+      }
       applyWorkedInlineSummary(btn, '');
+      return;
+    }
+    if (isWorkedTurnActive(btn, panel, panesArg)) {
+      workedKind.delete(btn);
+      applyWorkedInlineSummary(btn, '');
+      if (wrap && wrap.hasAttribute('data-ag-inline-kind')) wrap.removeAttribute('data-ag-inline-kind');
       return;
     }
     const summary = extractWorkedToolsSummary(panel);
@@ -136,8 +144,10 @@ export function createStepStreamModule(rt) {
     const finalSummary = workedSummary.get(btn) || '';
     applyWorkedInlineSummary(btn, finalSummary);
     workedKind.set(btn, 'tools');
-    if (wrap) wrap.setAttribute('data-ag-inline-kind', 'tools');
-    if (!userToggled.has(btn) && !isWorkedTurnActive(btn, panel, panesArg)) {
+    if (wrap && wrap.getAttribute('data-ag-inline-kind') !== 'tools') {
+      wrap.setAttribute('data-ag-inline-kind', 'tools');
+    }
+    if (!userToggled.has(btn)) {
       tryToggleWorkedBtn(btn);
     }
   }
@@ -699,6 +709,7 @@ export function createStepStreamModule(rt) {
     syncAttrTargetSet('data-maga-has-browser-hole', browserHoles);
 
     const actionCards = new Set();
+    const ACTION_CARD_RE = /(?:^|\b)(?:Ran|Running)\b|已运行|正在运行|Exited with code/i;
     document.querySelectorAll('[data-testid="agent-response"] button').forEach((btn) => {
       if (btn.hasAttribute('data-maga-own')) return;
       const tid = btn.getAttribute('data-testid');
@@ -712,7 +723,14 @@ export function createStepStreamModule(rt) {
       ) {
         return;
       }
-      if (btn.closest('.context-scope-mention, [data-maga-own]')) return;
+      if (btn.matches('[role="combobox"], [aria-haspopup]')) return;
+      if (
+        btn.closest(
+          '[data-markdown-root], [data-testid="planner-response-text"], .context-scope-mention, [data-maga-own]'
+        )
+      ) {
+        return;
+      }
       const cls = typeof btn.className === 'string' ? btn.className : '';
       const p = btn.parentElement;
       const pCls = p && typeof p.className === 'string' ? p.className : '';
@@ -720,9 +738,7 @@ export function createStepStreamModule(rt) {
         /\bborder\b/.test(cls) || /\bborder\b/.test(pCls) || /\brounded-(?:md|lg|xl)\b/.test(pCls);
       if (!hasBorderContainer) return;
       const txt = btn.textContent || '';
-      if (!btn.hasAttribute('aria-expanded') && !/(?:^|\b)(?:Ran|Running|已运行|正在运行)\b|Exited with code/i.test(txt)) {
-        return;
-      }
+      if (!ACTION_CARD_RE.test(txt)) return;
       actionCards.add(btn);
       if (
         p &&
@@ -730,7 +746,10 @@ export function createStepStreamModule(rt) {
         !p.hasAttribute('data-maga-own') &&
         /\brounded-(?:md|lg|xl)\b/.test(pCls) &&
         /\bborder\b/.test(pCls) &&
-        !p.querySelector('[data-testid="changed-files-card"], pre')
+        (p.children ? p.children.length : 0) <= 2 &&
+        !p.querySelector(
+          'p, pre, [data-markdown-root], [data-testid="planner-response-text"], [data-testid="changed-files-card"]'
+        )
       ) {
         actionCards.add(p);
       }
@@ -820,7 +839,9 @@ export function createStepStreamModule(rt) {
           const kind = workedKind.get(btn);
           if (userToggled.has(btn) || kind === 'tools') {
             if (kind === 'tools') {
-              if (wrap) wrap.setAttribute('data-ag-inline-kind', 'tools');
+              if (wrap && wrap.getAttribute('data-ag-inline-kind') !== 'tools') {
+                wrap.setAttribute('data-ag-inline-kind', 'tools');
+              }
               applyWorkedInlineSummary(btn, workedSummary.get(btn) || '');
             }
           } else if (kind === 'prose') {

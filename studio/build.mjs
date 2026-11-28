@@ -242,12 +242,28 @@ export function syncLiveConfigForStudio({
   configPath = TARGET_CONFIG_JSON,
   uiPrefsPath = TARGET_UI_PREFS_JSON,
 } = {}) {
+  let prefs = null;
+  if (existsSync(uiPrefsPath)) {
+    try {
+      const parsed = JSON.parse(readFileSync(uiPrefsPath, 'utf8'));
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        prefs = parsed;
+      }
+    } catch {}
+  }
+  if (!prefs) {
+    prefs = { schema: 1, updatedAt: 0, modules: {} };
+  }
+  prefs.modules =
+    prefs.modules && typeof prefs.modules === 'object' && !Array.isArray(prefs.modules) ? prefs.modules : {};
+  const needsMigration = prefs.stepUnfoldDefaultMigrated !== true;
+
   if (existsSync(configPath)) {
     const raw = readFileSync(configPath, 'utf8');
     const cfg = JSON.parse(raw);
     cfg.modules = cfg.modules && typeof cfg.modules === 'object' ? cfg.modules : {};
     let dirty = false;
-    if (cfg.modules.claudeUxStepUnfold === undefined) {
+    if (cfg.modules.claudeUxStepUnfold === undefined || (needsMigration && cfg.modules.claudeUxStepUnfold !== true)) {
       cfg.modules.claudeUxStepUnfold = true;
       dirty = true;
     }
@@ -260,24 +276,16 @@ export function syncLiveConfigForStudio({
       writeFileSync(configPath, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
     }
   }
-  if (existsSync(uiPrefsPath)) {
-    try {
-      const prefs = JSON.parse(readFileSync(uiPrefsPath, 'utf8'));
-      if (prefs && typeof prefs === 'object') {
-        prefs.modules = prefs.modules && typeof prefs.modules === 'object' ? prefs.modules : {};
-        let dirty = false;
-        // One-time migration off legacy deploy-forced `claudeUxStepUnfold: false`;
-        // subsequent deploys preserve explicit user mode (e.g., Compact `false`).
-        if (prefs.stepUnfoldDefaultMigrated !== true) {
-          prefs.modules.claudeUxStepUnfold = true;
-          prefs.stepUnfoldDefaultMigrated = true;
-          dirty = true;
-        }
-        if (dirty) {
-          writeFileSync(uiPrefsPath, JSON.stringify(prefs, null, 2) + '\n', 'utf8');
-        }
-      }
-    } catch {}
+
+  if (needsMigration) {
+    // One-time migration off legacy deploy-forced `claudeUxStepUnfold: false`;
+    // bumps updatedAt to invalidate stale client localStorage overrides while preserving
+    // subsequent explicit user mode selections (e.g., Compact `false`).
+    prefs.modules.claudeUxStepUnfold = true;
+    prefs.stepUnfoldDefaultMigrated = true;
+    prefs.updatedAt = Math.max(Date.now(), (Number(prefs.updatedAt) || 0) + 1);
+    mkdirSync(path.dirname(uiPrefsPath), { recursive: true });
+    writeFileSync(uiPrefsPath, JSON.stringify(prefs, null, 2) + '\n', 'utf8');
   }
 }
 

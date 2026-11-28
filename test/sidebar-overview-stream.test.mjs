@@ -330,8 +330,28 @@ test('step-stream keeps prose open while compressing pure-tool worked-for blocks
             </div>
           </div>
         </div>
+        <div id="active-tools-wrap">
+          <button id="btn-active-tools" type="button" data-testid="worked-for-collapsible" aria-expanded="true">Worked for 9s</button>
+          <div id="active-tools-panel">
+            <span id="active-ephemeral" data-testid="ephemeral-tool-status">Running build</span>
+            <div data-step-rows="true">
+              <button type="button" data-testid="tool-group-collapsible" aria-expanded="false">Running build</button>
+            </div>
+          </div>
+        </div>
         <div id="standalone-action-wrap" class="rounded-lg border">
           <button id="btn-ran-card" type="button">Ran build · Exited with code 1</button>
+        </div>
+        <div id="cjk-action-wrap" class="rounded-lg border">
+          <button id="btn-cjk-ran" type="button">已运行 重新运行构建与全量测试套件</button>
+        </div>
+        <div id="combo-guard-wrap" class="rounded-lg border">
+          <button id="btn-combo-guard" type="button" role="combobox" aria-haspopup="listbox" aria-expanded="false">Model choice</button>
+        </div>
+        <div data-markdown-root="true">
+          <div id="md-btn-wrap" class="rounded-lg border">
+            <button id="btn-md-guard" type="button" aria-expanded="false">已运行 Markdown Quoted Block</button>
+          </div>
         </div>
       </div>
     </body></html>`,
@@ -343,8 +363,10 @@ test('step-stream keeps prose open while compressing pure-tool worked-for blocks
     const btnDirect = doc.getElementById('btn-direct');
     const btnTrailing = doc.getElementById('btn-trailing');
     const btnTools = doc.getElementById('btn-tools');
+    const btnActiveTools = doc.getElementById('btn-active-tools');
     const btnRan = doc.getElementById('btn-ran-card');
-    for (const btn of [btnDirect, btnTrailing, btnTools]) {
+    const btnCjkRan = doc.getElementById('btn-cjk-ran');
+    for (const btn of [btnDirect, btnTrailing, btnTools, btnActiveTools]) {
       btn.addEventListener('click', () => {
         const next = btn.getAttribute('aria-expanded') === 'true' ? 'false' : 'true';
         btn.setAttribute('aria-expanded', next);
@@ -381,9 +403,29 @@ test('step-stream keeps prose open while compressing pure-tool worked-for blocks
     assert.equal(btnTools.getAttribute('aria-expanded'), 'false', 'pure-tool worked block stays compressed');
     assert.match(btnTools.querySelector('.ag-worked-inline-summary')?.textContent || '', /Explored files, Ran command · Edited file/);
 
-    // Standalone bordered command action tagged for unified 12px density
+    // Active tool-first turn must NOT be sealed as 'tools'; late prose arriving before turn-end collapse keeps it expanded
+    assert.equal(doc.getElementById('active-tools-wrap').getAttribute('data-ag-inline-kind'), null);
+    assert.equal(btnActiveTools.getAttribute('aria-expanded'), 'true');
+    doc.getElementById('active-ephemeral').remove();
+    const lateProse = doc.createElement('div');
+    lateProse.className = 'select-text';
+    lateProse.innerHTML = '<p>Late intermediate brief</p>';
+    doc.getElementById('active-tools-panel').appendChild(lateProse);
+    btnActiveTools.setAttribute('aria-expanded', 'false');
+    mod.handleAriaExpandedMutation(btnActiveTools);
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(btnActiveTools.getAttribute('aria-expanded'), 'true', 'late prose turn re-expands cleanly after active tools');
+    assert.equal(doc.getElementById('active-tools-wrap').getAttribute('data-ag-inline-kind'), 'prose');
+
+    // Standalone bordered command action (EN + CJK) tagged while markdown/combobox guards excluded
     assert.equal(btnRan.getAttribute('data-maga-action-card'), '1');
     assert.equal(doc.getElementById('standalone-action-wrap').getAttribute('data-maga-action-card'), '1');
+    assert.equal(btnCjkRan.getAttribute('data-maga-action-card'), '1');
+    assert.equal(doc.getElementById('cjk-action-wrap').getAttribute('data-maga-action-card'), '1');
+    assert.equal(doc.getElementById('btn-combo-guard').hasAttribute('data-maga-action-card'), false);
+    assert.equal(doc.getElementById('combo-guard-wrap').hasAttribute('data-maga-action-card'), false);
+    assert.equal(doc.getElementById('btn-md-guard').hasAttribute('data-maga-action-card'), false);
+    assert.equal(doc.getElementById('md-btn-wrap').hasAttribute('data-maga-action-card'), false);
 
     // Manual user expand on pure-tool block stays open across syncs
     const evTools = new dom.window.MouseEvent('click', { bubbles: true, cancelable: true });

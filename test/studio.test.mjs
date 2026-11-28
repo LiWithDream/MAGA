@@ -5171,6 +5171,29 @@ test('syncLiveConfigForStudio preserves valid user cjkFontScale, defaults missin
     writeFileSync(cfgPath, JSON.stringify({ modules: {} }), 'utf8');
     syncLiveConfigForStudio({ configPath: cfgPath, uiPrefsPath });
     assert.equal(JSON.parse(readFileSync(cfgPath, 'utf8')).cjkFontScale, '95');
+
+    // Missing ui-prefs.json + legacy config.json `false`: creates migrated ui-prefs.json with bumped updatedAt & updates config.json once
+    const freshCfgPath = path.join(dir, 'fresh-config.json');
+    const missingUiPrefsPath = path.join(dir, 'nested', 'ui-prefs.json');
+    writeFileSync(freshCfgPath, JSON.stringify({ cjkFontScale: '95', modules: { claudeUxStepUnfold: false } }), 'utf8');
+    syncLiveConfigForStudio({ configPath: freshCfgPath, uiPrefsPath: missingUiPrefsPath });
+    const migratedFreshCfg = JSON.parse(readFileSync(freshCfgPath, 'utf8'));
+    const createdUiPrefs = JSON.parse(readFileSync(missingUiPrefsPath, 'utf8'));
+    assert.equal(migratedFreshCfg.modules.claudeUxStepUnfold, true);
+    assert.equal(createdUiPrefs.stepUnfoldDefaultMigrated, true);
+    assert.equal(createdUiPrefs.modules.claudeUxStepUnfold, true);
+    assert.ok(Number(createdUiPrefs.updatedAt) > 0, 'bumps ui-prefs updatedAt to override stale localStorage');
+
+    // Subsequent deploy with explicit Compact (`false`) preserves user choice in both files
+    writeFileSync(freshCfgPath, JSON.stringify({ cjkFontScale: '95', modules: { claudeUxStepUnfold: false } }), 'utf8');
+    writeFileSync(
+      missingUiPrefsPath,
+      JSON.stringify({ schema: 1, updatedAt: createdUiPrefs.updatedAt, stepUnfoldDefaultMigrated: true, modules: { claudeUxStepUnfold: false } }),
+      'utf8'
+    );
+    syncLiveConfigForStudio({ configPath: freshCfgPath, uiPrefsPath: missingUiPrefsPath });
+    assert.equal(JSON.parse(readFileSync(freshCfgPath, 'utf8')).modules.claudeUxStepUnfold, false);
+    assert.equal(JSON.parse(readFileSync(missingUiPrefsPath, 'utf8')).modules.claudeUxStepUnfold, false);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

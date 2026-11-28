@@ -818,6 +818,15 @@ export async function handleProjectRpcRequest(rawPayload, callerEntry = null) {
       return { reqId, result: await handleGitWorkflowRpc(action, payload) };
     }
     if (
+      action === 'getStudioVersionInfo' ||
+      action === 'checkStudioUpdate' ||
+      action === 'startStudioUpdate' ||
+      action === 'getStudioUpdateStatus'
+    ) {
+      const { handleStudioUpdateRpc } = await import('../../studio/daemon/update-service.mjs');
+      return { reqId, result: await handleStudioUpdateRpc(action, payload) };
+    }
+    if (
       action === 'getRemoteControlStatus' ||
       action === 'saveRemoteControlConfig' ||
       action === 'createRemotePairing' ||

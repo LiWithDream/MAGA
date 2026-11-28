@@ -264,6 +264,7 @@ export function createHandoffLaunchHelper(deps) {
 
       startNewChatInProject(targetProj || null, cleanPrompt, [], [], null, {
         scopeGuard: () => {
+          if (settled) return { ok: false, reason: 'launch_cancelled' };
           const sel = store && typeof store.getState === 'function' ? store.getState()?.newConvoResourceSelector : null;
           return verifyResourceSelectorScope(sel, {
             projectId: targetPid,

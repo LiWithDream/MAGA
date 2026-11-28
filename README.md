@@ -327,7 +327,7 @@ Small daily friction adds up when you live inside Antigravity all day — every 
 | Root DOM observers (`MagaKernel`) | **`1`** shared `MutationObserver` (`data-maga-own` filtered) |
 | Frame flush cost (Apple Silicon local CDP check) | **`1.5–3.6 ms`** with leaf-only telemetry slots (`MetricsBus`) |
 | Global CSS `:has()` selectors | **`0`** (enforced by automated test guards) |
-| Automated regression & invariant suite (`npm test`) | **`255+`** passing tests, **`0`** skipped |
+| Automated regression & invariant suite (`npm test`) | **`260+`** passing tests, **`0`** skipped |
 | Background footprint | **`1`** local `LaunchAgent` (macOS) / Scheduled Task (Windows) |
 
 ---
@@ -421,7 +421,7 @@ External contributors: see **[CONTRIBUTING.md](./CONTRIBUTING.md)** (standard Fo
 │   ├── styles/            # Scoped stylesheets (0 :has() selectors)
 │   ├── cli.mjs            # Unified CLI (install / deploy / sync-rules / doctor / rollback / remote)
 │   └── pack-release.mjs   # Zero-npm-install Release tarball packager
-├── test/                  # Automated regression & invariant suite (255+ tests)
+├── test/                  # Automated regression & invariant suite (260+ tests)
 ├── install.sh             # One-line macOS installer (--dry-run, prebuilt & source modes)
 ├── uninstall.sh           # Clean macOS rollback & uninstaller (--dry-run supported)
 ├── install.ps1            # One-line Windows PowerShell installer (-DryRun, -NoRules, -NoShortcut)
@@ -430,7 +430,7 @@ External contributors: see **[CONTRIBUTING.md](./CONTRIBUTING.md)** (standard Fo
 
 | Command | Scope | Purpose |
 | :--- | :--- | :--- |
-| `npm run build:remote && npm test` | **All contributors** | Build Remote PWA & `user/custom.js`, run all 255+ regression & invariant tests |
+| `npm run build:remote && npm test` | **All contributors** | Build Remote PWA & `user/custom.js`, run all 260+ regression & invariant tests |
 | `npm run probe:host` | **If touching host coupling** | Read-only check of Antigravity selectors, React fibers, and SQLite contracts |
 | `npm run wt:new -- feat/slug` | Maintainer local flow | Create an isolated sibling Git worktree with symlinked/junctioned `node_modules` |
 | `npm run deploy` | Maintainer local flow | Hot-reload UI changes into running Antigravity from clean `main` (no app restart) |

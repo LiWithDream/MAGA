@@ -290,15 +290,25 @@ function normalizeLocksSchema(locks) {
   return { lockedFiles, paramLocks, bannedPatterns };
 }
 
+function resolveExistingPrefixRealpath(targetPath) {
+  let cur = path.resolve(targetPath);
+  const tail = [];
+  while (!fs.existsSync(cur)) {
+    const parent = path.dirname(cur);
+    if (parent === cur) break;
+    tail.unshift(path.basename(cur));
+    cur = parent;
+  }
+  let realBase = cur;
+  try {
+    realBase = realpathNative(cur);
+  } catch {}
+  return tail.length > 0 ? path.join(realBase, ...tail) : realBase;
+}
+
 function normalizeRelCompare(absTarget, rootDir) {
-  let realT = path.resolve(absTarget);
-  try {
-    if (fs.existsSync(realT)) realT = realpathNative(realT);
-  } catch {}
-  let realR = path.resolve(rootDir);
-  try {
-    if (fs.existsSync(realR)) realR = realpathNative(realR);
-  } catch {}
+  const realT = resolveExistingPrefixRealpath(absTarget);
+  const realR = resolveExistingPrefixRealpath(rootDir);
   const rel = path.relative(realR, realT).replace(/\\/g, '/');
   return CASE_INSENSITIVE_FS ? rel.toLowerCase() : rel;
 }
@@ -346,7 +356,12 @@ export function evaluateLocksPreToolUse(payload, opts = {}) {
     const relCandidates = [topLevel, mainRoot, locksRoot]
       .filter(Boolean)
       .map((rootCand) => normalizeRelCompare(absTarget, rootCand));
-    const writtenContent = String(args.Content || args.Replacement || args.TargetContent || '');
+    const chunkTexts = Array.isArray(args.ReplacementChunks)
+      ? args.ReplacementChunks.map((c) => String(c?.ReplacementContent || '')).filter(Boolean)
+      : [];
+    const writtenContent = [String(args.Content || args.Replacement || args.TargetContent || ''), ...chunkTexts]
+      .filter(Boolean)
+      .join('\n');
     if (writtenContent) {
       for (const b of locks.bannedPatterns) {
         if (!b.appliesTo.includes('file') || !isSafeBoundedRegex(b?.pattern)) continue;
@@ -545,65 +560,75 @@ export function flushQueuedAnchorWritesForRepo(gitRoots, opts = {}) {
   const paths = resolveAnchorPaths(opts);
   const repoHash = normalizeRepoKeyHash(gitRoots.mainRoot || gitRoots.topLevel);
   const queueFile = path.join(paths.pendingWritesDir, `${repoHash}.json`);
-  const queued = readJsonSafe(queueFile, null);
-  if (!queued || !Array.isArray(queued.anchors)) return { flushed: false };
-
-  // Ensure `.agents/rules/anchors.local.md` & `.anchors-meta.json` are excluded in `<commonDir>/info/exclude`
-  if (gitRoots.commonDir) {
-    const excludeFile = path.join(gitRoots.commonDir, 'info', 'exclude');
-    try {
-      const existing = fs.existsSync(excludeFile) ? fs.readFileSync(excludeFile, 'utf8') : '';
-      const lineSet = new Set(existing.split(/\r?\n/).map((l) => l.trim()));
-      if (!lineSet.has('/.agents') && !lineSet.has('.agents')) {
-        const missing = [];
-        for (const reqLine of ['/.agents/rules/anchors.local.md', '/.agents/rules/.anchors-meta.json']) {
-          if (!lineSet.has(reqLine) && !lineSet.has(reqLine.slice(1))) {
-            missing.push(reqLine);
-          }
-        }
-        if (missing.length > 0) {
-          const prefix = existing && !existing.endsWith('\n') ? '\n' : '';
-          writeAtomicText(excludeFile, `${existing}${prefix}${missing.join('\n')}\n`);
-        }
-      }
-    } catch {}
-  }
-
-  // Write strictly sanitized verbatim user quotes (NEVER thinking snippets -> I12/I16!)
-  const safeAnchors = [];
-  let usedTokens = 0;
-  for (const raw of queued.anchors) {
-    const text = String(raw?.text || '').replace(/\r?\n+/g, ' ').trim();
-    if (!text) continue;
-    const tok = estimateRuleTokens(text);
-    if (usedTokens + tok > MAX_ANCHOR_TOKENS) continue;
-    usedTokens += tok;
-    safeAnchors.push({
-      id: String(raw.id || sha1Short(text)).slice(0, 16),
-      text,
-      sourceTurn: raw.sourceTurn ? String(raw.sourceTurn).slice(0, 32) : '',
-      acceptedAt: Number(raw.acceptedAt) || Date.now(),
-    });
-  }
-
-  for (const rootDir of new Set([gitRoots.mainRoot, gitRoots.topLevel].filter(Boolean))) {
-    const targetMd = path.join(rootDir, '.agents', 'rules', 'anchors.local.md');
-    const metaJson = path.join(rootDir, '.agents', 'rules', '.anchors-meta.json');
-    if (safeAnchors.length === 0) {
-      try {
-        fs.rmSync(targetMd, { force: true });
-        fs.rmSync(metaJson, { force: true });
-      } catch {}
-    } else {
-      writeAtomicText(targetMd, renderAnchorsMarkdownFile(safeAnchors));
-      writeAtomicJson(metaJson, { schema: 1, usedTokens, maxTokens: MAX_ANCHOR_TOKENS, anchors: safeAnchors });
-    }
+  const claimedFile = `${queueFile}.flushing-${process.pid}-${Date.now()}-${crypto.randomBytes(2).toString('hex')}`;
+  try {
+    fs.renameSync(queueFile, claimedFile);
+  } catch {
+    return { flushed: false };
   }
 
   try {
-    fs.rmSync(queueFile, { force: true });
-  } catch {}
-  return { flushed: true, count: safeAnchors.length, usedTokens };
+    const queued = readJsonSafe(claimedFile, null);
+    if (!queued || !Array.isArray(queued.anchors)) return { flushed: false };
+
+    // Ensure `.agents/rules/anchors.local.md` & `.anchors-meta.json` are excluded in `<commonDir>/info/exclude`
+    if (gitRoots.commonDir) {
+      const excludeFile = path.join(gitRoots.commonDir, 'info', 'exclude');
+      try {
+        const existing = fs.existsSync(excludeFile) ? fs.readFileSync(excludeFile, 'utf8') : '';
+        const lineSet = new Set(existing.split(/\r?\n/).map((l) => l.trim()));
+        if (!lineSet.has('/.agents') && !lineSet.has('.agents')) {
+          const missing = [];
+          for (const reqLine of ['/.agents/rules/anchors.local.md', '/.agents/rules/.anchors-meta.json']) {
+            if (!lineSet.has(reqLine) && !lineSet.has(reqLine.slice(1))) {
+              missing.push(reqLine);
+            }
+          }
+          if (missing.length > 0) {
+            const prefix = existing && !existing.endsWith('\n') ? '\n' : '';
+            writeAtomicText(excludeFile, `${existing}${prefix}${missing.join('\n')}\n`);
+          }
+        }
+      } catch {}
+    }
+
+    // Write strictly sanitized verbatim user quotes (NEVER thinking snippets -> I12/I16!)
+    const safeAnchors = [];
+    let usedTokens = 0;
+    for (const raw of queued.anchors) {
+      const text = String(raw?.text || '').replace(/\r?\n+/g, ' ').trim();
+      if (!text) continue;
+      const tok = estimateRuleTokens(text);
+      if (usedTokens + tok > MAX_ANCHOR_TOKENS) continue;
+      usedTokens += tok;
+      safeAnchors.push({
+        id: String(raw.id || sha1Short(text)).slice(0, 16),
+        text,
+        sourceTurn: raw.sourceTurn ? String(raw.sourceTurn).slice(0, 32) : '',
+        acceptedAt: Number(raw.acceptedAt) || Date.now(),
+      });
+    }
+
+    for (const rootDir of new Set([gitRoots.mainRoot, gitRoots.topLevel].filter(Boolean))) {
+      const targetMd = path.join(rootDir, '.agents', 'rules', 'anchors.local.md');
+      const metaJson = path.join(rootDir, '.agents', 'rules', '.anchors-meta.json');
+      if (safeAnchors.length === 0) {
+        try {
+          fs.rmSync(targetMd, { force: true });
+          fs.rmSync(metaJson, { force: true });
+        } catch {}
+      } else {
+        writeAtomicText(targetMd, renderAnchorsMarkdownFile(safeAnchors));
+        writeAtomicJson(metaJson, { schema: 1, usedTokens, maxTokens: MAX_ANCHOR_TOKENS, anchors: safeAnchors });
+      }
+    }
+
+    return { flushed: true, count: safeAnchors.length, usedTokens };
+  } finally {
+    try {
+      fs.rmSync(claimedFile, { force: true });
+    } catch {}
+  }
 }
 
 function extractCleanUserRequestText(rawContent) {

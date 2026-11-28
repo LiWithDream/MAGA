@@ -1308,3 +1308,113 @@ test('Pre-release hardening: handoff cancels late scopeGuard, flush claims queue
     fs.rmSync(symParent, { recursive: true, force: true });
   }
 });
+
+test('Context ring G-badge expands pill width, isolates routes (New Chat / cross-chat), cleans up on dispose, and hides on tight/icon CSS tiers', async () => {
+  const { JSDOM } = await import('jsdom');
+  const { createFooterUnifiedRuntime } = await import(
+    pathToFileURL(path.join(REPO_ROOT, 'studio', 'modules', 'footer-unified.mjs')).href
+  );
+  const { createAnchorsPillRuntime } = await import(
+    pathToFileURL(path.join(REPO_ROOT, 'studio', 'modules', 'anchors-pill.mjs')).href
+  );
+
+  // 1. Static CSS assertions for anchors-pill.css
+  const css = fs.readFileSync(path.join(REPO_ROOT, 'studio', 'styles', 'anchors-pill.css'), 'utf8');
+  assert.doesNotMatch(css, /:has\s*\(/, 'anchors-pill.css must contain zero :has()');
+  assert.match(
+    css,
+    /#ag-claude-ctx-ring#ag-claude-ctx-ring\[data-agy-has-gen="true"\][\s\S]*?width:\s*auto\s*!important/,
+    'anchors-pill.css must widen #ag-claude-ctx-ring when data-agy-has-gen="true"'
+  );
+  assert.match(
+    css,
+    /\[data-agy-dock-tier="icon"\][\s\S]*?#ag-claude-ctx-ring#ag-claude-ctx-ring\[data-agy-has-gen="true"\][\s\S]*?width:\s*26px\s*!important/,
+    'anchors-pill.css must collapse #ag-claude-ctx-ring back to 26px in icon tier'
+  );
+  assert.match(
+    css,
+    /\[data-agy-dock-tier="tight"\][\s\S]*?\[data-agy-has-tight="0"\][\s\S]*?\.agy-ctx-gen-badge[\s\S]*?display:\s*none\s*!important/,
+    'anchors-pill.css must hide .agy-ctx-gen-badge in tight[data-agy-has-tight="0"] and icon tiers'
+  );
+  assert.match(
+    css,
+    /\[data-agy-dock-tier="icon"\][\s\S]*?\.agy-ctx-gen-badge[\s\S]*?display:\s*none\s*!important/,
+    'anchors-pill.css must hide .agy-ctx-gen-badge in icon tier'
+  );
+
+  // 2. Runtime route-isolation & lifecycle tests (New Chat / different chat / matching compacted chat / dispose)
+  const dom = new JSDOM(
+    '<!doctype html><html><body>' +
+      '<div id="antigravity.agentSidePanelInputBox">' +
+      '  <div class="agy-composer-footer">' +
+      '    <div class="left-group">' +
+      '      <button id="native-add-ctx" aria-label="Add context">+</button>' +
+      '      <button id="ag-claude-ctx-ring" type="button" data-compact-state="compacted" title="Context compacted">' +
+      '        <svg width="15" height="15" viewBox="0 0 20 20"><circle class="ag-ctx-ring-track" cx="10" cy="10" r="7"></circle><circle class="ag-ctx-ring-arc" cx="10" cy="10" r="7"></circle></svg>' +
+      '      </button>' +
+      '    </div>' +
+      '    <div class="right-group"></div>' +
+      '  </div>' +
+      '</div></body></html>',
+    { url: 'https://127.0.0.1:60000/' }
+  );
+  const keys = ['document', 'window', 'location'];
+  const prev = new Map(keys.map((k) => [k, Object.getOwnPropertyDescriptor(globalThis, k)]));
+  globalThis.document = dom.window.document;
+  globalThis.window = dom.window;
+  globalThis.location = dom.window.location;
+
+  try {
+    const footer = dom.window.document.querySelector('.agy-composer-footer');
+    footer.getBoundingClientRect = () => ({ width: 620, height: 60, top: 0, left: 0, right: 620, bottom: 60 });
+    const ring = dom.window.document.getElementById('ag-claude-ctx-ring');
+
+    dom.window.__ag_last_metrics = { hasData: true, cascadeId: 'conv-prev', metrics: { compactionCount: 1 } };
+    const footerRt = createFooterUnifiedRuntime();
+
+    // New Chat route (`/` -> empty cid): stale compactionCount must NOT leak
+    footerRt.sync();
+    assert.equal(ring.getAttribute('data-agy-has-gen'), null);
+    assert.equal(ring.querySelector('.agy-ctx-gen-badge')?.hidden, true);
+
+    // Different chat route (`/c/conv-other`): stale compactionCount must NOT leak
+    dom.window.history.replaceState({}, '', '/c/conv-other');
+    footerRt.sync();
+    assert.equal(ring.getAttribute('data-agy-has-gen'), null);
+    assert.equal(ring.querySelector('.agy-ctx-gen-badge')?.hidden, true);
+
+    // Matching route (`/c/conv-prev`) with no ratio text (`compacted`): G1 badge shows and sets data-agy-has-gen="true"
+    dom.window.history.replaceState({}, '', '/c/conv-prev');
+    footerRt.sync();
+    assert.equal(ring.getAttribute('data-agy-has-ratio'), null);
+    assert.equal(ring.getAttribute('data-agy-has-gen'), 'true');
+    assert.equal(ring.getAttribute('data-agy-gen-warn'), null);
+    assert.equal(ring.querySelector('.agy-ctx-gen-badge')?.hidden, false);
+    assert.equal(ring.querySelector('.agy-ctx-gen-badge')?.textContent, 'G1');
+
+    // G>=3 sets data-agy-gen-warn="1", and dispose() removes attributes and badge element
+    dom.window.__ag_last_metrics = { hasData: true, cascadeId: 'conv-prev', metrics: { compactionCount: 3 } };
+    footerRt.sync();
+    assert.equal(ring.getAttribute('data-agy-gen-warn'), '1');
+    footerRt.dispose();
+    assert.equal(ring.getAttribute('data-agy-has-gen'), null);
+    assert.equal(ring.getAttribute('data-agy-gen-warn'), null);
+    assert.equal(ring.querySelector('.agy-ctx-gen-badge'), null);
+
+    // Anchors pill on `/c/conv-other` ignores stale metrics from `conv-prev`
+    dom.window.history.replaceState({}, '', '/c/conv-other');
+    dom.window.__ag_last_metrics = { cascadeId: 'conv-prev', metrics: { compactionCount: 3 } };
+    const anchorsRt = createAnchorsPillRuntime({ studioPrefs: { get: () => ({ anchorsMode: 'semi' }) } });
+    anchorsRt.write({ cid: 'conv-other', isRunning: false }, anchorsRt.read({ cid: 'conv-other', isRunning: false }));
+    const anchorsPill = dom.window.document.getElementById('agy-anchors-pill');
+    assert.equal(anchorsPill ? anchorsPill.hidden : true, true);
+    anchorsRt.dispose();
+  } finally {
+    for (const k of keys) {
+      const desc = prev.get(k);
+      if (desc) Object.defineProperty(globalThis, k, desc);
+      else delete globalThis[k];
+    }
+    dom.window.close();
+  }
+});

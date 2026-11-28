@@ -3,9 +3,12 @@
 .agy-ctx-gen-badge {
   display: inline-flex;
   align-items: center;
-  margin-left: 4px;
+  flex-shrink: 0;
+  margin-left: 0;
   padding: 0 4px;
   height: 15px;
+  line-height: 15px;
+  white-space: nowrap;
   border-radius: 4px;
   font-size: 10px;
   font-weight: 600;
@@ -18,12 +21,48 @@
   display: none !important;
 }
 
+#antigravity\.agentSidePanelInputBox #ag-claude-ctx-ring#ag-claude-ctx-ring[data-agy-has-gen="true"],
+.agy-composer-footer #ag-claude-ctx-ring#ag-claude-ctx-ring[data-agy-has-gen="true"] {
+  width: auto !important;
+  padding: 0 6.5px !important;
+  gap: 4.5px !important;
+}
+
+#antigravity\.agentSidePanelInputBox #ag-claude-ctx-ring#ag-claude-ctx-ring[data-agy-has-ratio="true"][data-agy-has-gen="true"],
+.agy-composer-footer #ag-claude-ctx-ring#ag-claude-ctx-ring[data-agy-has-ratio="true"][data-agy-has-gen="true"] {
+  padding: 0 7px 0 6.5px !important;
+  gap: 5px !important;
+}
+
+#antigravity\.agentSidePanelInputBox .agy-composer-footer[data-agy-dock-tier="tight"] #ag-claude-ctx-ring#ag-claude-ctx-ring[data-agy-ctx-compacting="1"],
+.agy-composer-footer[data-agy-dock-tier="tight"] #ag-claude-ctx-ring#ag-claude-ctx-ring[data-agy-ctx-compacting="1"],
+#antigravity\.agentSidePanelInputBox .agy-composer-footer[data-agy-dock-tier="tight"] #ag-claude-ctx-ring#ag-claude-ctx-ring[data-agy-has-tight="0"],
+.agy-composer-footer[data-agy-dock-tier="tight"] #ag-claude-ctx-ring#ag-claude-ctx-ring[data-agy-has-tight="0"],
+#antigravity\.agentSidePanelInputBox .agy-composer-footer[data-agy-dock-tier="icon"] #ag-claude-ctx-ring#ag-claude-ctx-ring[data-agy-has-gen="true"],
+.agy-composer-footer[data-agy-dock-tier="icon"] #ag-claude-ctx-ring#ag-claude-ctx-ring[data-agy-has-gen="true"] {
+  width: 26px !important;
+  min-width: 26px !important;
+  max-width: 26px !important;
+  padding: 0 !important;
+  gap: 0 !important;
+  justify-content: center !important;
+}
+
+#antigravity\.agentSidePanelInputBox .agy-composer-footer[data-agy-dock-tier="tight"] #ag-claude-ctx-ring#ag-claude-ctx-ring[data-agy-ctx-compacting="1"] .agy-ctx-gen-badge,
+.agy-composer-footer[data-agy-dock-tier="tight"] #ag-claude-ctx-ring#ag-claude-ctx-ring[data-agy-ctx-compacting="1"] .agy-ctx-gen-badge,
+#antigravity\.agentSidePanelInputBox .agy-composer-footer[data-agy-dock-tier="tight"] #ag-claude-ctx-ring#ag-claude-ctx-ring[data-agy-has-tight="0"] .agy-ctx-gen-badge,
+.agy-composer-footer[data-agy-dock-tier="tight"] #ag-claude-ctx-ring#ag-claude-ctx-ring[data-agy-has-tight="0"] .agy-ctx-gen-badge,
+#antigravity\.agentSidePanelInputBox .agy-composer-footer[data-agy-dock-tier="icon"] #ag-claude-ctx-ring#ag-claude-ctx-ring .agy-ctx-gen-badge,
+.agy-composer-footer[data-agy-dock-tier="icon"] #ag-claude-ctx-ring#ag-claude-ctx-ring .agy-ctx-gen-badge {
+  display: none !important;
+}
+
 #ag-claude-ctx-ring[data-agy-gen-warn="1"] .agy-ctx-gen-badge {
   color: #d97706;
   background: rgba(245, 158, 11, 0.16);
 }
 
-.dark #ag-claude-ctx-ring[data-agy-gen-warn="1"] .agy-ctx-gen-badge {
+:is(html[data-ag-theme-mode="dark"], html.dark, body.dark) #ag-claude-ctx-ring[data-agy-gen-warn="1"] .agy-ctx-gen-badge {
   color: #fbbf24;
   background: rgba(245, 158, 11, 0.2);
 }

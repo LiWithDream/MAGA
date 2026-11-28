@@ -26,6 +26,13 @@ export function createAnchorsPillRuntime({ studioPrefs } = {}) {
 
   const isEnabled = () => (studioPrefs?.get?.()?.anchorsMode || 'semi') !== 'off';
 
+  function readMetricsGenForCid(cid) {
+    if (!cid || typeof window === 'undefined') return 0;
+    const m = window.__ag_last_metrics;
+    if (!m || (m.cascadeId && m.cascadeId !== cid)) return 0;
+    return Math.max(0, Number(m.metrics?.compactionCount || m.stats?.compactions || 0));
+  }
+
   function getMainBox() {
     return (
       document.getElementById('antigravity.agentSidePanelInputBox') ||
@@ -312,7 +319,7 @@ export function createAnchorsPillRuntime({ studioPrefs } = {}) {
       return;
     }
     const cid = getActiveRouteCid();
-    const metricsGen = Number(window.__ag_last_metrics?.metrics?.compactionCount || 0);
+    const metricsGen = readMetricsGenForCid(cid);
     const cached = statusCache.cid === cid ? statusCache.data : null;
     const hCtx = resolveHandoffContext(cid);
     const data =
@@ -565,7 +572,7 @@ export function createAnchorsPillRuntime({ studioPrefs } = {}) {
 
     const data = statusCache.cid === cid ? statusCache.data : null;
     const propCount = Array.isArray(data?.proposals) ? data.proposals.length : 0;
-    const metricsGen = Number(window.__ag_last_metrics?.metrics?.compactionCount || 0);
+    const metricsGen = readMetricsGenForCid(cid);
     const genCount = Math.max(Number(data?.compactionCount || 0), metricsGen);
     const shouldShow = propCount > 0 || genCount >= 3;
 

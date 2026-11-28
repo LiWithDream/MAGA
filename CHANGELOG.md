@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **`[remote]` Android Cloudflare Access / IdP OAuth WebView Routing & Callback Guard (`remote/android/app/src/main/java/com/agystudio/remote/MainActivity.kt`, `remote/android/app/build.gradle.kts`, `test/install-kit.test.mjs`)**: Added `cloudflare.com` / `.cloudflare.com` (and IdP auxiliary hosts) to `isKnownAuthHost()`, kept active off-origin auth pages inside the WebView during `authRedirectActive` (`onNonServerAuthPage`), and guarded `/cdn-cgi/access/` callback paths in `onPageFinished()` and `handleIncomingIntent()` (`isAccessCallbackPath()`) so external browser jumps no longer poison the WebView cookie session with cross-jar `Invalid` OAuth callbacks; bumped Android version to `1.6.0` (`10600`).
+
 ## [1.6.0] - 2026-11-28
 
 Introduced the experimental **Anti-Drift Anchors & One-Click Milestone Handoff (`maga-anchors`)** 3-pillar suite, decoupled `--channel stable|edge` end-user installers, expanded **Remote Control** with Artifact & Git Diff viewers, and added declarative Host Contract probes alongside worktree governance materialization.

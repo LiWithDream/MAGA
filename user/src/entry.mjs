@@ -391,6 +391,21 @@ import { createRemoteTapModule } from './modules/remote-tap.mjs';
     detectCompactStatus(cid) {
       return metricsQuota.detectCompactStatus(cid);
     },
+    openConversationFromProject(cid) {
+      return projects.openConversationFromProject(cid);
+    },
+    startNewChatInProjectById(projectId, initialPrompt = '') {
+      return projects.startNewChatInProjectById(projectId, initialPrompt);
+    },
+    resolveActiveConversationContext(cid) {
+      return projects.resolveActiveConversationContext(cid);
+    },
+    launchMilestoneHandoffChat(opts) {
+      return projects.launchMilestoneHandoffChat(opts);
+    },
+    showProjectsFloatingNotice(msg) {
+      return projects.showProjectsFloatingNotice(msg);
+    },
   };
 
   if (typeof window !== 'undefined') {

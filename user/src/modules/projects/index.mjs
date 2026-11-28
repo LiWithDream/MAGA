@@ -9,6 +9,7 @@ import { createProjectWorkspaceUi } from './workspace-ui.mjs';
 import { createConvProjectTopbar } from './conv-topbar.mjs';
 import { createWorktreeUiController } from './worktree-ui.mjs';
 import { createProjectSuggestionsController } from './suggestions-ui.mjs';
+import { createHandoffLaunchHelper } from './handoff-launch.mjs';
 import {
   computeProjectsOverlayMetrics,
   findLeftSidebarEl,
@@ -696,7 +697,7 @@ export function createProjectsModule(rt, modelApi) {
     }, 4500);
   }
 
-  function startNewChatInProject(project, initialPrompt = '', mentionEntries = [], mediaEntries = [], rollbackDraft = null) {
+  function startNewChatInProject(project, initialPrompt = '', mentionEntries = [], mediaEntries = [], rollbackDraft = null, launchOpts = null) {
     const { store, bindings } = resolveProjectsStoreAndBindings();
     const prompt = String(initialPrompt || '').trim();
     const submitChunks = buildComposerSubmitChunks(prompt, mentionEntries);
@@ -758,7 +759,10 @@ export function createProjectsModule(rt, modelApi) {
       const readyDom = Boolean(box && (wasOnHome || box !== prevInputBox || tries >= 16));
       if (!atHome || !projectMatched || !readyDom) {
         if (++tries < 35) later(trySubmit, 70);
-        else restoreComposerDraftOnFailure();
+        else {
+          restoreComposerDraftOnFailure();
+          launchOpts?.onOutcome?.({ phase: 'nav_fail', error: 'composer_unavailable' });
+        }
         return;
       }
       /* Give the newly mounted Home composer one extra tick so its project & workspace hooks settle */
@@ -780,6 +784,11 @@ export function createProjectsModule(rt, modelApi) {
         }
       }
       if (handleSubmit) {
+        const scopeRes = typeof launchOpts?.scopeGuard === 'function' ? launchOpts.scopeGuard() : { ok: true };
+        if (scopeRes && scopeRes.ok === false) {
+          launchOpts?.onOutcome?.({ phase: 'scope_mismatch', error: scopeRes.reason || 'scope_mismatch' });
+          return;
+        }
         submitting = true;
         (async () => {
           let resolvedMedia = [];
@@ -828,8 +837,10 @@ export function createProjectsModule(rt, modelApi) {
           };
           try {
             await handleSubmit(submitChunks, resolvedMedia, clearEditor);
-          } catch {
+            launchOpts?.onOutcome?.({ phase: 'submitted' });
+          } catch (err) {
             restoreComposerDraftOnFailure();
+            launchOpts?.onOutcome?.({ phase: 'submit_threw', error: String(err?.message || err || 'submit_failed') });
           } finally {
             if (mediaList.length) clearEditor();
           }
@@ -837,7 +848,10 @@ export function createProjectsModule(rt, modelApi) {
         return;
       }
       if (++tries < 35) later(trySubmit, 70);
-      else restoreComposerDraftOnFailure();
+      else {
+        restoreComposerDraftOnFailure();
+        launchOpts?.onOutcome?.({ phase: 'nav_fail', error: 'handle_submit_unavailable' });
+      }
     };
     later(trySubmit, 110);
   }
@@ -1887,6 +1901,8 @@ export function createProjectsModule(rt, modelApi) {
     getConversationBranchBadge: worktreeUi.getConversationBranchBadge,
   });
 
+  const handoffLaunch = createHandoffLaunchHelper({ rtState, hooks: ctx.hooks, activeReactFiber, getActiveCascadeId, decodeFileUriToPath, resolveProjectsStoreAndBindings, collectNativeProjects, startNewChatInProject, openConversationFromProject });
+
   function dispose() {
     pState.projectComposerDrafts.clear();
     if (projectsUsageListenerBound) {
@@ -1921,6 +1937,7 @@ export function createProjectsModule(rt, modelApi) {
     ensureSharedModalEscBound,
     closeProjectsModal,
     getConversationBranchBadge: worktreeUi.getConversationBranchBadge,
+    ...handoffLaunch,
     dispose,
   };
 }

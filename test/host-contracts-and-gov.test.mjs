@@ -252,7 +252,7 @@ test('studio/host/contracts.mjs & probe-host.mjs stay out of custom.js bundle an
             'dom.aux_sidebar_toggle': true,
             'dom.sidebar_project_anchors': true,
           },
-          fiber: { hasReactFiber: true, hasReduxStore: true },
+          fiber: { hasReactFiber: true, hasReduxStore: true, hasNewConvoResourceSelector: true },
         },
       }),
     });
@@ -264,7 +264,7 @@ test('studio/host/contracts.mjs & probe-host.mjs stay out of custom.js bundle an
       hostVersion: '2.36.0',
       cdpSnapshot: {
         dom: { 'dom.composer_input_box': true, 'dom.conversation_list_sidebar': false },
-        fiber: { hasReactFiber: true, hasReduxStore: false },
+        fiber: { hasReactFiber: true, hasReduxStore: false, hasNewConvoResourceSelector: false },
       },
       sqliteReport: { status: 'pass' },
     });
@@ -275,7 +275,7 @@ test('studio/host/contracts.mjs & probe-host.mjs stay out of custom.js bundle an
       hostVersion: '2.36.0',
       cdpSnapshot: {
         dom: { 'dom.composer_input_box': false },
-        fiber: { hasReactFiber: false, hasReduxStore: false },
+        fiber: { hasReactFiber: false, hasReduxStore: false, hasNewConvoResourceSelector: false },
       },
       sqliteReport: { status: 'pass' },
     });

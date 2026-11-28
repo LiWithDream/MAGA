@@ -234,4 +234,88 @@
 .agy-anc-handoff-txt {
   margin-bottom: 6px;
   opacity: 0.85;
+  line-height: 1.4;
+}
+
+.agy-anc-next-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+  background: color-mix(in srgb, currentColor 5%, transparent);
+  color: inherit;
+  font-size: 11.5px;
+  margin-bottom: 6px;
+}
+
+.agy-anc-next-input:disabled {
+  opacity: 0.6;
+}
+
+.agy-anc-draft-chip {
+  display: inline-flex;
+  align-items: center;
+  margin-bottom: 6px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, #d97706 42%, transparent);
+  background: color-mix(in srgb, #f59e0b 12%, transparent);
+  color: #b45309;
+  font-size: 10.5px;
+  cursor: pointer;
+}
+
+:is(html[data-ag-theme-mode="dark"], html.dark, body.dark) .agy-anc-draft-chip {
+  color: #fbbf24;
+}
+
+.agy-anc-handoff-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.agy-anc-handoff-primary {
+  flex: 1 1 auto;
+  background: color-mix(in srgb, #d97706 18%, rgba(128, 128, 140, 0.14));
+  border-color: color-mix(in srgb, #d97706 46%, transparent);
+  font-weight: 600;
+}
+
+:is(html[data-ag-theme-mode="dark"], html.dark, body.dark) .agy-anc-handoff-primary {
+  background: color-mix(in srgb, #fbbf24 18%, rgba(128, 128, 140, 0.16));
+  border-color: color-mix(in srgb, #fbbf24 44%, transparent);
+}
+
+.agy-anc-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.agy-anc-handoff-feedback {
+  margin-top: 6px;
+  padding: 5px 7px;
+  border-radius: 6px;
+  font-size: 11px;
+  line-height: 1.38;
+  background: rgba(128, 128, 140, 0.12);
+}
+
+.agy-anc-handoff-feedback[data-tone="warn"] {
+  background: rgba(245, 158, 11, 0.14);
+  color: #b45309;
+}
+
+.agy-anc-handoff-feedback[data-tone="error"] {
+  background: rgba(239, 68, 68, 0.14);
+  color: #b91c1c;
+}
+
+:is(html[data-ag-theme-mode="dark"], html.dark, body.dark) .agy-anc-handoff-feedback[data-tone="warn"] {
+  color: #fbbf24;
+}
+
+:is(html[data-ag-theme-mode="dark"], html.dark, body.dark) .agy-anc-handoff-feedback[data-tone="error"] {
+  color: #f87171;
 }

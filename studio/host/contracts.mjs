@@ -85,6 +85,14 @@ export const HOST_CONTRACTS = Object.freeze([
     modulePaths: ['user/src/core/model-api.mjs', 'user/src/modules/projects/native-store.mjs'],
     fallbackBehavior: 'Scheduled-task model list and Redux project creation degrade to DOM fallback.',
   },
+  {
+    id: 'fiber.new_convo_resource_selector',
+    tier: 'read_fiber_store',
+    criticality: 'degradable',
+    probeKey: 'hasNewConvoResourceSelector',
+    modulePaths: ['user/src/modules/projects/handoff-launch.mjs', 'user/src/modules/projects/index.mjs'],
+    fallbackBehavior: 'Non-project handoffs fall back to clipboard copy instead of risking wrong-project submission.',
+  },
 
   // 3. Host-Owned Dispatch (`host_dispatch`)
   {
@@ -106,6 +114,16 @@ export const HOST_CONTRACTS = Object.freeze([
     postcondition: 'layout/setDragOverChatCascadeId cleared on dragend/drop.',
     modulePaths: ['user/src/modules/sidebar-recents.mjs'],
     fallbackBehavior: 'Falls back to native HTML5 drag-and-drop payload.',
+  },
+  {
+    id: 'dispatch.milestone_handoff_launch',
+    tier: 'host_dispatch',
+    criticality: 'degradable',
+    writePolicy: 'never_probed_live',
+    precondition: 'Composer idle, verified newConvoResourceSelector scope (projectId or exact local folder), and non-empty handoffPrompt.',
+    postcondition: 'Verify new conversation ID via trajectorySummaries beforeIds diff or /c/<newCid> route within 4s; mark uncertain without auto-retry on timeout.',
+    modulePaths: ['user/src/modules/projects/handoff-launch.mjs', 'user/src/modules/projects/index.mjs'],
+    fallbackBehavior: 'Rolls back pre-submit failures with draft restoration and copies handoffPrompt to clipboard.',
   },
 
   // 4. Hand-Encoded Wire / Connect-JSON (`hand_encoded_wire`)
@@ -185,6 +203,7 @@ export function buildReadOnlyCdpContractProbeExpression() {
     }
     let hasReactFiber = false;
     let hasReduxStore = false;
+    let hasNewConvoResourceSelector = false;
     const rootEl = document.getElementById('root') || document.body;
     const scanNodes = [
       document.querySelector('[data-testid="conversation-list-sidebar"]'),
@@ -201,12 +220,18 @@ export function buildReadOnlyCdpContractProbeExpression() {
             const directStore = cur.memoizedProps?.store || cur.memoizedProps?.value?.store || cur.stateNode?.store;
             if (directStore && typeof directStore.getState === 'function' && typeof directStore.dispatch === 'function') {
               hasReduxStore = true;
+              try {
+                hasNewConvoResourceSelector = Boolean(directStore.getState()?.newConvoResourceSelector);
+              } catch {}
               break;
             }
             for (let dep = cur.dependencies && cur.dependencies.firstContext; dep; dep = dep.next) {
               const mv = dep.memoizedValue;
               if (mv && mv.store && typeof mv.store.getState === 'function' && typeof mv.store.dispatch === 'function') {
                 hasReduxStore = true;
+                try {
+                  hasNewConvoResourceSelector = Boolean(mv.store.getState()?.newConvoResourceSelector);
+                } catch {}
                 break;
               }
             }
@@ -224,6 +249,7 @@ export function buildReadOnlyCdpContractProbeExpression() {
       fiber: {
         hasReactFiber,
         hasReduxStore,
+        hasNewConvoResourceSelector,
       },
     };
   })()`;

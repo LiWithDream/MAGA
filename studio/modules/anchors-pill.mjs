@@ -19,7 +19,10 @@ export function createAnchorsPillRuntime({ studioPrefs } = {}) {
   let prevRunning = null;
   let settleTimer = 0;
   let statusCache = { cid: '', ts: 0, inFlight: false, data: null };
-  let handoffToastText = '';
+  let handoffInFlight = false;
+  const nextStepByCid = new Map();
+  let handoffFeedback = { cid: '', tone: '', text: '' };
+  let handoffFeedbackTimer = 0;
 
   const isEnabled = () => (studioPrefs?.get?.()?.anchorsMode || 'semi') !== 'off';
 
@@ -65,6 +68,36 @@ export function createAnchorsPillRuntime({ studioPrefs } = {}) {
     return '';
   }
 
+  function setHandoffFeedback(cid, tone, text, ttlMs = 5000) {
+    if (handoffFeedbackTimer) {
+      clearTimeout(handoffFeedbackTimer);
+      handoffFeedbackTimer = 0;
+    }
+    handoffFeedback = { cid: cid || '', tone: tone || 'ok', text: text || '' };
+    if (text && ttlMs > 0) {
+      handoffFeedbackTimer = setTimeout(() => {
+        handoffFeedbackTimer = 0;
+        handoffFeedback = { cid: '', tone: '', text: '' };
+        if (menuOpen && !disposed) renderMenuContents({ force: false });
+      }, ttlMs);
+    }
+  }
+
+  function resolveHandoffContext(cid) {
+    const base =
+      typeof window !== 'undefined' && typeof window.__agClaudeUxBridge?.resolveActiveConversationContext === 'function'
+        ? window.__agClaudeUxBridge.resolveActiveConversationContext(cid)
+        : null;
+    const repoRoot = String(base?.repoRoot || detectActiveWorkspaceRoot(cid) || '').trim();
+    return {
+      cid: String(base?.cid || cid || ''),
+      projectId: String(base?.projectId || ''),
+      projectName: String(base?.projectName || ''),
+      repoRoot,
+      composerDraft: String(base?.composerDraft || ''),
+    };
+  }
+
   function fetchStatus(cid, force = false) {
     if (disposed || !cid || typeof window.__agProjectCall !== 'function') return;
     const now = Date.now();
@@ -77,7 +110,7 @@ export function createAnchorsPillRuntime({ studioPrefs } = {}) {
         if (disposed || statusCache.cid !== cid) return;
         statusCache = { cid, ts: Date.now(), inFlight: false, data: res?.ok ? res : null };
         syncPillDom();
-        if (menuOpen) renderMenuContents();
+        if (menuOpen) renderMenuContents({ force: false });
       })
       .catch(() => {
         if (statusCache.cid === cid) statusCache.inFlight = false;
@@ -114,11 +147,174 @@ export function createAnchorsPillRuntime({ studioPrefs } = {}) {
     pop.style.bottom = `${bottom}px`;
   }
 
-  function renderMenuContents() {
+  async function executeHandoffAction({ cid, hCtx, repoRoot, copyOnly }) {
+    if (disposed || handoffInFlight || !cid || typeof window.__agProjectCall !== 'function') return;
+    const runningNow = !copyOnly && isComposerRunning();
+    if (runningNow) {
+      setHandoffFeedback(
+        cid,
+        'warn',
+        L('当前对话仍在生成中，请等待完成后再换窗。', 'Wait for the active reply to finish before handing off.')
+      );
+      renderMenuContents({ force: true });
+      return;
+    }
+
+    handoffInFlight = true;
+    renderMenuContents({ force: true });
+
+    const nextStep = String(nextStepByCid.get(cid) || '').trim();
+    const idleNow = !isComposerRunning();
+    const copyToClipboard = async (text) => {
+      if (!text || !navigator?.clipboard?.writeText) return false;
+      try {
+        await navigator.clipboard.writeText(text);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+
+    try {
+      const daemonRes = await window.__agProjectCall(
+        'createMilestoneHandoff',
+        {
+          cascadeId: cid,
+          repoRoot: repoRoot || hCtx.repoRoot || '',
+          projectId: hCtx.projectId || '',
+          userInitiated: true,
+          nextStep,
+          flushAnchors: Boolean(idleNow && !copyOnly),
+          promptOnly: Boolean(copyOnly),
+          preferRendererLaunch: Boolean(
+            !copyOnly && typeof window.__agClaudeUxBridge?.launchMilestoneHandoffChat === 'function'
+          ),
+        },
+        6000
+      );
+      if (disposed) return;
+      if (!daemonRes?.ok || !daemonRes.handoffPrompt) {
+        setHandoffFeedback(
+          cid,
+          'error',
+          L(
+            `生成交接单失败：${daemonRes?.error || 'unknown'}`,
+            `Failed to build handoff: ${daemonRes?.error || 'unknown'}`
+          )
+        );
+        return;
+      }
+
+      if (copyOnly) {
+        const copied = await copyToClipboard(daemonRes.handoffPrompt);
+        setHandoffFeedback(
+          cid,
+          copied ? 'ok' : 'warn',
+          copied
+            ? L('已复制无损交接单到剪贴板 ✓', 'Copied lossless handoff prompt ✓')
+            : L('交接单已生成，但剪贴板写入受限。', 'Handoff built, but clipboard write failed.')
+        );
+        return;
+      }
+
+      // Path A: Daemon already created conversation cleanly (e.g. headless mode)
+      if (daemonRes.mode === 'created' && daemonRes.newConversationId) {
+        nextStepByCid.delete(cid);
+        await copyToClipboard(daemonRes.handoffPrompt);
+        window.__agClaudeUxBridge?.openConversationFromProject?.(daemonRes.newConversationId);
+        window.__agClaudeUxBridge?.showProjectsFloatingNotice?.(
+          L('已完成里程碑换窗交接 ✓', 'Milestone handoff chat started ✓')
+        );
+        closeMenu();
+        return;
+      }
+
+      // Path B: Desktop renderer native launcher
+      const launcher = window.__agClaudeUxBridge?.launchMilestoneHandoffChat;
+      if (typeof launcher !== 'function') {
+        await copyToClipboard(daemonRes.handoffPrompt);
+        setHandoffFeedback(
+          cid,
+          'warn',
+          L(
+            '桌面建窗桥接不可用，已复制无损交接单到剪贴板 ✓',
+            'Desktop launcher unavailable; copied handoff prompt ✓'
+          )
+        );
+        return;
+      }
+
+      const launchRes = await launcher({
+        projectId: hCtx.projectId || '',
+        repoRoot: repoRoot || hCtx.repoRoot || daemonRes.repoRoot || '',
+        prompt: daemonRes.handoffPrompt,
+        expectedFromCid: cid,
+      });
+      if (disposed) return;
+
+      if (launchRes?.ok && launchRes?.status === 'created') {
+        nextStepByCid.delete(cid);
+        closeMenu();
+        window.__agClaudeUxBridge?.showProjectsFloatingNotice?.(
+          L('已新建并切换到交接窗口 ✓', 'Switched to new handoff chat ✓')
+        );
+        return;
+      }
+
+      await copyToClipboard(daemonRes.handoffPrompt);
+      if (launchRes?.status === 'uncertain') {
+        setHandoffFeedback(
+          cid,
+          'warn',
+          L(
+            '交接已提交但新会话尚未确认出现，请先查看侧边栏避免重复创建；交接单已备份到剪贴板。',
+            'Handoff submitted; check the sidebar before pasting to avoid duplicate chats (prompt copied).'
+          ),
+          8000
+        );
+      } else if (launchRes?.phase === 'scope_mismatch') {
+        setHandoffFeedback(
+          cid,
+          'warn',
+          L(
+            '当前会话未绑定项目（或选择器仍指向其他项目/目录），已安全中止并复制交接单到剪贴板 ✓',
+            'Aborted due to workspace/project scope mismatch; handoff prompt copied ✓'
+          ),
+          8000
+        );
+      } else {
+        setHandoffFeedback(
+          cid,
+          'warn',
+          L(
+            `自动新建未完成（${launchRes?.error || 'unknown'}），已复制交接单到剪贴板 ✓`,
+            `Auto-launch fell back (${launchRes?.error || 'unknown'}); handoff prompt copied ✓`
+          ),
+          6000
+        );
+      }
+    } catch (err) {
+      setHandoffFeedback(
+        cid,
+        'error',
+        L(`换窗请求失败：${String(err?.message || err)}`, `Handoff error: ${String(err?.message || err)}`)
+      );
+    } finally {
+      handoffInFlight = false;
+      if (menuOpen && !disposed) renderMenuContents({ force: true });
+    }
+  }
+
+  function renderMenuContents({ force = false } = {}) {
+    if (disposed || typeof document === 'undefined') return;
     const pop = ensureMenuEl();
+    if (!force && menuEl && menuEl.contains(document.activeElement) && document.activeElement?.matches?.('input, textarea, select')) {
+      return;
+    }
     const cid = getActiveRouteCid();
     const metricsGen = Number(window.__ag_last_metrics?.metrics?.compactionCount || 0);
     const cached = statusCache.cid === cid ? statusCache.data : null;
+    const hCtx = resolveHandoffContext(cid);
     const data =
       cached ||
       (cid && metricsGen >= 1
@@ -127,7 +323,7 @@ export function createAnchorsPillRuntime({ studioPrefs } = {}) {
             proposals: [],
             activeAnchors: [],
             tokenBudget: { usedTokens: 0, maxTokens: 400 },
-            repoRoot: detectActiveWorkspaceRoot(cid),
+            repoRoot: hCtx.repoRoot,
           }
         : null);
     pop.replaceChildren();
@@ -250,47 +446,99 @@ export function createAnchorsPillRuntime({ studioPrefs } = {}) {
     if (genCount >= 1) {
       const handoffBox = document.createElement('div');
       handoffBox.className = 'agy-anc-handoff';
+      const scopeLabel = hCtx.projectName || (data.repoRoot ? String(data.repoRoot).split(/[\\/]/).filter(Boolean).pop() : '');
       const info = document.createElement('div');
       info.className = 'agy-anc-handoff-txt';
       setLeafText(
         info,
         genCount >= 3
           ? L(
-              `当前已历经 G=${genCount} 次压缩（未固化约束半衰期 2–3 次），建议交接至全新里程碑会话。`,
-              `Compaction generation G=${genCount} (>=3 decay threshold). Recommended: hand off to a fresh chat.`
+              `当前已历经 G=${genCount} 次压缩（未固化约束半衰期 2–3 次）${scopeLabel ? ` · ${scopeLabel}` : ''}，建议交接至全新里程碑会话。`,
+              `Compaction G=${genCount} (>=3 decay threshold)${scopeLabel ? ` · ${scopeLabel}` : ''}. Recommended: hand off to a fresh chat.`
             )
-          : L(`当前压缩代数：G=${genCount}`, `Compaction generation: G=${genCount}`)
+          : L(
+              `当前压缩代数：G=${genCount}${scopeLabel ? ` · ${scopeLabel}` : ''}`,
+              `Compaction generation: G=${genCount}${scopeLabel ? ` · ${scopeLabel}` : ''}`
+            )
       );
+
+      const curNextStep = nextStepByCid.get(cid) || '';
+      const nextInput = document.createElement('input');
+      nextInput.type = 'text';
+      nextInput.className = 'agy-anc-next-input';
+      nextInput.maxLength = 500;
+      nextInput.placeholder = L(
+        '新窗口接着做什么？（可选，留空则接管后待命）',
+        'Next instruction for new chat (optional; blank = standby)'
+      );
+      nextInput.value = curNextStep;
+      nextInput.disabled = handoffInFlight;
+      nextInput.addEventListener('input', () => {
+        nextStepByCid.set(cid, nextInput.value);
+      });
+
+      const runningNow = isComposerRunning();
+      const actionRow = document.createElement('div');
+      actionRow.className = 'agy-anc-handoff-actions';
+
       const handoffBtn = document.createElement('button');
       handoffBtn.type = 'button';
-      handoffBtn.className = 'agy-anc-btn agy-anc-handoff-btn';
+      handoffBtn.className = 'agy-anc-btn agy-anc-handoff-btn agy-anc-handoff-primary';
+      handoffBtn.disabled = handoffInFlight || runningNow;
       setLeafText(
         handoffBtn,
-        handoffToastText || L('复制 / 发起里程碑无损交接', 'Copy / Start Milestone Handoff')
+        handoffInFlight
+          ? L('正在新建并交接…', 'Handing off…')
+          : runningNow
+            ? L('请等待回复完成再换窗', 'Wait for reply to finish')
+            : L('一键新建并交接', 'Start Handoff Chat')
       );
       handoffBtn.addEventListener('click', () => {
-        window
-          .__agProjectCall(
-            'createMilestoneHandoff',
-            { cascadeId: cid, repoRoot: data.repoRoot, userInitiated: true },
-            5000
-          )
-          .then((res) => {
-            if (res?.handoffPrompt && navigator?.clipboard?.writeText) {
-              navigator.clipboard.writeText(res.handoffPrompt).catch(() => {});
-            }
-            handoffToastText =
-              res?.mode === 'created'
-                ? L('已创建新会话并复制交接单 ✓', 'Created new chat & copied handoff ✓')
-                : L('已复制无损交接 Prompt ✓', 'Copied handoff prompt ✓');
-            renderMenuContents();
-            setTimeout(() => {
-              handoffToastText = '';
-            }, 3000);
-          })
-          .catch(() => {});
+        executeHandoffAction({ cid, hCtx, repoRoot: data.repoRoot || hCtx.repoRoot, copyOnly: false });
       });
-      handoffBox.append(info, handoffBtn);
+
+      const copyBtn = document.createElement('button');
+      copyBtn.type = 'button';
+      copyBtn.className = 'agy-anc-btn agy-anc-handoff-copy';
+      copyBtn.disabled = handoffInFlight;
+      setLeafText(copyBtn, L('仅复制', 'Copy Only'));
+      copyBtn.addEventListener('click', () => {
+        executeHandoffAction({ cid, hCtx, repoRoot: data.repoRoot || hCtx.repoRoot, copyOnly: true });
+      });
+
+      nextInput.addEventListener('keydown', (e) => {
+        if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+          e.preventDefault();
+          if (!handoffBtn.disabled) handoffBtn.click();
+        }
+      });
+
+      actionRow.append(handoffBtn, copyBtn);
+      handoffBox.append(info, nextInput);
+
+      if (hCtx.composerDraft && hCtx.composerDraft !== curNextStep.trim()) {
+        const draftChip = document.createElement('button');
+        draftChip.type = 'button';
+        draftChip.className = 'agy-anc-draft-chip';
+        setLeafText(draftChip, L('带入当前草稿', 'Use unsent draft'));
+        draftChip.addEventListener('click', () => {
+          nextStepByCid.set(cid, hCtx.composerDraft.slice(0, 500));
+          renderMenuContents({ force: true });
+          menuEl?.querySelector('.agy-anc-next-input')?.focus?.();
+        });
+        handoffBox.appendChild(draftChip);
+      }
+
+      handoffBox.appendChild(actionRow);
+
+      if (handoffFeedback.cid === cid && handoffFeedback.text) {
+        const fbEl = document.createElement('div');
+        fbEl.className = 'agy-anc-handoff-feedback';
+        setAttr(fbEl, 'data-tone', handoffFeedback.tone || 'ok');
+        setLeafText(fbEl, handoffFeedback.text);
+        handoffBox.appendChild(fbEl);
+      }
+
       pop.appendChild(handoffBox);
     }
   }
@@ -352,7 +600,7 @@ export function createAnchorsPillRuntime({ studioPrefs } = {}) {
         } else {
           menuOpen = true;
           const pop = ensureMenuEl();
-          renderMenuContents();
+          renderMenuContents({ force: true });
           positionMenu(pill);
           setAttr(pop, 'data-open', 'true');
         }
@@ -437,6 +685,10 @@ export function createAnchorsPillRuntime({ studioPrefs } = {}) {
     },
     dispose() {
       disposed = true;
+      handoffInFlight = false;
+      nextStepByCid.clear();
+      handoffFeedback = { cid: '', tone: '', text: '' };
+      if (handoffFeedbackTimer) clearTimeout(handoffFeedbackTimer);
       if (settleTimer) clearTimeout(settleTimer);
       if (typeof document !== 'undefined' && typeof document.removeEventListener === 'function') {
         document.removeEventListener('mousedown', onDocClick, true);

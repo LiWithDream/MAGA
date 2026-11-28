@@ -13,7 +13,7 @@ import {
 } from './sidebar-status.mjs';
 
 export function createSidebarRecentsModule(rt) {
-  const { FEAT, L, CFG_UI_STATE, trustLocalOverrides, docRoot, state: rtState, frame, later, escapeHtml, persistUiPrefsToDaemon, syncAttrTargetSet, hooks } = rt;
+  const { FEAT, L, CFG_UI_STATE, trustLocalOverrides, docRoot, state: rtState, frame, later, cancelLater, escapeHtml, persistUiPrefsToDaemon, syncAttrTargetSet, hooks } = rt;
   const activeReactFiber = (...args) => hooks.activeReactFiber?.(...args);
   const getActiveCascadeId = (...args) => hooks.getActiveCascadeId?.(...args) || '';
   const appendDroppedMentionsToPdComposer = (...args) => hooks.appendDroppedMentionsToPdComposer?.(...args);
@@ -1055,6 +1055,9 @@ export function createSidebarRecentsModule(rt) {
       await act.updateConversationAnnotations(id, patch, true);
       rtState.recentLastSig = '';
       scheduleSidebarSync();
+      if (patch && Object.prototype.hasOwnProperty.call(patch, 'pinned') && isNativeProjectsHidden()) {
+        scheduleSidebarHideSync();
+      }
       return true;
     } catch {
       return false;
@@ -1540,11 +1543,14 @@ export function createSidebarRecentsModule(rt) {
   }
 
   let sidebarHideRaf = 0;
+  function isNativeProjectsHidden() {
+    return Boolean(FEAT.hideSidebarProjects || hooks.isSidebarProjectsCapActive?.());
+  }
   function scheduleSidebarHideSync() {
     if (rtState.disposed || sidebarHideRaf) return;
     sidebarHideRaf = frame(() => {
       sidebarHideRaf = 0;
-      if (!rtState.disposed && FEAT.hideSidebarProjects) syncSidebarHideNativeProjects();
+      if (!rtState.disposed && isNativeProjectsHidden()) syncSidebarHideNativeProjects();
     });
   }
 
@@ -1573,7 +1579,7 @@ export function createSidebarRecentsModule(rt) {
       if (typeof bindings.store.subscribe === 'function') {
         sidebarStoreUnsub = bindings.store.subscribe(() => {
           scheduleSidebarSync();
-          if (FEAT.hideSidebarProjects) scheduleSidebarHideSync();
+          if (isNativeProjectsHidden()) scheduleSidebarHideSync();
         });
       } else {
         sidebarStoreUnsub = null;
@@ -1660,7 +1666,58 @@ export function createSidebarRecentsModule(rt) {
     return 0;
   }
 
+  let pinnedMeasureRetryTimer = 0;
+  let pinnedMeasureRetries = 0;
+
+  function clearPinnedMeasureRetry() {
+    if (pinnedMeasureRetryTimer) {
+      if (typeof cancelLater === 'function') cancelLater(pinnedMeasureRetryTimer);
+      else clearTimeout(pinnedMeasureRetryTimer);
+      pinnedMeasureRetryTimer = 0;
+    }
+    pinnedMeasureRetries = 0;
+  }
+
+  function schedulePinnedMeasureRetry() {
+    if (rtState.disposed || pinnedMeasureRetryTimer || pinnedMeasureRetries >= 6) return;
+    pinnedMeasureRetries += 1;
+    pinnedMeasureRetryTimer = later(() => {
+      pinnedMeasureRetryTimer = 0;
+      if (!rtState.disposed && isNativeProjectsHidden()) syncSidebarHideNativeProjects();
+    }, 80);
+  }
+
+  function countActiveStoreKeptItems(state) {
+    const ts = state && state.trajectorySummaries;
+    const summaries = (ts && ts.summaries) || {};
+    const indexes = (ts && ts.indexes) || {};
+    const toIds = (col) => {
+      if (!col) return [];
+      if (typeof col[Symbol.iterator] === 'function' && typeof col !== 'string') return Array.from(col);
+      if (typeof col === 'object') return Object.keys(col);
+      return [];
+    };
+    const pinnedIds = new Set();
+    for (const id of toIds(indexes.pinned)) {
+      if (id && !(summaries[id] && summaries[id].annotations && summaries[id].annotations.archived)) pinnedIds.add(id);
+    }
+    for (const [id, s] of Object.entries(summaries)) {
+      if (id && s && s.annotations && s.annotations.pinned && !s.annotations.archived) pinnedIds.add(id);
+    }
+    let coordCount = 0;
+    for (const id of toIds(indexes.coordinator)) {
+      if (id && !(summaries[id] && summaries[id].annotations && summaries[id].annotations.archived)) coordCount += 1;
+    }
+    return { pinnedCount: pinnedIds.size, coordCount, total: pinnedIds.size + coordCount };
+  }
+
+  function estimatePinnedBootstrapHeight(cutIdx, storeKept) {
+    const estRows = Math.max(Number(cutIdx) || 0, storeKept.total + (storeKept.pinnedCount > 0 ? 1 : 0) + (storeKept.coordCount > 0 ? 1 : 0), 2);
+    return Math.max(72, Math.min(360, estRows * 36));
+  }
+
   function clearSidebarHideNativeProjects() {
+    clearPinnedMeasureRetry();
     if (sidebarHideScrollEl) {
       sidebarHideScrollEl.removeEventListener('scroll', onSidebarHideScroll);
       sidebarHideScrollEl = null;
@@ -1746,6 +1803,7 @@ export function createSidebarRecentsModule(rt) {
       }
     }
 
+    const storeKept = countActiveStoreKeptItems(findSidebarBindings()?.store?.getState?.());
     const indexed = [];
     for (const child of list.children) {
       const rawIdx = child.getAttribute('data-index');
@@ -1753,7 +1811,16 @@ export function createSidebarRecentsModule(rt) {
       const idx = Number(rawIdx);
       if (Number.isFinite(idx)) indexed.push({ idx, el: child });
     }
-    if (!indexed.length) return;
+    if (!indexed.length) {
+      if (storeKept.total > 0) {
+        const estH = estimatePinnedBootstrapHeight(0, storeKept);
+        const nextPinnedPx = `${estH}px`;
+        if (sbParent.getAttribute('data-ag-sb-unified') !== 'pinned') sbParent.setAttribute('data-ag-sb-unified', 'pinned');
+        if (sbParent.style.getPropertyValue('--ag-sb-pinned-height') !== nextPinnedPx) sbParent.style.setProperty('--ag-sb-pinned-height', nextPinnedPx);
+        schedulePinnedMeasureRetry();
+      }
+      return;
+    }
     indexed.sort((a, b) => a.idx - b.idx);
 
     /* Sections that stay native above the cut: Pinned and (v2.34+) Coordinators, which the native list
@@ -1775,7 +1842,16 @@ export function createSidebarRecentsModule(rt) {
     }
 
     if (cutItem) {
-      const pinnedH = cutItem.idx === 0 ? 0 : Math.max(0, Math.round(parseVirtualTranslateY(cutItem.el)));
+      const measuredH = cutItem.idx === 0 ? 0 : Math.max(0, Math.round(parseVirtualTranslateY(cutItem.el)));
+      let pinnedH = measuredH;
+      if (measuredH > 0) {
+        clearPinnedMeasureRetry();
+      } else if (cutItem.idx > 0 || storeKept.total > 0) {
+        pinnedH = estimatePinnedBootstrapHeight(cutItem.idx, storeKept);
+        schedulePinnedMeasureRetry();
+      } else {
+        clearPinnedMeasureRetry();
+      }
       const nextCutStr = String(cutItem.idx);
       const nextPinnedStr = String(pinnedH);
       if (list.dataset.agCutIdx !== nextCutStr) list.dataset.agCutIdx = nextCutStr;
@@ -1813,7 +1889,7 @@ export function createSidebarRecentsModule(rt) {
             syncPinnedSidebarRowTooltips(scrollBox);
             return;
           }
-          if (m.attributeName === 'style' && m.target && m.target.parentElement === list) {
+          if ((m.attributeName === 'style' || m.attributeName === 'data-index') && m.target && m.target.parentElement === list) {
             syncSidebarHideNativeProjects();
             return;
           }
@@ -1822,7 +1898,7 @@ export function createSidebarRecentsModule(rt) {
       sidebarListLayoutMo.observe(list, {
         subtree: true,
         attributes: true,
-        attributeFilter: ['style', 'data-subtext']
+        attributeFilter: ['style', 'data-subtext', 'data-index']
       });
     }
     if (scrollBox.scrollTop > 0) {
@@ -1834,7 +1910,15 @@ export function createSidebarRecentsModule(rt) {
     if (list.dataset.agCutIdx === undefined) {
       // Only pinned section exists in virtual list (no native Projects/Conversations headers rendered)
       const last = indexed[indexed.length - 1];
-      const estH = Math.max(0, Math.round(parseVirtualTranslateY(last.el) + ((last.el.getBoundingClientRect && last.el.getBoundingClientRect().height) || 33) + 12));
+      const lastY = parseVirtualTranslateY(last.el);
+      const lastRectH = (last.el.getBoundingClientRect && last.el.getBoundingClientRect().height) || 0;
+      let estH = Math.max(0, Math.round(lastY + (lastRectH || 33) + 12));
+      if ((estH === 0 || (lastY === 0 && lastRectH === 0)) && (hasPinnedHdr || storeKept.total > 0)) {
+        estH = estimatePinnedBootstrapHeight(indexed.length, storeKept);
+        schedulePinnedMeasureRetry();
+      } else {
+        clearPinnedMeasureRetry();
+      }
       const nextUnified = estH > 0 ? 'pinned' : 'empty';
       const nextPinnedPx = `${estH}px`;
       if (sbParent.getAttribute('data-ag-sb-unified') !== nextUnified) sbParent.setAttribute('data-ag-sb-unified', nextUnified);
@@ -1887,6 +1971,7 @@ export function createSidebarRecentsModule(rt) {
   }
 
   function dispose() {
+    clearPinnedMeasureRetry();
     document.removeEventListener('pointerdown', onPinnedRowPointerDown, true);
     window.removeEventListener('pointermove', onPinnedRowPointerMove, true);
     window.removeEventListener('pointerup', onPinnedRowPointerUp, true);

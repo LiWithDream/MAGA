@@ -658,3 +658,121 @@ test('built user/custom.js enforces sidebar 4/8 cap with native Pinned preservat
     assert.equal(doc.getElementById('ag-claude-sidebar-projects'), null);
   });
 });
+
+test('sidebar 4/8 cap breaks 0->1 pinned display:none deadlock and transitions 0->1->measured->0 cleanly', async () => {
+  const customJsSrc = readFileSync(path.join(REPO, 'user', 'custom.js'), 'utf8');
+  const { JSDOM } = await import('jsdom');
+  const nowSec = Math.floor(Date.now() / 1000);
+  const summaries = {
+    'p-maga-c-1': {
+      annotations: { title: 'Target Chat', pinned: false },
+      lastModifiedTime: { seconds: nowSec - 10 },
+      trajectoryMetadata: { projectId: 'p-maga' },
+      status: 1,
+    },
+    'p-maga-c-2': {
+      annotations: { title: 'Sibling Chat', pinned: false },
+      lastModifiedTime: { seconds: nowSec - 60 },
+      trajectoryMetadata: { projectId: 'p-maga' },
+      status: 1,
+    },
+  };
+
+  const dom = new JSDOM(
+    `<!doctype html><html><body><div id="root">
+      <div class="bg-sidebar">
+        <button data-testid="automations-button">Automations</button>
+        <a href="/customizations">Skills</a>
+        <div class="sb-grand flex-1 overflow-y-auto flex flex-col">
+          <div class="sb-parent w-full relative">
+            <div data-testid="conversation-list-sidebar">
+              <div class="w-full relative" style="height: 0px;">
+                <div data-index="0" style="position: absolute; transform: translateY(0px);">
+                  <div data-testid="section-header"><span>Projects</span><button data-testid="sidebar-add-project-button"></button></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div id="antigravity.agentSidePanelInputBox"><textarea></textarea></div>
+    </div></body></html>`,
+    { url: 'http://127.0.0.1/', pretendToBeVisual: true, runScripts: 'outside-only' }
+  );
+
+  await withDomGlobals(dom, async () => {
+    const { window } = dom;
+    const doc = window.document;
+    const listeners = [];
+    const storeState = {
+      sidebarProjects: {
+        projects: [{ id: 'p-maga', name: 'MAGA', folderUris: ['file:///tmp/maga'], archived: false }],
+      },
+      trajectorySummaries: {
+        summaries,
+        indexes: { pinned: [], sidebar: ['p-maga-c-1', 'p-maga-c-2'] },
+      },
+    };
+    const listEl = doc.querySelector('[data-testid="conversation-list-sidebar"]').firstElementChild;
+    listEl.__reactFiber$sb = {
+      memoizedProps: {
+        sidebarStore: {
+          getState: () => storeState,
+          subscribe: (fn) => {
+            listeners.push(fn);
+            return () => {};
+          },
+          dispatch: () => {},
+        },
+        sidebarRouter: { state: { location: { pathname: '/' } }, navigate: () => {} },
+      },
+    };
+    window.__agProjectCall = async () => ({ ok: true, contexts: {}, projectMtimes: {} });
+    window.ctx = { modules: { i18n: true, claudeUxHideSidebarProjects: false, claudeUxProjects: true }, onCleanup: () => {} };
+    window.eval(customJsSrc);
+    await new Promise((r) => setTimeout(r, 30));
+
+    const sbParent = doc.querySelector('.sb-parent');
+    const sbProjSec = doc.getElementById('ag-claude-sidebar-projects');
+    assert.ok(sbProjSec, '#ag-claude-sidebar-projects mounted');
+    assert.equal(sbParent.getAttribute('data-ag-sb-unified'), 'empty', 'starts empty when 0 pinned');
+    assert.equal(sbParent.style.getPropertyValue('--ag-sb-pinned-height'), '0px');
+    assert.ok(sbProjSec.querySelector('[data-ag-sbp-id="p-maga-c-1"]'));
+
+    // 1. Pin 1 chat while virtualizer keeps Projects at translateY(0px) due to display:none
+    summaries['p-maga-c-1'].annotations.pinned = true;
+    storeState.trajectorySummaries.indexes.pinned = ['p-maga-c-1'];
+    storeState.trajectorySummaries.indexes.sidebar = ['p-maga-c-2'];
+    const projWrap = listEl.firstElementChild;
+    projWrap.setAttribute('data-index', '3');
+    listeners.forEach((fn) => fn());
+    await new Promise((r) => setTimeout(r, 120));
+
+    assert.equal(sbParent.getAttribute('data-ag-sb-unified'), 'pinned', 'unlocks empty wrapper in Cap mode when 0->1 pinned');
+    const bootH = Number.parseInt(sbParent.style.getPropertyValue('--ag-sb-pinned-height'), 10);
+    assert.ok(bootH >= 72, `applies positive bootstrap height >= 72px (got ${bootH})`);
+    assert.equal(sbProjSec.querySelector('[data-ag-sbp-id="p-maga-c-1"]'), null, 'pinned chat excluded from sidebar projects list');
+
+    // 2. Virtualizer completes layout and updates Projects translateY to 73px
+    projWrap.setAttribute('style', 'position: absolute; transform: translateY(73px);');
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(sbParent.getAttribute('data-ag-sb-unified'), 'pinned');
+    assert.equal(sbParent.style.getPropertyValue('--ag-sb-pinned-height'), '73px', 'settles to measured translateY once unhidden');
+
+    // 3. Unpin back to 0 -> collapses cleanly back to empty & restores row in sidebar projects
+    summaries['p-maga-c-1'].annotations.pinned = false;
+    storeState.trajectorySummaries.indexes.pinned = [];
+    storeState.trajectorySummaries.indexes.sidebar = ['p-maga-c-1', 'p-maga-c-2'];
+    projWrap.setAttribute('data-index', '0');
+    projWrap.setAttribute('style', 'position: absolute; transform: translateY(0px);');
+    listeners.forEach((fn) => fn());
+    await new Promise((r) => setTimeout(r, 120));
+
+    assert.equal(sbParent.getAttribute('data-ag-sb-unified'), 'empty', 'collapses cleanly back to empty when 1->0 unpinned');
+    assert.equal(sbParent.style.getPropertyValue('--ag-sb-pinned-height'), '0px');
+    assert.ok(sbProjSec.querySelector('[data-ag-sbp-id="p-maga-c-1"]'), 'unpinned chat returns to sidebar projects list');
+
+    window.__agClaudeUxDispose();
+    assert.equal(doc.getElementById('ag-claude-sidebar-projects'), null);
+  });
+});

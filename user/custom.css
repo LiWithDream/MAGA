@@ -1072,10 +1072,6 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) :is([data-testid="planner-
 }
 
 /* 3.8 Interleaved Step Stream & Bi-Directional Collapse Animation */
-div[data-ag-inline-stream="true"] > button[data-testid="worked-for-collapsible"][aria-expanded="true"] {
-  display: none !important;
-}
-
 div[data-ag-inline-stream="true"] > button[data-testid="worked-for-collapsible"] + div {
   padding-left: 0 !important;
   padding-top: 0 !important;

@@ -2180,6 +2180,7 @@ test('Stage 5: user/src modular decomposition, zero legacy dead code, and MagaKe
     'user/src/modules/metrics-quota.mjs',
     'user/src/modules/inline-undo.mjs',
     'user/src/modules/sidebar-recents.mjs',
+    'user/src/modules/sidebar-projects.mjs',
     'user/src/modules/i18n.mjs',
     'user/src/modules/settings-host.mjs',
     'user/src/modules/projects/shared.mjs',
@@ -5139,25 +5140,33 @@ test('OWN_FOOTER_PILL_IDS stays aligned with CSS exclusions and allows auto-comp
   });
 });
 
-test('syncLiveConfigForStudio preserves valid user cjkFontScale and defaults missing/invalid to 95', () => {
+test('syncLiveConfigForStudio preserves valid user cjkFontScale, defaults missing/invalid to 95, and migrates stepUnfold once without clobbering user choices', () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'agy-cjk-sync-'));
   try {
     const cfgPath = path.join(dir, 'config.json');
     const uiPrefsPath = path.join(dir, 'ui-prefs.json');
     for (const scale of ['94.5', '95', '100']) {
       writeFileSync(cfgPath, JSON.stringify({ cjkFontScale: scale, modules: { claudeUxStepUnfold: true } }), 'utf8');
-      writeFileSync(uiPrefsPath, JSON.stringify({ modules: { claudeUxStepUnfold: true } }), 'utf8');
+      writeFileSync(uiPrefsPath, JSON.stringify({ modules: { claudeUxStepUnfold: false } }), 'utf8');
       syncLiveConfigForStudio({ configPath: cfgPath, uiPrefsPath });
       const savedCfg = JSON.parse(readFileSync(cfgPath, 'utf8'));
       const savedUi = JSON.parse(readFileSync(uiPrefsPath, 'utf8'));
       assert.equal(savedCfg.cjkFontScale, scale, `must preserve cjkFontScale=${scale}`);
-      assert.equal(savedCfg.modules.claudeUxStepUnfold, false);
-      assert.equal(savedUi.modules.claudeUxStepUnfold, false);
+      assert.equal(savedCfg.modules.claudeUxStepUnfold, true, 'must not clobber claudeUxStepUnfold back to false');
+      assert.equal(savedUi.modules.claudeUxStepUnfold, true, 'one-time migration restores inline briefs default');
+      assert.equal(savedUi.stepUnfoldDefaultMigrated, true);
+
+      // Subsequent deploy preserves explicit Compact mode (`false`) once migrated
+      writeFileSync(uiPrefsPath, JSON.stringify({ stepUnfoldDefaultMigrated: true, modules: { claudeUxStepUnfold: false } }), 'utf8');
+      syncLiveConfigForStudio({ configPath: cfgPath, uiPrefsPath });
+      assert.equal(JSON.parse(readFileSync(uiPrefsPath, 'utf8')).modules.claudeUxStepUnfold, false);
     }
 
     writeFileSync(cfgPath, JSON.stringify({ cjkFontScale: '80', modules: {} }), 'utf8');
     syncLiveConfigForStudio({ configPath: cfgPath, uiPrefsPath });
-    assert.equal(JSON.parse(readFileSync(cfgPath, 'utf8')).cjkFontScale, '95');
+    const afterMissing = JSON.parse(readFileSync(cfgPath, 'utf8'));
+    assert.equal(afterMissing.cjkFontScale, '95');
+    assert.equal(afterMissing.modules.claudeUxStepUnfold, true);
 
     writeFileSync(cfgPath, JSON.stringify({ modules: {} }), 'utf8');
     syncLiveConfigForStudio({ configPath: cfgPath, uiPrefsPath });

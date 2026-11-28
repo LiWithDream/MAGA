@@ -6,16 +6,39 @@ export function createStepStreamModule(rt) {
   const { FEAT, L, frame, state: rtState, setLeafText, syncAttrTargetSet } = rt;
 
   const userToggled = new WeakSet();
-  const autoExpandCount = new WeakMap();
+  const autoExpandBurst = new WeakMap();
   const openSnapshots = new WeakMap();
   const runningTimers = new WeakMap();
   let timerIntervalId = null;
 
+  function resolveWorkedStreamHost(btn) {
+    if (!btn || !btn.parentElement) return null;
+    const p = btn.parentElement;
+    if (p.nextElementSibling && !p.classList.contains('flex')) return p;
+    if (p.parentElement && p.parentElement.tagName === 'DIV' && p.nextElementSibling) {
+      return p.parentElement;
+    }
+    return p;
+  }
+
+  function tryAutoExpandWorkedBtn(btn) {
+    if (rtState.disposed || !FEAT.stepUnfold || !btn || !btn.isConnected) return false;
+    if (btn.getAttribute('aria-expanded') !== 'false' || userToggled.has(btn)) return false;
+    const now = Date.now();
+    const prev = autoExpandBurst.get(btn);
+    const count = prev && now - prev.lastTs < 1500 ? prev.count : 0;
+    if (count >= 6) return false;
+    autoExpandBurst.set(btn, { count: count + 1, lastTs: now });
+    btn.click();
+    return true;
+  }
+
   const PAST_LABEL_RE =
     /^(?:Explored|Ran\b|Edited\b|Done\b|Read\b|Searched|Listed|Viewed|Checked|Found\b|Created|Updated|Deleted|Wrote\b|Written|Built\b|Tested|Installed|Fetched|Analyzed|Reviewed|Thought\b|Worked\b|Completed|Finished|Failed|Stopped|Cancelled|Canceled|Skipped|已探索|已运行|已编辑|已完成|已读取|已搜索|已查看|已检查|已创建|已更新|已删除|已写入|已构建|已测试|已失败|已取消|完成了|思考了)/i;
 
+  const isTrustedClick = typeof rt.isTrustedClick === 'function' ? rt.isTrustedClick : (e) => Boolean(e && e.isTrusted);
   const onDocClick = (e) => {
-    if (!e.isTrusted) return;
+    if (!isTrustedClick(e)) return;
     const btn = e.target && e.target.closest && e.target.closest('button[data-testid="worked-for-collapsible"]');
     if (btn) userToggled.add(btn);
   };
@@ -568,7 +591,19 @@ export function createStepStreamModule(rt) {
   }
 
   function handleAriaExpandedMutation(t) {
-    if (!FEAT.collapseAnim || !t || t.getAttribute('data-testid') !== 'tool-group-collapsible') return;
+    if (!t || !t.getAttribute) return;
+    const testid = t.getAttribute('data-testid');
+    if (testid === 'worked-for-collapsible') {
+      if (FEAT.stepUnfold && t.getAttribute('aria-expanded') === 'false' && !userToggled.has(t)) {
+        frame(() => {
+          if (!rtState.disposed && FEAT.stepUnfold && t.isConnected && t.getAttribute('aria-expanded') === 'false' && !userToggled.has(t)) {
+            tryAutoExpandWorkedBtn(t);
+          }
+        });
+      }
+      return;
+    }
+    if (!FEAT.collapseAnim || testid !== 'tool-group-collapsible') return;
     const exp = t.getAttribute('aria-expanded');
     if (exp === 'false') {
       animateCollapseIfNeeded(t);
@@ -582,20 +617,18 @@ export function createStepStreamModule(rt) {
     if (FEAT.stepUnfold) {
       const workedBtns = document.querySelectorAll('button[data-testid="worked-for-collapsible"]');
       for (const btn of workedBtns) {
-        const wrap = btn.parentElement;
+        const wrap = resolveWorkedStreamHost(btn);
         if (wrap && !wrap.hasAttribute('data-ag-inline-stream')) {
           wrap.setAttribute('data-ag-inline-stream', 'true');
         }
-        if (btn.getAttribute('aria-expanded') === 'false' && !userToggled.has(btn)) {
-          const n = autoExpandCount.get(btn) || 0;
-          if (n < 3) {
-            autoExpandCount.set(btn, n + 1);
-            btn.click();
-          }
+        if (!btn.hasAttribute('data-ag-inline-worked')) {
+          btn.setAttribute('data-ag-inline-worked', 'true');
         }
+        tryAutoExpandWorkedBtn(btn);
       }
     } else {
       document.querySelectorAll('[data-ag-inline-stream]').forEach((el) => el.removeAttribute('data-ag-inline-stream'));
+      document.querySelectorAll('[data-ag-inline-worked]').forEach((el) => el.removeAttribute('data-ag-inline-worked'));
     }
     if (FEAT.collapseAnim) captureOpenToolPanels();
     const panes = collectPanes();
@@ -617,6 +650,7 @@ export function createStepStreamModule(rt) {
     restoreInlinePillBoundaries();
     document.querySelectorAll('.ag-collapse-ghost, .ag-orbit-dots, .ag-elapsed-timer').forEach((el) => el.remove());
     document.querySelectorAll('[data-ag-inline-stream]').forEach((el) => el.removeAttribute('data-ag-inline-stream'));
+    document.querySelectorAll('[data-ag-inline-worked]').forEach((el) => el.removeAttribute('data-ag-inline-worked'));
   }
 
   return {

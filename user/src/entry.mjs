@@ -11,6 +11,7 @@ import { createI18nModule } from './modules/i18n.mjs';
 import { createInlineUndoModule } from './modules/inline-undo.mjs';
 import { createMetricsQuotaModule } from './modules/metrics-quota.mjs';
 import { createSidebarRecentsModule } from './modules/sidebar-recents.mjs';
+import { createSidebarProjectsModule } from './modules/sidebar-projects.mjs';
 import { createCustomizationsModule } from './modules/customizations.mjs';
 import { createProjectsModule } from './modules/projects/index.mjs';
 import { createOverviewPanelModule } from './modules/overview-panel.mjs';
@@ -41,6 +42,7 @@ import { createRemoteTapModule } from './modules/remote-tap.mjs';
   const inlineUndo = createInlineUndoModule(rt);
   const metricsQuota = createMetricsQuotaModule(rt);
   const sidebarRecents = createSidebarRecentsModule(rt);
+  const sidebarProjects = createSidebarProjectsModule(rt);
 
   // Register SVG icons & sidebar hooks before creating projects module
   Object.assign(hooks, {
@@ -78,6 +80,14 @@ import { createRemoteTapModule } from './modules/remote-tap.mjs';
     closeRecentRowMenu: sidebarRecents.closeRecentRowMenu,
     syncRecentSection: sidebarRecents.syncRecentSection,
     scheduleSidebarSync: sidebarRecents.scheduleSidebarSync,
+    classifySidebarConversation: sidebarRecents.classifySidebarConversation,
+    pendingGlyphSvg: sidebarRecents.pendingGlyphSvg,
+    formatRelativeAge: sidebarRecents.formatRelativeAge,
+    openRecentRowMenu: sidebarRecents.openRecentRowMenu,
+    mutateRecentConversationAnnotation: sidebarRecents.mutateRecentConversationAnnotation,
+    triggerNewConversationFromSidebar: sidebarRecents.triggerNewConversationFromSidebar,
+    isSidebarProjectsCapActive: sidebarProjects.isCapActive,
+    syncSidebarProjects: sidebarProjects.sync,
     hasDroppedContextPayload: sidebarRecents.hasDroppedContextPayload,
     extractDroppedContextMentions: sidebarRecents.extractDroppedContextMentions,
     attachConversationDragTransfer: sidebarRecents.attachConversationDragTransfer,
@@ -106,6 +116,7 @@ import { createRemoteTapModule } from './modules/remote-tap.mjs';
     openProjectInstructionsModal: projects.openProjectInstructionsModal,
     openProjectsView: projects.openProjectsView,
     closeProjectsView: projects.closeProjectsView,
+    triggerNativeNewProject: projects.triggerNativeNewProject,
     syncProjectsWorkspace: projects.syncProjectsWorkspace,
     teardownProjectsWorkspace: projects.teardownProjectsWorkspace,
     refreshProjectsLanguageUi: projects.refreshProjectsLanguageUi,
@@ -337,6 +348,7 @@ import { createRemoteTapModule } from './modules/remote-tap.mjs';
     rt.cleanupPendingAsync();
 
     inlineUndo.dispose();
+    sidebarProjects.dispose();
     sidebarRecents.dispose();
     customizations.dispose();
     projects.dispose();

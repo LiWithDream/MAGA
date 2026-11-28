@@ -60,3 +60,25 @@ html:not([data-agy-show-thinking="1"]) [data-testid="thinking-collapsible-trigge
 [data-testid="tool-group-collapsible"][data-maga-native-elapsed="1"] .ag-elapsed-timer {
   display: none !important;
 }
+
+/* Inline Briefs: persistent post-turn step prose with whisper-quiet collapsible worked-for trigger */
+div[data-ag-inline-stream="true"] button[data-testid="worked-for-collapsible"][aria-expanded="true"] {
+  min-height: 20px !important;
+  padding: 1px 6px !important;
+  margin-bottom: 2px !important;
+  font-size: 11.5px !important;
+  line-height: 1.35 !important;
+  opacity: 0.52 !important;
+  transition: opacity 120ms ease, background-color 120ms ease !important;
+}
+
+div[data-ag-inline-stream="true"] button[data-testid="worked-for-collapsible"][aria-expanded="true"]:hover {
+  opacity: 0.94 !important;
+}
+
+div[data-ag-inline-stream="true"] > button[data-testid="worked-for-collapsible"] + div,
+div[data-ag-inline-stream="true"] > .flex + div {
+  padding-left: 0 !important;
+  padding-top: 0 !important;
+  overflow: visible !important;
+}

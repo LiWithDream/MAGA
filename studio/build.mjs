@@ -62,6 +62,8 @@ const STYLE_FILES = [
   'overview-usage.css',
   'studio-settings.css',
   'anchors-pill.css',
+  'sidebar-projects.css',
+  'projects-overview.css',
 ];
 
 const DEFAULT_PREFS = DEFAULT_STUDIO_PREFS;
@@ -245,8 +247,8 @@ export function syncLiveConfigForStudio({
     const cfg = JSON.parse(raw);
     cfg.modules = cfg.modules && typeof cfg.modules === 'object' ? cfg.modules : {};
     let dirty = false;
-    if (cfg.modules.claudeUxStepUnfold !== false) {
-      cfg.modules.claudeUxStepUnfold = false;
+    if (cfg.modules.claudeUxStepUnfold === undefined) {
+      cfg.modules.claudeUxStepUnfold = true;
       dirty = true;
     }
     const curScale = String(cfg.cjkFontScale ?? '').trim();
@@ -263,8 +265,15 @@ export function syncLiveConfigForStudio({
       const prefs = JSON.parse(readFileSync(uiPrefsPath, 'utf8'));
       if (prefs && typeof prefs === 'object') {
         prefs.modules = prefs.modules && typeof prefs.modules === 'object' ? prefs.modules : {};
-        if (prefs.modules.claudeUxStepUnfold !== false) {
-          prefs.modules.claudeUxStepUnfold = false;
+        let dirty = false;
+        // One-time migration off legacy deploy-forced `claudeUxStepUnfold: false`;
+        // subsequent deploys preserve explicit user mode (e.g., Compact `false`).
+        if (prefs.stepUnfoldDefaultMigrated !== true) {
+          prefs.modules.claudeUxStepUnfold = true;
+          prefs.stepUnfoldDefaultMigrated = true;
+          dirty = true;
+        }
+        if (dirty) {
           writeFileSync(uiPrefsPath, JSON.stringify(prefs, null, 2) + '\n', 'utf8');
         }
       }

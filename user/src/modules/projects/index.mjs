@@ -434,10 +434,12 @@ export function createProjectsModule(rt, modelApi) {
     }
     if (
       t.closest(
-        'a[href="/"], [data-testid="new-conversation-button"], [data-testid="automations-button"], a[href="/customizations"], [data-testid="settings-button"], [data-testid="conversation-row-sidebar"], #ag-claude-recent-section [data-ag-recent-new]'
+        'a[href="/"], [data-testid="new-conversation-button"], [data-testid="automations-button"], a[href="/customizations"], [data-testid="settings-button"], [data-testid="conversation-row-sidebar"], #ag-claude-recent-section [data-ag-recent-new], #ag-claude-sidebar-projects [data-ag-sbp-new-chat]'
       ) ||
       (t.closest('#ag-claude-recent-section .ag-recent-row') &&
-        !t.closest('[data-ag-recent-pin], [data-ag-recent-menu], [data-ag-recent-rename-input]'))
+        !t.closest('[data-ag-recent-pin], [data-ag-recent-menu], [data-ag-recent-rename-input]')) ||
+      (t.closest('#ag-claude-sidebar-projects .ag-sbp-row') &&
+        !t.closest('[data-ag-sbp-pin], [data-ag-sbp-menu]'))
     ) {
       closeProjectsView();
     }
@@ -1933,6 +1935,7 @@ export function createProjectsModule(rt, modelApi) {
     openProjectInstructionsModal,
     openProjectsView,
     closeProjectsView,
+    triggerNativeNewProject,
     refreshProjectsLanguageUi,
     ensureSharedModalEscBound,
     closeProjectsModal,

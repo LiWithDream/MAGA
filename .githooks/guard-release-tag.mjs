@@ -1,12 +1,15 @@
 #!/usr/bin/env node
 /**
  * Release Tag Pre-Push Guardrail (.githooks/guard-release-tag.mjs).
- * Enforces three mechanical checks whenever pushing a `refs/tags/v*` release tag:
+ * Enforces four mechanical checks whenever pushing a `refs/tags/v*` release tag:
  *   1. Target commit is an ancestor of remote `<remote>/main` (or local `main` when offline),
  *      blocking unmerged branch tags or non-main historical tags (override: `MAGA_ALLOW_NON_MAIN_TAG=1`).
- *   2. No stranded unmerged remote branches outside `main`, `master`, or `wip/*`
+ *   2. When `main` has `package.json`, the tagged commit's `package.json` must match `main`'s
+ *      package `name` (blocks legacy upstream `anti-claude` v2/v3 tags even when in `main` ancestry)
+ *      and `version === tag.slice(1)` (override: `MAGA_ALLOW_TAG_MISMATCH=1`).
+ *   3. No stranded unmerged remote branches outside `main`, `master`, or `wip/*`
  *      (live `git ls-remote --heads <remote>`, override: `MAGA_ALLOW_STRANDED_TAG=1`).
- *   3. Both `smoke/darwin` and `smoke/win32` GitHub Commit Statuses are `success` on the
+ *   4. Both `smoke/darwin` and `smoke/win32` GitHub Commit Statuses are `success` on the
  *      dereferenced target commit SHA (GitHub remotes only; override: `MAGA_SKIP_SMOKE=1`).
  */
 import { execFileSync } from 'node:child_process';
@@ -231,6 +234,78 @@ function checkMainAncestryForCommit({ cwd, remoteName, tagName, targetCommitSha,
   return { ok: true, mainRef, mainSha };
 }
 
+function readPackageJsonAtCommit(cwd, commitSha, { execFile, childEnv }) {
+  if (!commitSha) return null;
+  try {
+    const raw = execFile('git', ['-C', cwd, 'show', `${commitSha}:package.json`], {
+      encoding: 'utf8',
+      env: childEnv,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    if (!raw || !raw.trim()) return null;
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function checkTagPackageIdentityForCommit({ cwd, remoteName, tagName, targetCommitSha, mainSha, remoteHeadsRes, execFile, childEnv }) {
+  const refMainSha =
+    mainSha ||
+    (remoteHeadsRes?.reachable && remoteHeadsRes.mainSha ? remoteHeadsRes.mainSha : '') ||
+    resolveLocalMainRef(cwd, remoteName, { execFile, childEnv })?.sha ||
+    '';
+  const mainPkg = readPackageJsonAtCommit(cwd, refMainSha, { execFile, childEnv });
+  if (!mainPkg) return { ok: true };
+
+  const targetPkg = readPackageJsonAtCommit(cwd, targetCommitSha, { execFile, childEnv });
+  if (!targetPkg) {
+    return {
+      ok: false,
+      reason: 'tag_package_missing',
+      message: [
+        `[MAGA release-tag guard] Refusing to push release tag '${tagName}' (${targetCommitSha.slice(0, 7)}): commit has no valid package.json.`,
+        `To override intentionally: MAGA_ALLOW_TAG_MISMATCH=1 git push ${remoteName} ${tagName}`,
+      ].join('\n'),
+    };
+  }
+
+  const expectedName = String(mainPkg.name || '').trim();
+  const actualName = String(targetPkg.name || '').trim();
+  if (expectedName && actualName !== expectedName) {
+    return {
+      ok: false,
+      reason: 'tag_package_name_mismatch',
+      expectedName,
+      actualName,
+      message: [
+        `[MAGA release-tag guard] Refusing to push release tag '${tagName}' (${targetCommitSha.slice(0, 7)}): package.json name is '${actualName || '<missing>'}', expected '${expectedName}'.`,
+        `This blocks legacy upstream tags (e.g. anti-claude v2.x/v3.x) even when their commits lie in 'main' ancestry.`,
+        `To override intentionally: MAGA_ALLOW_TAG_MISMATCH=1 git push ${remoteName} ${tagName}`,
+      ].join('\n'),
+    };
+  }
+
+  const expectedVersion = tagName.replace(/^v/, '');
+  const actualVersion = String(targetPkg.version || '').trim();
+  if (actualVersion !== expectedVersion) {
+    return {
+      ok: false,
+      reason: 'tag_package_version_mismatch',
+      expectedVersion,
+      actualVersion,
+      message: [
+        `[MAGA release-tag guard] Refusing to push release tag '${tagName}' (${targetCommitSha.slice(0, 7)}): package.json version is '${actualVersion || '<missing>'}', expected '${expectedVersion}'.`,
+        `Ensure package.json version matches '${tagName}' before pushing the tag.`,
+        `To override intentionally: MAGA_ALLOW_TAG_MISMATCH=1 git push ${remoteName} ${tagName}`,
+      ].join('\n'),
+    };
+  }
+
+  return { ok: true };
+}
+
 function checkStrandedBranchesForCommit({ cwd, remoteName, tagName, targetCommitSha, remoteHeadsRes, execFile, childEnv }) {
   const stranded = [];
   for (const { branch, remoteSha } of remoteHeadsRes?.heads || []) {
@@ -358,9 +433,10 @@ export function checkReleaseTagPush({
 
   const warnings = [];
   const allowNonMainTag = effectiveEnv.MAGA_ALLOW_NON_MAIN_TAG === '1';
+  const allowTagMismatch = effectiveEnv.MAGA_ALLOW_TAG_MISMATCH === '1';
   const allowStrandedTag = effectiveEnv.MAGA_ALLOW_STRANDED_TAG === '1';
   let remoteHeadsRes = null;
-  if (!allowNonMainTag || !allowStrandedTag) {
+  if (!allowNonMainTag || !allowTagMismatch || !allowStrandedTag) {
     remoteHeadsRes = fetchRemoteHeads({ cwd, remoteName, strictRemote, execFile, childEnv });
     if (remoteHeadsRes.warning) warnings.push(remoteHeadsRes.warning);
     if (!remoteHeadsRes.ok) {
@@ -376,6 +452,7 @@ export function checkReleaseTagPush({
   for (const ref of releaseTags) {
     const tagName = ref.remoteRef.slice('refs/tags/'.length);
     const targetCommitSha = resolveCommitSha(cwd, ref.localSha, { execFile, childEnv });
+    let verifiedMainSha = '';
 
     if (!allowNonMainTag) {
       const mainRes = checkMainAncestryForCommit({
@@ -396,6 +473,30 @@ export function checkReleaseTagPush({
           warnings,
           message: mainRes.message,
           ...(mainRes.mainRef ? { mainRef: mainRes.mainRef, mainSha: mainRes.mainSha } : {}),
+        };
+      }
+      verifiedMainSha = mainRes.mainSha || '';
+    }
+
+    if (!allowTagMismatch) {
+      const pkgRes = checkTagPackageIdentityForCommit({
+        cwd,
+        remoteName,
+        tagName,
+        targetCommitSha,
+        mainSha: verifiedMainSha,
+        remoteHeadsRes,
+        execFile,
+        childEnv,
+      });
+      if (!pkgRes.ok) {
+        return {
+          allowed: false,
+          reason: pkgRes.reason,
+          tagName,
+          targetCommitSha,
+          warnings,
+          message: pkgRes.message,
         };
       }
     }

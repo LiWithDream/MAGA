@@ -154,6 +154,9 @@ jobs:
             RELEASE_FLAGS+=(--prerelease --latest=false)
           fi
           if gh release view "$TAG" >/dev/null 2>&1; then
+            if [[ "$TAG" == *-* ]]; then
+              gh release edit "$TAG" --prerelease --latest=false
+            fi
             gh release upload "$TAG" "${ASSETS[@]}" --clobber
           elif [[ -s /tmp/release-notes.md ]]; then
             gh release create "$TAG" "${ASSETS[@]}" --title "AGY Studio ${TAG}" --notes-file /tmp/release-notes.md ${RELEASE_FLAGS[@]+"${RELEASE_FLAGS[@]}"}

@@ -413,6 +413,9 @@ test('pack-release extractChangelogNotes and CI release workflow stay aligned fo
         `#!/usr/bin/env bash
 set -eu
 if [[ "\${1:-}" == "release" && "\${2:-}" == "view" ]]; then
+  if [[ "\${STUB_RELEASE_EXISTS:-0}" == "1" ]]; then
+    exit 0
+  fi
   exit 1
 fi
 printf '%s\\n' "$*" >> "${ghLogPath}"
@@ -421,7 +424,7 @@ printf '%s\\n' "$*" >> "${ghLogPath}"
       );
 
       const isolatedScript = stepScript.replaceAll('/tmp/release-notes.md', notesPath);
-      const runCase = (tag, withNotes) => {
+      const runCase = (tag, withNotes, { exists = false } = {}) => {
         const ver = tag.replace(/^v/, '');
         for (const asset of [
           `agy-studio-v${ver}-macos.tar.gz`,
@@ -442,6 +445,7 @@ printf '%s\\n' "$*" >> "${ghLogPath}"
             PATH: `${binDir}:${process.env.PATH}`,
             GITHUB_REF_NAME: tag,
             GH_TOKEN: 'stub-token',
+            STUB_RELEASE_EXISTS: exists ? '1' : '0',
           },
           encoding: 'utf8',
         });
@@ -453,6 +457,9 @@ printf '%s\\n' "$*" >> "${ghLogPath}"
       assert.match(rcWithNotes, /--notes-file/);
       assert.match(rcWithNotes, /--prerelease --latest=false$/);
 
+      const rcExisting = runCase('v2.0.0-rc.1', true, { exists: true });
+      assert.match(rcExisting, /^release edit v2\.0\.0-rc\.1 --prerelease --latest=false\nrelease upload v2\.0\.0-rc\.1\b/);
+
       const betaGenNotes = runCase('v2.0.0-beta.1', false);
       assert.match(betaGenNotes, /^release create v2\.0\.0-beta\.1\b/);
       assert.match(betaGenNotes, /--generate-notes/);
@@ -463,6 +470,10 @@ printf '%s\\n' "$*" >> "${ghLogPath}"
       assert.match(stableWithNotes, /--notes-file/);
       assert.doesNotMatch(stableWithNotes, /--prerelease/);
       assert.doesNotMatch(stableWithNotes, /--latest=false/);
+
+      const stableExisting = runCase('v2.0.0', true, { exists: true });
+      assert.match(stableExisting, /^release upload v2\.0\.0\b/);
+      assert.doesNotMatch(stableExisting, /release edit/);
     } finally {
       rmSync(ciTmp, { recursive: true, force: true });
     }

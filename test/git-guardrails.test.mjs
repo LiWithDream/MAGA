@@ -1073,6 +1073,55 @@ test('guard-release-tag enforces main-branch ancestry reachability for v* tags (
   }
 });
 
+test('guard-release-tag blocks legacy upstream package names (even in main ancestry) and package.json version mismatches', () => {
+  const bareOrigin = realpathNative(fs.mkdtempSync(path.join(os.tmpdir(), 'maga-tag-pkg-origin-')));
+  const dev = realpathNative(fs.mkdtempSync(path.join(os.tmpdir(), 'maga-tag-pkg-dev-')));
+
+  try {
+    execFileSync('git', ['init', '--bare', '-b', 'main', bareOrigin], { stdio: 'ignore' });
+    execFileSync('git', ['clone', bareOrigin, dev], { stdio: 'ignore' });
+    git(dev, ['config', 'user.name', 'MAGA Test']);
+    git(dev, ['config', 'user.email', 'test@maga.local']);
+    git(dev, ['config', 'core.hooksPath', GITHOOKS_DIR]);
+
+    // Ancestor commit with legacy upstream package name "anti-claude" v3.1.5
+    git(dev, ['checkout', '-B', 'main']);
+    fs.writeFileSync(path.join(dev, 'package.json'), JSON.stringify({ name: 'anti-claude', version: '3.1.5' }) + '\n');
+    git(dev, ['add', 'package.json']);
+    git(dev, ['commit', '-m', 'upstream v3.1.5'], { MAGA_ALLOW_MAIN_COMMIT: '1' });
+    git(dev, ['tag', 'v3.1.5']);
+
+    // AGY Studio main advances to agy-studio 2.0.0-rc.1 (v3.1.5 remains an ancestor of main!)
+    fs.writeFileSync(path.join(dev, 'package.json'), JSON.stringify({ name: 'agy-studio', version: '2.0.0-rc.1' }) + '\n');
+    git(dev, ['add', 'package.json']);
+    git(dev, ['commit', '-m', 'agy-studio 2.0.0-rc.1'], { MAGA_ALLOW_MAIN_COMMIT: '1' });
+    git(dev, ['push', '-u', 'origin', 'main']);
+
+    // 1. Pushing legacy upstream tag v3.1.5 is BLOCKED even though it is an ancestor of origin/main
+    const legacyPush = gitResult(dev, ['push', 'origin', 'v3.1.5'], { MAGA_SKIP_SMOKE: '1' });
+    assert.notEqual(legacyPush.status, 0);
+    assert.match(legacyPush.stderr, /package\.json name is 'anti-claude', expected 'agy-studio'/);
+
+    // 2. Pushing a tag whose version does not match package.json at HEAD is BLOCKED
+    git(dev, ['tag', '-a', 'v2.0.0', '-m', 'Mismatched v2.0.0']);
+    const versionMismatchPush = gitResult(dev, ['push', 'origin', 'v2.0.0']);
+    assert.notEqual(versionMismatchPush.status, 0);
+    assert.match(versionMismatchPush.stderr, /package\.json version is '2\.0\.0-rc\.1', expected '2\.0\.0'/);
+
+    // 3. Pushing matching tag v2.0.0-rc.1 on agy-studio 2.0.0-rc.1 SUCCEEDS
+    git(dev, ['tag', '-a', 'v2.0.0-rc.1', '-m', 'Release v2.0.0-rc.1']);
+    const validPush = gitResult(dev, ['push', 'origin', 'v2.0.0-rc.1']);
+    assert.equal(validPush.status, 0, validPush.stderr);
+
+    // 4. Explicit override MAGA_ALLOW_TAG_MISMATCH=1 succeeds
+    const overridePush = gitResult(dev, ['push', 'origin', 'v2.0.0'], { MAGA_ALLOW_TAG_MISMATCH: '1' });
+    assert.equal(overridePush.status, 0, overridePush.stderr);
+  } finally {
+    fs.rmSync(bareOrigin, { recursive: true, force: true });
+    fs.rmSync(dev, { recursive: true, force: true });
+  }
+});
+
 test('studio/smoke-live evaluates doctor + CDP invariants across OSes and formats GitHub Commit Status payloads', () => {
   assert.equal(parseSmokeRepoSlug('https://github.com/Acme/agy-studio.git')?.slug, 'Acme/agy-studio');
   assert.equal(parseSmokeRepoSlug('ssh://git@github.com/Acme/agy-studio.git')?.slug, 'Acme/agy-studio');

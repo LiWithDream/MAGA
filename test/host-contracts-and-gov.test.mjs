@@ -285,3 +285,32 @@ test('studio/host/contracts.mjs & probe-host.mjs stay out of custom.js bundle an
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test('core/studio/user/remote/vendor/install tracked sources stay free of domain-specific ML research jargon', () => {
+  const trackedFiles = git(REPO_ROOT, [
+    'ls-files',
+    '--',
+    'core',
+    'studio',
+    'user/src',
+    'remote',
+    'install.mjs',
+    'vendor',
+  ])
+    .split(/\r?\n/)
+    .filter(Boolean);
+  assert.ok(trackedFiles.length > 0, 'expected tracked source files');
+
+  const bannedTermRe = /\b(?:cuda|torch_npu|ascend|slurm|sscl|tpami|neurips|icml|iclr|cvpr|imagenet|max_epochs)\b|论文|消融/i;
+  const violations = [];
+  for (const rel of trackedFiles) {
+    const absPath = path.join(REPO_ROOT, rel);
+    const buf = fs.readFileSync(absPath);
+    if (buf.includes(0)) continue;
+    const match = buf.toString('utf8').match(bannedTermRe);
+    if (match) {
+      violations.push(`${rel}: ${match[0]}`);
+    }
+  }
+  assert.deepEqual(violations, [], `Unexpected domain-specific ML research jargon in core files: ${violations.join(', ')}`);
+});

@@ -10,6 +10,7 @@ import {
   esc,
 } from './constants.mjs';
 import { getRemoteL1Summary } from './remote-view.mjs';
+import { renderUpdateCard } from './update-view.mjs';
 
 export function getHostExecutorSummary(catalog, val, L) {
   if (val && val !== 0) {
@@ -193,8 +194,10 @@ export function renderL1(p, base, catalog, { studioPrefs, state, L }) {
         </div>
       </div>
 
+      ${renderUpdateCard(state, L)}
+
       <div class="agy-ms-foot-meta">
-        <span>AGY Studio · agy-studio</span>
+        <span>AGY Studio${state?.updateVersionInfo?.local?.version && state.updateVersionInfo.local.version !== '0.0.0' ? ` v${esc(state.updateVersionInfo.local.version)}` : ' · agy-studio'}</span>
         <span>${esc(L('改动即时生效并自动保存', 'Instant & persistent'))}</span>
       </div>`;
 }

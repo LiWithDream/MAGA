@@ -3,8 +3,13 @@
  */
 import { PREVIEW_SAMPLE_GROUPS, buildDefaultPreviewSelectionMap } from './constants.mjs';
 import { handleRemoteSettingsClick, loadRemoteControlStatusIfNeeded } from './remote-events.mjs';
+import {
+  handleUpdateSettingsClick,
+  loadStudioVersionInfoIfNeeded,
+  stopUpdateStatusPolling,
+} from './update-events.mjs';
 
-export { loadRemoteControlStatusIfNeeded };
+export { loadRemoteControlStatusIfNeeded, loadStudioVersionInfoIfNeeded, stopUpdateStatusPolling };
 
 export function loadAiSuggestionsConfigIfNeeded(state, viewName, onLoaded) {
   if (!state || (viewName !== 'workspace' && viewName !== 'workspace-ai-suggestions')) return;
@@ -92,6 +97,9 @@ export function bindSettingsRootEvents(root, {
     }
 
     if (await handleRemoteSettingsClick(target, root, { state, renderActiveHost, flashToast })) {
+      return;
+    }
+    if (await handleUpdateSettingsClick(target, { state, renderActiveHost, flashToast })) {
       return;
     }
 

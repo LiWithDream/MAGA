@@ -9,7 +9,7 @@
 import { markOwn, setAttr, setLeafText } from '../core/dom.mjs';
 import { getActiveRouteCid, isZhUi } from '../core/env.mjs';
 import { DRAWER_ID, NAV_WRAP_ID, PANEL_ID, ROOT_ID, SVG_BACK, SVG_CLOSE, SVG_GEAR, TRIGGER_ID, buildDefaultPreviewSelectionMap, computeSettingsDrawerTopInset, esc } from './settings/constants.mjs';
-import { bindSettingsRootEvents, loadAiSuggestionsConfigIfNeeded, loadGitWorkflowStatusIfNeeded, loadRemoteControlStatusIfNeeded } from './settings/events.mjs';
+import { bindSettingsRootEvents, loadAiSuggestionsConfigIfNeeded, loadGitWorkflowStatusIfNeeded, loadRemoteControlStatusIfNeeded, loadStudioVersionInfoIfNeeded, stopUpdateStatusPolling } from './settings/events.mjs';
 import { createFxPreviewController } from './settings/preview.mjs';
 import { renderL2Remote } from './settings/remote-view.mjs';
 import {
@@ -41,6 +41,10 @@ export function createStudioSettingsRuntime({
 
   const state = {
     resetArmed: false,
+    updateArmed: false,
+    updateVersionInfo: null,
+    updateCheck: null,
+    updateJob: null,
     fxStudioTab: 'capsule',
     fxPreviewModel: 'Gemini 4 Neon',
     fxPreviewActiveModel: 'Gemini 4 Neon',
@@ -116,7 +120,7 @@ export function createStudioSettingsRuntime({
 
   function pushView(view, meta = null) {
     navDir = 'forward';
-    state.resetArmed = false;
+    state.resetArmed = state.updateArmed = false;
     let targetView = view;
     if (targetView === 'models-theme') {
       targetView = 'models';
@@ -129,7 +133,7 @@ export function createStudioSettingsRuntime({
   function popView() {
     if (viewStack.length <= 1) return false;
     navDir = 'back';
-    state.resetArmed = false;
+    state.resetArmed = state.updateArmed = false;
     viewStack.pop();
     renderActiveHost(false);
     return true;
@@ -209,7 +213,7 @@ export function createStudioSettingsRuntime({
     drawerOpen = true;
     viewStack = [{ view: 'l1' }];
     navDir = '';
-    state.resetArmed = false;
+    state.resetArmed = state.updateArmed = false;
     const el = ensureDrawerEl();
     syncDrawerTopInset(el);
     renderInto(el, 'drawer', false);
@@ -225,7 +229,7 @@ export function createStudioSettingsRuntime({
     drawerOpen = false;
     restoreOverviewOnClose = false;
     restoreRouteCid = '';
-    state.resetArmed = false;
+    state.resetArmed = state.updateArmed = false;
     updateTriggerState();
     fxController.disposeFxPreview();
 
@@ -294,6 +298,7 @@ export function createStudioSettingsRuntime({
     loadAiSuggestionsConfigIfNeeded(state, cur.view, () => renderActiveHost(true));
     loadGitWorkflowStatusIfNeeded(state, cur.view, () => renderActiveHost(true));
     loadRemoteControlStatusIfNeeded(state, cur.view, () => renderActiveHost(true));
+    loadStudioVersionInfoIfNeeded(state, cur.view, () => renderActiveHost(true));
     const meta = getViewMeta(cur.view, L);
     const viewCtx = {
       studioPrefs,
@@ -505,6 +510,7 @@ export function createStudioSettingsRuntime({
     fxController.disposeFxPreview();
     if (restoreTimer) clearTimeout(restoreTimer);
     if (toastTimer) clearTimeout(toastTimer);
+    stopUpdateStatusPolling(state);
     document.removeEventListener('keydown', onDocKeyDown, true);
     document.removeEventListener('click', onDocClickCapture, true);
     document.documentElement?.removeAttribute?.('data-agy-maga-settings-open');

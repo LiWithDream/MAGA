@@ -576,6 +576,17 @@ export function renderL2Stream(p, base, { studioPrefs, L }) {
           ['expanded', L('展开摘要', 'Expanded')],
         ], stepMode)}
         ${renderDrillRow('stream-auto-compact', L('智能压缩上下文 (Auto-Compact)', 'Auto-Compact'), L('高上下文且设了长定时等待时，回合结束趁缓存未失效自动触发 /compact', 'Runs /compact right after long-wait or high-context turns while cache is warm'), acSum)}
+        ${renderSegRow(
+          'anchorsMode',
+          'studio',
+          L('抗漂移锚点与交接 (Experimental)', 'Anti-Drift Anchors & Handoff (Experimental)'),
+          L('追踪压缩代数 G、一键无损换窗、纠偏原话审批卡与 .agents/locks.json 减速带；关闭后停用钩子与底栏胶囊', 'Tracks compaction generation G, 1-click milestone handoff, verbatim anchor cards & .agents/locks.json speed-bumps; set Off to disable'),
+          [
+            ['off', L('关闭', 'Off')],
+            ['semi', L('半自动', 'Semi-auto')],
+          ],
+          p.anchorsMode || 'semi'
+        )}
         ${renderSwitchRow('resumeBannerEnabled', 'studio', L('中断恢复胶囊 (Resume)', 'Interrupted Task Resume Pill'), L('检测到对话因崩溃、超时或网络意外中断时在底栏显示一键继续按钮', 'Shows one-click Resume pill when a conversation terminated mid-task'), p.resumeBannerEnabled)}
         ${renderSwitchRow('claudeUxCodeFold', 'base', L('长代码块折叠与吸顶', 'Long Code Folding (>40 lines)'), L('超过 40 行的代码块自动折叠为预览并保持语言与复制栏吸顶', 'Collapses long code blocks with sticky language & copy bar'), base.modules?.claudeUxCodeFold !== false)}
       </div>`;

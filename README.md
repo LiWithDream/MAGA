@@ -167,8 +167,53 @@ Antigravity Desktop 2.0 is built around **one agent in one chat**. Once you jugg
 **Monitor runs, approve waiting tool calls, and steer sessions from your phone or another browser — with zero open ports.**
 
 - **Zero-Dep Loopback Gateway & Edge Security**: A standalone 7-file gateway binds strictly to `127.0.0.1:18791` behind Cloudflare Access (JWKS RS256), Tailscale Serve, or local loopback, pairing via single-use codes or local SVG QR codes and ECDSA P-256 device handshakes with granular roles (`observe` / `steer` / `admin`) and instant revocation.
-- **Full Mobile & Desktop Console**: Inspect live streaming steps, dual-pool quotas, per-project views, and interactive `askQuestion` cards; switch models/effort tiers; attach screenshots or camera photos; trigger `/compact`, `Resume`, or Opus Gate reviews; and guard writes with fail-closed `TURBO` confirmations.
+- **Full Mobile & Desktop Console**: Inspect live streaming steps, dual-pool quotas, per-project views, 30-day usage breakdown, read-only Artifact Markdown & live Git diff drawer, and interactive `askQuestion` cards; switch models/effort tiers; attach screenshots or camera photos; complete dynamic `/` skills; trigger `/compact`, `Resume`, or Opus Gate reviews; and guard writes with fail-closed `TURBO` confirmations.
 - **Native Android App & Self-Hosted OTA (`remote/android/`)**: Edge-to-edge WebView client with native notifications & haptics, Android share-sheet upload, in-app OAuth, network/resume/crash recovery, optional `KeepAliveService` listener, and Cloudflare-Access-authenticated in-app OTA updates (`/api/android/latest`, `/api/android/apk`).
+
+---
+
+<a id="anti-drift-anchors"></a>
+
+### 6. Anti-Drift Anchors & Milestone Handoff (Experimental)
+
+**Keep long-horizon engineering and research sessions from drifting across compactions — without silent rule rewrites.**
+
+- **Compaction Generation (`G`) & 1-Click Milestone Handoff**: Tracks context compactions (`G`). Once `G >= 3` (where unrestated constraints start decaying rapidly), a lightweight dock pill (`G3 · Handoff`) offers one-click lossless handoff to a new chat with your Git snapshot, post-compaction visible excerpts, and read-only transcript pointer (`<untrusted_reference>`-sandboxed, zero `thinking` leaked).
+- **Human-Signed Verbatim Anchors (`.agents/rules/anchors.local.md`)**: Scans `transcript_full.jsonl` out of band at `Stop` boundaries to pair your verbatim corrections against the model's immediate redacted `thinking` comprehension check. Only human-approved quotes flush into untracked `.agents/rules/anchors.local.md` under a strict `<= 400`-token Evict-to-Admit budget.
+- **Deterministic `.agents/locks.json` Speed-Bumps & Loop Escalation**: Zero-LLM `PreToolUse` check (`< 0.2ms`) triggers `force_ask` when edits touch locked paths or commands override locked env/flags, and escalates `>= 3` repeated tool failure loops to `opus-gate` `debug`. *(Note: `.agents/locks.json` is an opt-in `force_ask` workflow speed-bump, not a security sandbox — arbitrary shell commands can still modify files if approved.)*
+
+<details>
+<summary><b>Example: opt-in repository <code>.agents/locks.json</code> (general engineering)</b></summary>
+
+```json
+{
+  "schema": 1,
+  "lockedFiles": [
+    { "id": "applied-migrations", "path": "db/migrations/", "quote": "Never rewrite already-applied migrations; add a new migration instead." }
+  ],
+  "paramLocks": [
+    { "id": "api-ver", "key": "API_VERSION", "expected": "v2", "quote": "Keep integration tests pinned to API_VERSION=v2." }
+  ],
+  "bannedPatterns": [
+    {
+      "id": "no-force-push",
+      "appliesTo": ["shell"],
+      "pattern": "git\\s+push\\b[^\\n]*--force(?!-with-lease)",
+      "quote": "Do not raw force-push shared branches.",
+      "reopenIf": "Explicit maintainer approval on an isolated feature branch"
+    },
+    {
+      "id": "no-prod-url-in-source",
+      "appliesTo": ["file"],
+      "excludeFiles": [".env.example"],
+      "pattern": "postgres://prod-db\\.internal",
+      "quote": "Do not hardcode internal production DB URLs in tracked source files."
+    }
+  ]
+}
+```
+
+</details>
 
 ---
 
@@ -275,7 +320,7 @@ Small daily friction adds up when you live inside Antigravity all day — every 
 | Root DOM observers (`MagaKernel`) | **`1`** shared `MutationObserver` (`data-maga-own` filtered) |
 | Frame flush cost (Apple Silicon local CDP check) | **`1.5–3.6 ms`** with leaf-only telemetry slots (`MetricsBus`) |
 | Global CSS `:has()` selectors | **`0`** (enforced by automated test guards) |
-| Automated regression & invariant suite (`npm test`) | **`225+`** passing tests, **`0`** skipped |
+| Automated regression & invariant suite (`npm test`) | **`255+`** passing tests, **`0`** skipped |
 | Background footprint | **`1`** local `LaunchAgent` (macOS) / Scheduled Task (Windows) |
 
 ---
@@ -319,6 +364,7 @@ Running other Antigravity plugins? Here is how **AGY Studio** behaves alongside 
 | **Conversation** | Step Stream Mode | `Compact` | Unified step verbosity and fold state |
 | **Conversation** | Interrupted Resume Pill | `On` | Contextual `Resume` pill for mid-stream interruptions |
 | **Conversation** | Cache-Aware Auto-Compact | `Semi-auto` | Mode (`Off`/`Semi-auto`/`Auto`), context threshold (`50%`), long-wait triggers |
+| **Conversation** | Anti-Drift Anchors (Experimental) | `Semi-auto` | Mode (`Off`/`Semi-auto`), compaction `G` badge & 1-click handoff, verbatim anchor cards & `.agents/locks.json` speed-bumps |
 | **Conversation** | Long Code Folding | `On` | Collapse code blocks over 40 lines with sticky copy header |
 | **Workspace** | Overview & Project Usage | `On` | Right-hand Overview and per-project Day/Week/Month token charts |
 | **Workspace** | Subagent Dock Pill | `On` | Footer subagent status pill and one-click 50/50 split |
@@ -362,11 +408,11 @@ This comes from Antigravity's native `language_server` when its TLS/proxy connec
 │   ├── shared/            # Single-source preferences schema & sanitization
 │   ├── daemon/            # Usage stats, resume detection, AI suggestions, plugin sync & gate services
 │   ├── modules/           # Dock capsules, Settings Studio (incl. Remote Control & QR), auto-compact, subagent split
-│   ├── plugin/            # Managed plugins (maga-opus-gate, maga-auto-compact, maga-git-workflow)
+│   ├── plugin/            # Managed plugins (maga-opus-gate, maga-auto-compact, maga-git-workflow, maga-anchors)
 │   ├── styles/            # Scoped stylesheets (0 :has() selectors)
 │   ├── cli.mjs            # Unified CLI (install / deploy / sync-rules / doctor / rollback / remote)
 │   └── pack-release.mjs   # Zero-npm-install Release tarball packager
-├── test/                  # Automated regression & invariant suite (225+ tests)
+├── test/                  # Automated regression & invariant suite (255+ tests)
 ├── install.sh             # One-line macOS installer (--dry-run, prebuilt & source modes)
 ├── uninstall.sh           # Clean macOS rollback & uninstaller (--dry-run supported)
 ├── install.ps1            # One-line Windows PowerShell installer (-DryRun, -NoRules, -NoShortcut)
@@ -376,7 +422,7 @@ This comes from Antigravity's native `language_server` when its TLS/proxy connec
 | Contributor Command | Purpose |
 | :--- | :--- |
 | `npm run wt:new -- feat/slug` | Create an isolated sibling Git worktree with symlinked/junctioned `node_modules` |
-| `npm test` | Compile `user/custom.js` and run the full 225+ test & invariant suite |
+| `npm test` | Compile `user/custom.js` and run the full 255+ test & invariant suite |
 | `npm run deploy` | Hot-reload UI changes into running Antigravity from clean `main` (no app restart) |
 | `npm run release:pack:all` | Build zero-`npm-install` macOS `.tar.gz` and Windows `.zip` archives + SHA-256 in `dist/` |
 

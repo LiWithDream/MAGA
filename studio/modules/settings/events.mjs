@@ -338,12 +338,16 @@ export function bindSettingsRootEvents(root, {
       } else if (kind === 'studio') {
         const prevMode = studioPrefs.get().opusGateMode;
         const prevAcMode = studioPrefs.get().autoCompactMode;
+        const prevAnchorsMode = studioPrefs.get().anchorsMode;
         studioPrefs.patch({ [key]: val });
         if (key === 'opusGateMode' && prevMode === 'off' && val !== 'off' && typeof window.__agProjectCall === 'function') {
           window.__agProjectCall('syncOpusGatePlugin', {}, 5000).catch(() => {});
         }
         if (key === 'autoCompactMode' && prevAcMode === 'off' && val !== 'off' && typeof window.__agProjectCall === 'function') {
           window.__agProjectCall('syncAutoCompactPlugin', {}, 5000).catch(() => {});
+        }
+        if (key === 'anchorsMode' && prevAnchorsMode === 'off' && val !== 'off' && typeof window.__agProjectCall === 'function') {
+          window.__agProjectCall('syncAnchorsPlugin', {}, 5000).catch(() => {});
         }
         flashToast('✓ 已保存', '✓ Saved');
       } else if (kind === 'studio-num') {

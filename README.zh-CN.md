@@ -168,8 +168,53 @@
 **离开桌面也能实时看流式进度、点工具审批与继续追问——零公网端口暴露。**
 
 - **7 文件零依赖回环网关与边界认证**：网关严格仅监听 `127.0.0.1:18791`，通过 Cloudflare Access（JWKS RS256）、Tailscale Serve 或本机回环接入；支持一次性配对码与桌面端本地 SVG 二维码扫码配对，基于 ECDSA P-256 设备握手与角色权限（`observe` / `steer` / `admin`）随时升降级或吊销设备。
-- **完整控制台体验（桌面三栏 + 移动端）**：实时查看过程流、双池配额与分项目视图，支持交互式 `askQuestion` 单选/多选卡片、切换模型与思考档位、粘贴或相机传图、触发 `/compact` / `Resume` / `Opus Gate` 复核，并对 `TURBO` 模式强制二次确认防误触。
+- **完整控制台体验（桌面三栏 + 移动端）**：实时查看过程流、双池配额、30 天用量分布、只读 Artifact Markdown 与实时 Git 状态/Diff 审阅抽屉、分项目视图及交互式 `askQuestion` 卡片；切换模型与思考档位、动态 `/` 技能补全、粘贴或相机传图；触发 `/compact` / `Resume` / `Opus Gate` 复核，并对 `TURBO` 模式强制二次确认防误触。
 - **原生 Android 客户端与自托管 OTA（`remote/android/`）**：沉浸式全面屏壳体、原生通知与震动反馈、系统分享直接传图、应用内 OAuth 登录、断网/切网/WebView 崩进程自愈、可选前台保活监听服务（`KeepAliveService`），以及走同源 Cloudflare Access 校验的应用内静默查更与一键 OTA 安装。
+
+---
+
+<a id="anti-drift-anchors"></a>
+
+### 6. 抗漂移锚点与一键里程碑换窗（Experimental）
+
+**让超长程研发与工程会话在多次上下文压缩后依然不失忆、不漂移，且绝不静默篡改规则。**
+
+- **压缩代数 `G` 徽章与一键无损换窗**：自动统计当前对话的压缩次数 `G`。当进入约束半衰期临界点（`G >= 3`）时，底栏亮起轻量胶囊（`G3 · 建议换窗`），点击即可自动携带 Git 快照、压缩后可见上下文摘录与只读回查坐标新建会话（`<untrusted_reference>` 隔离，严禁泄露思维链）。
+- **人工拍板的原话活体锚点（`.agents/rules/anchors.local.md`）**：在 `Stop` 边界带外扫描 `transcript_full.jsonl`，将您的纠偏原话与紧随其后的脱敏 `thinking` 理解复述并排呈现在确认卡；仅经您点击 `Accept` 的原话才会在回合边界按 `<= 400` Token 进一退一预算落盘（未追踪，绝不污染 `main`）。
+- **`.agents/locks.json` 确定性减速带与死循环升级**：零 LLM 开销的 `PreToolUse` 检查（`< 0.2ms`）可在修改锁定路径或命令行覆写锁定参数时触发 `force_ask` 提醒，并在同一工具连续失败 `>= 3` 次时自动联动 `opus-gate` `debug` 跳出死胡同。*（注：`.agents/locks.json` 是可选的工作流 `force_ask` 减速带，而非安全隔离沙箱——若放行任意 Shell 命令仍可修改文件。）*
+
+<details>
+<summary><b>示例：在通用工程仓库按需配置 <code>.agents/locks.json</code></b></summary>
+
+```json
+{
+  "schema": 1,
+  "lockedFiles": [
+    { "id": "applied-migrations", "path": "db/migrations/", "quote": "禁止修改已落库的迁移文件，请新建迁移脚本。" }
+  ],
+  "paramLocks": [
+    { "id": "api-ver", "key": "API_VERSION", "expected": "v2", "quote": "集成测试必须锁定 API_VERSION=v2。" }
+  ],
+  "bannedPatterns": [
+    {
+      "id": "no-force-push",
+      "appliesTo": ["shell"],
+      "pattern": "git\\s+push\\b[^\\n]*--force(?!-with-lease)",
+      "quote": "禁止对共享分支执行裸 --force 强推。",
+      "reopenIf": "独立特性分支且经仓库维护者明确同意"
+    },
+    {
+      "id": "no-prod-url-in-source",
+      "appliesTo": ["file"],
+      "excludeFiles": [".env.example"],
+      "pattern": "postgres://prod-db\\.internal",
+      "quote": "禁止在受追踪源码中硬编码内网生产库连接串。"
+    }
+  ]
+}
+```
+
+</details>
 
 ---
 
@@ -276,7 +321,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 | 根 DOM 观测器数量（`MagaKernel`） | **`1`** 个统一 `MutationObserver`（`data-maga-own` 自隔离） |
 | 主线程刷帧耗时（Apple Silicon 本地 CDP 实测） | **`1.5–3.6 ms`**，高频遥测走叶节点原地更新（`MetricsBus`） |
 | 全局 CSS `:has()` 选择器数量 | **`0`**（自动化测试硬守卫） |
-| 自动化回归与不变量测试（`npm test`） | **`225+`** 项全部通过，**`0`** 项跳过 |
+| 自动化回归与不变量测试（`npm test`） | **`255+`** 项全部通过，**`0`** 项跳过 |
 | 后台进程占用 | **`1`** 个本地 `LaunchAgent`（macOS）/ 计划任务（Windows） |
 
 ---
@@ -320,6 +365,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 | **对话与过程流** | 步骤流展示模式 | `紧凑折叠` | 统一同步宿主步骤详细程度与展开状态 |
 | **对话与过程流** | 中断恢复胶囊（`Resume`） | `开` | 检测到流式意外中止时在底栏显示静默续跑按钮 |
 | **对话与过程流** | 智能压缩上下文（`Auto-Compact`） | `半自动` | 模式（关闭/半自动/自动）、触发阈值（`50%`）、长等待与高水位触发 |
+| **对话与过程流** | 抗漂移锚点与交接（Experimental） | `半自动` | 模式（`关闭`/`半自动`）、压缩代数 `G` 徽章与一键换窗、原话审批卡及 `.agents/locks.json` 减速带 |
 | **对话与过程流** | 长代码块折叠与吸顶 | `开` | 超过 40 行自动折叠并吸顶语言栏与复制按钮 |
 | **工作区与面板** | Overview 与项目用量图表 | `开` | 右侧 Overview 与项目详情页的日/周/月 Token 柱状图 |
 | **工作区与面板** | 底部子代理胶囊与分屏 | `开` | 底栏实时状态胶囊与一键 50/50 联动分屏 |
@@ -363,11 +409,11 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 │   ├── shared/            # 单一数据源偏好设置 Schema 与清洗校验
 │   ├── daemon/            # 用量聚合、中断检测、AI 历史建议、插件同步与各服务守护逻辑
 │   ├── modules/           # 底栏胶囊、设置台（含远程控制与本地二维码）、智能压缩、子代理分屏
-│   ├── plugin/            # 托管原生插件（maga-opus-gate、maga-auto-compact、maga-git-workflow）
+│   ├── plugin/            # 托管原生插件（maga-opus-gate、maga-auto-compact、maga-git-workflow、maga-anchors）
 │   ├── styles/            # 作用域样式表（全仓 0 条 :has() 选择器）
 │   ├── cli.mjs            # 统一 CLI（install / deploy / sync-rules / doctor / rollback / remote）
 │   └── pack-release.mjs   # 零依赖 Release 压缩包打包器
-├── test/                  # 自动化测试套件（225+ 项回归与架构守卫）
+├── test/                  # 自动化测试套件（255+ 项回归与架构守卫）
 ├── install.sh             # 一键 macOS 安装脚本（支持 --dry-run、预编包与源码模式）
 ├── uninstall.sh           # 一键 macOS 无痕回滚卸载脚本（支持 --dry-run）
 ├── install.ps1            # 一键 Windows PowerShell 安装脚本（支持 -DryRun / -NoRules / -NoShortcut）
@@ -377,7 +423,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 | 开发者命令 | 作用 |
 | :--- | :--- |
 | `npm run wt:new -- feat/slug` | 创建隔离开发用 Git Worktree 并自动软链 / Junction `node_modules` |
-| `npm test` | 编译 `user/custom.js` 并运行全部 225+ 项回归与不变量测试 |
+| `npm test` | 编译 `user/custom.js` 并运行全部 255+ 项回归与不变量测试 |
 | `npm run deploy` | 在干净 `main` 上秒级热更新至运行中的 Antigravity（无需重启客户端） |
 | `npm run release:pack:all` | 生成零 `npm install` 的 macOS `.tar.gz` 与 Windows `.zip` 及 SHA-256 校验文件到 `dist/` |
 

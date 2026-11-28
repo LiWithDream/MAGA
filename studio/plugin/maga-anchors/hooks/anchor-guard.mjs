@@ -42,7 +42,7 @@ const realpathNative = fs.realpathSync.native || fs.realpathSync;
 
 // Bilingual high-precision constraint / user-correction cue matcher (applied outside fenced code blocks)
 const CORRECTION_CUE_RE =
-  /(?:严禁|禁止|不准|不能改|不能动|不要再|不要改|别再|切忌|算作弊|同赛道|公平对比|必须保持|我记得|刚才说了|不是这个意思|我说的是|锁死|must\s+not\b|never\s+(?:modify|edit|change|run|use|touch|override|bypass)\b|do\s+not\s+(?:modify|edit|change|run|touch|override)\b|strictly\s+forbidden|fair[- ]comparison)/i;
+  /(?:严禁|禁止|不准|不能改|不能动|不要再|不要改|别再|切忌|必须保持|刚才说了|不是这个意思|我说的是|锁死|\bmust\s+not\b|\bnever\s+(?:modify|edit|change|run|use|touch|override|bypass|delete|drop)\b|\b(?:do\s+not|don['’]t)\s+(?:modify|edit|change|run|use|touch|override|bypass|delete|drop|remove)\b|\bstop\s+(?:changing|editing|modifying|running|using|touching)\b|\b(?:i\s+said|i\s+told\s+you|that['’]s\s+not\s+what\s+i\s+meant|keep\s+it\s+(?:strictly|unchanged|locked))\b|\bstrictly\s+forbidden\b)/i;
 
 export function sha1Short(text) {
   return crypto.createHash('sha1').update(String(text || '')).digest('hex').slice(0, 16);
@@ -127,11 +127,19 @@ export function resolveAnchorPaths(opts = {}) {
     conversationsDir,
     brainDir,
     prefsFile: opts.studioPrefsFile || path.join(stateDir, 'studio-prefs.json'),
+    userConfigFile: opts.userConfigFile || path.join(stateDir, 'user', 'config.json'),
     proposalsDir: opts.proposalsDir || path.join(stateDir, 'anchor-proposals'),
     pendingWritesDir: opts.pendingWritesDir || path.join(stateDir, 'anchor-pending-writes'),
     pluginDataDir: opts.pluginDataDir || process.env.PLUGIN_DATA || path.join(stateDir, 'anchors-data'),
     opusProposalsDir: opts.opusProposalsDir || path.join(stateDir, 'opus-gate-proposals'),
   };
+}
+
+function isZhUiConfigured(paths, opts = {}) {
+  if (opts.lang === 'zh') return true;
+  if (opts.lang === 'en') return false;
+  const cfg = readJsonSafe(paths.userConfigFile, null);
+  return Boolean(cfg?.modules?.i18n === true);
 }
 
 function isAnchorsEnabled(prefsFile) {
@@ -256,10 +264,22 @@ function normalizeLocksSchema(locks) {
       : Array.isArray(b?.applies_to)
         ? b.applies_to.map((x) => String(x || '').toLowerCase())
         : defaultApplies;
+    const rawExclude = Array.isArray(b?.excludeFiles)
+      ? b.excludeFiles
+      : Array.isArray(b?.exclude_files)
+        ? b.exclude_files
+        : [];
+    const excludeFiles = rawExclude
+      .map((x) => {
+        const norm = String(x || '').trim().replace(/\\/g, '/').replace(/^\/+/, '');
+        return CASE_INSENSITIVE_FS ? norm.toLowerCase() : norm;
+      })
+      .filter(Boolean);
     return {
       id: b?.id || '',
       scope,
       appliesTo,
+      excludeFiles,
       pattern: b?.pattern || '',
       flags: b?.flags || '',
       quote: b?.quote || b?.message || '',
@@ -289,18 +309,18 @@ export function evaluateLocksPreToolUse(payload, opts = {}) {
 
   const args = payload?.toolCall?.args && typeof payload.toolCall.args === 'object' ? payload.toolCall.args : {};
   const rawCwd = args.Cwd || args.cwd || payload?.cwd || process.cwd();
-  // Zero-subprocess fast path (`<0.2ms` pure fs walk; zero git spawn when `.agents/locks.json` is absent)
-  const loaded = findFastUpwardLocks(rawCwd);
-  if (!loaded) return { decision: 'allow' };
-
-  const { locks: rawLocks, locksRoot, topLevel, mainRoot } = loaded;
-  const locks = normalizeLocksSchema(rawLocks);
   const toolName = String(payload?.toolCall?.name || '').toLowerCase();
 
   if (FILE_EDIT_TOOLS.has(toolName)) {
     const rawPath = args.Path || args.TargetFile || args.path || args.file_path || '';
     if (!rawPath || typeof rawPath !== 'string') return { decision: 'allow' };
     const absTarget = path.isAbsolute(rawPath) ? path.resolve(rawPath) : path.resolve(rawCwd, rawPath);
+    // Zero-subprocess fast path (`<0.2ms` pure fs walk starting from edited target's directory; zero git spawn when `.agents/locks.json` is absent)
+    const loaded = findFastUpwardLocks(path.dirname(absTarget)) || findFastUpwardLocks(rawCwd);
+    if (!loaded) return { decision: 'allow' };
+
+    const { locks: rawLocks, locksRoot, topLevel, mainRoot } = loaded;
+    const locks = normalizeLocksSchema(rawLocks);
     const lockedFiles = locks.lockedFiles;
     for (const entry of lockedFiles) {
       const lockRelRaw = typeof entry?.path === 'string' ? entry.path.trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '') : '';
@@ -320,29 +340,44 @@ export function evaluateLocksPreToolUse(payload, opts = {}) {
       }
     }
 
-    // Check file-scoped `bannedPatterns` (e.g. sanitization guards against committing private IPs/paths into non-excluded files)
+    // Check file-scoped `bannedPatterns` (e.g. sanitization guards against committing private strings into tracked files)
     const basenameTarget = path.basename(absTarget);
-    if (basenameTarget !== 'ENV.md') {
-      const writtenContent = String(args.Content || args.Replacement || args.TargetContent || '');
-      if (writtenContent) {
-        for (const b of locks.bannedPatterns) {
-          if (!b.appliesTo.includes('file') || !isSafeBoundedRegex(b?.pattern)) continue;
-          try {
-            const re = new RegExp(b.pattern, b.flags && /^[im]{0,2}$/.test(b.flags) ? b.flags : '');
-            if (re.test(writtenContent)) {
-              const quote = String(b.quote || 'Content matches banned file pattern').slice(0, 220);
-              const src = b.source ? ` (${String(b.source).slice(0, 40)})` : '';
-              return {
-                decision: 'force_ask',
-                reason: `[AGY Studio File Guard] Edit to '${basenameTarget}' hits '${b.id || b.pattern}'${src}: "${quote}"`,
-              };
-            }
-          } catch {}
-        }
+    const cmpBase = CASE_INSENSITIVE_FS ? basenameTarget.toLowerCase() : basenameTarget;
+    const relCandidates = [topLevel, mainRoot, locksRoot]
+      .filter(Boolean)
+      .map((rootCand) => normalizeRelCompare(absTarget, rootCand));
+    const writtenContent = String(args.Content || args.Replacement || args.TargetContent || '');
+    if (writtenContent) {
+      for (const b of locks.bannedPatterns) {
+        if (!b.appliesTo.includes('file') || !isSafeBoundedRegex(b?.pattern)) continue;
+        const isExcluded =
+          b.excludeFiles.length > 0 &&
+          b.excludeFiles.some(
+            (ex) =>
+              ex === cmpBase ||
+              relCandidates.some((rel) => rel === ex || rel.startsWith(`${ex.replace(/\/+$/, '')}/`))
+          );
+        if (isExcluded) continue;
+        try {
+          const re = new RegExp(b.pattern, b.flags && /^[im]{0,2}$/.test(b.flags) ? b.flags : '');
+          if (re.test(writtenContent)) {
+            const quote = String(b.quote || 'Content matches banned file pattern').slice(0, 220);
+            const src = b.source ? ` (${String(b.source).slice(0, 40)})` : '';
+            return {
+              decision: 'force_ask',
+              reason: `[AGY Studio File Guard] Edit to '${basenameTarget}' hits '${b.id || b.pattern}'${src}: "${quote}"`,
+            };
+          }
+        } catch {}
       }
     }
     return { decision: 'allow' };
   }
+
+  // Zero-subprocess fast path (`<0.2ms` pure fs walk; zero git spawn when `.agents/locks.json` is absent)
+  const loaded = findFastUpwardLocks(rawCwd);
+  if (!loaded) return { decision: 'allow' };
+  const locks = normalizeLocksSchema(loaded.locks);
 
   if (toolName === 'run_command') {
     const cmd = String(args.CommandLine || args.command || '');
@@ -401,6 +436,7 @@ export function evaluateLocksPreToolUse(payload, opts = {}) {
 function loadConvAnchorState(pluginDataDir, cid) {
   const defaultState = {
     byteOffset: 0,
+    transcriptCheckpoints: 0,
     lastNudgedCompactionGen: 0,
     mutedHashes: [],
     loopSig: '',
@@ -594,7 +630,7 @@ export function extractCandidateCorrectionParagraphs(cleanUserText) {
     .filter(Boolean);
   for (const para of paragraphs) {
     if (para.length < 10 || para.length > 360) continue;
-    if (/[?？]$/.test(para) && !/算作弊|不能|严禁|不准/.test(para)) continue;
+    if (/[?？]$/.test(para) && !/不能|严禁|不准|must\s+not|never|don['’]t/i.test(para)) continue;
     if (CORRECTION_CUE_RE.test(para)) {
       out.push(para.slice(0, 280));
     }
@@ -762,14 +798,18 @@ export function evaluateStopBoundary(payload, opts = {}) {
     if (fs.existsSync(fallback)) transcriptFullPath = fallback;
   }
 
-  let transcriptCheckpoints = 0;
   if (transcriptFullPath) {
+    const prevByteOffset = Number(state.byteOffset) || 0;
     const scanRes = scanTranscriptTailForProposals(transcriptFullPath, {
-      byteOffset: state.byteOffset,
+      byteOffset: prevByteOffset,
       mutedHashes: state.mutedHashes,
     });
     state.byteOffset = scanRes.nextByteOffset;
-    transcriptCheckpoints = scanRes.checkpointCount;
+    if (scanRes.nextByteOffset < prevByteOffset) {
+      state.transcriptCheckpoints = scanRes.checkpointCount;
+    } else {
+      state.transcriptCheckpoints = (Number(state.transcriptCheckpoints) || 0) + scanRes.checkpointCount;
+    }
 
     if (scanRes.candidates.length > 0) {
       const propFile = path.join(paths.proposalsDir, `${cid}.json`);
@@ -794,14 +834,17 @@ export function evaluateStopBoundary(payload, opts = {}) {
 
   // 3. Compaction generation `G >= 3` zero-model-token inline user notice
   const sqlGen = readCompactionGenerationCount(cid, opts);
-  const compactionGen = Math.max(sqlGen, transcriptCheckpoints);
+  const compactionGen = Math.max(sqlGen, Number(state.transcriptCheckpoints) || 0);
   let out = {};
   if (compactionGen >= 3 && (Number(state.lastNudgedCompactionGen) || 0) < compactionGen) {
     state.lastNudgedCompactionGen = compactionGen;
+    const zh = isZhUiConfigured(paths, opts);
     out = {
       systemMessage: '',
       metadata: {
-        user_markdown: `💡 **AGY Studio Anti-Drift**: 当前会话已完成 **G=${compactionGen}** 次上下文压缩（未固化约束半衰期约 2–3 次压缩）。可点击底栏 **G${compactionGen}** 徽章将关键约束固化至仓库锚点，或一键交接至全新里程碑会话。`,
+        user_markdown: zh
+          ? `💡 **AGY Studio Anti-Drift**: 当前会话已完成 **G=${compactionGen}** 次上下文压缩（未固化约束半衰期约 2–3 次压缩）。可点击底栏 **G${compactionGen}** 徽章将关键约束固化至仓库锚点，或一键交接至全新里程碑会话。`
+          : `💡 **AGY Studio Anti-Drift**: This chat has undergone **G=${compactionGen}** compactions (unanchored constraints decay after ~2–3 compactions). Click the **G${compactionGen}** dock pill to pin key constraints or hand off cleanly to a fresh milestone chat.`,
       },
     };
   }

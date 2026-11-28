@@ -41,7 +41,7 @@ export function createStudioPrefsRuntime({ initialPrefs, defaultPrefs, effortEff
   };
   const BASE_MODULE_DEFAULTS = {
     i18n: false,
-    claudeUxStepUnfold: false,
+    claudeUxStepUnfold: true,
     claudeUxCodeFold: true,
     claudeUxHideSidebarProjects: false,
     claudeUxContextRing: true,
@@ -98,6 +98,24 @@ export function createStudioPrefsRuntime({ initialPrefs, defaultPrefs, effortEff
     const motionVal = cur.motionLevel || 'full';
     if (docRoot.getAttribute('data-agy-motion') !== motionVal) {
       docRoot.setAttribute('data-agy-motion', motionVal);
+    }
+    const sbCapOn = cur.sidebarProjectCapEnabled !== false ? '1' : '0';
+    const sbCapPer = String(cur.sidebarProjectMaxPerProject ?? 4);
+    const sbCapTotal = String(cur.sidebarProjectMaxTotal ?? 8);
+    const sbCapChanged =
+      docRoot.getAttribute('data-agy-sb-cap') !== sbCapOn ||
+      docRoot.getAttribute('data-agy-sb-cap-per') !== sbCapPer ||
+      docRoot.getAttribute('data-agy-sb-cap-total') !== sbCapTotal;
+    if (sbCapChanged) {
+      docRoot.setAttribute('data-agy-sb-cap', sbCapOn);
+      docRoot.setAttribute('data-agy-sb-cap-per', sbCapPer);
+      docRoot.setAttribute('data-agy-sb-cap-total', sbCapTotal);
+      if (typeof window === 'object' && window && typeof window.dispatchEvent === 'function') {
+        try {
+          const Ctor = window.CustomEvent || (typeof CustomEvent === 'function' ? CustomEvent : null);
+          if (Ctor) window.dispatchEvent(new Ctor('agy:sidebar-cap-prefs-changed'));
+        } catch {}
+      }
     }
   }
 
@@ -447,13 +465,22 @@ export function createStudioPrefsRuntime({ initialPrefs, defaultPrefs, effortEff
   function getStepStreamMode() {
     const base = getBaseState();
     const hostVerbose = getHostPref('verboseConversationSteps');
-    return hostVerbose === true || base?.modules?.claudeUxStepUnfold === true ? 'expanded' : 'compact';
+    if (hostVerbose === true) return 'verbose';
+    return base?.modules?.claudeUxStepUnfold === false ? 'compact' : 'inline';
   }
 
   async function setStepStreamMode(mode) {
-    const expanded = mode === 'expanded';
-    await setHostPref('verboseConversationSteps', expanded);
-    setBaseModule('claudeUxStepUnfold', expanded);
+    const nextMode = mode === 'expanded' ? 'inline' : mode;
+    if (nextMode === 'compact') {
+      await setHostPref('verboseConversationSteps', false);
+      setBaseModule('claudeUxStepUnfold', false);
+    } else if (nextMode === 'verbose') {
+      await setHostPref('verboseConversationSteps', true);
+      setBaseModule('claudeUxStepUnfold', true);
+    } else {
+      await setHostPref('verboseConversationSteps', false);
+      setBaseModule('claudeUxStepUnfold', true);
+    }
     notify('step-stream');
     return true;
   }

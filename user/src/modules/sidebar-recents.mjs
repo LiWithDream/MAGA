@@ -1546,6 +1546,8 @@ export function createSidebarRecentsModule(rt) {
     const hasFocus = typeof document.hasFocus === 'function' ? document.hasFocus() : true;
     syncFolderStatusBadges(bindings, state, activeId, hasFocus);
     syncRecentSection(bindings, state, activeId, hasFocus);
+    hooks.syncSidebarProjects?.(bindings, state, activeId, hasFocus);
+    if (hooks.isSidebarProjectsCapActive?.()) scheduleSidebarHideSync();
     hooks.syncConvProjectTopbar?.();
   }
 
@@ -1652,7 +1654,8 @@ export function createSidebarRecentsModule(rt) {
     if (scrollBox && !rtState.disposed) {
       syncPinnedSidebarRowTooltips(scrollBox);
     }
-    if (rtState.disposed || !FEAT.hideSidebarProjects) {
+    const capActive = Boolean(hooks.isSidebarProjectsCapActive?.());
+    if (rtState.disposed || (!FEAT.hideSidebarProjects && !capActive)) {
       clearSidebarHideNativeProjects();
       return;
     }
@@ -1660,23 +1663,33 @@ export function createSidebarRecentsModule(rt) {
     const list = scrollBox && scrollBox.firstElementChild;
     if (!scrollBox || !sbParent || !list) return;
 
-    /* Guard against hiding native sidebar lists when Unified Recents failed to mount on a live React host */
+    /* Guard against hiding native sidebar lists when custom sidebar section failed to mount on a live React host */
     const hasReactHost = Boolean(
       document.getElementById('root') ||
         Object.keys(list).some((k) => k.startsWith('__react')) ||
         Object.keys(scrollBox).some((k) => k.startsWith('__react'))
     );
-    if (hasReactHost && !document.getElementById('ag-claude-recent-section')) {
+    const expectedSecId = FEAT.hideSidebarProjects ? 'ag-claude-recent-section' : 'ag-claude-sidebar-projects';
+    if (hasReactHost && !document.getElementById(expectedSecId)) {
       const bindings = findSidebarBindings();
       if (bindings) {
-        syncRecentSection(
-          bindings,
-          bindings.store.getState(),
-          getActiveCascadeId(),
-          typeof document.hasFocus === 'function' ? document.hasFocus() : true
-        );
+        if (FEAT.hideSidebarProjects) {
+          syncRecentSection(
+            bindings,
+            bindings.store.getState(),
+            getActiveCascadeId(),
+            typeof document.hasFocus === 'function' ? document.hasFocus() : true
+          );
+        } else {
+          hooks.syncSidebarProjects?.(
+            bindings,
+            bindings.store.getState(),
+            getActiveCascadeId(),
+            typeof document.hasFocus === 'function' ? document.hasFocus() : true
+          );
+        }
       }
-      if (!document.getElementById('ag-claude-recent-section')) {
+      if (!document.getElementById(expectedSecId)) {
         clearSidebarHideNativeProjects();
         return;
       }
@@ -1743,7 +1756,7 @@ export function createSidebarRecentsModule(rt) {
       }
       sidebarListLayoutTarget = list;
       sidebarListLayoutMo = new MutationObserver((muts) => {
-        if (rtState.disposed || !FEAT.hideSidebarProjects) return;
+        if (rtState.disposed || (!FEAT.hideSidebarProjects && !hooks.isSidebarProjectsCapActive?.())) return;
         for (const m of muts) {
           if (m.attributeName === 'data-subtext') {
             syncPinnedSidebarRowTooltips(scrollBox);
@@ -1868,6 +1881,12 @@ export function createSidebarRecentsModule(rt) {
     closeRecentRowMenu,
     syncRecentSection,
     scheduleSidebarSync,
+    classifySidebarConversation,
+    pendingGlyphSvg,
+    formatRelativeAge,
+    openRecentRowMenu,
+    mutateRecentConversationAnnotation,
+    triggerNewConversationFromSidebar,
     dispose,
   };
 }

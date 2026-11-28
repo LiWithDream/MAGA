@@ -2,7 +2,7 @@
  * Native Redux/Fiber store bindings, project CRUD RPCs, context/file deltas & project action menu.
  */
 export function createProjectNativeStore(ctx) {
-  const { FEAT, L, FILE_MANAGER_ZH, FILE_MANAGER_EN, rtState, escapeHtml, setLeafText, pState, ICONS, pHooks, activeReactFiber, invalidateOverviewSnapshotCache, isSidebarVisibleSummary, isSummaryPinned, protoSeconds, findSidebarBindings, scheduleSidebarSync, closeRecentRowMenu } = ctx;
+  const { FEAT, L, FILE_MANAGER_ZH, FILE_MANAGER_EN, rtState, escapeHtml, setLeafText, pState, ICONS, pHooks, activeReactFiber, invalidateOverviewSnapshotCache, isSidebarVisibleSummary, isSummaryPinned, classifySidebarConversation, protoSeconds, findSidebarBindings, scheduleSidebarSync, closeRecentRowMenu, getActiveCascadeId } = ctx;
   const { SVG_CLAUDE_PROJECTS_ICON, SVG_PROJ_SETTINGS, RECENT_FOLDER_SVG, RECENT_RENAME_SVG, RECENT_ARCHIVE_SVG, RECENT_TRASH_SVG } = ICONS;
   const renderProjectsView = (...args) => pHooks.renderProjectsView?.(...args);
   const closeProjectsModal = (...args) => pHooks.closeProjectsModal?.(...args);
@@ -228,6 +228,8 @@ export function createProjectNativeStore(ctx) {
     }
 
     const items = [];
+    const activeCid = getActiveCascadeId?.() || '';
+    const hasFocus = typeof document !== 'undefined' && typeof document.hasFocus === 'function' ? document.hasFocus() : true;
     for (const cid of candidateIds) {
       const sum = summaries[cid];
       if (!sum || !isSidebarVisibleSummary(cid, sum, state)) continue;
@@ -237,13 +239,16 @@ export function createProjectNativeStore(ctx) {
       const status = sum.status ?? 0;
       const waiting = Boolean(sum.waitingSteps && sum.waitingSteps.length);
       const running = !sum.killed && (status === 2 || status === 3 || status === 4 || Boolean(sum.hasRunningSubagents));
+      const cls = classifySidebarConversation ? classifySidebarConversation(cid, sum, state, activeCid, hasFocus) : null;
+      const unread = Boolean(!waiting && !running && cls && cls.kind === 'unread');
       items.push({
         id: cid,
         title,
         lastSec,
         pinned: isSummaryPinned(cid, sum, state),
         waiting,
-        running
+        running,
+        unread,
       });
     }
     items.sort((a, b) => (a.pinned !== b.pinned ? (a.pinned ? -1 : 1) : b.lastSec - a.lastSec));
@@ -693,11 +698,36 @@ export function createProjectNativeStore(ctx) {
         isBuiltin: isCliProject
       };
       const chats = collectProjectConversations(base, state);
+      let waitingCount = 0;
+      let runningCount = 0;
+      let unreadCount = 0;
+      let latestChat = null;
+      for (const ch of chats) {
+        if (ch.waiting) waitingCount += 1;
+        if (ch.running) runningCount += 1;
+        if (ch.unread) unreadCount += 1;
+        if (!latestChat || (ch.lastSec || 0) > (latestChat.lastSec || 0)) latestChat = ch;
+      }
+      const statusKind =
+        waitingCount > 0
+          ? 'pending'
+          : runningCount > 0
+            ? 'running'
+            : unreadCount > 0
+              ? 'unread'
+              : chats.length === 0
+                ? 'empty'
+                : 'idle';
       out.push({
         ...base,
         chats,
         chatCount: chats.length,
-        lastSec: chats.length ? chats[0].lastSec : 0
+        lastSec: latestChat ? latestChat.lastSec : 0,
+        latestChat,
+        waitingCount,
+        runningCount,
+        unreadCount,
+        statusKind,
       });
     }
     for (const delId of [...pState.optimisticallyDeletedProjectIds]) {

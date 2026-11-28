@@ -75,7 +75,8 @@ function sanitizeUiPrefs(raw) {
     }
   }
   const updatedAt = Number(raw.updatedAt) > 0 ? Math.floor(Number(raw.updatedAt)) : 0;
-  return { modules, cjkFontScale, uiState, updatedAt };
+  const stepUnfoldDefaultMigrated = raw.stepUnfoldDefaultMigrated === true;
+  return { modules, cjkFontScale, uiState, updatedAt, stepUnfoldDefaultMigrated };
 }
 
 function resolveEffectiveUserConfig(userConfigFile, rawCfg) {
@@ -134,6 +135,7 @@ export function saveUiPrefs(payload) {
   const next = {
     schema: 1,
     updatedAt,
+    stepUnfoldDefaultMigrated: true,
     modules: Object.assign({}, cur.modules, incoming.modules),
     ...(incoming.cjkFontScale || cur.cjkFontScale
       ? { cjkFontScale: incoming.cjkFontScale || cur.cjkFontScale }

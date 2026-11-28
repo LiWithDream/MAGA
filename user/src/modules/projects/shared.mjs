@@ -157,6 +157,7 @@ export function createProjectSharedContext(rt, modelApi) {
     invalidateOverviewSnapshotCache: (...args) => hooks.invalidateOverviewSnapshotCache?.(...args),
     isSidebarVisibleSummary: getSidebarHook('isSidebarVisibleSummary'),
     isSummaryPinned: getSidebarHook('isSummaryPinned'),
+    classifySidebarConversation: getSidebarHook('classifySidebarConversation'),
     protoSeconds: getSidebarHook('protoSeconds'),
     findSidebarBindings: getSidebarHook('findSidebarBindings'),
     scheduleSidebarSync: getSidebarHook('scheduleSidebarSync'),

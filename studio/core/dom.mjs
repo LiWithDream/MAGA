@@ -46,6 +46,7 @@ export const OWN_HOST_IDS = new Set([
   'ag-claude-project-modal',
   'ag-claude-ov-sections',
   'ag-claude-recent-section',
+  'ag-claude-sidebar-projects',
   'ag-claude-ctx-ring',
   'ag-claude-quota-popover',
   'ag-live-metrics-pill',

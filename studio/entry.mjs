@@ -136,6 +136,8 @@ import { motionThemes } from '../vendor/agy-capsule/motion_themes.mjs';
   const offPrefsSync = studioPrefs.subscribe((_, reason) => {
     if (reason === 'base-module' || reason === 'reset-all' || reason === 'import' || reason === 'daemon-hydrate') {
       kernel.markDirty(['all'], true);
+    } else if (reason === 'patch') {
+      kernel.markDirty(['sidebar', 'stream'], false);
     }
   });
 

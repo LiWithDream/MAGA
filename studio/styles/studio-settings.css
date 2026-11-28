@@ -1189,3 +1189,106 @@ html[data-agy-motion="off"] #agy-maga-settings-trigger svg {
   gap: 6px;
   flex-shrink: 0;
 }
+
+/* L2 Step Stream Live Sample Preview */
+.agy-ms-stream-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 11px 14px 13px;
+  background: var(--ms-subtle);
+  border-top: 1px solid var(--ms-border);
+  border-bottom: 1px solid var(--ms-border);
+}
+.agy-ms-sp-canvas {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 9px;
+  background: var(--ms-surface);
+  border: 1px solid var(--ms-border);
+}
+.agy-ms-sp-think {
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: var(--ms-subtle);
+  border-left: 2px solid var(--ms-border);
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--ms-muted);
+  font-style: italic;
+}
+.agy-ms-sp-prose {
+  font-size: 12px;
+  line-height: 1.48;
+  color: var(--ms-fg);
+}
+.agy-ms-sp-prose.is-final {
+  font-weight: 500;
+}
+.agy-ms-sp-action {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 3px 7px;
+  border-radius: 6px;
+  background: var(--ms-subtle);
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--ms-muted);
+}
+.agy-ms-sp-action.is-open {
+  background: transparent;
+  padding: 1px 2px;
+}
+.agy-ms-sp-action.is-summary span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agy-ms-sp-folded-tag {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ms-accent) 10%, transparent);
+  color: var(--ms-accent);
+  font-size: 10px;
+  font-weight: 500;
+}
+.agy-ms-sp-detail-box {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 6px 8px;
+  border-radius: 7px;
+  border: 1px solid var(--ms-border);
+  background: var(--ms-subtle);
+}
+.agy-ms-sp-detail-hdr {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--ms-muted);
+  margin-bottom: 1px;
+}
+.agy-ms-sp-detail-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 10.5px;
+  line-height: 1.35;
+  color: var(--ms-muted);
+}
+.agy-ms-sp-detail-item span {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--ms-fg);
+  opacity: 0.85;
+}
+.agy-ms-sp-detail-item code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  color: var(--ms-muted);
+  background: transparent;
+}

@@ -29,6 +29,9 @@ export const DEFAULT_STUDIO_PREFS = Object.freeze({
   overviewUsageEnabled: true,
   overviewUsageDefaultPeriod: 'day',
   subagentFooterEnabled: true,
+  sidebarProjectCapEnabled: true,
+  sidebarProjectMaxPerProject: 4,
+  sidebarProjectMaxTotal: 8,
   // Review Gate (Carbon High / Opus High)
   opusGateMode: 'semi',
   opusGateModel: 'opus',
@@ -73,6 +76,15 @@ export function clampInt(val, min, max, fallback) {
   const n = Number(val);
   if (!Number.isFinite(n)) return fallback;
   return Math.max(min, Math.min(max, Math.round(n)));
+}
+
+export function sanitizeSidebarCapInt(val, min, max, fallback) {
+  if (val === null || val === undefined || val === '') return fallback;
+  const n = Number(val);
+  if (!Number.isFinite(n)) return fallback;
+  const rounded = Math.round(n);
+  if (rounded <= 0) return 0;
+  return Math.max(min, Math.min(max, rounded));
 }
 
 export function sanitizeHighWaterPct(val, fallback) {
@@ -163,6 +175,9 @@ export function sanitizeStudioPrefs(raw, defaults = DEFAULT_STUDIO_PREFS) {
     overviewUsageEnabled: boolOr('overviewUsageEnabled', def.overviewUsageEnabled),
     overviewUsageDefaultPeriod: enumOr('overviewUsageDefaultPeriod', def.overviewUsageDefaultPeriod),
     subagentFooterEnabled: boolOr('subagentFooterEnabled', def.subagentFooterEnabled),
+    sidebarProjectCapEnabled: boolOr('sidebarProjectCapEnabled', def.sidebarProjectCapEnabled),
+    sidebarProjectMaxPerProject: sanitizeSidebarCapInt(src.sidebarProjectMaxPerProject, 1, 20, def.sidebarProjectMaxPerProject),
+    sidebarProjectMaxTotal: sanitizeSidebarCapInt(src.sidebarProjectMaxTotal, 2, 40, def.sidebarProjectMaxTotal),
     opusGateMode: enumOr('opusGateMode', def.opusGateMode),
     opusGateModel: enumOr('opusGateModel', def.opusGateModel),
     opusGateMinQuota5hPct: clampInt(src.opusGateMinQuota5hPct, 5, 80, def.opusGateMinQuota5hPct),

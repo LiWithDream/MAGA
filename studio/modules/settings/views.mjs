@@ -118,14 +118,24 @@ export function renderL1(p, base, catalog, { studioPrefs, state, L }) {
   }`;
 
   const stepMode = studioPrefs.getStepStreamMode();
+  const stepLabels = {
+    inline: L('保留简报', 'Inline Briefs'),
+    expanded: L('保留简报', 'Inline Briefs'),
+    compact: L('紧凑折叠', 'Compact'),
+    verbose: L('全量详细', 'Verbose'),
+  };
   const streamSummary = `${
     p.hideThinkingProse ? L('隐藏思考正文', 'Thought hidden') : L('显示思考正文', 'Thought shown')
-  } · ${stepMode === 'expanded' ? L('步骤展开', 'Expanded') : L('步骤紧凑', 'Compact')}`;
+  } · ${stepLabels[stepMode] || stepLabels.inline}`;
 
   const wsSummary = `${
     p.overviewUsageEnabled ? L('用量开', 'Usage on') : L('用量关', 'Usage off')
   } · ${
-    base.modules?.claudeUxHideSidebarProjects === true ? L('最近对话', 'Recents') : L('原生分组', 'Native')
+    base.modules?.claudeUxHideSidebarProjects === true
+      ? L('最近对话', 'Recents')
+      : p.sidebarProjectCapEnabled !== false
+        ? L(`上限 ${p.sidebarProjectMaxPerProject || '∞'}/${p.sidebarProjectMaxTotal || '∞'}`, `Cap ${p.sidebarProjectMaxPerProject || '∞'}/${p.sidebarProjectMaxTotal || '∞'}`)
+        : L('原生分组', 'Native')
   }`;
 
   const motionLabels = { full: L('完整', 'Full'), reduced: L('精简', 'Reduced'), off: L('关闭', 'Off') };
@@ -557,8 +567,69 @@ export function renderL3OpusGate(p, { L }) {
       </div>`;
 }
 
+export function renderStepStreamPreviewHtml(mode, hideThinking, L) {
+  const normMode = mode === 'compact' || mode === 'verbose' ? mode : 'inline';
+  const modeSub =
+    normMode === 'compact'
+      ? L('紧凑折叠 · 结束时收起全部过程', 'Compact · Collapses steps at turn end')
+      : normMode === 'verbose'
+        ? L('全量详细 · 展开全部工具明细', 'Verbose · Expands every tool detail')
+        : L('保留简报 · 保留过程说明，工具单行', 'Inline Briefs · Keeps notes, 1-line tools');
+
+  const thinkHtml =
+    !hideThinking && normMode !== 'compact'
+      ? `<div class="agy-ms-sp-think">${esc('Thinking · Checking auth middleware & session expiry…')}</div>`
+      : '';
+  const briefText = L(
+    '已定位登录态过期原因并修复刷新逻辑，下面运行测试确认。',
+    'Found the session expiry bug and patched refresh logic; running tests next.'
+  );
+  const finalText = L(
+    '登录态刷新问题已修复，18 项相关测试全部通过。',
+    'Session refresh is fixed and all 18 related tests pass.'
+  );
+
+  let canvasHtml = '';
+  if (normMode === 'compact') {
+    canvasHtml = `
+      <div class="agy-ms-sp-action">
+        <span>▸ ${esc(L('已工作 28s', 'Worked for 28s'))}</span>
+        <span class="agy-ms-sp-folded-tag">${esc(L('已收起 1 段过程说明 · 3 项操作', 'Collapsed 1 note · 3 actions'))}</span>
+      </div>
+      <div class="agy-ms-sp-prose is-final">${esc(finalText)}</div>`;
+  } else if (normMode === 'verbose') {
+    canvasHtml = `
+      <div class="agy-ms-sp-action is-open"><span>▾ ${esc(L('已工作 28s', 'Worked for 28s'))}</span></div>
+      ${thinkHtml}
+      <div class="agy-ms-sp-prose">${esc(briefText)}</div>
+      <div class="agy-ms-sp-detail-box">
+        <div class="agy-ms-sp-detail-hdr">▾ ${esc(L('已探索文件、已编辑文件、已运行命令', 'Explored files, Edited file, Ran command'))}</div>
+        <div class="agy-ms-sp-detail-item"><span>read_file</span><code>src/auth/session.ts</code></div>
+        <div class="agy-ms-sp-detail-item"><span>edit_file</span><code>src/auth/refresh.ts (+12 / -4)</code></div>
+        <div class="agy-ms-sp-detail-item"><span>run_command</span><code>npm test → 18 passed</code></div>
+      </div>
+      <div class="agy-ms-sp-prose is-final">${esc(finalText)}</div>`;
+  } else {
+    canvasHtml = `
+      ${thinkHtml}
+      <div class="agy-ms-sp-prose">${esc(briefText)}</div>
+      <div class="agy-ms-sp-action is-summary"><span>▸ ${esc(L('已探索文件、已编辑文件、已运行命令 · 28s', 'Explored files, Edited file, Ran command · 28s'))}</span></div>
+      <div class="agy-ms-sp-prose is-final">${esc(finalText)}</div>`;
+  }
+
+  return `
+      <div class="agy-ms-stream-preview" data-mode="${esc(normMode)}" data-hide-thinking="${hideThinking ? '1' : '0'}">
+        <div class="agy-ms-preview-hdr">
+          <span class="agy-ms-preview-cap">${esc(L('效果样例预览', 'Live Sample Preview'))}</span>
+          <span class="agy-ms-preview-sub">${esc(modeSub)}</span>
+        </div>
+        <div class="agy-ms-sp-canvas">${canvasHtml}</div>
+      </div>`;
+}
+
 export function renderL2Stream(p, base, { studioPrefs, L }) {
   const stepMode = studioPrefs.getStepStreamMode();
+  const hideThinking = p.hideThinkingProse !== false;
   const acMode = p.autoCompactMode || 'semi';
   const acModeLbl =
     acMode === 'auto'
@@ -570,11 +641,13 @@ export function renderL2Stream(p, base, { studioPrefs, L }) {
   const acSum = acMode === 'off' ? acModeLbl : `${acModeLbl} · ≥${p.autoCompactThresholdPct ?? 50}% / ${acMin}m`;
   return `
       <div class="agy-ms-card">
-        ${renderSwitchRow('hideThinkingProse', 'studio', L('隐藏思考过程正文', 'Hide Thinking Prose'), L('开启时隐藏英文 Thought 正文与展开箭头，需要查看推理细节时可随时关闭', 'Hides verbose Thought bodies & chevrons; turn off to inspect reasoning'), p.hideThinkingProse)}
-        ${renderSegRow('stepStream', 'step', L('步骤流展示模式', 'Step Stream Mode'), L('统一控制宿主与底座：紧凑折叠不打断阅读，展开摘要可保留中间叙述与工具进展', 'Controls verboseConversationSteps + step unfold together'), [
+        ${renderSwitchRow('hideThinkingProse', 'studio', L('隐藏思考过程正文', 'Hide Thinking Prose'), L('开启时隐藏英文 Thought 正文与展开箭头，需要查看推理细节时可随时关闭', 'Hides verbose Thought bodies & chevrons; turn off to inspect reasoning'), hideThinking)}
+        ${renderSegRow('stepStream', 'step', L('步骤流展示模式', 'Step Stream Mode'), L('控制回合结束后过程说明与工具调用的展开方式', 'Controls how progress notes and tool calls appear after a turn finishes'), [
+          ['inline', L('保留简报', 'Inline Briefs')],
           ['compact', L('紧凑折叠', 'Compact')],
-          ['expanded', L('展开摘要', 'Expanded')],
-        ], stepMode)}
+          ['verbose', L('全量详细', 'Verbose')],
+        ], stepMode === 'expanded' ? 'inline' : stepMode)}
+        ${renderStepStreamPreviewHtml(stepMode, hideThinking, L)}
         ${renderDrillRow('stream-auto-compact', L('智能压缩上下文 (Auto-Compact)', 'Auto-Compact'), L('高上下文且设了长定时等待时，回合结束趁缓存未失效自动触发 /compact', 'Runs /compact right after long-wait or high-context turns while cache is warm'), acSum)}
         ${renderSegRow(
           'anchorsMode',
@@ -713,6 +786,27 @@ export function renderL2Workspace(p, base, { state, L }) {
       <div class="agy-ms-sec-hdr">${esc(L('侧边栏与工作区页面', 'Sidebar & Pages'))}</div>
       <div class="agy-ms-card">
         ${renderSwitchRow('claudeUxHideSidebarProjects', 'base', L('侧栏统一「最近对话」', 'Unified Sidebar Recents'), L('合并原生项目与普通对话分组，统一按最近时间混排显示', 'Replaces split Projects/Chats with a single chronological Recents list'), base.modules?.claudeUxHideSidebarProjects === true)}
+        ${
+          base.modules?.claudeUxHideSidebarProjects !== true
+            ? `${renderSwitchRow('sidebarProjectCapEnabled', 'studio', L('侧栏项目区对话上限', 'Cap Sidebar Project Chats'), L('防止单个展开项目占满左侧栏，按公平注水算法分配展示名额并置顶保护运行/待确认对话', 'Prevents one expanded project from flooding the sidebar using fair water-filling with active/pending priority'), p.sidebarProjectCapEnabled !== false)}${
+                p.sidebarProjectCapEnabled !== false
+                  ? `${renderSegRow('sidebarProjectMaxPerProject', 'studio-num', L('单项目最多显示对话', 'Max Chats per Project'), '', [
+                      ['3', '3'],
+                      ['4', '4'],
+                      ['5', '5'],
+                      ['8', '8'],
+                      ['0', L('不限', 'All')],
+                    ], String(p.sidebarProjectMaxPerProject ?? 4))}${renderSegRow('sidebarProjectMaxTotal', 'studio-num', L('项目区总计最多显示', 'Total Project Chats Cap'), '', [
+                      ['6', '6'],
+                      ['8', '8'],
+                      ['10', '10'],
+                      ['12', '12'],
+                      ['0', L('不限', 'All')],
+                    ], String(p.sidebarProjectMaxTotal ?? 8))}`
+                  : ''
+              }`
+            : ''
+        }
         ${renderSwitchRow('claudeUxProjects', 'base', L('项目工作区 (Projects)', 'Projects Workspace'), L('启用 Claude 风格项目卡片墙、本地 AGENTS 指令与上下文文件管理', 'Enables Claude-style Projects workspace, AGENTS.md & context files'), base.modules?.claudeUxProjects !== false)}
         ${renderDrillRow('workspace-ai-suggestions', L('AI 历史对话建议', 'AI Conversation Suggestions'), L('使用 Gemini 3.8 Flash 基于最近对话推荐新会话起点并自动切换 Worktree', 'Suggests follow-up chats from recent history with cold-start context handoff'), aiSum)}
         ${renderDrillRow('workspace-git-workflow', L('Git 并行工作流 (Git Workflow)', 'Git Parallel Workflow'), L('全项目分级分支护栏、Worktree 隔离策略与拦截记录', 'Tiered branch protection, parallel worktree isolation & guard logs'), wfSum)}

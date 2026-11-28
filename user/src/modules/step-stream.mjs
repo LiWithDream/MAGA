@@ -6,16 +6,174 @@ export function createStepStreamModule(rt) {
   const { FEAT, L, frame, state: rtState, setLeafText, syncAttrTargetSet } = rt;
 
   const userToggled = new WeakSet();
-  const autoExpandCount = new WeakMap();
+  const autoExpandBurst = new WeakMap();
+  const workedKind = new WeakMap();
+  const workedSummary = new WeakMap();
+  const pendingProbes = new WeakSet();
   const openSnapshots = new WeakMap();
   const runningTimers = new WeakMap();
   let timerIntervalId = null;
 
+  function resolveWorkedStreamHost(btn) {
+    if (!btn || !btn.parentElement) return null;
+    const p = btn.parentElement;
+    if (p.nextElementSibling && !p.classList.contains('flex')) return p;
+    if (p.parentElement && p.parentElement.tagName === 'DIV' && p.nextElementSibling) {
+      return p.parentElement;
+    }
+    return p;
+  }
+
+  function resolveWorkedPanel(btn) {
+    if (!btn || !btn.parentElement) return null;
+    const p = btn.parentElement;
+    return p.classList.contains('flex') ? p.nextElementSibling : btn.nextElementSibling;
+  }
+
+  function panelHasIntermediateProse(panel) {
+    if (!panel || !panel.querySelectorAll) return false;
+    const nodes = panel.querySelectorAll(
+      '[data-testid="planner-response-text"], [data-markdown-root], .select-text, .prose, .markdown'
+    );
+    for (const el of nodes) {
+      if (!(el.textContent || '').trim()) continue;
+      const btnAncestor = el.closest('button');
+      if (btnAncestor && panel.contains(btnAncestor)) continue;
+      const sys = el.closest('[data-testid="system-message-row"]');
+      if (sys && panel.contains(sys)) continue;
+      const thinkPanel = el.closest('[data-testid="thinking-collapsible-trigger"] + div');
+      if (thinkPanel && panel.contains(thinkPanel)) continue;
+      const toolPanel = el.closest('[data-testid="tool-group-collapsible"] + div');
+      if (toolPanel && panel.contains(toolPanel)) continue;
+      return true;
+    }
+    return false;
+  }
+
+  function extractWorkedToolsSummary(panel) {
+    if (!panel || !panel.querySelectorAll) return '';
+    let els = Array.from(panel.querySelectorAll('[data-testid="tool-group-collapsible"]'));
+    if (!els.length) {
+      els = Array.from(panel.querySelectorAll('[data-testid="system-message-row"] button'));
+    }
+    const seen = new Set();
+    const parts = [];
+    for (const el of els) {
+      let txt = (el.textContent || '').replace(/\s+/g, ' ').trim();
+      txt = txt.replace(/\s*\d+[ms](?:\s+\d+s)?$/, '').trim();
+      if (!txt || seen.has(txt)) continue;
+      seen.add(txt);
+      parts.push(txt);
+    }
+    if (!parts.length) return '';
+    const joined = parts.join(' · ');
+    return joined.length > 46 ? `${joined.slice(0, 45).trimEnd()}…` : joined;
+  }
+
+  function applyWorkedInlineSummary(btn, summaryText) {
+    if (!btn) return;
+    let span = btn.querySelector(':scope > .ag-worked-inline-summary');
+    const clean = String(summaryText || '').trim();
+    if (!clean) {
+      if (btn.hasAttribute('data-ag-has-summary')) btn.removeAttribute('data-ag-has-summary');
+      if (span) span.remove();
+      return;
+    }
+    const nativeSpan = Array.from(btn.children || []).find(
+      (ch) => ch.tagName === 'SPAN' && !ch.classList.contains('ag-worked-inline-summary')
+    );
+    const nativeText = nativeSpan
+      ? nativeSpan.textContent || ''
+      : Array.from(btn.childNodes || [])
+          .filter((n) => n !== span && !(n.classList && n.classList.contains('ag-worked-inline-summary')))
+          .map((n) => n.textContent || '')
+          .join(' ');
+    const durMatch = nativeText.match(/\b(\d+[hms](?:\s+\d+s)?)\b/);
+    const duration = durMatch ? durMatch[1] : '';
+    const finalSummary = duration ? `${clean} · ${duration}` : clean;
+    if (btn.getAttribute('data-ag-has-summary') !== '1') {
+      btn.setAttribute('data-ag-has-summary', '1');
+    }
+    if (!span) {
+      span = document.createElement('span');
+      span.className = 'ag-worked-inline-summary';
+      if (typeof rt.markOwn === 'function') rt.markOwn(span);
+      else span.setAttribute('data-maga-own', '1');
+      const chevron = btn.querySelector(':scope > svg:last-of-type');
+      if (chevron) btn.insertBefore(span, chevron);
+      else btn.appendChild(span);
+    }
+    setLeafText(span, finalSummary);
+  }
+
+  function isWorkedTurnActive(btn, panel, panesArg) {
+    if (panel && panel.querySelector && panel.querySelector('[data-testid="ephemeral-tool-status"], .ag-orbit-dots')) {
+      return true;
+    }
+    const resp = btn && btn.closest ? btn.closest('[data-testid="agent-response"]') : null;
+    if (!resp) return false;
+    const panes = panesArg || collectPanes();
+    for (const p of panes) {
+      if (!p.root.contains(resp)) continue;
+      const turns = p.root.querySelectorAll('[data-testid="agent-response"]');
+      if (!turns.length || turns[turns.length - 1] !== resp) return false;
+      return (
+        Boolean(document.querySelector('button[data-testid="input-cancel-button"]')) ||
+        paneHasWorkingHeading(p.root)
+      );
+    }
+    return false;
+  }
+
+  function tryToggleWorkedBtn(btn) {
+    if (rtState.disposed || !FEAT.stepUnfold || !btn || !btn.isConnected) return false;
+    const now = Date.now();
+    const prev = autoExpandBurst.get(btn);
+    const count = prev && now - prev.lastTs < 1500 ? prev.count : 0;
+    if (count >= 6) return false;
+    autoExpandBurst.set(btn, { count: count + 1, lastTs: now });
+    btn.click();
+    return true;
+  }
+
+  function classifyAndReconcileWorkedBtn(btn, panesArg) {
+    if (rtState.disposed || !FEAT.stepUnfold || !btn || !btn.isConnected) return;
+    if (btn.getAttribute('aria-expanded') !== 'true') return;
+    const wrap = resolveWorkedStreamHost(btn);
+    const panel = resolveWorkedPanel(btn);
+    if (panelHasIntermediateProse(panel)) {
+      workedKind.set(btn, 'prose');
+      if (wrap && wrap.getAttribute('data-ag-inline-kind') !== 'prose') {
+        wrap.setAttribute('data-ag-inline-kind', 'prose');
+      }
+      applyWorkedInlineSummary(btn, '');
+      return;
+    }
+    if (isWorkedTurnActive(btn, panel, panesArg)) {
+      workedKind.delete(btn);
+      applyWorkedInlineSummary(btn, '');
+      if (wrap && wrap.hasAttribute('data-ag-inline-kind')) wrap.removeAttribute('data-ag-inline-kind');
+      return;
+    }
+    const summary = extractWorkedToolsSummary(panel);
+    if (summary) workedSummary.set(btn, summary);
+    const finalSummary = workedSummary.get(btn) || '';
+    applyWorkedInlineSummary(btn, finalSummary);
+    workedKind.set(btn, 'tools');
+    if (wrap && wrap.getAttribute('data-ag-inline-kind') !== 'tools') {
+      wrap.setAttribute('data-ag-inline-kind', 'tools');
+    }
+    if (!userToggled.has(btn)) {
+      tryToggleWorkedBtn(btn);
+    }
+  }
+
   const PAST_LABEL_RE =
     /^(?:Explored|Ran\b|Edited\b|Done\b|Read\b|Searched|Listed|Viewed|Checked|Found\b|Created|Updated|Deleted|Wrote\b|Written|Built\b|Tested|Installed|Fetched|Analyzed|Reviewed|Thought\b|Worked\b|Completed|Finished|Failed|Stopped|Cancelled|Canceled|Skipped|已探索|已运行|已编辑|已完成|已读取|已搜索|已查看|已检查|已创建|已更新|已删除|已写入|已构建|已测试|已失败|已取消|完成了|思考了)/i;
 
+  const isTrustedClick = typeof rt.isTrustedClick === 'function' ? rt.isTrustedClick : (e) => Boolean(e && e.isTrusted);
   const onDocClick = (e) => {
-    if (!e.isTrusted) return;
+    if (!isTrustedClick(e)) return;
     const btn = e.target && e.target.closest && e.target.closest('button[data-testid="worked-for-collapsible"]');
     if (btn) userToggled.add(btn);
   };
@@ -173,6 +331,7 @@ export function createStepStreamModule(rt) {
       let timerEl = el.querySelector(':scope > .ag-elapsed-timer');
 
       if (isRunning) {
+        if (el.getAttribute('data-maga-running') !== '1') el.setAttribute('data-maga-running', '1');
         activeCount += 1;
         let startTs = runningTimers.get(el);
         if (!startTs) {
@@ -204,6 +363,7 @@ export function createStepStreamModule(rt) {
           setLeafText(timerEl, txt);
         }
       } else {
+        if (el.hasAttribute('data-maga-running')) el.removeAttribute('data-maga-running');
         if (orbit) orbit.remove();
         if (timerEl) timerEl.remove();
         runningTimers.delete(el);
@@ -212,6 +372,7 @@ export function createStepStreamModule(rt) {
     /* stale indicators on rows that are no longer candidates */
     if (!FEAT.runningTimer) {
       document.querySelectorAll('.ag-orbit-dots, .ag-elapsed-timer').forEach((n) => n.remove());
+      document.querySelectorAll('[data-maga-running]').forEach((el) => el.removeAttribute('data-maga-running'));
     }
 
     const keepPolling = activeCount > 0;
@@ -565,10 +726,97 @@ export function createStepStreamModule(rt) {
       if (host) browserHoles.add(host);
     });
     syncAttrTargetSet('data-maga-has-browser-hole', browserHoles);
+
+    const actionCards = new Set();
+    const actionCardWraps = new Set();
+    const CHROME_RE = /\b(?:border|rounded-(?:md|lg|xl)|bg-(?:muted|secondary|card|accent|background|zinc|neutral|stone|slate))\b/;
+    const ACTION_CARD_RE = /(?:^|\b)(?:Ran|Running)\b|已运行|正在运行|Exited with code/i;
+    document.querySelectorAll('[data-testid="agent-response"] button').forEach((btn) => {
+      if (btn.hasAttribute('data-maga-own')) return;
+      const tid = btn.getAttribute('data-testid');
+      if (
+        tid === 'worked-for-collapsible' ||
+        tid === 'tool-group-collapsible' ||
+        tid === 'step-plan-chip' ||
+        tid === 'changed-files-card-review' ||
+        tid === 'markdown-table-menu' ||
+        tid === 'thinking-collapsible-trigger'
+      ) {
+        return;
+      }
+      if (btn.matches('[role="combobox"], [aria-haspopup]')) return;
+      if (
+        btn.closest(
+          '[data-markdown-root], [data-testid="planner-response-text"], .context-scope-mention, [data-maga-own], [data-testid="changed-files-card"]'
+        )
+      ) {
+        return;
+      }
+      if (btn.querySelector('pre, table')) return;
+      const cls = typeof btn.className === 'string' ? btn.className : '';
+      const p = btn.parentElement;
+      const pCls = p && typeof p.className === 'string' ? p.className : '';
+      const hasCardChrome = CHROME_RE.test(cls) || CHROME_RE.test(pCls);
+      if (!hasCardChrome) return;
+      const txt = (btn.textContent || '').trim();
+      if (!txt || txt.length > 240 || !ACTION_CARD_RE.test(txt)) return;
+      actionCards.add(btn);
+      if (
+        p &&
+        p.tagName === 'DIV' &&
+        !p.hasAttribute('data-maga-own') &&
+        p.children &&
+        p.children.length === 1 &&
+        btn.getAttribute('aria-expanded') !== 'true' &&
+        CHROME_RE.test(pCls) &&
+        !p.querySelector(
+          'p, pre, [data-markdown-root], [data-testid="planner-response-text"], [data-testid="changed-files-card"]'
+        )
+      ) {
+        actionCardWraps.add(p);
+      }
+    });
+    syncAttrTargetSet('data-maga-action-card', actionCards);
+    syncAttrTargetSet('data-maga-action-card-wrap', actionCardWraps);
   }
 
   function handleAriaExpandedMutation(t) {
-    if (!FEAT.collapseAnim || !t || t.getAttribute('data-testid') !== 'tool-group-collapsible') return;
+    if (!t || !t.getAttribute) return;
+    const testid = t.getAttribute('data-testid');
+    if (testid === 'worked-for-collapsible') {
+      if (FEAT.stepUnfold && t.getAttribute('aria-expanded') === 'false' && !userToggled.has(t)) {
+        if (workedKind.get(t) === 'tools') {
+          applyWorkedInlineSummary(t, workedSummary.get(t) || '');
+          return;
+        }
+        frame(() => {
+          if (rtState.disposed || !FEAT.stepUnfold || !t.isConnected) return;
+          if (t.getAttribute('aria-expanded') !== 'false' || userToggled.has(t)) return;
+          const kind = workedKind.get(t);
+          if (kind === 'tools') {
+            applyWorkedInlineSummary(t, workedSummary.get(t) || '');
+            return;
+          }
+          if (kind === 'prose') {
+            tryToggleWorkedBtn(t);
+            return;
+          }
+          if (!pendingProbes.has(t)) {
+            pendingProbes.add(t);
+            if (tryToggleWorkedBtn(t)) {
+              frame(() => {
+                pendingProbes.delete(t);
+                if (!rtState.disposed && FEAT.stepUnfold && t.isConnected) classifyAndReconcileWorkedBtn(t);
+              });
+            } else {
+              pendingProbes.delete(t);
+            }
+          }
+        });
+      }
+      return;
+    }
+    if (!FEAT.collapseAnim || testid !== 'tool-group-collapsible') return;
     const exp = t.getAttribute('aria-expanded');
     if (exp === 'false') {
       animateCollapseIfNeeded(t);
@@ -577,28 +825,70 @@ export function createStepStreamModule(rt) {
     }
   }
 
+  function teardownWorkedInlineState() {
+    document.querySelectorAll('.ag-worked-inline-summary').forEach((el) => el.remove());
+    document.querySelectorAll('[data-ag-inline-stream]').forEach((el) => {
+      el.removeAttribute('data-ag-inline-stream');
+      el.removeAttribute('data-ag-inline-kind');
+      el.removeAttribute('data-ag-has-plan-chip');
+    });
+    document.querySelectorAll('[data-ag-inline-worked]').forEach((el) => el.removeAttribute('data-ag-inline-worked'));
+    document.querySelectorAll('[data-ag-has-summary]').forEach((el) => el.removeAttribute('data-ag-has-summary'));
+  }
+
   function sync() {
     if (rtState.disposed) return;
+    const panes = collectPanes();
     if (FEAT.stepUnfold) {
       const workedBtns = document.querySelectorAll('button[data-testid="worked-for-collapsible"]');
       for (const btn of workedBtns) {
-        const wrap = btn.parentElement;
-        if (wrap && !wrap.hasAttribute('data-ag-inline-stream')) {
-          wrap.setAttribute('data-ag-inline-stream', 'true');
+        const wrap = resolveWorkedStreamHost(btn);
+        if (wrap) {
+          if (!wrap.hasAttribute('data-ag-inline-stream')) {
+            wrap.setAttribute('data-ag-inline-stream', 'true');
+          }
+          const hasPlanChip = Boolean(wrap.querySelector('button[data-testid="step-plan-chip"]'));
+          if (hasPlanChip) {
+            if (!wrap.hasAttribute('data-ag-has-plan-chip')) wrap.setAttribute('data-ag-has-plan-chip', 'true');
+          } else if (wrap.hasAttribute('data-ag-has-plan-chip')) {
+            wrap.removeAttribute('data-ag-has-plan-chip');
+          }
         }
-        if (btn.getAttribute('aria-expanded') === 'false' && !userToggled.has(btn)) {
-          const n = autoExpandCount.get(btn) || 0;
-          if (n < 3) {
-            autoExpandCount.set(btn, n + 1);
-            btn.click();
+        if (!btn.hasAttribute('data-ag-inline-worked')) {
+          btn.setAttribute('data-ag-inline-worked', 'true');
+        }
+        if (btn.getAttribute('aria-expanded') === 'true') {
+          classifyAndReconcileWorkedBtn(btn, panes);
+        } else {
+          const kind = workedKind.get(btn);
+          if (userToggled.has(btn) || kind === 'tools') {
+            if (kind === 'tools') {
+              if (wrap && wrap.getAttribute('data-ag-inline-kind') !== 'tools') {
+                wrap.setAttribute('data-ag-inline-kind', 'tools');
+              }
+              applyWorkedInlineSummary(btn, workedSummary.get(btn) || '');
+            }
+          } else if (kind === 'prose') {
+            tryToggleWorkedBtn(btn);
+          } else if (!pendingProbes.has(btn)) {
+            pendingProbes.add(btn);
+            if (tryToggleWorkedBtn(btn)) {
+              frame(() => {
+                pendingProbes.delete(btn);
+                if (!rtState.disposed && FEAT.stepUnfold && btn.isConnected) {
+                  classifyAndReconcileWorkedBtn(btn, panes);
+                }
+              });
+            } else {
+              pendingProbes.delete(btn);
+            }
           }
         }
       }
     } else {
-      document.querySelectorAll('[data-ag-inline-stream]').forEach((el) => el.removeAttribute('data-ag-inline-stream'));
+      teardownWorkedInlineState();
     }
     if (FEAT.collapseAnim) captureOpenToolPanels();
-    const panes = collectPanes();
     syncRunningToolIndicators(panes);
     syncInlinePillBoundaries();
     syncCodeBlocks();
@@ -616,7 +906,10 @@ export function createStepStreamModule(rt) {
     document.removeEventListener('click', onDocClick, true);
     restoreInlinePillBoundaries();
     document.querySelectorAll('.ag-collapse-ghost, .ag-orbit-dots, .ag-elapsed-timer').forEach((el) => el.remove());
-    document.querySelectorAll('[data-ag-inline-stream]').forEach((el) => el.removeAttribute('data-ag-inline-stream'));
+    document.querySelectorAll('[data-maga-action-card]').forEach((el) => el.removeAttribute('data-maga-action-card'));
+    document.querySelectorAll('[data-maga-action-card-wrap]').forEach((el) => el.removeAttribute('data-maga-action-card-wrap'));
+    document.querySelectorAll('[data-maga-running]').forEach((el) => el.removeAttribute('data-maga-running'));
+    teardownWorkedInlineState();
   }
 
   return {

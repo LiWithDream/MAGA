@@ -3,7 +3,7 @@
  * Reuses shared aggregation/chart/tooltip core from usage-card-core.mjs with zero extra disk scans
  * and zero background polling (on-demand per open/refresh via unified daemon getUsageStats).
  */
-import { markOwn, setAttr } from '../core/dom.mjs';
+import { markOwn, setAttr, setStyle } from '../core/dom.mjs';
 import { isZhUi, L } from '../core/env.mjs';
 import {
   SPANS,
@@ -20,6 +20,25 @@ import {
   buildUsageBodyHtml,
   createSharedUsageTooltip,
 } from './usage-card-core.mjs';
+
+export function classifyUsageTier(totalTokens) {
+  const n = Number(totalTokens || 0);
+  if (!Number.isFinite(n) || n <= 0) return 'none';
+  if (n < 1_000_000) return 'light';
+  if (n < 50_000_000) return 'mid';
+  if (n < 500_000_000) return 'heavy';
+  return 'flagship';
+}
+
+export function computeLogUsageRatio(totalTokens, maxTokens) {
+  const v = Number(totalTokens || 0);
+  const m = Number(maxTokens || 0);
+  if (!Number.isFinite(v) || !Number.isFinite(m) || v <= 0 || m <= 0) return 0;
+  const num = Math.log10(v / 1000 + 1);
+  const den = Math.log10(m / 1000 + 1);
+  if (!(den > 0)) return 0;
+  return Math.max(0.08, Math.min(1, Number((num / den).toFixed(3))));
+}
 
 export function createProjectUsageRuntime({ motionThemes, studioPrefs } = {}) {
   const CARD_ID = 'agy-pd-usage-card';
@@ -292,20 +311,85 @@ export function createProjectUsageRuntime({ motionThemes, studioPrefs } = {}) {
   }
 
   function applyGridBadges(view) {
-    const badges = view.querySelectorAll('.ag-proj-card [data-ag-proj-usage-badge]');
-    for (const badge of badges) {
-      markOwn(badge);
-      const pid = badge.getAttribute('data-ag-proj-usage-badge') || '';
+    const cards = Array.from(view.querySelectorAll('.ag-proj-card[data-ag-proj-id]'));
+    let maxTokens = 0;
+    let sumTokens = 0;
+    for (const card of cards) {
+      const pid = card.getAttribute('data-ag-proj-id') || '';
       const entry = pid ? gridCache.byProject[pid] : null;
-      if (!entry || !entry.totalTokens) {
-        badge.hidden = true;
-        if (badge.textContent) badge.textContent = '';
-        continue;
+      const tot = Number(entry?.totalTokens || 0);
+      if (tot > 0) {
+        sumTokens += tot;
+        if (tot > maxTokens) maxTokens = tot;
       }
-      const nextText = fmtTokens(entry.totalTokens);
-      if (badge.textContent !== nextText) badge.textContent = nextText;
-      setAttr(badge, 'title', `${exact(entry.totalTokens)} tokens · ${reqFmt(entry.requests || 0)}`);
-      badge.hidden = false;
+    }
+
+    for (const card of cards) {
+      const pid = card.getAttribute('data-ag-proj-id') || '';
+      const badge = card.querySelector('[data-ag-proj-usage-badge]');
+      const shareEl = card.querySelector('[data-ag-proj-usage-share]');
+      const entry = pid ? gridCache.byProject[pid] : null;
+      const tot = Number(entry?.totalTokens || 0);
+      const tier = classifyUsageTier(tot);
+      const ratio = computeLogUsageRatio(tot, maxTokens);
+      setAttr(card, 'data-usage-tier', tier);
+      setStyle(card, '--ag-usage-ratio', String(ratio));
+
+      const hasUsage = Boolean(entry && tot > 0);
+      const sharePct = hasUsage && sumTokens > 0 ? (tot / sumTokens) * 100 : null;
+      const pctLabel =
+        sharePct === null
+          ? ''
+          : sharePct >= 10
+            ? `${Math.round(sharePct)}%`
+            : sharePct >= 0.1
+              ? `${sharePct.toFixed(1)}%`
+              : '<0.1%';
+
+      if (badge) {
+        markOwn(badge);
+        setAttr(badge, 'data-usage-tier', tier);
+        if (!hasUsage) {
+          badge.hidden = true;
+          if (badge.textContent) badge.textContent = '';
+        } else {
+          const nextText = fmtTokens(tot);
+          if (badge.textContent !== nextText) badge.textContent = nextText;
+          const shareLbl = sharePct !== null ? formatShareLabel(sharePct) : '';
+          setAttr(
+            badge,
+            'title',
+            `${exact(tot)} tokens · ${reqFmt(entry.requests || 0)}${shareLbl ? ` (${L('占比', 'share')} ${shareLbl})` : ''}`
+          );
+          badge.hidden = false;
+        }
+      }
+
+      if (shareEl) {
+        markOwn(shareEl);
+        if (!hasUsage || !pctLabel) {
+          shareEl.hidden = true;
+          if (shareEl.textContent) shareEl.textContent = '';
+        } else {
+          const shareText = `${L('占比 ', '')}${pctLabel}`;
+          if (shareEl.textContent !== shareText) shareEl.textContent = shareText;
+          shareEl.hidden = false;
+        }
+      }
+    }
+
+    const totalEl = view.querySelector('[data-ag-proj-total-usage]');
+    if (totalEl) {
+      markOwn(totalEl);
+      if (sumTokens > 0) {
+        const nextTotal = `${L('累计消耗 ', 'Total ')}${fmtTokens(sumTokens)}`;
+        if (totalEl.textContent !== nextTotal) totalEl.textContent = nextTotal;
+        setAttr(totalEl, 'title', `${exact(sumTokens)} tokens`);
+        totalEl.hidden = false;
+      } else {
+        totalEl.hidden = true;
+        if (totalEl.textContent) totalEl.textContent = '';
+      }
     }
   }
 

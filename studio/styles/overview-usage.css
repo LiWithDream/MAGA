@@ -367,27 +367,13 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) :is(#ag-claude-ov-sections
   flex-direction: column;
   align-items: center;
   cursor: pointer;
-  border-radius: 5px;
-  transition: opacity 140ms ease, background-color 140ms ease;
-}
-
-:is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-bar[data-agy-active="1"] {
-  background-color: color-mix(in srgb, var(--ag-ov-fg) 6%, transparent);
+  border-radius: 4px;
+  transition: opacity 150ms ease;
 }
 
 :is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) :is(.agy-usage-bar, .agy-usage-kpi, .agy-usage-seg button, .agy-usage-reset-btn):focus-visible {
   outline: 1.5px solid color-mix(in srgb, var(--ag-ov-fg) 42%, transparent);
   outline-offset: 1px;
-}
-
-:is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-bars:hover .agy-usage-bar {
-  opacity: 0.48;
-}
-
-:is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-bars:hover .agy-usage-bar:hover,
-:is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-bars:hover .agy-usage-bar[data-agy-active="1"] {
-  opacity: 1;
-  background-color: color-mix(in srgb, var(--ag-ov-fg) 6%, transparent);
 }
 
 :is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-bar-track {
@@ -409,7 +395,7 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) :is(#ag-claude-ov-sections
   border-radius: 3.5px 3.5px 1.5px 1.5px;
   overflow: hidden;
   min-height: 4px;
-  transition: transform 140ms ease, filter 140ms ease;
+  transition: opacity 150ms ease, filter 150ms ease;
 }
 
 :is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-chart[data-period="week"] .agy-usage-bar-stack,
@@ -417,10 +403,21 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) :is(#ag-claude-ov-sections
   max-width: 12px;
 }
 
+:is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-bar:not([data-agy-active="1"]) .agy-usage-bar-stack {
+  opacity: 0.44;
+}
+
 :is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-bar:hover .agy-usage-bar-stack,
 :is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-bar[data-agy-active="1"] .agy-usage-bar-stack {
-  filter: brightness(1.08);
-  transform: scaleX(1.08);
+  opacity: 1;
+}
+
+:is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-bar:hover .agy-usage-bar-stack {
+  filter: brightness(1.06);
+}
+
+:is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-bars:hover .agy-usage-bar[data-agy-active="1"]:not(:hover) .agy-usage-bar-stack {
+  opacity: 0.72;
 }
 
 :is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-bar-stack > i {
@@ -437,6 +434,10 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) :is(#ag-claude-ov-sections
   border-radius: 999px;
   background-color: color-mix(in srgb, var(--ag-ov-muted) 26%, transparent);
   transition: background-color 140ms ease;
+}
+
+:is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-bar[data-agy-active="1"] .agy-usage-bar-zero {
+  background-color: color-mix(in srgb, var(--ag-ov-fg) 58%, transparent);
 }
 
 :is(#ag-claude-ov-sections #agy-ov-usage-card, #ag-claude-projects-view #agy-pd-usage-card) .agy-usage-bar:hover .agy-usage-bar-zero {

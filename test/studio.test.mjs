@@ -5448,6 +5448,12 @@ test('usage-card-core scopes model breakdown to active Day/Week/Month bucket and
     assert.match(enHtml, />This month</);
     assert.match(enHtml, />Selected 8\.0k · 8 req</);
 
+    // Pure opacity focus on chart bars (no boxy full-height gray column background)
+    const usageCss = readFileSync(path.join(REPO, 'studio', 'styles', 'overview-usage.css'), 'utf8');
+    assert.match(usageCss, /\.agy-usage-bar:not\(\[data-agy-active="1"\]\)\s+\.agy-usage-bar-stack\s*\{\s*opacity:\s*0\.44;/);
+    assert.doesNotMatch(usageCss, /\.agy-usage-bar\[data-agy-active="1"\]\s*\{[^}]*background-color:/);
+    assert.doesNotMatch(usageCss, /\.agy-usage-bars:hover\s+\.agy-usage-bar:(?:hover|\[data-agy-active="1"\])[^{]*\{[^}]*background-color:/);
+
     ovUsage.dispose();
   } finally {
     for (const k of keys) {

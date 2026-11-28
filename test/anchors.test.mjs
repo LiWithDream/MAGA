@@ -1179,3 +1179,132 @@ test('Must 4: removes hardcoded ENV.md exemption, supports excludeFiles, localiz
     fs.rmSync(stateDir, { recursive: true, force: true });
   }
 });
+
+test('Pre-release hardening: handoff cancels late scopeGuard, flush claims queue atomically, locks resolve symlink parents & ReplacementChunks', async () => {
+  const { JSDOM } = await import('jsdom');
+  const { createHandoffLaunchHelper } = await import(
+    pathToFileURL(path.join(REPO_ROOT, 'user', 'src', 'modules', 'projects', 'handoff-launch.mjs')).href
+  );
+  const { flushQueuedAnchorWritesForRepo, normalizeRepoKeyHash } = await import(
+    pathToFileURL(path.join(REPO_ROOT, 'studio', 'plugin', 'maga-anchors', 'hooks', 'anchor-guard.mjs')).href
+  );
+
+  // 1. Late scopeGuard after navTimeoutMs settles returns launch_cancelled
+  const dom = new JSDOM(
+    '<!doctype html><html><body><div id="antigravity.agentSidePanelInputBox"><div data-lexical-editor="true">draft</div></div></body></html>',
+    { url: 'https://127.0.0.1:60000/c/old-cid-late' }
+  );
+  const prevWin = globalThis.window;
+  const prevDoc = globalThis.document;
+  globalThis.window = dom.window;
+  globalThis.document = dom.window.document;
+  try {
+    let capturedOpts = null;
+    const launcher = createHandoffLaunchHelper({
+      rtState: { disposed: false },
+      hooks: {},
+      activeReactFiber: () => null,
+      getActiveCascadeId: () => 'old-cid-late',
+      decodeFileUriToPath: (u) => String(u || '').replace('file://', ''),
+      resolveProjectsStoreAndBindings: () => ({
+        store: { getState: () => ({ newConvoResourceSelector: { lastSelectedProjectId: 'p1' }, trajectorySummaries: { summaries: {} } }) },
+        bindings: { router: { state: { location: { pathname: '/c/old-cid-late' } } } },
+      }),
+      collectNativeProjects: () => [{ id: 'p1', name: 'P1', dirPath: '/tmp/p1' }],
+      startNewChatInProject: (_p, _pr, _m, _med, _rb, opts) => {
+        capturedOpts = opts;
+      },
+      openConversationFromProject: () => {},
+    });
+    const res = await launcher.launchMilestoneHandoffChat({
+      projectId: 'p1',
+      prompt: 'handoff',
+      expectedFromCid: 'old-cid-late',
+      navTimeoutMs: 110,
+    });
+    assert.equal(res.ok, false);
+    assert.equal(res.error, 'launch_timeout');
+    assert.deepEqual(capturedOpts.scopeGuard(), { ok: false, reason: 'launch_cancelled' });
+  } finally {
+    globalThis.window = prevWin;
+    globalThis.document = prevDoc;
+  }
+
+  // 2. Atomic queue claim, symlink non-existent file lock, and ReplacementChunks inspection
+  const repo = createTempGitRepo();
+  const stateDir = realpathNative(fs.mkdtempSync(path.join(os.tmpdir(), 'maga-anc-audit-')));
+  const symParent = fs.mkdtempSync(path.join(os.tmpdir(), 'maga-anc-sym-'));
+  try {
+    const repoHash = normalizeRepoKeyHash(repo);
+    const pendingDir = path.join(stateDir, 'anchor-pending-writes');
+    fs.mkdirSync(pendingDir, { recursive: true });
+    const queueFile = path.join(pendingDir, `${repoHash}.json`);
+    fs.writeFileSync(
+      queueFile,
+      JSON.stringify({ anchors: [{ id: 'a1', text: 'Keep release packaging clean', sourceTurn: 'turn#1' }] }),
+      'utf8'
+    );
+    const flushRes = flushQueuedAnchorWritesForRepo(
+      { topLevel: repo, mainRoot: repo, commonDir: path.join(repo, '.git') },
+      { stateDir }
+    );
+    assert.equal(flushRes.flushed, true);
+    assert.equal(flushRes.count, 1);
+    assert.equal(fs.existsSync(queueFile), false);
+    assert.equal(fs.readdirSync(pendingDir).filter((f) => f.includes('.flushing-')).length, 0);
+    assert.match(fs.readFileSync(path.join(repo, '.agents', 'rules', 'anchors.local.md'), 'utf8'), /Keep release packaging clean/);
+
+    fs.mkdirSync(path.join(repo, '.agents'), { recursive: true });
+    fs.writeFileSync(
+      path.join(repo, '.agents', 'locks.json'),
+      JSON.stringify({
+        schema: 1,
+        lockedFiles: [{ id: 'new-locked', path: 'future-dir/locked.ts', quote: 'Protected new file path' }],
+        bannedPatterns: [
+          {
+            id: 'no-ip-chunk',
+            appliesTo: ['file'],
+            pattern: '10\\.249\\.',
+            quote: 'Do not write internal IPs in ReplacementChunks',
+          },
+        ],
+      }),
+      'utf8'
+    );
+
+    if (process.platform !== 'win32') {
+      const symRepo = path.join(symParent, 'repo-link');
+      fs.symlinkSync(repo, symRepo);
+      const symLockRes = evaluateLocksPreToolUse(
+        {
+          hookEventName: 'PreToolUse',
+          cwd: symRepo,
+          toolCall: { name: 'write_file', args: { Path: path.join(symRepo, 'future-dir', 'locked.ts'), Content: 'x' } },
+        },
+        { stateDir }
+      );
+      assert.equal(symLockRes.decision, 'force_ask');
+    }
+
+    const multiRes = evaluateLocksPreToolUse(
+      {
+        hookEventName: 'PreToolUse',
+        cwd: repo,
+        toolCall: {
+          name: 'multi_replace_file_content',
+          args: {
+            TargetFile: path.join(repo, 'src', 'app.ts'),
+            ReplacementChunks: [{ TargetContent: 'old', ReplacementContent: 'const ip = "10.249.1.2";' }],
+          },
+        },
+      },
+      { stateDir }
+    );
+    assert.equal(multiRes.decision, 'force_ask');
+    assert.match(multiRes.reason, /ReplacementChunks/);
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+    fs.rmSync(stateDir, { recursive: true, force: true });
+    fs.rmSync(symParent, { recursive: true, force: true });
+  }
+});

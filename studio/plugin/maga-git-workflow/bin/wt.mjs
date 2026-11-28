@@ -96,10 +96,12 @@ async function main() {
         normalizeRealPath(w.path) === targetNorm
     );
     const worktreePath = matched ? matched.realPath : target;
+    const callerCid = String(flags.get('--cid') || process.env.ANTIGRAVITY_CONVERSATION_ID || '').trim();
     const removed = await removeRepoWorktreeCore(mainEntry, listRes.worktrees, {
       worktreePath,
       deleteBranch: Boolean(flags.get('--delete-branch')),
       forceActive: Boolean(flags.get('--force-active')),
+      callerCid,
       commonDir: listRes.commonDir,
     });
     console.log(JSON.stringify(removed, null, 2));

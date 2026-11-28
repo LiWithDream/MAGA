@@ -790,6 +790,33 @@ export async function createRepoWorktreeCore(
   };
 }
 
+async function checkSelfBoundMergedCleanAsync(
+  mainReal,
+  mainEntry,
+  entry,
+  { callerCid = '', baseBranch = '', activeBounds = [] } = {}
+) {
+  const cleanCaller = SAFE_CID_RE.test(String(callerCid || '').trim()) ? String(callerCid).trim() : '';
+  if (!cleanCaller) return false;
+  if (!activeBounds.every((b) => String(b?.cid || '').trim() === cleanCaller)) return false;
+
+  await ensureNodeModulesExcludedIfNeededAsync(mainReal, entry.realPath);
+  const stRes = await execGitWithStatusAsync(entry.realPath, ['status', '--porcelain=v1'], 4000);
+  if (!stRes.ok || stRes.stdout.trim() !== '') return false;
+
+  let wtHead = String(entry.head || '').trim();
+  if (!wtHead) {
+    const headRes = await execGitWithStatusAsync(entry.realPath, ['rev-parse', 'HEAD'], 4000);
+    if (!headRes.ok) return false;
+    wtHead = headRes.stdout.trim();
+  }
+  if (!wtHead) return false;
+
+  const baseRef = String(baseBranch || mainEntry.branch || 'HEAD').trim() || 'HEAD';
+  const mergedRes = await execGitWithStatusAsync(mainReal, ['merge-base', '--is-ancestor', wtHead, baseRef], 4000);
+  return Boolean(mergedRes.ok);
+}
+
 export async function removeRepoWorktreeCore(
   mainEntry,
   worktrees,
@@ -797,6 +824,8 @@ export async function removeRepoWorktreeCore(
     worktreePath = '',
     deleteBranch = false,
     forceActive = false,
+    callerCid = '',
+    baseBranch = '',
     commonDir = '',
     protectedBranches = null,
     now = Date.now(),
@@ -817,14 +846,27 @@ export async function removeRepoWorktreeCore(
   if (entry.locked) return { ok: false, error: 'worktree_locked' };
   if (entry.prunable) return { ok: false, error: 'worktree_prunable' };
 
-  if (!forceActive && Array.isArray(entry.boundCids)) {
-    const activeBound = entry.boundCids.some((b) => b.updatedAt > 0 && now - b.updatedAt <= ACTIVE_CID_TTL_MS);
-    if (activeBound) {
+  let selfActiveBypass = false;
+  let ensuredNodeModules = false;
+  const activeBounds = Array.isArray(entry.boundCids)
+    ? entry.boundCids.filter((b) => b && b.updatedAt > 0 && now - b.updatedAt <= ACTIVE_CID_TTL_MS)
+    : [];
+  if (!forceActive && activeBounds.length > 0) {
+    const canBypass = await checkSelfBoundMergedCleanAsync(mainReal, mainEntry, entry, {
+      callerCid,
+      baseBranch,
+      activeBounds,
+    });
+    ensuredNodeModules = true;
+    if (!canBypass) {
       return { ok: false, error: 'worktree_active_in_conversation' };
     }
+    selfActiveBypass = true;
   }
 
-  await ensureNodeModulesExcludedIfNeededAsync(mainReal, entry.realPath);
+  if (!ensuredNodeModules) {
+    await ensureNodeModulesExcludedIfNeededAsync(mainReal, entry.realPath);
+  }
   const govCleanup = await cleanupLocalGovernanceBeforeRemoveAsync(entry.realPath, mainReal);
   if (govCleanup.skippedModified.length > 0) {
     govCleanup.restore();
@@ -886,6 +928,7 @@ export async function removeRepoWorktreeCore(
     removedPath: entry.realPath,
     branch: entry.branch,
     branchDeleted,
+    ...(selfActiveBypass ? { selfActiveBypass: true } : {}),
     ...(branchWarning ? { branchWarning } : {}),
   };
 }

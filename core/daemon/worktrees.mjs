@@ -509,6 +509,7 @@ export async function removeRepoWorktreeAsync(
     worktreePath = '',
     deleteBranch = false,
     forceActive = false,
+    callerCid = '',
     allowUnregistered = false,
     authorizedDirs = null,
     nativeProjectsDir = NATIVE_PROJECTS_DIR,
@@ -530,6 +531,8 @@ export async function removeRepoWorktreeAsync(
     worktreePath,
     deleteBranch,
     forceActive,
+    callerCid,
+    baseBranch: listRes.baseBranch || '',
   });
   if (!removed.ok) return removed;
 
@@ -616,6 +619,7 @@ export async function handleWorktreeRpc(action, payload = {}, opts = {}) {
       worktreePath: payload?.worktreePath,
       deleteBranch: Boolean(payload?.deleteBranch),
       forceActive: false,
+      callerCid: payload?.cid || '',
       allowUnregistered: false,
       authorizedDirs: opts.authorizedDirs || null,
       nativeProjectsDir: opts.nativeProjectsDir || NATIVE_PROJECTS_DIR,

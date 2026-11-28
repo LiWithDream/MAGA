@@ -117,9 +117,22 @@ export function createAnchorsPillRuntime({ studioPrefs } = {}) {
   function renderMenuContents() {
     const pop = ensureMenuEl();
     const cid = getActiveRouteCid();
-    const data = statusCache.cid === cid ? statusCache.data : null;
+    const metricsGen = Number(window.__ag_last_metrics?.metrics?.compactionCount || 0);
+    const cached = statusCache.cid === cid ? statusCache.data : null;
+    const data =
+      cached ||
+      (cid && metricsGen >= 1
+        ? {
+            compactionCount: metricsGen,
+            proposals: [],
+            activeAnchors: [],
+            tokenBudget: { usedTokens: 0, maxTokens: 400 },
+            repoRoot: detectActiveWorkspaceRoot(cid),
+          }
+        : null);
     pop.replaceChildren();
     if (!data) return;
+    if (!cached && cid) fetchStatus(cid, false);
 
     const hdr = document.createElement('div');
     hdr.className = 'agy-anc-hdr';
@@ -233,7 +246,7 @@ export function createAnchorsPillRuntime({ studioPrefs } = {}) {
       }
     }
 
-    const genCount = Number(data.compactionCount || 0);
+    const genCount = Math.max(Number(data.compactionCount || 0), metricsGen);
     if (genCount >= 1) {
       const handoffBox = document.createElement('div');
       handoffBox.className = 'agy-anc-handoff';
@@ -288,7 +301,13 @@ export function createAnchorsPillRuntime({ studioPrefs } = {}) {
     const box = getMainBox();
     const footer = box?.querySelector('.agy-composer-footer');
     const leftGroup = footer?.children?.[0] || null;
-    const existing = document.getElementById(PILL_ID);
+    let existing = document.getElementById(PILL_ID);
+    if (existing && existing.tagName !== 'DIV') {
+      // Defensive hot-reload migration: top-level Row 1 pills MUST be <div> so they never steal
+      // `:scope > button:first-of-type` from Antigravity's native `+ Add context` button.
+      existing.remove();
+      existing = null;
+    }
 
     if (!isEnabled() || !cid || !leftGroup) {
       if (existing) existing.hidden = true;
@@ -310,14 +329,21 @@ export function createAnchorsPillRuntime({ studioPrefs } = {}) {
 
     let pill = existing;
     if (!pill) {
-      pill = document.createElement('button');
+      pill = document.createElement('div');
       pill.id = PILL_ID;
-      pill.type = 'button';
       pill.className = 'agy-anchors-pill';
       markOwn(pill);
+      const goBtn = document.createElement('button');
+      goBtn.type = 'button';
+      goBtn.className = 'agy-anchors-go';
+      const ico = document.createElement('span');
+      ico.className = 'agy-anchors-icon';
+      ico.setAttribute('aria-hidden', 'true');
+      setLeafText(ico, '⚓');
       const txt = document.createElement('span');
       txt.className = 'agy-anchors-pill-lbl';
-      pill.appendChild(txt);
+      goBtn.append(ico, txt);
+      pill.appendChild(goBtn);
       pill.addEventListener('click', (e) => {
         e.preventDefault();
         e.stopPropagation();
@@ -336,9 +362,19 @@ export function createAnchorsPillRuntime({ studioPrefs } = {}) {
     }
 
     if (pill.parentElement !== leftGroup) {
+      const acEl = document.getElementById('agy-auto-compact-pill');
+      const opusEl = document.getElementById('agy-opus-gate-pill');
       const resumeEl = document.getElementById('agy-resume-pill');
-      if (resumeEl && resumeEl.parentElement === leftGroup) {
-        resumeEl.insertAdjacentElement('afterend', pill);
+      const anchor =
+        acEl?.parentElement === leftGroup
+          ? acEl
+          : opusEl?.parentElement === leftGroup
+            ? opusEl
+            : resumeEl?.parentElement === leftGroup
+              ? resumeEl
+              : null;
+      if (anchor) {
+        anchor.insertAdjacentElement('afterend', pill);
       } else {
         leftGroup.insertBefore(pill, leftGroup.firstChild);
       }
@@ -346,11 +382,23 @@ export function createAnchorsPillRuntime({ studioPrefs } = {}) {
     pill.hidden = false;
     setAttr(pill, 'data-warn', genCount >= 3 ? '1' : '0');
     const lblEl = pill.querySelector('.agy-anchors-pill-lbl');
+    const goBtn = pill.querySelector('.agy-anchors-go');
     const labelText =
       propCount > 0
-        ? L(`⚓ 锚点待签 (${propCount})`, `⚓ Anchors (${propCount})`)
-        : L(`⚓ G${genCount} · 建议换窗`, `⚓ G${genCount} · Handoff`);
+        ? L(`锚点待签 (${propCount})`, `Anchors (${propCount})`)
+        : L(`G${genCount} · 建议换窗`, `G${genCount} · Handoff`);
     if (lblEl) setLeafText(lblEl, labelText);
+    const tipText =
+      propCount > 0
+        ? L(`有 ${propCount} 条约束锚点待人工签发`, `${propCount} anchor constraint(s) awaiting approval`)
+        : L(
+            `已历经 G=${genCount} 次压缩，点击打开无损里程碑交接面板`,
+            `Compaction generation G=${genCount}; click to open Milestone Handoff`
+          );
+    if (goBtn) {
+      if (goBtn.title !== tipText) goBtn.title = tipText;
+      setAttr(goBtn, 'aria-label', labelText);
+    }
   }
 
   const onDocClick = (e) => {

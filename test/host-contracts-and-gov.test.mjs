@@ -129,7 +129,7 @@ test('worktree-core materializes untracked local governance as isolated copies, 
     const createdTracked = await createRepoWorktreeCore(mainEntry, { branch: 'feat/tracked-agents', commonDir: listed0.commonDir });
     assert.equal(createdTracked.ok, true);
     assert.equal(
-      fs.readFileSync(path.join(createdTracked.worktreePath, 'AGENTS.md'), 'utf8'),
+      fs.readFileSync(path.join(createdTracked.worktreePath, 'AGENTS.md'), 'utf8').replace(/\r\n/g, '\n'),
       '# Local Governance\n',
       'tracked AGENTS.md comes from Git commit, not overwritten by dirty main file'
     );

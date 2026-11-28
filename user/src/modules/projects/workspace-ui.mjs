@@ -20,6 +20,27 @@ export function createProjectWorkspaceUi(ctx) {
 
   const SVG_AI_SPARKLE =
     '<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 1.25c.32 0 .59.22.66.53l.74 3.23c.2.88.88 1.56 1.76 1.76l3.23.74a.68.68 0 0 1 0 1.32l-3.23.74a2.4 2.4 0 0 0-1.76 1.76l-.74 3.23a.68.68 0 0 1-1.32 0l-.74-3.23a2.4 2.4 0 0 0-1.76-1.76l-3.23-.74a.68.68 0 0 1 0-1.32l3.23-.74a2.4 2.4 0 0 0 1.76-1.76l.74-3.23c.07-.31.34-.53.66-.53z"/></svg>';
+  const SVG_CARD_CHAT_TINY =
+    '<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 3.5h11a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H6.2l-3.2 2.4V11.5h-.5a1 1 0 0 1-1-1v-6a1 1 0 0 1 1-1z"/></svg>';
+  const PROJECT_TONES = ['indigo', 'blue', 'teal', 'amber', 'rose', 'violet'];
+
+  function pickProjectTone(p) {
+    const seed = String((p && (p.id || p.name)) || 'project');
+    let h = 2166136261;
+    for (let i = 0; i < seed.length; i += 1) {
+      h ^= seed.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return PROJECT_TONES[Math.abs(h) % PROJECT_TONES.length];
+  }
+
+  function extractProjectMonogram(name) {
+    const s = String(name || '').trim();
+    if (!s) return 'P';
+    const base = s.includes('/') ? s.split('/').pop().trim() || s : s;
+    const m = base.match(/[A-Za-z0-9\u4e00-\u9fff\u3400-\u4dbf]/u);
+    return m ? m[0].toUpperCase() : 'P';
+  }
 
   function emitProjectsEvent(name, detail) {
     if (typeof window === 'undefined' || typeof window.dispatchEvent !== 'function') return;
@@ -904,9 +925,11 @@ export function createProjectWorkspaceUi(ctx) {
 
     let totalPending = 0;
     let totalRunning = 0;
+    let totalChats = 0;
     for (const p of filtered) {
       totalPending += Number(p.waitingCount || 0);
       totalRunning += Number(p.runningCount || 0);
+      totalChats += Number(p.chatCount || 0);
     }
 
     const cardsHtml = filtered.length
@@ -929,6 +952,8 @@ export function createProjectWorkspaceUi(ctx) {
               wtCount > 1
                 ? `<span class="ag-proj-card-chip" title="${escapeHtml(L(`${wtCount} 个并行 Worktree`, `${wtCount} worktrees`))}">⎇ ${wtCount}</span>`
                 : '';
+            const subtagsInner = `${tagHtml}${agentsChipHtml}${wtChipHtml}`;
+            const subtagsHtml = subtagsInner ? `<div class="ag-proj-card-subtags">${subtagsInner}</div>` : '';
 
             const statusKind =
               p.statusKind ||
@@ -966,7 +991,9 @@ export function createProjectWorkspaceUi(ctx) {
                   ? `<div class="ag-proj-card-latest is-muted">${escapeHtml(p.remoteLabel)}</div>`
                   : `<div class="ag-proj-card-latest is-muted">${escapeHtml(L('暂无对话，点击开始', 'No conversations yet'))}</div>`;
 
-            const glyphSvg = p.isRemote ? SVG_PROJ_EXTERNAL : SVG_CLAUDE_PROJECTS_ICON;
+            const tone = pickProjectTone(p);
+            const monogram = extractProjectMonogram(p.name);
+            const avatarInner = p.isRemote ? SVG_PROJ_EXTERNAL : escapeHtml(monogram);
             const moreBtnHtml = !p.isBuiltin
               ? `<button type="button" class="ag-proj-card-more" data-ag-proj-menu="${escapeHtml(p.id)}" aria-label="${escapeHtml(L('项目操作', 'Project options'))}" title="${escapeHtml(L('更多操作', 'More options'))}">${RECENT_MORE_SVG}</button>`
               : '';
@@ -976,22 +1003,28 @@ export function createProjectWorkspaceUi(ctx) {
                 ? ` title="${escapeHtml(p.remoteUrl)}"`
                 : '';
             const projChatIds = (Array.isArray(p.chats) ? p.chats : []).map((c) => c && c.id).filter(Boolean).join(',');
-            return `<article class="ag-proj-card" data-ag-proj-id="${escapeHtml(p.id)}" data-ag-proj-chat-ids="${escapeHtml(projChatIds)}" data-status="${escapeHtml(statusKind)}" data-empty="${p.chatCount === 0 ? 'true' : 'false'}" data-usage-tier="none" tabindex="0">
+            return `<article class="ag-proj-card" data-ag-proj-id="${escapeHtml(p.id)}" data-ag-proj-chat-ids="${escapeHtml(projChatIds)}" data-status="${escapeHtml(statusKind)}" data-empty="${p.chatCount === 0 ? 'true' : 'false'}" data-tone="${escapeHtml(tone)}" data-usage-tier="none" tabindex="0">
               <div class="ag-proj-card-head">
-                <span class="ag-proj-card-glyph" aria-hidden="true">${glyphSvg}</span>
-                <div class="ag-proj-card-title">${escapeHtml(p.name)}</div>
-                ${statusPillHtml}
-                ${moreBtnHtml}
+                <div class="ag-proj-card-avatar" data-tone="${escapeHtml(tone)}" aria-hidden="true">${avatarInner}</div>
+                <div class="ag-proj-card-title-col">
+                  <div class="ag-proj-card-title">${escapeHtml(p.name)}</div>
+                  ${subtagsHtml}
+                </div>
+                <div class="ag-proj-card-head-r">
+                  ${statusPillHtml}
+                  <span class="ag-proj-card-usage" data-ag-proj-usage-badge="${escapeHtml(p.id)}" data-usage-tier="none" hidden></span>
+                  ${moreBtnHtml}
+                </div>
               </div>
-              ${latestHtml}
+              <div class="ag-proj-card-latest-row">
+                <span class="ag-proj-card-latest-icon" aria-hidden="true">${SVG_CARD_CHAT_TINY}</span>
+                ${latestHtml}
+              </div>
               <div class="ag-proj-card-foot">
                 <div class="ag-proj-card-meta-wrap">
                   <span class="ag-proj-card-meta"${metaTitleAttr}>${escapeHtml(metaText)}</span>
-                  ${tagHtml}
-                  ${agentsChipHtml}
-                  ${wtChipHtml}
                 </div>
-                <span class="ag-proj-card-usage" data-ag-proj-usage-badge="${escapeHtml(p.id)}" data-usage-tier="none" hidden></span>
+                <span class="ag-proj-card-share" data-ag-proj-usage-share="${escapeHtml(p.id)}" hidden></span>
               </div>
               <div class="ag-proj-card-bar" aria-hidden="true"><div class="ag-proj-card-bar-fill"></div></div>
             </article>`;
@@ -1011,8 +1044,11 @@ export function createProjectWorkspaceUi(ctx) {
           : L('最近活跃', 'Recent');
 
     const summaryPills = [
-      `<span class="ag-proj-summary-count">${escapeHtml(
+      `<span class="ag-proj-summary-stat">${escapeHtml(
         FEAT.i18n ? `${filtered.length} 个项目` : `${filtered.length} ${filtered.length === 1 ? 'project' : 'projects'}`
+      )}</span>`,
+      `<span class="ag-proj-summary-stat">${escapeHtml(
+        FEAT.i18n ? `${totalChats} 个对话` : `${totalChats} ${totalChats === 1 ? 'chat' : 'chats'}`
       )}</span>`,
       totalPending > 0
         ? `<span class="ag-proj-summary-pill" data-kind="pending">${escapeHtml(L(`${totalPending} 待确认`, `${totalPending} pending`))}</span>`

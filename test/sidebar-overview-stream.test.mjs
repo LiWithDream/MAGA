@@ -155,9 +155,15 @@ test('usage tier classification & logarithmic bar spread differentiate 366k / 36
         <div class="ag-proj-grid">
           <article class="ag-proj-card" data-ag-proj-id="p-small" data-ag-proj-chat-ids="c1">
             <span class="ag-proj-card-usage" data-ag-proj-usage-badge="p-small" hidden></span>
+            <span class="ag-proj-card-share" data-ag-proj-usage-share="p-small" hidden></span>
           </article>
-          <article class="ag-proj-card" data-ag-proj-id="p-top" data-ag-proj-chat-ids="c2">
+          <article class="ag-proj-card" data-ag-proj-id="p-mid" data-ag-proj-chat-ids="c2">
+            <span class="ag-proj-card-usage" data-ag-proj-usage-badge="p-mid" hidden></span>
+            <span class="ag-proj-card-share" data-ag-proj-usage-share="p-mid" hidden></span>
+          </article>
+          <article class="ag-proj-card" data-ag-proj-id="p-top" data-ag-proj-chat-ids="c3">
             <span class="ag-proj-card-usage" data-ag-proj-usage-badge="p-top" hidden></span>
+            <span class="ag-proj-card-share" data-ag-proj-usage-share="p-top" hidden></span>
           </article>
         </div>
       </div>
@@ -172,6 +178,7 @@ test('usage tier classification & logarithmic bar spread differentiate 366k / 36
           ok: true,
           byProject: {
             'p-small': { totalTokens: 366_000, requests: 8 },
+            'p-mid': { totalTokens: 36_600_000, requests: 90 },
             'p-top': { totalTokens: 1_190_000_000, requests: 2100 },
           },
         };
@@ -183,13 +190,18 @@ test('usage tier classification & logarithmic bar spread differentiate 366k / 36
     await new Promise((r) => setTimeout(r, 25));
 
     const smallCard = dom.window.document.querySelector('[data-ag-proj-id="p-small"]');
+    const midCard = dom.window.document.querySelector('[data-ag-proj-id="p-mid"]');
     const topCard = dom.window.document.querySelector('[data-ag-proj-id="p-top"]');
     const totalEl = dom.window.document.querySelector('[data-ag-proj-total-usage]');
     assert.equal(smallCard.getAttribute('data-usage-tier'), 'light');
+    assert.equal(midCard.getAttribute('data-usage-tier'), 'mid');
     assert.equal(topCard.getAttribute('data-usage-tier'), 'flagship');
     assert.equal(topCard.style.getPropertyValue('--ag-usage-ratio'), '1');
+    assert.equal(dom.window.document.querySelector('[data-ag-proj-usage-share="p-small"]').textContent, '<0.1%');
+    assert.equal(dom.window.document.querySelector('[data-ag-proj-usage-share="p-mid"]').textContent, '3.0%');
+    assert.equal(dom.window.document.querySelector('[data-ag-proj-usage-share="p-top"]').textContent, '97%');
     assert.equal(totalEl.hidden, false);
-    assert.match(totalEl.textContent, /1\.19B/);
+    assert.match(totalEl.textContent, /1\.23B/);
     rt.dispose();
   });
 });
@@ -290,24 +302,36 @@ test('studio-prefs supports 3-mode stepStreamMode (inline default) & sidebar pro
   });
 });
 
-test('step-stream keeps worked-for-collapsible open after turn end (including trailing wrapper) while honoring user clicks', async () => {
+test('step-stream keeps prose open while compressing pure-tool worked-for blocks & tagging action cards', async () => {
   const { createStepStreamModule } = await import(
     pathToFileURL(path.join(REPO, 'user', 'src', 'modules', 'step-stream.mjs')).href
   );
   const { JSDOM } = await import('jsdom');
   const dom = new JSDOM(
     `<!doctype html><html><body>
-      <div id="turn-host">
+      <div id="turn-host" data-testid="agent-response">
         <div id="direct-wrap">
           <button id="btn-direct" type="button" data-testid="worked-for-collapsible" aria-expanded="false">Worked for 1m</button>
-          <div id="direct-panel"><p>Intermediate summary text</p></div>
+          <div id="direct-panel"><div class="select-text"><p>Intermediate summary text</p></div></div>
         </div>
         <div id="trailing-host">
           <div class="flex min-w-0 items-center">
             <button id="btn-trailing" type="button" data-testid="worked-for-collapsible" aria-expanded="true">Worked for 2m</button>
-            <span class="trailing">3 steps</span>
+            <span class="trailing" data-testid="step-plan-chip">3/3 steps</span>
           </div>
-          <div id="trailing-panel"><p>Trailing summary text</p></div>
+          <div id="trailing-panel"><div class="select-text"><p>Trailing summary text</p></div></div>
+        </div>
+        <div id="tools-only-wrap">
+          <button id="btn-tools" type="button" data-testid="worked-for-collapsible" aria-expanded="false">Worked for 41s</button>
+          <div id="tools-panel">
+            <div data-step-rows="true">
+              <button type="button" data-testid="tool-group-collapsible" aria-expanded="false">Explored files, Ran command</button>
+              <button type="button" data-testid="tool-group-collapsible" aria-expanded="false">Edited file</button>
+            </div>
+          </div>
+        </div>
+        <div id="standalone-action-wrap" class="rounded-lg border">
+          <button id="btn-ran-card" type="button">Ran build · Exited with code 1</button>
         </div>
       </div>
     </body></html>`,
@@ -318,7 +342,9 @@ test('step-stream keeps worked-for-collapsible open after turn end (including tr
     const doc = dom.window.document;
     const btnDirect = doc.getElementById('btn-direct');
     const btnTrailing = doc.getElementById('btn-trailing');
-    for (const btn of [btnDirect, btnTrailing]) {
+    const btnTools = doc.getElementById('btn-tools');
+    const btnRan = doc.getElementById('btn-ran-card');
+    for (const btn of [btnDirect, btnTrailing, btnTools]) {
       btn.addEventListener('click', () => {
         const next = btn.getAttribute('aria-expanded') === 'true' ? 'false' : 'true';
         btn.setAttribute('aria-expanded', next);
@@ -334,14 +360,38 @@ test('step-stream keeps worked-for-collapsible open after turn end (including tr
       setLeafText: (el, txt) => {
         if (el.textContent !== txt) el.textContent = txt;
       },
-      syncAttrTargetSet: () => {},
+      syncAttrTargetSet: (attr, nextSet) => {
+        doc.querySelectorAll(`[${attr}]`).forEach((el) => {
+          if (!nextSet.has(el)) el.removeAttribute(attr);
+        });
+        for (const el of nextSet) el.setAttribute(attr, '1');
+      },
     };
     const mod = createStepStreamModule(rt);
     mod.sync();
+    await new Promise((r) => setTimeout(r, 40));
 
-    assert.equal(btnDirect.getAttribute('aria-expanded'), 'true', 'direct collapsed turn auto-expands');
+    assert.equal(btnDirect.getAttribute('aria-expanded'), 'true', 'direct prose turn auto-expands');
     assert.equal(doc.getElementById('direct-wrap').getAttribute('data-ag-inline-stream'), 'true');
+    assert.equal(doc.getElementById('direct-wrap').getAttribute('data-ag-inline-kind'), 'prose');
     assert.equal(doc.getElementById('trailing-host').getAttribute('data-ag-inline-stream'), 'true', 'trailing wrapper marks outer host');
+
+    // Pure-tool block probed & compressed to 1 line with inline summary
+    assert.equal(doc.getElementById('tools-only-wrap').getAttribute('data-ag-inline-kind'), 'tools');
+    assert.equal(btnTools.getAttribute('aria-expanded'), 'false', 'pure-tool worked block stays compressed');
+    assert.match(btnTools.querySelector('.ag-worked-inline-summary')?.textContent || '', /Explored files, Ran command · Edited file/);
+
+    // Standalone bordered command action tagged for unified 12px density
+    assert.equal(btnRan.getAttribute('data-maga-action-card'), '1');
+    assert.equal(doc.getElementById('standalone-action-wrap').getAttribute('data-maga-action-card'), '1');
+
+    // Manual user expand on pure-tool block stays open across syncs
+    const evTools = new dom.window.MouseEvent('click', { bubbles: true, cancelable: true });
+    evTools.__testTrusted = true;
+    btnTools.dispatchEvent(evTools);
+    assert.equal(btnTools.getAttribute('aria-expanded'), 'true');
+    mod.sync();
+    assert.equal(btnTools.getAttribute('aria-expanded'), 'true', 'manual user expand on tool block stays open');
 
     // Simulate turn end collapsing btnTrailing from true -> false (programmatic React state update)
     btnTrailing.setAttribute('aria-expanded', 'false');
@@ -360,6 +410,8 @@ test('step-stream keeps worked-for-collapsible open after turn end (including tr
     mod.dispose();
     assert.equal(doc.querySelector('[data-ag-inline-stream]'), null);
     assert.equal(doc.querySelector('[data-ag-inline-worked]'), null);
+    assert.equal(doc.querySelector('.ag-worked-inline-summary'), null);
+    assert.equal(doc.querySelector('[data-maga-action-card]'), null);
   });
 });
 
@@ -475,9 +527,14 @@ test('built user/custom.js enforces sidebar 4/8 cap with native Pinned preservat
     const alphaCard = ovView.querySelector('[data-ag-proj-id="p-alpha"]');
     const magaCard = ovView.querySelector('[data-ag-proj-id="p-maga"]');
     assert.equal(alphaCard.getAttribute('data-status'), 'running');
+    assert.ok(alphaCard.getAttribute('data-tone'));
+    assert.equal(alphaCard.querySelector('.ag-proj-card-avatar')?.textContent.trim(), 'A');
+    assert.equal(magaCard.querySelector('.ag-proj-card-avatar')?.textContent.trim(), 'M');
+    assert.ok(magaCard.querySelector('[data-ag-proj-usage-share="p-maga"]'));
     assert.match(alphaCard.querySelector('.ag-proj-card-status')?.textContent || '', /1 运行中/);
     assert.equal(magaCard.querySelector('.ag-proj-card-latest')?.textContent.trim(), 'p-maga Chat 1');
     assert.match(magaCard.textContent, /AGENTS/);
+    assert.match(ovView.querySelector('.ag-proj-summary')?.textContent || '', /11 个对话/);
     assert.match(ovView.querySelector('.ag-proj-summary')?.textContent || '', /1 运行中/);
 
     window.__agClaudeUxDispose();

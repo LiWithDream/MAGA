@@ -61,19 +61,89 @@ html:not([data-agy-show-thinking="1"]) [data-testid="thinking-collapsible-trigge
   display: none !important;
 }
 
-/* Inline Briefs: persistent post-turn step prose with whisper-quiet collapsible worked-for trigger */
-div[data-ag-inline-stream="true"] button[data-testid="worked-for-collapsible"][aria-expanded="true"] {
-  min-height: 20px !important;
-  padding: 1px 6px !important;
-  margin-bottom: 2px !important;
-  font-size: 11.5px !important;
+/* Inline Briefs & Unified Action-Row Chrome: consistent 12px density across all step/action controls */
+[data-testid="worked-for-collapsible"],
+[data-testid="step-plan-chip"],
+[data-testid="tool-group-collapsible"],
+[data-testid="ephemeral-tool-status"],
+[data-testid="thinking-collapsible-trigger"],
+[data-testid="system-message-row"] button,
+[data-step-rows="true"] button {
+  font-family: var(--font-sans) !important;
+  font-size: 12px !important;
   line-height: 1.35 !important;
-  opacity: 0.52 !important;
-  transition: opacity 120ms ease, background-color 120ms ease !important;
+  font-weight: 400 !important;
+  min-height: 22px !important;
+  padding: 2px 6px !important;
+  border-radius: 6px !important;
+  color: var(--muted-foreground, #6E6D68) !important;
+  opacity: 0.86 !important;
+  transition: opacity 120ms ease, color 120ms ease, background-color 120ms ease !important;
 }
 
-div[data-ag-inline-stream="true"] button[data-testid="worked-for-collapsible"][aria-expanded="true"]:hover {
-  opacity: 0.94 !important;
+:is(
+  [data-testid="worked-for-collapsible"],
+  [data-testid="step-plan-chip"],
+  [data-testid="tool-group-collapsible"],
+  [data-testid="system-message-row"] button,
+  [data-step-rows="true"] button
+):hover {
+  opacity: 1 !important;
+  color: var(--foreground, #1C1C1A) !important;
+}
+
+[data-testid="step-plan-chip"] svg,
+[data-testid="worked-for-collapsible"] svg {
+  width: 13px !important;
+  height: 13px !important;
+}
+
+[data-testid="system-message-row"] {
+  margin: 0 !important;
+  font-size: 12px !important;
+  line-height: 1.35 !important;
+}
+
+[data-step-rows="true"] {
+  gap: 1px !important;
+}
+
+button[data-testid="worked-for-collapsible"] .ag-worked-inline-summary {
+  margin-left: 4px !important;
+  opacity: 0.78 !important;
+  max-width: 360px !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+  font-weight: 400 !important;
+}
+
+button[data-testid="worked-for-collapsible"][aria-expanded="true"] .ag-worked-inline-summary {
+  display: none !important;
+}
+
+div[data-ag-inline-stream="true"][data-ag-inline-kind="prose"]:not([data-ag-has-plan-chip="true"])
+  > button[data-testid="worked-for-collapsible"][aria-expanded="true"] {
+  display: none !important;
+}
+
+[data-maga-action-card="1"],
+[data-maga-action-card="1"] :is(span, p, div) {
+  font-family: var(--font-sans) !important;
+  font-size: 12px !important;
+  line-height: 1.35 !important;
+  color: var(--muted-foreground, #6E6D68) !important;
+}
+
+[data-maga-action-card="1"] {
+  min-height: 26px !important;
+  padding: 3px 9px !important;
+  border-radius: 8px !important;
+}
+
+:is(html[data-ag-theme-mode="dark"] body, body.dark) [data-maga-action-card="1"],
+:is(html[data-ag-theme-mode="dark"] body, body.dark) [data-maga-action-card="1"] :is(span, p, div) {
+  color: var(--muted-foreground, #9A9994) !important;
 }
 
 div[data-ag-inline-stream="true"] > button[data-testid="worked-for-collapsible"] + div,

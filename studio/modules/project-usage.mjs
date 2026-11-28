@@ -326,38 +326,63 @@ export function createProjectUsageRuntime({ motionThemes, studioPrefs } = {}) {
 
     for (const card of cards) {
       const pid = card.getAttribute('data-ag-proj-id') || '';
-      const badge = card.querySelector(`[data-ag-proj-usage-badge]`);
+      const badge = card.querySelector('[data-ag-proj-usage-badge]');
+      const shareEl = card.querySelector('[data-ag-proj-usage-share]');
       const entry = pid ? gridCache.byProject[pid] : null;
       const tot = Number(entry?.totalTokens || 0);
       const tier = classifyUsageTier(tot);
       const ratio = computeLogUsageRatio(tot, maxTokens);
       setAttr(card, 'data-usage-tier', tier);
       setStyle(card, '--ag-usage-ratio', String(ratio));
-      if (!badge) continue;
-      markOwn(badge);
-      setAttr(badge, 'data-usage-tier', tier);
-      if (!entry || !tot) {
-        badge.hidden = true;
-        if (badge.textContent) badge.textContent = '';
-        continue;
+
+      const hasUsage = Boolean(entry && tot > 0);
+      const sharePct = hasUsage && sumTokens > 0 ? (tot / sumTokens) * 100 : null;
+      const pctLabel =
+        sharePct === null
+          ? ''
+          : sharePct >= 10
+            ? `${Math.round(sharePct)}%`
+            : sharePct >= 0.1
+              ? `${sharePct.toFixed(1)}%`
+              : '<0.1%';
+
+      if (badge) {
+        markOwn(badge);
+        setAttr(badge, 'data-usage-tier', tier);
+        if (!hasUsage) {
+          badge.hidden = true;
+          if (badge.textContent) badge.textContent = '';
+        } else {
+          const nextText = fmtTokens(tot);
+          if (badge.textContent !== nextText) badge.textContent = nextText;
+          const shareLbl = sharePct !== null ? formatShareLabel(sharePct) : '';
+          setAttr(
+            badge,
+            'title',
+            `${exact(tot)} tokens · ${reqFmt(entry.requests || 0)}${shareLbl ? ` (${L('占比', 'share')} ${shareLbl})` : ''}`
+          );
+          badge.hidden = false;
+        }
       }
-      const nextText = fmtTokens(tot);
-      if (badge.textContent !== nextText) badge.textContent = nextText;
-      const sharePct = sumTokens > 0 ? (tot / sumTokens) * 100 : null;
-      const shareLbl = sharePct !== null ? formatShareLabel(sharePct) : '';
-      setAttr(
-        badge,
-        'title',
-        `${exact(tot)} tokens · ${reqFmt(entry.requests || 0)}${shareLbl ? ` (${L('占比', 'share')} ${shareLbl})` : ''}`
-      );
-      badge.hidden = false;
+
+      if (shareEl) {
+        markOwn(shareEl);
+        if (!hasUsage || !pctLabel) {
+          shareEl.hidden = true;
+          if (shareEl.textContent) shareEl.textContent = '';
+        } else {
+          const shareText = `${L('占比 ', '')}${pctLabel}`;
+          if (shareEl.textContent !== shareText) shareEl.textContent = shareText;
+          shareEl.hidden = false;
+        }
+      }
     }
 
     const totalEl = view.querySelector('[data-ag-proj-total-usage]');
     if (totalEl) {
       markOwn(totalEl);
       if (sumTokens > 0) {
-        const nextTotal = `${L('累计', 'Total')} ${fmtTokens(sumTokens)} tokens`;
+        const nextTotal = `${L('累计消耗 ', 'Total ')}${fmtTokens(sumTokens)}`;
         if (totalEl.textContent !== nextTotal) totalEl.textContent = nextTotal;
         setAttr(totalEl, 'title', `${exact(sumTokens)} tokens`);
         totalEl.hidden = false;

@@ -7,6 +7,9 @@ export function createStepStreamModule(rt) {
 
   const userToggled = new WeakSet();
   const autoExpandBurst = new WeakMap();
+  const workedKind = new WeakMap();
+  const workedSummary = new WeakMap();
+  const pendingProbes = new WeakSet();
   const openSnapshots = new WeakMap();
   const runningTimers = new WeakMap();
   let timerIntervalId = null;
@@ -21,9 +24,93 @@ export function createStepStreamModule(rt) {
     return p;
   }
 
-  function tryAutoExpandWorkedBtn(btn) {
+  function resolveWorkedPanel(btn) {
+    if (!btn || !btn.parentElement) return null;
+    const p = btn.parentElement;
+    return p.classList.contains('flex') ? p.nextElementSibling : btn.nextElementSibling;
+  }
+
+  function panelHasIntermediateProse(panel) {
+    if (!panel || !panel.querySelectorAll) return false;
+    const nodes = panel.querySelectorAll(
+      '[data-testid="planner-response-text"], [data-markdown-root], .select-text, .prose, .markdown'
+    );
+    for (const el of nodes) {
+      if (!(el.textContent || '').trim()) continue;
+      const btnAncestor = el.closest('button');
+      if (btnAncestor && panel.contains(btnAncestor)) continue;
+      const sys = el.closest('[data-testid="system-message-row"]');
+      if (sys && panel.contains(sys)) continue;
+      const thinkPanel = el.closest('[data-testid="thinking-collapsible-trigger"] + div');
+      if (thinkPanel && panel.contains(thinkPanel)) continue;
+      const toolPanel = el.closest('[data-testid="tool-group-collapsible"] + div');
+      if (toolPanel && panel.contains(toolPanel)) continue;
+      return true;
+    }
+    return false;
+  }
+
+  function extractWorkedToolsSummary(panel) {
+    if (!panel || !panel.querySelectorAll) return '';
+    let els = Array.from(panel.querySelectorAll('[data-testid="tool-group-collapsible"]'));
+    if (!els.length) {
+      els = Array.from(panel.querySelectorAll('[data-testid="system-message-row"] button'));
+    }
+    const seen = new Set();
+    const parts = [];
+    for (const el of els) {
+      let txt = (el.textContent || '').replace(/\s+/g, ' ').trim();
+      txt = txt.replace(/\s*\d+[ms](?:\s+\d+s)?$/, '').trim();
+      if (!txt || seen.has(txt)) continue;
+      seen.add(txt);
+      parts.push(txt);
+    }
+    if (!parts.length) return '';
+    const joined = parts.join(' · ');
+    return joined.length > 46 ? `${joined.slice(0, 45).trimEnd()}…` : joined;
+  }
+
+  function applyWorkedInlineSummary(btn, summaryText) {
+    if (!btn) return;
+    let span = btn.querySelector(':scope > .ag-worked-inline-summary');
+    const clean = String(summaryText || '').trim();
+    if (!clean) {
+      if (span) span.remove();
+      return;
+    }
+    if (!span) {
+      span = document.createElement('span');
+      span.className = 'ag-worked-inline-summary';
+      if (typeof rt.markOwn === 'function') rt.markOwn(span);
+      else span.setAttribute('data-maga-own', '1');
+      const chevron = btn.querySelector(':scope > svg:last-of-type');
+      if (chevron) btn.insertBefore(span, chevron);
+      else btn.appendChild(span);
+    }
+    setLeafText(span, `· ${clean}`);
+  }
+
+  function isWorkedTurnActive(btn, panel, panesArg) {
+    if (panel && panel.querySelector && panel.querySelector('[data-testid="ephemeral-tool-status"], .ag-orbit-dots')) {
+      return true;
+    }
+    const resp = btn && btn.closest ? btn.closest('[data-testid="agent-response"]') : null;
+    if (!resp) return false;
+    const panes = panesArg || collectPanes();
+    for (const p of panes) {
+      if (!p.root.contains(resp)) continue;
+      const turns = p.root.querySelectorAll('[data-testid="agent-response"]');
+      if (!turns.length || turns[turns.length - 1] !== resp) return false;
+      return (
+        Boolean(document.querySelector('button[data-testid="input-cancel-button"]')) ||
+        paneHasWorkingHeading(p.root)
+      );
+    }
+    return false;
+  }
+
+  function tryToggleWorkedBtn(btn) {
     if (rtState.disposed || !FEAT.stepUnfold || !btn || !btn.isConnected) return false;
-    if (btn.getAttribute('aria-expanded') !== 'false' || userToggled.has(btn)) return false;
     const now = Date.now();
     const prev = autoExpandBurst.get(btn);
     const count = prev && now - prev.lastTs < 1500 ? prev.count : 0;
@@ -31,6 +118,28 @@ export function createStepStreamModule(rt) {
     autoExpandBurst.set(btn, { count: count + 1, lastTs: now });
     btn.click();
     return true;
+  }
+
+  function classifyAndReconcileWorkedBtn(btn, panesArg) {
+    if (rtState.disposed || !FEAT.stepUnfold || !btn || !btn.isConnected) return;
+    if (btn.getAttribute('aria-expanded') !== 'true') return;
+    const wrap = resolveWorkedStreamHost(btn);
+    const panel = resolveWorkedPanel(btn);
+    if (panelHasIntermediateProse(panel)) {
+      workedKind.set(btn, 'prose');
+      if (wrap) wrap.setAttribute('data-ag-inline-kind', 'prose');
+      applyWorkedInlineSummary(btn, '');
+      return;
+    }
+    const summary = extractWorkedToolsSummary(panel);
+    if (summary) workedSummary.set(btn, summary);
+    const finalSummary = workedSummary.get(btn) || '';
+    applyWorkedInlineSummary(btn, finalSummary);
+    workedKind.set(btn, 'tools');
+    if (wrap) wrap.setAttribute('data-ag-inline-kind', 'tools');
+    if (!userToggled.has(btn) && !isWorkedTurnActive(btn, panel, panesArg)) {
+      tryToggleWorkedBtn(btn);
+    }
   }
 
   const PAST_LABEL_RE =
@@ -588,6 +697,45 @@ export function createStepStreamModule(rt) {
       if (host) browserHoles.add(host);
     });
     syncAttrTargetSet('data-maga-has-browser-hole', browserHoles);
+
+    const actionCards = new Set();
+    document.querySelectorAll('[data-testid="agent-response"] button').forEach((btn) => {
+      if (btn.hasAttribute('data-maga-own')) return;
+      const tid = btn.getAttribute('data-testid');
+      if (
+        tid === 'worked-for-collapsible' ||
+        tid === 'tool-group-collapsible' ||
+        tid === 'step-plan-chip' ||
+        tid === 'changed-files-card-review' ||
+        tid === 'markdown-table-menu' ||
+        tid === 'thinking-collapsible-trigger'
+      ) {
+        return;
+      }
+      if (btn.closest('.context-scope-mention, [data-maga-own]')) return;
+      const cls = typeof btn.className === 'string' ? btn.className : '';
+      const p = btn.parentElement;
+      const pCls = p && typeof p.className === 'string' ? p.className : '';
+      const hasBorderContainer =
+        /\bborder\b/.test(cls) || /\bborder\b/.test(pCls) || /\brounded-(?:md|lg|xl)\b/.test(pCls);
+      if (!hasBorderContainer) return;
+      const txt = btn.textContent || '';
+      if (!btn.hasAttribute('aria-expanded') && !/(?:^|\b)(?:Ran|Running|已运行|正在运行)\b|Exited with code/i.test(txt)) {
+        return;
+      }
+      actionCards.add(btn);
+      if (
+        p &&
+        p.tagName === 'DIV' &&
+        !p.hasAttribute('data-maga-own') &&
+        /\brounded-(?:md|lg|xl)\b/.test(pCls) &&
+        /\bborder\b/.test(pCls) &&
+        !p.querySelector('[data-testid="changed-files-card"], pre')
+      ) {
+        actionCards.add(p);
+      }
+    });
+    syncAttrTargetSet('data-maga-action-card', actionCards);
   }
 
   function handleAriaExpandedMutation(t) {
@@ -595,9 +743,32 @@ export function createStepStreamModule(rt) {
     const testid = t.getAttribute('data-testid');
     if (testid === 'worked-for-collapsible') {
       if (FEAT.stepUnfold && t.getAttribute('aria-expanded') === 'false' && !userToggled.has(t)) {
+        if (workedKind.get(t) === 'tools') {
+          applyWorkedInlineSummary(t, workedSummary.get(t) || '');
+          return;
+        }
         frame(() => {
-          if (!rtState.disposed && FEAT.stepUnfold && t.isConnected && t.getAttribute('aria-expanded') === 'false' && !userToggled.has(t)) {
-            tryAutoExpandWorkedBtn(t);
+          if (rtState.disposed || !FEAT.stepUnfold || !t.isConnected) return;
+          if (t.getAttribute('aria-expanded') !== 'false' || userToggled.has(t)) return;
+          const kind = workedKind.get(t);
+          if (kind === 'tools') {
+            applyWorkedInlineSummary(t, workedSummary.get(t) || '');
+            return;
+          }
+          if (kind === 'prose') {
+            tryToggleWorkedBtn(t);
+            return;
+          }
+          if (!pendingProbes.has(t)) {
+            pendingProbes.add(t);
+            if (tryToggleWorkedBtn(t)) {
+              frame(() => {
+                pendingProbes.delete(t);
+                if (!rtState.disposed && FEAT.stepUnfold && t.isConnected) classifyAndReconcileWorkedBtn(t);
+              });
+            } else {
+              pendingProbes.delete(t);
+            }
           }
         });
       }
@@ -612,26 +783,67 @@ export function createStepStreamModule(rt) {
     }
   }
 
+  function teardownWorkedInlineState() {
+    document.querySelectorAll('.ag-worked-inline-summary').forEach((el) => el.remove());
+    document.querySelectorAll('[data-ag-inline-stream]').forEach((el) => {
+      el.removeAttribute('data-ag-inline-stream');
+      el.removeAttribute('data-ag-inline-kind');
+      el.removeAttribute('data-ag-has-plan-chip');
+    });
+    document.querySelectorAll('[data-ag-inline-worked]').forEach((el) => el.removeAttribute('data-ag-inline-worked'));
+  }
+
   function sync() {
     if (rtState.disposed) return;
+    const panes = collectPanes();
     if (FEAT.stepUnfold) {
       const workedBtns = document.querySelectorAll('button[data-testid="worked-for-collapsible"]');
       for (const btn of workedBtns) {
         const wrap = resolveWorkedStreamHost(btn);
-        if (wrap && !wrap.hasAttribute('data-ag-inline-stream')) {
-          wrap.setAttribute('data-ag-inline-stream', 'true');
+        if (wrap) {
+          if (!wrap.hasAttribute('data-ag-inline-stream')) {
+            wrap.setAttribute('data-ag-inline-stream', 'true');
+          }
+          const hasPlanChip = Boolean(wrap.querySelector('button[data-testid="step-plan-chip"]'));
+          if (hasPlanChip) {
+            if (!wrap.hasAttribute('data-ag-has-plan-chip')) wrap.setAttribute('data-ag-has-plan-chip', 'true');
+          } else if (wrap.hasAttribute('data-ag-has-plan-chip')) {
+            wrap.removeAttribute('data-ag-has-plan-chip');
+          }
         }
         if (!btn.hasAttribute('data-ag-inline-worked')) {
           btn.setAttribute('data-ag-inline-worked', 'true');
         }
-        tryAutoExpandWorkedBtn(btn);
+        if (btn.getAttribute('aria-expanded') === 'true') {
+          classifyAndReconcileWorkedBtn(btn, panes);
+        } else {
+          const kind = workedKind.get(btn);
+          if (userToggled.has(btn) || kind === 'tools') {
+            if (kind === 'tools') {
+              if (wrap) wrap.setAttribute('data-ag-inline-kind', 'tools');
+              applyWorkedInlineSummary(btn, workedSummary.get(btn) || '');
+            }
+          } else if (kind === 'prose') {
+            tryToggleWorkedBtn(btn);
+          } else if (!pendingProbes.has(btn)) {
+            pendingProbes.add(btn);
+            if (tryToggleWorkedBtn(btn)) {
+              frame(() => {
+                pendingProbes.delete(btn);
+                if (!rtState.disposed && FEAT.stepUnfold && btn.isConnected) {
+                  classifyAndReconcileWorkedBtn(btn, panes);
+                }
+              });
+            } else {
+              pendingProbes.delete(btn);
+            }
+          }
+        }
       }
     } else {
-      document.querySelectorAll('[data-ag-inline-stream]').forEach((el) => el.removeAttribute('data-ag-inline-stream'));
-      document.querySelectorAll('[data-ag-inline-worked]').forEach((el) => el.removeAttribute('data-ag-inline-worked'));
+      teardownWorkedInlineState();
     }
     if (FEAT.collapseAnim) captureOpenToolPanels();
-    const panes = collectPanes();
     syncRunningToolIndicators(panes);
     syncInlinePillBoundaries();
     syncCodeBlocks();
@@ -649,8 +861,8 @@ export function createStepStreamModule(rt) {
     document.removeEventListener('click', onDocClick, true);
     restoreInlinePillBoundaries();
     document.querySelectorAll('.ag-collapse-ghost, .ag-orbit-dots, .ag-elapsed-timer').forEach((el) => el.remove());
-    document.querySelectorAll('[data-ag-inline-stream]').forEach((el) => el.removeAttribute('data-ag-inline-stream'));
-    document.querySelectorAll('[data-ag-inline-worked]').forEach((el) => el.removeAttribute('data-ag-inline-worked'));
+    document.querySelectorAll('[data-maga-action-card]').forEach((el) => el.removeAttribute('data-maga-action-card'));
+    teardownWorkedInlineState();
   }
 
   return {

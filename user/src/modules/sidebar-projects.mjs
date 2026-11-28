@@ -240,10 +240,11 @@ function hasIndexKey(idxCol, id) {
 }
 
 export function createSidebarProjectsModule(rt) {
-  const { FEAT, L, docRoot, state: rtState, escapeHtml, hooks } = rt;
+  const { FEAT, L, docRoot, state: rtState, escapeHtml, frame, hooks } = rt;
 
   let lastSig = '';
   let lastDragEndTs = 0;
+  let renamingId = '';
   let standaloneLimit = DEFAULT_STANDALONE_LIMIT;
   let itemsById = new Map();
   let seededNativeCollapsed = false;
@@ -565,11 +566,48 @@ export function createSidebarProjectsModule(rt) {
 
   function remove() {
     closeSortMenu();
+    hooks.closeRecentRowMenu?.('sbp');
+    renamingId = '';
     const el = typeof document !== 'undefined' ? document.getElementById('ag-claude-sidebar-projects') : null;
     if (el) el.remove();
     lastSig = '';
     sortSnapshot = null;
     itemsById.clear();
+  }
+
+  function startInlineRename(id) {
+    if (!id) return;
+    hooks.closeRecentRowMenu?.();
+    renamingId = id;
+    lastSig = '';
+    hooks.syncSidebarEnhancements?.();
+    frame?.(() => {
+      const input =
+        typeof document !== 'undefined'
+          ? document.querySelector('#ag-claude-sidebar-projects [data-ag-sbp-rename-input]')
+          : null;
+      if (input) {
+        input.focus();
+        try {
+          input.select();
+        } catch {}
+      }
+    });
+  }
+
+  function commitInlineRename(input, commit) {
+    if (!input || !renamingId || input.dataset?.agSbpCommitted === '1') return;
+    if (input.dataset) input.dataset.agSbpCommitted = '1';
+    const id = input.getAttribute('data-ag-sbp-rename-input') || renamingId;
+    const orig = input.getAttribute('data-orig-title') || '';
+    const nextVal = String(input.value || '').trim();
+    renamingId = '';
+    lastSig = '';
+    if (commit && id && nextVal && nextVal !== orig) {
+      hooks.mutateRecentConversationAnnotation?.(id, { title: nextVal }, hooks.findSidebarBindings?.());
+    }
+    hooks.syncSidebarEnhancements?.();
+    hooks.scheduleSidebarSync?.();
   }
 
   function collectSectionsData(bindings, state, activeId, hasFocus) {
@@ -761,8 +799,8 @@ export function createSidebarProjectsModule(rt) {
 
   function renderRowHtml(it, activeId, nowSec, indented) {
     const isAct = it.id === activeId;
+    const isRenaming = Boolean(renamingId && renamingId === it.id);
     const wtBranch = hooks.getConversationBranchBadge?.(it.id) || '';
-    const branchPillHtml = wtBranch ? `<span class="ag-sbp-branch">${escapeHtml(wtBranch)}</span>` : '';
     const sideHtml = renderSideHtml(it, nowSec);
     const tipParts = [it.title];
     if (it.status && it.status.kind === 'running') {
@@ -772,16 +810,21 @@ export function createSidebarProjectsModule(rt) {
     if (wtBranch) tipParts.push(`Worktree: ${wtBranch}`);
     const pinSvg = hooks.RECENT_PIN_SVG || '';
     const moreSvg = hooks.RECENT_MORE_SVG || '⋯';
+    const mainInner = isRenaming
+      ? `<input type="text" class="ag-sbp-rename-input" data-ag-sbp-rename-input="${escapeHtml(it.id)}" data-orig-title="${escapeHtml(it.title)}" value="${escapeHtml(it.title)}" />`
+      : `<div class="ag-sbp-title">${escapeHtml(it.title)}</div>`;
+    const tailHtml = isRenaming
+      ? ''
+      : `<div class="ag-sbp-side">${sideHtml}</div>` +
+        `<div class="ag-sbp-actions">` +
+        `<button type="button" class="ag-sbp-act-btn" data-ag-sbp-pin="${escapeHtml(it.id)}" title="${escapeHtml(L('置顶对话', 'Pin'))}" aria-label="${escapeHtml(L('置顶对话', 'Pin'))}">${pinSvg}</button>` +
+        `<button type="button" class="ag-sbp-act-btn" data-ag-sbp-menu="${escapeHtml(it.id)}" title="${escapeHtml(L('更多选项', 'More options'))}" aria-label="${escapeHtml(L('更多选项', 'More options'))}">${moreSvg}</button>` +
+        `</div>`;
     return (
-      `<div class="ag-sbp-row${indented ? ' is-indented' : ''}" role="button" tabindex="0" draggable="true"` +
+      `<div class="ag-sbp-row${indented ? ' is-indented' : ''}" role="button" tabindex="0"${isRenaming ? '' : ' draggable="true"'}` +
       ` data-ag-sbp-id="${escapeHtml(it.id)}" data-ag-sbp-title="${escapeHtml(it.title)}"` +
-      ` data-active="${isAct ? 'true' : 'false'}" title="${escapeHtml(tipParts.join('\n'))}">` +
-      `<div class="ag-sbp-main"><div class="ag-sbp-title">${escapeHtml(it.title)}</div>${branchPillHtml}</div>` +
-      `<div class="ag-sbp-side">${sideHtml}</div>` +
-      `<div class="ag-sbp-actions">` +
-      `<button type="button" class="ag-sbp-act-btn" data-ag-sbp-pin="${escapeHtml(it.id)}" title="${escapeHtml(L('置顶对话', 'Pin'))}" aria-label="${escapeHtml(L('置顶对话', 'Pin'))}">${pinSvg}</button>` +
-      `<button type="button" class="ag-sbp-act-btn" data-ag-sbp-menu="${escapeHtml(it.id)}" title="${escapeHtml(L('更多选项', 'More options'))}" aria-label="${escapeHtml(L('更多选项', 'More options'))}">${moreSvg}</button>` +
-      `</div></div>`
+      ` data-active="${isAct ? 'true' : 'false'}"${isRenaming ? ' data-renaming="true"' : ''} title="${escapeHtml(tipParts.join('\n'))}">` +
+      `<div class="ag-sbp-main">${mainInner}</div>${tailHtml}</div>`
     );
   }
 
@@ -800,6 +843,11 @@ export function createSidebarProjectsModule(rt) {
       return false;
     }
     seedCollapsedFromNative(bindings.sidebar);
+
+    const existingSec = typeof document !== 'undefined' ? document.getElementById('ag-claude-sidebar-projects') : null;
+    if (renamingId && existingSec && existingSec.querySelector('[data-ag-sbp-rename-input]')) {
+      return true;
+    }
 
     const { maxPerProject, maxTotal } = readCapPrefs();
     const { sortMode, cooldownSec } = readSortPrefs();
@@ -851,6 +899,7 @@ export function createSidebarProjectsModule(rt) {
       projSecCollapsed ? 1 : 0,
       convSecCollapsed ? 1 : 0,
       standaloneLimit,
+      renamingId,
       activeId,
       nowBucket,
       allocated.items
@@ -1020,10 +1069,16 @@ export function createSidebarProjectsModule(rt) {
         if (menuBtn) {
           ev.preventDefault();
           ev.stopPropagation();
+          closeSortMenu();
           const cid = menuBtn.getAttribute('data-ag-sbp-menu');
           const item = itemsById.get(cid);
           const r = menuBtn.getBoundingClientRect();
-          if (item) hooks.openRecentRowMenu?.(item, r.right + 4, r.bottom + 4);
+          if (item) hooks.openRecentRowMenu?.(item, r.right + 4, r.bottom + 4, 'sbp');
+          return;
+        }
+
+        if (t.closest('[data-ag-sbp-rename-input]')) {
+          ev.stopPropagation();
           return;
         }
 
@@ -1031,6 +1086,7 @@ export function createSidebarProjectsModule(rt) {
         if (row) {
           if (Date.now() - lastDragEndTs < 260) return;
           const cid = row.getAttribute('data-ag-sbp-id');
+          if (renamingId && renamingId === cid) return;
           hooks.closeRecentRowMenu?.();
           if (rtState.projectsViewOpen) hooks.closeProjectsView?.();
           hooks.navigateSidebarConversation?.(cid, hooks.findSidebarBindings?.() || bindings);
@@ -1042,21 +1098,27 @@ export function createSidebarProjectsModule(rt) {
         const row = ev.target?.closest?.('[data-ag-sbp-id]');
         if (!row) return;
         const cid = row.getAttribute('data-ag-sbp-id');
+        if (renamingId && renamingId === cid) return;
         const item = itemsById.get(cid);
         if (!item) return;
         ev.preventDefault();
         ev.stopPropagation();
-        hooks.openRecentRowMenu?.(item, ev.clientX + 2, ev.clientY + 2);
+        closeSortMenu();
+        hooks.openRecentRowMenu?.(item, ev.clientX + 2, ev.clientY + 2, 'sbp');
       });
 
       sec.addEventListener('dragstart', (ev) => {
-        if (ev.target?.closest?.('[data-ag-sbp-pin], [data-ag-sbp-menu]')) {
+        if (ev.target?.closest?.('[data-ag-sbp-pin], [data-ag-sbp-menu], [data-ag-sbp-rename-input]')) {
           ev.preventDefault();
           return;
         }
         const row = ev.target?.closest?.('[data-ag-sbp-id]');
         if (!row) return;
         const cid = row.getAttribute('data-ag-sbp-id');
+        if (!cid || (renamingId && renamingId === cid)) {
+          ev.preventDefault();
+          return;
+        }
         const item = itemsById.get(cid);
         const title = (item && item.title) || row.getAttribute('data-ag-sbp-title') || '';
         hooks.attachConversationDragTransfer?.(ev.dataTransfer, cid, title);
@@ -1071,6 +1133,19 @@ export function createSidebarProjectsModule(rt) {
       });
 
       sec.addEventListener('keydown', (ev) => {
+        const input = ev.target?.closest?.('[data-ag-sbp-rename-input]');
+        if (input) {
+          if (ev.key === 'Enter') {
+            ev.preventDefault();
+            ev.stopPropagation();
+            commitInlineRename(input, true);
+          } else if (ev.key === 'Escape') {
+            ev.preventDefault();
+            ev.stopPropagation();
+            commitInlineRename(input, false);
+          }
+          return;
+        }
         const row = ev.target?.closest?.('[data-ag-sbp-id]');
         if (row && (ev.key === 'Enter' || ev.key === ' ')) {
           ev.preventDefault();
@@ -1080,6 +1155,15 @@ export function createSidebarProjectsModule(rt) {
           hooks.scheduleSidebarSync?.();
         }
       });
+
+      sec.addEventListener(
+        'blur',
+        (ev) => {
+          const input = ev.target?.closest?.('[data-ag-sbp-rename-input]');
+          if (input) commitInlineRename(input, true);
+        },
+        true
+      );
 
       sbGrand.insertBefore(sec, sbParent.nextSibling);
       lastSig = '';
@@ -1238,5 +1322,6 @@ export function createSidebarProjectsModule(rt) {
     sync,
     remove,
     dispose,
+    startInlineRename,
   };
 }

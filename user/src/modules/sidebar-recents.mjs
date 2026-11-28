@@ -1076,21 +1076,26 @@ export function createSidebarRecentsModule(rt) {
     }
   }
 
-  function closeRecentRowMenu() {
+  function onRecentMenuResize() {
+    closeRecentRowMenu();
+  }
+
+  function closeRecentRowMenu(onlySource = '') {
+    if (onlySource && recentMenuState && recentMenuState.source !== onlySource) return;
     recentMenuState = null;
     const menu = document.getElementById('ag-recent-row-menu');
     if (menu) menu.remove();
     if (recentMenuDocBound) {
       document.removeEventListener('mousedown', onRecentMenuDocDown, true);
       document.removeEventListener('keydown', onRecentMenuDocKey, true);
-      window.removeEventListener('resize', closeRecentRowMenu);
+      window.removeEventListener('resize', onRecentMenuResize);
       recentMenuDocBound = false;
     }
   }
 
   function onRecentMenuDocDown(ev) {
     const t = ev && ev.target;
-    if (t && t.closest && t.closest('#ag-recent-row-menu, [data-ag-recent-menu]')) return;
+    if (t && t.closest && t.closest('#ag-recent-row-menu, [data-ag-recent-menu], [data-ag-sbp-menu]')) return;
     closeRecentRowMenu();
   }
 
@@ -1143,6 +1148,7 @@ export function createSidebarRecentsModule(rt) {
       menu = document.createElement('div');
       menu.id = 'ag-recent-row-menu';
       menu.setAttribute('role', 'menu');
+      menu.setAttribute('data-maga-own', '1');
       menu.setAttribute('data-ag-i18n-ignore', '1');
       menu.addEventListener('click', (ev) => {
         const btn = ev.target && ev.target.closest && ev.target.closest('[data-ag-rm-act]');
@@ -1163,7 +1169,12 @@ export function createSidebarRecentsModule(rt) {
           return;
         }
         if (act === 'rename') {
-          startRecentInlineRename(cur.id);
+          if (cur.source === 'sbp' && typeof hooks.startSidebarProjectInlineRename === 'function') {
+            closeRecentRowMenu();
+            hooks.startSidebarProjectInlineRename(cur.id);
+          } else {
+            startRecentInlineRename(cur.id);
+          }
           return;
         }
         if (act === 'archive') {
@@ -1217,7 +1228,7 @@ export function createSidebarRecentsModule(rt) {
     }
   }
 
-  function openRecentRowMenu(item, x, y) {
+  function openRecentRowMenu(item, x, y, source = 'recent') {
     if (!item || !item.id) return;
     if (recentMenuState && recentMenuState.id === item.id) {
       closeRecentRowMenu();
@@ -1230,13 +1241,14 @@ export function createSidebarRecentsModule(rt) {
       projectName: item.project || '',
       x,
       y,
-      confirmDelete: false
+      confirmDelete: false,
+      source: source || 'recent',
     };
     renderRecentRowMenu();
   }
 
   function removeRecentSection() {
-    closeRecentRowMenu();
+    closeRecentRowMenu('recent');
     recentRenamingId = '';
     const el = document.getElementById('ag-claude-recent-section');
     if (el) el.remove();
@@ -1519,10 +1531,10 @@ export function createSidebarRecentsModule(rt) {
                 isUnified && !isRenaming
                   ? `<div class="ag-recent-actions"><button type="button" class="ag-recent-act-btn" data-ag-recent-pin="${escapeHtml(it.id)}" title="${escapeHtml(L('置顶对话', 'Pin'))}" aria-label="${escapeHtml(L('置顶对话', 'Pin'))}">${RECENT_PIN_SVG}</button><button type="button" class="ag-recent-act-btn" data-ag-recent-menu="${escapeHtml(it.id)}" title="${escapeHtml(L('更多选项', 'More options'))}" aria-label="${escapeHtml(L('更多选项', 'More options'))}">${RECENT_MORE_SVG}</button></div>`
                   : '';
-              const branchPillHtml = wtBranch ? `<span class="ag-recent-branch">${escapeHtml(wtBranch)}</span>` : '';
+              const branchPillHtml = '';
               const mainInner = isRenaming
                 ? `<input type="text" class="ag-recent-rename-input" data-ag-recent-rename-input="${escapeHtml(it.id)}" data-orig-title="${escapeHtml(it.title)}" value="${escapeHtml(it.title)}" />`
-                : `<div class="ag-recent-title">${escapeHtml(it.title)}</div>${branchPillHtml}`;
+                : `<div class="ag-recent-title">${escapeHtml(it.title)}</div>`;
               return `<div class="ag-recent-row" role="button" tabindex="0"${isRenaming ? '' : ' draggable="true"'} data-ag-recent-id="${escapeHtml(it.id)}" data-ag-recent-title="${escapeHtml(it.title)}" data-active="${isAct ? 'true' : 'false'}"${it.project ? ` data-has-project="true"` : ''}${isRenaming ? ' data-renaming="true"' : ''} title="${escapeHtml(tip)}"><div class="ag-recent-main">${mainInner}</div>${isRenaming ? '' : `<div class="ag-recent-side">${sideHtml}</div>${actionsHtml}`}</div>`;
             })
             .join('')}</div>` + moreHtml

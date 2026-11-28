@@ -93,6 +93,7 @@ import { createRemoteTapModule } from './modules/remote-tap.mjs';
     triggerNewConversationFromSidebar: sidebarRecents.triggerNewConversationFromSidebar,
     isSidebarProjectsCapActive: sidebarProjects.isCapActive,
     syncSidebarProjects: sidebarProjects.sync,
+    startSidebarProjectInlineRename: sidebarProjects.startInlineRename,
     hasDroppedContextPayload: sidebarRecents.hasDroppedContextPayload,
     extractDroppedContextMentions: sidebarRecents.extractDroppedContextMentions,
     attachConversationDragTransfer: sidebarRecents.attachConversationDragTransfer,

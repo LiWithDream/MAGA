@@ -951,12 +951,14 @@ test('worktree UI (Topbar, #agy-wt-menu, Cockpit strip, chat badges) & compiled 
     assert.equal(ovSec.querySelector('.ag-ov-wt-tag'), null, 'main conversation omits wt tag');
     assert.match(ovSec.querySelector('.ag-ov-git-pill')?.textContent || '', /main/);
 
-    // 2. Sidebar unified Recents shows `.ag-recent-branch` ONLY on worktree conversation (zero per-row RPCs)
+    // 2. Sidebar unified Recents keeps rows clean without inline branch pills (branch stays in hover tooltip; zero per-row RPCs)
     const rowA = bd.querySelector(`#ag-claude-recent-section [data-ag-recent-id="${cidOvA}"]`);
     const rowB = bd.querySelector(`#ag-claude-recent-section [data-ag-recent-id="${cidOvB}"]`);
     assert.ok(rowA && rowB);
-    assert.equal(rowA.querySelector('.ag-recent-branch')?.textContent.trim(), 'feat/ov-wt');
+    assert.equal(rowA.querySelector('.ag-recent-branch'), null, 'unified Recents omits inline branch pill');
     assert.equal(rowB.querySelector('.ag-recent-branch'), null, 'main-branch chat omits branch micro-badge in Recents');
+    assert.match(rowA.getAttribute('title') || '', /Worktree:\s*feat\/ov-wt/);
+    assert.doesNotMatch(rowB.getAttribute('title') || '', /Worktree:/);
     assert.equal(ovCalls.filter((c) => c.action === 'getConvWorktreeMap').length <= 1, true, 'zero per-row worktree RPCs');
 
     bw.__agClaudeUxDispose?.();

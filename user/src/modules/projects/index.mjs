@@ -439,7 +439,7 @@ export function createProjectsModule(rt, modelApi) {
       (t.closest('#ag-claude-recent-section .ag-recent-row') &&
         !t.closest('[data-ag-recent-pin], [data-ag-recent-menu], [data-ag-recent-rename-input]')) ||
       (t.closest('#ag-claude-sidebar-projects .ag-sbp-row') &&
-        !t.closest('[data-ag-sbp-pin], [data-ag-sbp-menu]'))
+        !t.closest('[data-ag-sbp-pin], [data-ag-sbp-menu], [data-ag-sbp-rename-input]'))
     ) {
       closeProjectsView();
     }
@@ -449,7 +449,7 @@ export function createProjectsModule(rt, modelApi) {
     if (e.key !== 'Escape' || e.isComposing || e.keyCode === 229) return;
     /* Let sidebar inline rename, recent row menu, model/quota popovers handle Escape first */
     if (
-      (e.target && e.target.closest && e.target.closest('[data-ag-recent-rename-input]')) ||
+      (e.target && e.target.closest && e.target.closest('[data-ag-recent-rename-input], [data-ag-sbp-rename-input]')) ||
       document.getElementById('ag-recent-row-menu') ||
       rtState.quotaPopoverOpen
     ) {

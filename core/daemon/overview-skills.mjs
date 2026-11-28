@@ -772,6 +772,12 @@ export async function handleProjectRpcRequest(rawPayload, callerEntry = null) {
       const result = collectResumeState(payload);
       return { reqId, result };
     }
+    if (action === 'getBackgroundTaskStates') {
+      const { collectBackgroundTaskStates } = await import('../../studio/daemon/bg-task-status.mjs');
+      const convDir = callerEntry?.endpoint?.conversationsDir;
+      const result = collectBackgroundTaskStates(payload, convDir ? { conversationsDir: convDir } : {});
+      return { reqId, result };
+    }
     if (
       action === 'saveQuotaState' ||
       action === 'getOpusGateStatus' ||

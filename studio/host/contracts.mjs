@@ -172,10 +172,12 @@ export const HOST_CONTRACTS = Object.freeze([
       'step_type=15 m20.3 thinking is stripped on older rows; full CoT lives in brain/<cid>/.system_generated/logs/transcript_full.jsonl',
       'step_type=23 stores compaction checkpoints (summary in field 30.5)',
       'step_type=132 stores schedule tool waits',
+      'active steps (status IN (1, 2, 8)) classify schedule / run_command / step_type=127 background tasks read-only',
     ],
     modulePaths: [
       'studio/plugin/maga-auto-compact/hooks/compact-check.mjs',
       'studio/daemon/usage-service.mjs',
+      'studio/daemon/bg-task-status.mjs',
     ],
     fallbackBehavior: 'Opens strictly readOnly; returns 0/empty metrics on schema drift without throwing.',
   },

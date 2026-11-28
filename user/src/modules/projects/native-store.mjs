@@ -2,7 +2,7 @@
  * Native Redux/Fiber store bindings, project CRUD RPCs, context/file deltas & project action menu.
  */
 export function createProjectNativeStore(ctx) {
-  const { FEAT, L, FILE_MANAGER_ZH, FILE_MANAGER_EN, rtState, escapeHtml, setLeafText, pState, ICONS, pHooks, activeReactFiber, invalidateOverviewSnapshotCache, isSidebarVisibleSummary, isSummaryPinned, classifySidebarConversation, protoSeconds, findSidebarBindings, scheduleSidebarSync, closeRecentRowMenu, getActiveCascadeId } = ctx;
+  const { FEAT, L, FILE_MANAGER_ZH, FILE_MANAGER_EN, rtState, escapeHtml, setLeafText, pState, ICONS, pHooks, activeReactFiber, invalidateOverviewSnapshotCache, isSidebarVisibleSummary, isSummaryPinned, classifySidebarConversation, pickDominantRunningSubkind, protoSeconds, findSidebarBindings, scheduleSidebarSync, closeRecentRowMenu, getActiveCascadeId } = ctx;
   const { SVG_CLAUDE_PROJECTS_ICON, SVG_PROJ_SETTINGS, RECENT_FOLDER_SVG, RECENT_RENAME_SVG, RECENT_ARCHIVE_SVG, RECENT_TRASH_SVG } = ICONS;
   const renderProjectsView = (...args) => pHooks.renderProjectsView?.(...args);
   const closeProjectsModal = (...args) => pHooks.closeProjectsModal?.(...args);
@@ -237,9 +237,21 @@ export function createProjectNativeStore(ctx) {
       if (!title) continue;
       const lastSec = protoSeconds(sum.lastModifiedTime);
       const status = sum.status ?? 0;
-      const waiting = Boolean(sum.waitingSteps && sum.waitingSteps.length);
-      const running = !sum.killed && (status === 2 || status === 3 || status === 4 || Boolean(sum.hasRunningSubagents));
       const cls = classifySidebarConversation ? classifySidebarConversation(cid, sum, state, activeCid, hasFocus) : null;
+      const waiting = cls ? cls.kind === 'pending' : Boolean(sum.waitingSteps && sum.waitingSteps.length);
+      const running = cls
+        ? cls.kind === 'running'
+        : !sum.killed &&
+          (status === 2 || status === 3 || status === 4 || Boolean(sum.hasRunningSubagents) || Boolean(sum.notFullyIdle));
+      const runningSubkind = running
+        ? cls?.subkind ||
+          (status === 2 || status === 3 || status === 4
+            ? 'orbit'
+            : sum.hasRunningSubagents || sum.hasActiveChildren
+              ? 'subagent'
+              : 'bg-wait')
+        : '';
+      const runningDetail = running ? String(cls?.detail || '') : '';
       const unread = Boolean(!waiting && !running && cls && cls.kind === 'unread');
       items.push({
         id: cid,
@@ -248,6 +260,8 @@ export function createProjectNativeStore(ctx) {
         pinned: isSummaryPinned(cid, sum, state),
         waiting,
         running,
+        runningSubkind,
+        runningDetail,
         unread,
       });
     }
@@ -698,16 +712,29 @@ export function createProjectNativeStore(ctx) {
         isBuiltin: isCliProject
       };
       const chats = collectProjectConversations(base, state);
+      const runningChats = [];
       let waitingCount = 0;
       let runningCount = 0;
       let unreadCount = 0;
       let latestChat = null;
       for (const ch of chats) {
         if (ch.waiting) waitingCount += 1;
-        if (ch.running) runningCount += 1;
+        if (ch.running) {
+          runningCount += 1;
+          runningChats.push({
+            id: ch.id,
+            title: ch.title,
+            subkind: ch.runningSubkind || 'orbit',
+            detail: ch.runningDetail || '',
+          });
+        }
         if (ch.unread) unreadCount += 1;
         if (!latestChat || (ch.lastSec || 0) > (latestChat.lastSec || 0)) latestChat = ch;
       }
+      const distinctRunKinds = new Set(runningChats.map((r) => r.subkind).filter(Boolean));
+      const runningSubkind =
+        runningCount > 0 ? (pickDominantRunningSubkind ? pickDominantRunningSubkind(distinctRunKinds) : 'orbit') : '';
+      const runningMixed = distinctRunKinds.size > 1;
       const statusKind =
         waitingCount > 0
           ? 'pending'
@@ -726,6 +753,9 @@ export function createProjectNativeStore(ctx) {
         latestChat,
         waitingCount,
         runningCount,
+        runningSubkind,
+        runningMixed,
+        runningChats,
         unreadCount,
         statusKind,
       });

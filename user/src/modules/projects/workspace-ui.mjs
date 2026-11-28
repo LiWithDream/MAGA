@@ -4,7 +4,7 @@
  * Remote Repo links, Clean Markdown preview & Recents filter header.
  */
 export function createProjectWorkspaceUi(ctx) {
-  const { L, FILE_MANAGER_ZH, FILE_MANAGER_EN, rtState, escapeHtml, pState, pHooks, ICONS } = ctx;
+  const { L, FILE_MANAGER_ZH, FILE_MANAGER_EN, rtState, escapeHtml, pState, pHooks, ICONS, renderRunningGlyphHtml, formatRunningStatusTooltip, formatRunningPillText, formatRunningBreakdownTooltip } = ctx;
   const {
     SVG_CLAUDE_PROJECTS_ICON,
     SVG_PROJ_SEARCH_ICON,
@@ -926,10 +926,12 @@ export function createProjectWorkspaceUi(ctx) {
     let totalPending = 0;
     let totalRunning = 0;
     let totalChats = 0;
+    const allRunningItems = [];
     for (const p of filtered) {
       totalPending += Number(p.waitingCount || 0);
       totalRunning += Number(p.runningCount || 0);
       totalChats += Number(p.chatCount || 0);
+      if (Array.isArray(p.runningChats)) allRunningItems.push(...p.runningChats);
     }
 
     const cardsHtml = filtered.length
@@ -968,13 +970,23 @@ export function createProjectWorkspaceUi(ctx) {
                       : 'idle');
 
             let statusPillHtml = '';
+            const cardRunSubkind = statusKind === 'running' ? p.runningSubkind || 'orbit' : '';
             if (statusKind === 'pending') {
               statusPillHtml = `<span class="ag-proj-card-status" data-kind="pending"><span class="ag-proj-status-dot" aria-hidden="true"></span><span>${escapeHtml(
                 L(`${p.waitingCount || 1} 待确认`, `${p.waitingCount || 1} pending`)
               )}</span></span>`;
             } else if (statusKind === 'running') {
-              statusPillHtml = `<span class="ag-proj-card-status" data-kind="running"><span class="ag-folder-orbit" aria-hidden="true"></span><span>${escapeHtml(
-                L(`${p.runningCount || 1} 运行中`, `${p.runningCount || 1} running`)
+              const runGlyph = renderRunningGlyphHtml
+                ? renderRunningGlyphHtml(cardRunSubkind)
+                : '<span class="ag-folder-orbit" aria-hidden="true"></span>';
+              const runLbl = formatRunningPillText
+                ? formatRunningPillText(cardRunSubkind, p.runningCount || 1, Boolean(p.runningMixed), L)
+                : L(`${p.runningCount || 1} 运行中`, `${p.runningCount || 1} running`);
+              const runTip = formatRunningBreakdownTooltip
+                ? formatRunningBreakdownTooltip(p.runningChats, L)
+                : '';
+              statusPillHtml = `<span class="ag-proj-card-status" data-kind="running" data-subkind="${escapeHtml(cardRunSubkind)}"${runTip ? ` title="${escapeHtml(runTip)}"` : ''}>${runGlyph}<span>${escapeHtml(
+                runLbl
               )}</span></span>`;
             } else if (statusKind === 'unread') {
               statusPillHtml = `<span class="ag-proj-card-status" data-kind="unread"><span class="ag-claude-unread-dot" aria-hidden="true"></span><span>${escapeHtml(
@@ -1003,7 +1015,7 @@ export function createProjectWorkspaceUi(ctx) {
                 ? ` title="${escapeHtml(p.remoteUrl)}"`
                 : '';
             const projChatIds = (Array.isArray(p.chats) ? p.chats : []).map((c) => c && c.id).filter(Boolean).join(',');
-            return `<article class="ag-proj-card" data-ag-proj-id="${escapeHtml(p.id)}" data-ag-proj-chat-ids="${escapeHtml(projChatIds)}" data-status="${escapeHtml(statusKind)}" data-empty="${p.chatCount === 0 ? 'true' : 'false'}" data-tone="${escapeHtml(tone)}" data-usage-tier="none" tabindex="0">
+            return `<article class="ag-proj-card" data-ag-proj-id="${escapeHtml(p.id)}" data-ag-proj-chat-ids="${escapeHtml(projChatIds)}" data-status="${escapeHtml(statusKind)}"${cardRunSubkind ? ` data-status-subkind="${escapeHtml(cardRunSubkind)}"` : ''} data-empty="${p.chatCount === 0 ? 'true' : 'false'}" data-tone="${escapeHtml(tone)}" data-usage-tier="none" tabindex="0">
               <div class="ag-proj-card-head">
                 <div class="ag-proj-card-avatar" data-tone="${escapeHtml(tone)}" aria-hidden="true">${avatarInner}</div>
                 <div class="ag-proj-card-title-col">
@@ -1054,7 +1066,11 @@ export function createProjectWorkspaceUi(ctx) {
         ? `<span class="ag-proj-summary-pill" data-kind="pending">${escapeHtml(L(`${totalPending} 待确认`, `${totalPending} pending`))}</span>`
         : '',
       totalRunning > 0
-        ? `<span class="ag-proj-summary-pill" data-kind="running">${escapeHtml(L(`${totalRunning} 运行中`, `${totalRunning} running`))}</span>`
+        ? `<span class="ag-proj-summary-pill" data-kind="running"${
+            formatRunningBreakdownTooltip && allRunningItems.length
+              ? ` title="${escapeHtml(formatRunningBreakdownTooltip(allRunningItems, L))}"`
+              : ''
+          }>${escapeHtml(L(`${totalRunning} 运行中`, `${totalRunning} running`))}</span>`
         : '',
       '<span class="ag-proj-summary-usage" data-ag-proj-total-usage="1" hidden></span>',
     ]
@@ -1091,10 +1107,21 @@ export function createProjectWorkspaceUi(ctx) {
     if (filteredChats.length) {
       return filteredChats
         .map((c) => {
+          const runSub = c.runningSubkind || 'orbit';
+          const runTip = c.running
+            ? formatRunningStatusTooltip
+              ? formatRunningStatusTooltip({ subkind: runSub, detail: c.runningDetail }, L)
+              : L('运行中', 'Running')
+            : '';
+          const runGlyph = c.running
+            ? renderRunningGlyphHtml
+              ? renderRunningGlyphHtml(runSub)
+              : '<span class="ag-pd-dot ag-pd-dot-run"></span>'
+            : '';
           const statusDot = c.waiting
             ? `<span class="ag-pd-dot ag-pd-dot-wait" title="${escapeHtml(L('待确认', 'Waiting'))}"></span>`
             : c.running
-              ? `<span class="ag-pd-dot ag-pd-dot-run" title="${escapeHtml(L('运行中', 'Running'))}"></span>`
+              ? `<span class="ag-pd-chat-status" data-kind="running" data-subkind="${escapeHtml(runSub)}" title="${escapeHtml(runTip)}">${runGlyph}</span>`
               : '';
           const pinBadge = c.pinned
             ? `<span class="ag-pd-chat-pin" title="${escapeHtml(L('已置顶', 'Pinned'))}">${RECENT_PIN_SVG}</span>`

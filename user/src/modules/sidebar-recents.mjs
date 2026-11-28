@@ -2,6 +2,16 @@
  * Sidebar Enhancements: Collapsed project folder status badges, top Recents section,
  * pinned drag-to-composer, and native sidebar Projects hiding.
  */
+import {
+  classifyRunningSubkind,
+  createBgTaskStatusClient,
+  formatRunningBreakdownTooltip,
+  formatRunningPillText,
+  formatRunningStatusTooltip,
+  pickDominantRunningSubkind,
+  renderRunningGlyphHtml,
+} from './sidebar-status.mjs';
+
 export function createSidebarRecentsModule(rt) {
   const { FEAT, L, CFG_UI_STATE, trustLocalOverrides, docRoot, state: rtState, frame, later, escapeHtml, persistUiPrefsToDaemon, syncAttrTargetSet, hooks } = rt;
   const activeReactFiber = (...args) => hooks.activeReactFiber?.(...args);
@@ -50,6 +60,19 @@ export function createSidebarRecentsModule(rt) {
   let recentMenuDocBound = false;
   let recentItemsById = new Map();
   let recentLastDragEndTs = 0;
+
+  const bgStatusClient = createBgTaskStatusClient({
+    onUpdated: () => {
+      if (rtState.disposed) return;
+      rtState.recentLastSig = '';
+      scheduleSidebarSync();
+      hooks.refreshProjectsViewIfOpen?.();
+    },
+    callRpc: (action, payload, timeoutMs) =>
+      typeof window !== 'undefined' && typeof window.__agProjectCall === 'function'
+        ? window.__agProjectCall(action, payload, timeoutMs)
+        : Promise.resolve(null),
+  });
 
   /* ---- v2.34+ Conversation & File Drag-to-Composer (`application/context-scope-item-cider`) ---- */
   function buildCiderConversationPayload(id, title) {
@@ -653,13 +676,15 @@ export function createSidebarRecentsModule(rt) {
       return { kind: 'pending', subkind: pendingSubkindOf(waitingStep), title };
     }
 
-    const status = summary.status ?? 0;
-    const isWorking =
-      !summary.killed && (status === 2 || status === 3 || status === 4 || Boolean(summary.hasRunningSubagents));
-    const isBgWorking =
-      !summary.killed && (status === 1 || status === 0) && !summary.hasRunningSubagents && Boolean(summary.notFullyIdle);
-    if (isWorking || isBgWorking) {
-      return { kind: 'running', subkind: 'orbit', title };
+    const runCls = classifyRunningSubkind(id, summary, state, bgStatusClient.getCachedState(id));
+    if (runCls) {
+      return {
+        kind: 'running',
+        subkind: runCls.subkind,
+        detail: runCls.detail,
+        needsBgLookup: runCls.needsBgLookup,
+        title,
+      };
     }
 
     if (!summary.notFullyIdle) {
@@ -830,7 +855,7 @@ export function createSidebarRecentsModule(rt) {
 
       const buckets = {
         pending: { kind: 'pending', count: 0, subkind: null, titles: [] },
-        running: { kind: 'running', count: 0, subkind: 'orbit', titles: [] },
+        running: { kind: 'running', count: 0, subkind: 'orbit', items: [], titles: [] },
         unread: { kind: 'unread', count: 0, subkind: 'dot', titles: [] }
       };
       const seen = new Set();
@@ -841,8 +866,15 @@ export function createSidebarRecentsModule(rt) {
         if (!cls) continue;
         const b = buckets[cls.kind];
         b.count += 1;
-        if (!b.subkind) b.subkind = cls.subkind;
+        if (cls.kind === 'running') {
+          b.items.push({ subkind: cls.subkind || 'orbit', detail: cls.detail || '', title: cls.title || '' });
+        } else if (!b.subkind) {
+          b.subkind = cls.subkind;
+        }
         if (b.titles.length < 3 && cls.title) b.titles.push(cls.title);
+      }
+      if (buckets.running.count > 0) {
+        buckets.running.subkind = pickDominantRunningSubkind(buckets.running.items.map((x) => x.subkind));
       }
 
       const active = ['pending', 'running', 'unread'].map((k) => buckets[k]).filter((b) => b.count > 0);
@@ -865,7 +897,11 @@ export function createSidebarRecentsModule(rt) {
         .map((b) => (FEAT.i18n ? `${b.count} 个${kindLabels[b.kind]}` : `${b.count} ${kindLabels[b.kind]}`))
         .join(' · ');
       const detailLines = active
-        .flatMap((b) => b.titles.map((t) => `${kindLabels[b.kind]}${FEAT.i18n ? '：' : ': '}${t}`))
+        .flatMap((b) =>
+          b.kind === 'running'
+            ? b.items.slice(0, 3).map((it) => `${it.title} · ${formatRunningStatusTooltip(it, L)}`)
+            : b.titles.map((t) => `${kindLabels[b.kind]}${FEAT.i18n ? '：' : ': '}${t}`)
+        )
         .slice(0, 4);
       const tip = detailLines.length ? `${summaryLine}\n${detailLines.join('\n')}` : summaryLine;
       if (!btn.hasAttribute('data-ag-folder-tip')) {
@@ -882,9 +918,10 @@ export function createSidebarRecentsModule(rt) {
             b.kind === 'pending'
               ? pendingGlyphSvg(b.subkind)
               : b.kind === 'running'
-                ? '<span class="ag-folder-orbit"></span>'
+                ? renderRunningGlyphHtml(b.subkind)
                 : '<span class="ag-claude-unread-dot"></span>';
-          return `<span class="ag-claude-folder-badge" data-kind="${b.kind}">${ico}<span>${b.count}</span></span>`;
+          const subAttr = b.kind === 'running' ? ` data-subkind="${escapeHtml(b.subkind || 'orbit')}"` : '';
+          return `<span class="ag-claude-folder-badge" data-kind="${b.kind}"${subAttr}>${ico}<span>${b.count}</span></span>`;
         })
         .join('');
 
@@ -1436,7 +1473,7 @@ export function createSidebarRecentsModule(rt) {
       sec.removeAttribute('data-collapsed');
     }
     const sig = `${mode}|${FEAT.i18n ? 1 : 0}|${isCollapsed ? 1 : 0}|${isUnified ? recentPageLimit : recentExpanded ? 1 : 0}|${recentRenamingId}|${activeId}|${nowBucket}|${total}|${items
-      .map((it) => `${it.id}:${it.title}:${it.project}:${hooks.getConversationBranchBadge?.(it.id) || ''}:${it.status ? `${it.status.kind}-${it.status.subkind}` : 'idle'}:${Math.floor(it.updatedAt / 60)}`)
+      .map((it) => `${it.id}:${it.title}:${it.project}:${hooks.getConversationBranchBadge?.(it.id) || ''}:${it.status ? `${it.status.kind}-${it.status.subkind}-${it.status.detail || ''}` : 'idle'}:${Math.floor(it.updatedAt / 60)}`)
       .join(';')}`;
     if (sig === rtState.recentLastSig) return;
     rtState.recentLastSig = sig;
@@ -1468,12 +1505,13 @@ export function createSidebarRecentsModule(rt) {
               if (it.status && it.status.kind === 'pending') {
                 sideHtml = `<span class="ag-claude-folder-badge" data-kind="pending">${pendingGlyphSvg(it.status.subkind)}</span>`;
               } else if (it.status && it.status.kind === 'running') {
-                sideHtml = '<span class="ag-folder-orbit"></span>';
+                sideHtml = renderRunningGlyphHtml(it.status.subkind);
               } else if (it.status && it.status.kind === 'unread') {
                 sideHtml = `<span class="ag-claude-unread-dot"></span>${age ? `<span>${escapeHtml(age)}</span>` : ''}`;
               }
               const wtBranch = hooks.getConversationBranchBadge?.(it.id) || '';
               const tipParts = [it.title];
+              if (it.status && it.status.kind === 'running') tipParts.push(formatRunningStatusTooltip(it.status, L));
               if (it.project) tipParts.push(`${L('所属项目：', 'Project: ')}${it.project}`);
               if (wtBranch) tipParts.push(`Worktree: ${wtBranch}`);
               const tip = tipParts.join('\n');
@@ -1544,6 +1582,19 @@ export function createSidebarRecentsModule(rt) {
     const state = bindings.store.getState();
     const activeId = getActiveCascadeId();
     const hasFocus = typeof document.hasFocus === 'function' ? document.hasFocus() : true;
+    const bgCandidates = [];
+    const summaries = (state && state.trajectorySummaries && state.trajectorySummaries.summaries) || {};
+    for (const [cid, sum] of Object.entries(summaries)) {
+      if (!sum || sum.killed || !isSidebarVisibleSummary(cid, sum, state)) continue;
+      const runCls = classifyRunningSubkind(cid, sum, state, null);
+      if (runCls && runCls.needsBgLookup) {
+        bgCandidates.push({
+          id: cid,
+          sig: `${protoSeconds(sum.lastModifiedTime)}:${sum.stepCount || 0}:${sum.backgroundTaskCount || 0}`,
+        });
+      }
+    }
+    bgStatusClient.syncCandidates(bgCandidates);
     syncFolderStatusBadges(bindings, state, activeId, hasFocus);
     syncRecentSection(bindings, state, activeId, hasFocus);
     hooks.syncSidebarProjects?.(bindings, state, activeId, hasFocus);
@@ -1844,6 +1895,7 @@ export function createSidebarRecentsModule(rt) {
     window.removeEventListener('focus', onWindowSidebarEvent);
     window.removeEventListener('blur', onWindowSidebarEvent);
     window.removeEventListener('popstate', onWindowSidebarEvent);
+    bgStatusClient.dispose();
     if (sidebarStoreUnsub) {
       sidebarStoreUnsub();
       sidebarStoreUnsub = null;
@@ -1883,6 +1935,11 @@ export function createSidebarRecentsModule(rt) {
     scheduleSidebarSync,
     classifySidebarConversation,
     pendingGlyphSvg,
+    renderRunningGlyphHtml,
+    formatRunningStatusTooltip,
+    formatRunningPillText,
+    formatRunningBreakdownTooltip,
+    pickDominantRunningSubkind,
     formatRelativeAge,
     openRecentRowMenu,
     mutateRecentConversationAnnotation,

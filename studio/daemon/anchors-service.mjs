@@ -124,7 +124,10 @@ export function getAnchorsStatus(payload = {}, opts = {}) {
   const paths = resolveAnchorPaths(opts);
   const cid = getSafeCid(payload.cascadeId || payload.cid);
   const pluginInstalled = isAnchorsPluginInstalled(opts);
-  const compactionCount = cid ? readCompactionGenerationCount(cid, opts) : 0;
+  const convState = cid ? readJsonSafeOrNull(path.join(paths.pluginDataDir, `${cid}.json`)) : null;
+  const compactionCount = cid
+    ? Math.max(readCompactionGenerationCount(cid, opts), Number(convState?.transcriptCheckpoints) || 0)
+    : 0;
 
   let proposals = [];
   let inferredRepoRoot = typeof payload.repoRoot === 'string' ? payload.repoRoot.trim() : '';

@@ -846,3 +846,336 @@ test('Anchors popover UI: 1-click launch, double-submit lock, running disable, d
     else delete globalThis.navigator;
   }
 });
+
+test('Must 1: cumulative transcriptCheckpoints fallback triggers G>=3 nudge & status without node:sqlite', () => {
+  const repo = createTempGitRepo();
+  const stateDir = realpathNative(fs.mkdtempSync(path.join(os.tmpdir(), 'maga-anc-no-sql-')));
+  const pluginsDir = path.join(stateDir, 'plugins');
+  const brainDir = path.join(stateDir, 'brain');
+  const cid = 'conv-nosqlite-g-01';
+  const logsDir = path.join(brainDir, cid, '.system_generated', 'logs');
+  fs.mkdirSync(logsDir, { recursive: true });
+
+  try {
+    syncAnchorsPlugin({}, { pluginsDir });
+    const tf = path.join(logsDir, 'transcript_full.jsonl');
+    const appendCp = (idx) => {
+      fs.appendFileSync(
+        tf,
+        `${JSON.stringify({ step_index: idx, source: 'SYSTEM', type: 'CHECKPOINT', content: `Checkpoint ${idx}` })}\n`,
+        'utf8'
+      );
+    };
+
+    // No `.db` file exists at all (simulating unavailable `node:sqlite`)
+    appendCp(1);
+    const out1 = evaluateStopBoundary({ hookEventName: 'Stop', conversationId: cid, cwd: repo }, { stateDir, brainDir });
+    assert.deepEqual(out1, {});
+    assert.equal(getAnchorsStatus({ cascadeId: cid, repoRoot: repo }, { stateDir, brainDir, pluginsDir }).compactionCount, 1);
+
+    appendCp(2);
+    const out2 = evaluateStopBoundary({ hookEventName: 'Stop', conversationId: cid, cwd: repo }, { stateDir, brainDir });
+    assert.deepEqual(out2, {});
+    assert.equal(getAnchorsStatus({ cascadeId: cid, repoRoot: repo }, { stateDir, brainDir, pluginsDir }).compactionCount, 2);
+
+    appendCp(3);
+    const out3 = evaluateStopBoundary({ hookEventName: 'Stop', conversationId: cid, cwd: repo }, { stateDir, brainDir });
+    assert.match(out3.metadata?.user_markdown || '', /\*\*G=3\*\*/);
+    const st3 = getAnchorsStatus({ cascadeId: cid, repoRoot: repo }, { stateDir, brainDir, pluginsDir });
+    assert.equal(st3.compactionCount, 3);
+    assert.equal(st3.handoffRecommended, true);
+
+    // Re-running Stop with no new checkpoint must NOT emit duplicate G=3 nudge
+    const out3Repeat = evaluateStopBoundary({ hookEventName: 'Stop', conversationId: cid, cwd: repo }, { stateDir, brainDir });
+    assert.deepEqual(out3Repeat, {});
+
+    appendCp(4);
+    const out4 = evaluateStopBoundary({ hookEventName: 'Stop', conversationId: cid, cwd: repo }, { stateDir, brainDir });
+    assert.match(out4.metadata?.user_markdown || '', /\*\*G=4\*\*/);
+    assert.equal(getAnchorsStatus({ cascadeId: cid, repoRoot: repo }, { stateDir, brainDir, pluginsDir }).compactionCount, 4);
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+    fs.rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+test('Must 2: FILE_EDIT_TOOLS resolve .agents/locks.json from target file directory across repositories', () => {
+  const repoA = createTempGitRepo();
+  const repoB = createTempGitRepo();
+  const stateDir = realpathNative(fs.mkdtempSync(path.join(os.tmpdir(), 'maga-anc-crossrepo-')));
+
+  try {
+    fs.mkdirSync(path.join(repoB, '.agents'), { recursive: true });
+    fs.writeFileSync(
+      path.join(repoB, '.agents', 'locks.json'),
+      JSON.stringify({
+        schema: 1,
+        lockedFiles: [{ id: 'mig', path: 'db/migrations', quote: 'Never edit applied migrations' }],
+        bannedPatterns: [
+          {
+            id: 'no-prod-key',
+            appliesTo: ['file'],
+            pattern: 'PROD_MASTER_KEY',
+            quote: 'Do not write prod master key into files',
+          },
+        ],
+      }),
+      'utf8'
+    );
+
+    // Editing locked path in repoB while cwd points to unlocked repoA
+    const crossEdit = evaluateLocksPreToolUse(
+      {
+        hookEventName: 'PreToolUse',
+        cwd: repoA,
+        toolCall: {
+          name: 'edit_file',
+          args: { Path: path.join(repoB, 'db', 'migrations', '001_init.sql') },
+        },
+      },
+      { stateDir }
+    );
+    assert.equal(crossEdit.decision, 'force_ask');
+    assert.match(crossEdit.reason, /Never edit applied migrations/);
+
+    // Writing into a not-yet-created nested subdirectory of repoB while cwd is repoA
+    const crossWrite = evaluateLocksPreToolUse(
+      {
+        hookEventName: 'PreToolUse',
+        cwd: repoA,
+        toolCall: {
+          name: 'write_file',
+          args: {
+            Path: path.join(repoB, 'src', 'nested', 'new-config.ts'),
+            Content: 'export const k = "PROD_MASTER_KEY";\n',
+          },
+        },
+      },
+      { stateDir }
+    );
+    assert.equal(crossWrite.decision, 'force_ask');
+    assert.match(crossWrite.reason, /no-prod-key/);
+  } finally {
+    fs.rmSync(repoA, { recursive: true, force: true });
+    fs.rmSync(repoB, { recursive: true, force: true });
+    fs.rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+test('Must 3: Settings anchorsMode kill switch renders, disables hooks, and hides #agy-anchors-pill reactively', async () => {
+  const { renderL2Stream } = await import(
+    pathToFileURL(path.join(REPO_ROOT, 'studio', 'modules', 'settings', 'views.mjs')).href
+  );
+  const { createAnchorsPillRuntime } = await import(
+    pathToFileURL(path.join(REPO_ROOT, 'studio', 'modules', 'anchors-pill.mjs')).href
+  );
+  const { JSDOM } = await import('jsdom');
+
+  const htmlOff = renderL2Stream(
+    { hideThinkingProse: true, autoCompactMode: 'semi', anchorsMode: 'off', resumeBannerEnabled: true },
+    { modules: { claudeUxCodeFold: true } },
+    { studioPrefs: { getStepStreamMode: () => 'compact' }, L: (_zh, en) => en }
+  );
+  assert.match(htmlOff, /data-ms-seg-key="anchorsMode"[^>]*data-ms-seg-val="off"[^>]*aria-checked="true"/);
+
+  const htmlSemi = renderL2Stream(
+    { hideThinkingProse: true, autoCompactMode: 'semi', anchorsMode: 'semi', resumeBannerEnabled: true },
+    { modules: { claudeUxCodeFold: true } },
+    { studioPrefs: { getStepStreamMode: () => 'compact' }, L: (_zh, en) => en }
+  );
+  assert.match(htmlSemi, /data-ms-seg-key="anchorsMode"[^>]*data-ms-seg-val="semi"[^>]*aria-checked="true"/);
+
+  // Disabled hooks allow locked file edits and skip Stop proposal scanning
+  const repo = createTempGitRepo();
+  const stateDir = realpathNative(fs.mkdtempSync(path.join(os.tmpdir(), 'maga-anc-off-')));
+  const brainDir = path.join(stateDir, 'brain');
+  const cid = 'conv-anchors-off-01';
+  const logsDir = path.join(brainDir, cid, '.system_generated', 'logs');
+  fs.mkdirSync(logsDir, { recursive: true });
+  fs.mkdirSync(path.join(repo, '.agents'), { recursive: true });
+  fs.writeFileSync(
+    path.join(repo, '.agents', 'locks.json'),
+    JSON.stringify({ schema: 1, lockedFiles: [{ id: 'f', path: 'README.md', quote: 'Locked' }] }),
+    'utf8'
+  );
+  fs.writeFileSync(path.join(stateDir, 'studio-prefs.json'), JSON.stringify({ anchorsMode: 'off' }), 'utf8');
+  fs.writeFileSync(
+    path.join(logsDir, 'transcript_full.jsonl'),
+    `${JSON.stringify({ step_index: 1, source: 'SYSTEM', type: 'CHECKPOINT', content: 'C1' })}\n` +
+      `${JSON.stringify({ step_index: 2, source: 'SYSTEM', type: 'CHECKPOINT', content: 'C2' })}\n` +
+      `${JSON.stringify({ step_index: 3, source: 'SYSTEM', type: 'CHECKPOINT', content: 'C3' })}\n`,
+    'utf8'
+  );
+
+  try {
+    assert.deepEqual(
+      evaluateLocksPreToolUse(
+        { hookEventName: 'PreToolUse', cwd: repo, toolCall: { name: 'edit_file', args: { Path: path.join(repo, 'README.md') } } },
+        { stateDir }
+      ),
+      { decision: 'allow' }
+    );
+    assert.deepEqual(
+      evaluateStopBoundary({ hookEventName: 'Stop', conversationId: cid, cwd: repo }, { stateDir, brainDir }),
+      {}
+    );
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+    fs.rmSync(stateDir, { recursive: true, force: true });
+  }
+
+  // Reactive pill hiding via studioPrefs.subscribe
+  const dom = new JSDOM(
+    '<!doctype html><html><body><div id="antigravity.agentSidePanelInputBox"><div class="agy-composer-footer"><div class="left-group"><button id="native-add-ctx">+</button></div></div></div></body></html>',
+    { url: 'https://127.0.0.1:60000/c/conv-reactive-off' }
+  );
+  const prevWin = globalThis.window;
+  const prevDoc = globalThis.document;
+  const prevLoc = globalThis.location;
+  globalThis.window = dom.window;
+  globalThis.document = dom.window.document;
+  globalThis.location = dom.window.location;
+  try {
+    let mode = 'semi';
+    const listeners = new Set();
+    const prefs = {
+      get: () => ({ anchorsMode: mode }),
+      subscribe: (fn) => {
+        listeners.add(fn);
+        return () => listeners.delete(fn);
+      },
+    };
+    dom.window.__ag_last_metrics = { metrics: { compactionCount: 3 } };
+    const rt = createAnchorsPillRuntime({ studioPrefs: prefs });
+    rt.write({ cid: 'conv-reactive-off', isRunning: false }, rt.read({ cid: 'conv-reactive-off', isRunning: false }));
+    const pill = dom.window.document.getElementById('agy-anchors-pill');
+    assert.equal(pill.hidden, false);
+
+    mode = 'off';
+    for (const fn of listeners) fn({ anchorsMode: mode }, 'patch');
+    assert.equal(pill.hidden, true, 'toggling anchorsMode to off hides pill immediately via subscription');
+    rt.dispose();
+  } finally {
+    globalThis.window = prevWin;
+    globalThis.document = prevDoc;
+    globalThis.location = prevLoc;
+  }
+});
+
+test('Must 4: removes hardcoded ENV.md exemption, supports excludeFiles, localizes G>=3 notice & balances EN/ZH cues', () => {
+  const repo = createTempGitRepo();
+  const stateDir = realpathNative(fs.mkdtempSync(path.join(os.tmpdir(), 'maga-anc-m4-')));
+  const brainDir = path.join(stateDir, 'brain');
+
+  try {
+    // 1. No hardcoded ENV.md exemption by default; excludeFiles skips only listed files
+    fs.mkdirSync(path.join(repo, '.agents'), { recursive: true });
+    fs.writeFileSync(
+      path.join(repo, '.agents', 'locks.json'),
+      JSON.stringify({
+        schema: 1,
+        bannedPatterns: [
+          {
+            id: 'no-ip-default',
+            appliesTo: ['file'],
+            pattern: '10\\.249\\.',
+            quote: 'Do not leak internal IPs',
+          },
+        ],
+      }),
+      'utf8'
+    );
+    const envBlocked = evaluateLocksPreToolUse(
+      {
+        hookEventName: 'PreToolUse',
+        cwd: repo,
+        toolCall: { name: 'write_file', args: { Path: path.join(repo, 'ENV.md'), Content: 'IP=10.249.1.2\n' } },
+      },
+      { stateDir }
+    );
+    assert.equal(envBlocked.decision, 'force_ask', 'ENV.md is NOT hardcoded exempt');
+
+    fs.writeFileSync(
+      path.join(repo, '.agents', 'locks.json'),
+      JSON.stringify({
+        schema: 1,
+        bannedPatterns: [
+          {
+            id: 'no-ip-excluded',
+            appliesTo: ['file'],
+            excludeFiles: ['ENV.md'],
+            pattern: '10\\.249\\.',
+            quote: 'Do not leak internal IPs in tracked docs',
+          },
+        ],
+      }),
+      'utf8'
+    );
+    assert.deepEqual(
+      evaluateLocksPreToolUse(
+        {
+          hookEventName: 'PreToolUse',
+          cwd: repo,
+          toolCall: { name: 'write_file', args: { Path: path.join(repo, 'ENV.md'), Content: 'IP=10.249.1.2\n' } },
+        },
+        { stateDir }
+      ),
+      { decision: 'allow' }
+    );
+    assert.equal(
+      evaluateLocksPreToolUse(
+        {
+          hookEventName: 'PreToolUse',
+          cwd: repo,
+          toolCall: { name: 'write_file', args: { Path: path.join(repo, 'docs', 'guide.md'), Content: 'IP=10.249.1.2\n' } },
+        },
+        { stateDir }
+      ).decision,
+      'force_ask'
+    );
+
+    // 2. Bilingual G>=3 inline notice follows user/config.json modules.i18n
+    const makeCpTranscript = (cid) => {
+      const dir = path.join(brainDir, cid, '.system_generated', 'logs');
+      fs.mkdirSync(dir, { recursive: true });
+      const tf = path.join(dir, 'transcript_full.jsonl');
+      fs.writeFileSync(
+        tf,
+        [1, 2, 3].map((i) => JSON.stringify({ step_index: i, source: 'SYSTEM', type: 'CHECKPOINT', content: `C${i}` })).join('\n') + '\n',
+        'utf8'
+      );
+      return tf;
+    };
+
+    makeCpTranscript('conv-en-nudge');
+    const enOut = evaluateStopBoundary({ hookEventName: 'Stop', conversationId: 'conv-en-nudge', cwd: repo }, { stateDir, brainDir });
+    assert.match(enOut.metadata?.user_markdown || '', /This chat has undergone \*\*G=3\*\* compactions/);
+
+    fs.mkdirSync(path.join(stateDir, 'user'), { recursive: true });
+    fs.writeFileSync(path.join(stateDir, 'user', 'config.json'), JSON.stringify({ modules: { i18n: true } }), 'utf8');
+    makeCpTranscript('conv-zh-nudge');
+    const zhOut = evaluateStopBoundary({ hookEventName: 'Stop', conversationId: 'conv-zh-nudge', cwd: repo }, { stateDir, brainDir });
+    assert.match(zhOut.metadata?.user_markdown || '', /当前会话已完成 \*\*G=3\*\* 次上下文压缩/);
+
+    // 3. Balanced EN/ZH cues without casual "我记得" false positive
+    const cueLog = path.join(stateDir, 'cue-check.jsonl');
+    fs.writeFileSync(
+      cueLog,
+      [
+        { step_index: 1, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: "<USER_REQUEST>\nDon't modify the migration files once pushed.\n</USER_REQUEST>" },
+        { step_index: 2, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: '<USER_REQUEST>\nStop editing schema.prisma without approval.\n</USER_REQUEST>' },
+        { step_index: 3, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: '<USER_REQUEST>\n我记得上次我们也是用这个配置跑通的。\n</USER_REQUEST>' },
+      ]
+        .map((x) => JSON.stringify(x))
+        .join('\n') + '\n',
+      'utf8'
+    );
+    const cueScan = scanTranscriptTailForProposals(cueLog, { byteOffset: 0 });
+    assert.equal(cueScan.candidates.length, 2);
+    assert.match(cueScan.candidates[0].verbatimQuote, /Don't modify the migration files/);
+    assert.match(cueScan.candidates[1].verbatimQuote, /Stop editing schema\.prisma/);
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+    fs.rmSync(stateDir, { recursive: true, force: true });
+  }
+});

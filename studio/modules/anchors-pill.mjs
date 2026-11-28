@@ -659,6 +659,17 @@ export function createAnchorsPillRuntime({ studioPrefs } = {}) {
     document.addEventListener('mousedown', onDocClick, true);
   }
 
+  const offStudioPrefs = studioPrefs?.subscribe?.(() => {
+    if (disposed) return;
+    if (!isEnabled()) {
+      syncPillDom();
+      return;
+    }
+    const curCid = getActiveRouteCid();
+    if (curCid && statusCache.cid !== curCid) fetchStatus(curCid, true);
+    syncPillDom();
+  });
+
   return {
     topics: ['composer', 'metrics'],
     read(snapshot) {
@@ -685,6 +696,7 @@ export function createAnchorsPillRuntime({ studioPrefs } = {}) {
     },
     dispose() {
       disposed = true;
+      offStudioPrefs?.();
       handoffInFlight = false;
       nextStepByCid.clear();
       handoffFeedback = { cid: '', tone: '', text: '' };

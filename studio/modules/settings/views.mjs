@@ -567,8 +567,69 @@ export function renderL3OpusGate(p, { L }) {
       </div>`;
 }
 
+export function renderStepStreamPreviewHtml(mode, hideThinking, L) {
+  const normMode = mode === 'compact' || mode === 'verbose' ? mode : 'inline';
+  const modeSub =
+    normMode === 'compact'
+      ? L('紧凑折叠 · 结束时收起全部过程', 'Compact · Collapses steps at turn end')
+      : normMode === 'verbose'
+        ? L('全量详细 · 展开全部工具明细', 'Verbose · Expands every tool detail')
+        : L('保留简报 · 保留过程说明，工具单行', 'Inline Briefs · Keeps notes, 1-line tools');
+
+  const thinkHtml =
+    !hideThinking && normMode !== 'compact'
+      ? `<div class="agy-ms-sp-think">${esc('Thinking · Checking auth middleware & session expiry…')}</div>`
+      : '';
+  const briefText = L(
+    '已定位登录态过期原因并修复刷新逻辑，下面运行测试确认。',
+    'Found the session expiry bug and patched refresh logic; running tests next.'
+  );
+  const finalText = L(
+    '登录态刷新问题已修复，18 项相关测试全部通过。',
+    'Session refresh is fixed and all 18 related tests pass.'
+  );
+
+  let canvasHtml = '';
+  if (normMode === 'compact') {
+    canvasHtml = `
+      <div class="agy-ms-sp-action">
+        <span>▸ ${esc(L('已工作 28s', 'Worked for 28s'))}</span>
+        <span class="agy-ms-sp-folded-tag">${esc(L('已收起 1 段过程说明 · 3 项操作', 'Collapsed 1 note · 3 actions'))}</span>
+      </div>
+      <div class="agy-ms-sp-prose is-final">${esc(finalText)}</div>`;
+  } else if (normMode === 'verbose') {
+    canvasHtml = `
+      <div class="agy-ms-sp-action is-open"><span>▾ ${esc(L('已工作 28s', 'Worked for 28s'))}</span></div>
+      ${thinkHtml}
+      <div class="agy-ms-sp-prose">${esc(briefText)}</div>
+      <div class="agy-ms-sp-detail-box">
+        <div class="agy-ms-sp-detail-hdr">▾ ${esc(L('已探索文件、已编辑文件、已运行命令', 'Explored files, Edited file, Ran command'))}</div>
+        <div class="agy-ms-sp-detail-item"><span>read_file</span><code>src/auth/session.ts</code></div>
+        <div class="agy-ms-sp-detail-item"><span>edit_file</span><code>src/auth/refresh.ts (+12 / -4)</code></div>
+        <div class="agy-ms-sp-detail-item"><span>run_command</span><code>npm test → 18 passed</code></div>
+      </div>
+      <div class="agy-ms-sp-prose is-final">${esc(finalText)}</div>`;
+  } else {
+    canvasHtml = `
+      ${thinkHtml}
+      <div class="agy-ms-sp-prose">${esc(briefText)}</div>
+      <div class="agy-ms-sp-action is-summary"><span>▸ ${esc(L('已工作 28s · 已探索文件、已编辑文件、已运行命令', 'Worked for 28s · Explored files, Edited file, Ran command'))}</span></div>
+      <div class="agy-ms-sp-prose is-final">${esc(finalText)}</div>`;
+  }
+
+  return `
+      <div class="agy-ms-stream-preview" data-mode="${esc(normMode)}" data-hide-thinking="${hideThinking ? '1' : '0'}">
+        <div class="agy-ms-preview-hdr">
+          <span class="agy-ms-preview-cap">${esc(L('效果样例预览', 'Live Sample Preview'))}</span>
+          <span class="agy-ms-preview-sub">${esc(modeSub)}</span>
+        </div>
+        <div class="agy-ms-sp-canvas">${canvasHtml}</div>
+      </div>`;
+}
+
 export function renderL2Stream(p, base, { studioPrefs, L }) {
   const stepMode = studioPrefs.getStepStreamMode();
+  const hideThinking = p.hideThinkingProse !== false;
   const acMode = p.autoCompactMode || 'semi';
   const acModeLbl =
     acMode === 'auto'
@@ -580,12 +641,13 @@ export function renderL2Stream(p, base, { studioPrefs, L }) {
   const acSum = acMode === 'off' ? acModeLbl : `${acModeLbl} · ≥${p.autoCompactThresholdPct ?? 50}% / ${acMin}m`;
   return `
       <div class="agy-ms-card">
-        ${renderSwitchRow('hideThinkingProse', 'studio', L('隐藏思考过程正文', 'Hide Thinking Prose'), L('开启时隐藏英文 Thought 正文与展开箭头，需要查看推理细节时可随时关闭', 'Hides verbose Thought bodies & chevrons; turn off to inspect reasoning'), p.hideThinkingProse)}
-        ${renderSegRow('stepStream', 'step', L('步骤流展示模式', 'Step Stream Mode'), L('保留简报：对齐 Remote 体验，回合结束后持久保留中间说明，工具折叠保持单行；紧凑折叠在结束时收起；全量详细展开每步详情', 'Inline Briefs matches Remote by keeping intermediate prose persistent with 1-line tools; Compact collapses at turn end; Verbose expands all details'), [
+        ${renderSwitchRow('hideThinkingProse', 'studio', L('隐藏思考过程正文', 'Hide Thinking Prose'), L('开启时隐藏英文 Thought 正文与展开箭头，需要查看推理细节时可随时关闭', 'Hides verbose Thought bodies & chevrons; turn off to inspect reasoning'), hideThinking)}
+        ${renderSegRow('stepStream', 'step', L('步骤流展示模式', 'Step Stream Mode'), L('控制回合结束后过程说明与工具调用的展开方式', 'Controls how progress notes and tool calls appear after a turn finishes'), [
           ['inline', L('保留简报', 'Inline Briefs')],
           ['compact', L('紧凑折叠', 'Compact')],
           ['verbose', L('全量详细', 'Verbose')],
         ], stepMode === 'expanded' ? 'inline' : stepMode)}
+        ${renderStepStreamPreviewHtml(stepMode, hideThinking, L)}
         ${renderDrillRow('stream-auto-compact', L('智能压缩上下文 (Auto-Compact)', 'Auto-Compact'), L('高上下文且设了长定时等待时，回合结束趁缓存未失效自动触发 /compact', 'Runs /compact right after long-wait or high-context turns while cache is warm'), acSum)}
         ${renderSegRow(
           'anchorsMode',

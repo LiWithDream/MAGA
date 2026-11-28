@@ -292,6 +292,26 @@ test('studio-prefs supports 3-mode stepStreamMode (inline default) & sidebar pro
     assert.match(streamHtml, /data-ms-seg-val="inline"[^>]*aria-checked="true"/);
     assert.match(streamHtml, /data-ms-seg-val="compact"/);
     assert.match(streamHtml, /data-ms-seg-val="verbose"/);
+    assert.doesNotMatch(streamHtml, /对齐 Remote|Remote-like|matches Remote/i);
+    assert.match(streamHtml, /agy-ms-stream-preview[^>]*data-mode="inline"[^>]*data-hide-thinking="1"/);
+    assert.match(streamHtml, /agy-ms-sp-prose/);
+    assert.match(streamHtml, /agy-ms-sp-action is-summary/);
+    assert.doesNotMatch(streamHtml, /agy-ms-sp-think/);
+
+    await prefsRt.setStepStreamMode('compact');
+    const compactHtml = renderL2Stream(prefsRt.get(), { modules: { claudeUxCodeFold: true } }, { studioPrefs: prefsRt, L: (_zh, en) => en });
+    assert.match(compactHtml, /agy-ms-stream-preview[^>]*data-mode="compact"/);
+    assert.match(compactHtml, /agy-ms-sp-folded-tag/);
+    assert.doesNotMatch(compactHtml, /agy-ms-sp-detail-box/);
+
+    await prefsRt.setStepStreamMode('verbose');
+    prefsRt.patch({ hideThinkingProse: false }, { skipDaemon: true });
+    const verboseHtml = renderL2Stream(prefsRt.get(), { modules: { claudeUxCodeFold: true } }, { studioPrefs: prefsRt, L: (_zh, en) => en });
+    assert.match(verboseHtml, /agy-ms-stream-preview[^>]*data-mode="verbose"[^>]*data-hide-thinking="0"/);
+    assert.match(verboseHtml, /agy-ms-sp-detail-box/);
+    assert.match(verboseHtml, /agy-ms-sp-think/);
+    prefsRt.patch({ hideThinkingProse: true }, { skipDaemon: true });
+    await prefsRt.setStepStreamMode('inline');
 
     const wsHtml = renderL2Workspace(prefsRt.get(), { modules: { claudeUxHideSidebarProjects: false } }, { state: {}, L: (_zh, en) => en });
     assert.match(wsHtml, /data-ms-key="sidebarProjectCapEnabled"/);

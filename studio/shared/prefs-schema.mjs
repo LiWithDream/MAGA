@@ -32,6 +32,8 @@ export const DEFAULT_STUDIO_PREFS = Object.freeze({
   sidebarProjectCapEnabled: true,
   sidebarProjectMaxPerProject: 4,
   sidebarProjectMaxTotal: 8,
+  sidebarProjectSortMode: 'recent',
+  sidebarProjectSortCooldownSec: 300,
   // Review Gate (Carbon High / Opus High)
   opusGateMode: 'semi',
   opusGateModel: 'opus',
@@ -62,6 +64,7 @@ export const STUDIO_PREFS_ENUMS = {
   orchestrator3dStyle: new Set(['chamber', 'helix', 'orbital', 'c-matrix', 'c-louver', 'c-spark', 'nebula', 'beam', 'orb']),
   orchestratorIcon: new Set(['prism', 'gravity', 'semicircle', 'none']),
   overviewUsageDefaultPeriod: new Set(['day', 'week', 'month']),
+  sidebarProjectSortMode: new Set(['recent', 'fixed', 'name', 'usage']),
   opusGateMode: new Set(['off', 'semi', 'auto']),
   opusGateModel: new Set(['carbon', 'opus']),
   autoCompactMode: new Set(['off', 'semi', 'auto']),
@@ -85,6 +88,16 @@ export function sanitizeSidebarCapInt(val, min, max, fallback) {
   const rounded = Math.round(n);
   if (rounded <= 0) return 0;
   return Math.max(min, Math.min(max, rounded));
+}
+
+const VALID_SIDEBAR_SORT_COOLDOWN_SEC = new Set([0, 60, 300]);
+
+export function sanitizeSidebarSortCooldownSec(val, fallback = 300) {
+  if (val === null || val === undefined || val === '') return fallback;
+  const n = Number(val);
+  if (!Number.isFinite(n)) return fallback;
+  const rounded = Math.round(n);
+  return VALID_SIDEBAR_SORT_COOLDOWN_SEC.has(rounded) ? rounded : fallback;
 }
 
 export function sanitizeHighWaterPct(val, fallback) {
@@ -178,6 +191,11 @@ export function sanitizeStudioPrefs(raw, defaults = DEFAULT_STUDIO_PREFS) {
     sidebarProjectCapEnabled: boolOr('sidebarProjectCapEnabled', def.sidebarProjectCapEnabled),
     sidebarProjectMaxPerProject: sanitizeSidebarCapInt(src.sidebarProjectMaxPerProject, 1, 20, def.sidebarProjectMaxPerProject),
     sidebarProjectMaxTotal: sanitizeSidebarCapInt(src.sidebarProjectMaxTotal, 2, 40, def.sidebarProjectMaxTotal),
+    sidebarProjectSortMode: enumOr('sidebarProjectSortMode', def.sidebarProjectSortMode ?? 'recent'),
+    sidebarProjectSortCooldownSec: sanitizeSidebarSortCooldownSec(
+      src.sidebarProjectSortCooldownSec,
+      def.sidebarProjectSortCooldownSec ?? 300
+    ),
     opusGateMode: enumOr('opusGateMode', def.opusGateMode),
     opusGateModel: enumOr('opusGateModel', def.opusGateModel),
     opusGateMinQuota5hPct: clampInt(src.opusGateMinQuota5hPct, 5, 80, def.opusGateMinQuota5hPct),

@@ -1769,6 +1769,10 @@ export function createProjectsModule(rt, modelApi) {
     }
   }
 
+  function refreshProjectsViewIfOpen() {
+    if (rtState.projectsViewOpen) renderProjectsView();
+  }
+
   function teardownProjectsWorkspace(opts = {}) {
     convTopbar.teardown();
     worktreeUi.teardown();
@@ -1937,6 +1941,7 @@ export function createProjectsModule(rt, modelApi) {
     closeProjectsView,
     triggerNativeNewProject,
     refreshProjectsLanguageUi,
+    refreshProjectsViewIfOpen,
     ensureSharedModalEscBound,
     closeProjectsModal,
     getConversationBranchBadge: worktreeUi.getConversationBranchBadge,

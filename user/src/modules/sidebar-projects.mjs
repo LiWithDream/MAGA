@@ -1,13 +1,26 @@
 /**
  * Sidebar Projects Smart Cap (default 4 per project / 8 total across Projects)
- * with priority protection (active/pending/running) and fair water-filling allocation.
+ * with priority protection (active/pending/running), fair water-filling allocation,
+ * configurable sorting (`recent` / `fixed` / `name` / `usage`), and anti-jump cooldown.
  */
+import {
+  formatRunningBreakdownTooltip,
+  formatRunningStatusTooltip,
+  pickDominantRunningSubkind,
+  renderRunningGlyphHtml,
+} from './sidebar-status.mjs';
 
 const COLLAPSED_PROJS_KEY = 'agy_sbp_collapsed_v1';
 const COLLAPSED_SECS_KEY = 'agy_sbp_sec_collapsed_v1';
+const SORT_PREFS_KEY = 'agy_sbp_sort_prefs_v1';
 const DEFAULT_MAX_PER_PROJECT = 4;
 const DEFAULT_MAX_TOTAL = 8;
 const DEFAULT_STANDALONE_LIMIT = 8;
+const DEFAULT_SORT_MODE = 'recent';
+const DEFAULT_SORT_COOLDOWN_SEC = 300;
+const VALID_SORT_MODES = new Set(['recent', 'fixed', 'name', 'usage']);
+const VALID_SORT_COOLDOWNS = new Set([0, 60, 300]);
+const USAGE_CACHE_TTL_MS = 25000;
 
 const SvgFolder =
   '<svg viewBox="0 0 16 16" width="13.5" height="13.5" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 4.4A1.2 1.2 0 0 1 3.2 3.2h3.1l1.2 1.3h5.3a1.2 1.2 0 0 1 1.2 1.2v6.1a1.2 1.2 0 0 1-1.2 1.2H3.2A1.2 1.2 0 0 1 2 11.8V4.4z"/></svg>';
@@ -17,6 +30,10 @@ const SvgCockpit =
   '<svg viewBox="0 0 16 16" width="12.5" height="12.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="2.5" width="4.5" height="4.5" rx="1"/><rect x="9" y="2.5" width="4.5" height="4.5" rx="1"/><rect x="2.5" y="9" width="4.5" height="4.5" rx="1"/><rect x="9" y="9" width="4.5" height="4.5" rx="1"/></svg>';
 const SvgPlus =
   '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.55" stroke-linecap="round" aria-hidden="true"><path d="M8 3.2v9.6M3.2 8h9.6"/></svg>';
+const SvgSort =
+  '<svg viewBox="0 0 16 16" width="12.5" height="12.5" fill="none" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.2 3.2v9.6M5.2 3.2L3.2 5.2M5.2 3.2l2 2M10.8 12.8V3.2M10.8 12.8l-2-2M10.8 12.8l2-2"/></svg>';
+const SvgRefresh =
+  '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 7.5A5 5 0 1 0 11.7 11.4"/><path d="M13.2 4.1v3.4H9.8"/></svg>';
 
 function isPriorityChat(chat, activeId) {
   if (!chat) return false;
@@ -122,6 +139,98 @@ export function computeSidebarProjectAllocation(
   return { items, totalVisible, totalChats, hiddenTotal };
 }
 
+/**
+ * Pure project ordering resolver with anti-jump cooldown snapshot for `recent` mode.
+ */
+export function resolveSidebarProjectOrder(projects, snapshot = null, opts = {}) {
+  const list = Array.isArray(projects) ? projects.slice() : [];
+  const sortMode = VALID_SORT_MODES.has(opts.sortMode) ? opts.sortMode : DEFAULT_SORT_MODE;
+  const rawCd = opts.cooldownSec === undefined || opts.cooldownSec === null ? DEFAULT_SORT_COOLDOWN_SEC : Number(opts.cooldownSec);
+  const cooldownSec = Number.isFinite(rawCd) && VALID_SORT_COOLDOWNS.has(Math.round(rawCd))
+    ? Math.round(rawCd)
+    : DEFAULT_SORT_COOLDOWN_SEC;
+  const usageByProject = opts.usageByProject && typeof opts.usageByProject === 'object' ? opts.usageByProject : null;
+  const nowMs = Number.isFinite(Number(opts.nowMs)) ? Number(opts.nowMs) : Date.now();
+  const forceRefresh = Boolean(opts.forceRefresh);
+
+  if (sortMode === 'fixed') {
+    const ordered = list.sort((a, b) => (a.origIdx ?? 0) - (b.origIdx ?? 0));
+    return {
+      orderedProjects: ordered,
+      nextSnapshot: { mode: 'fixed', orderIds: ordered.map((p) => p.id), lastSortedAt: nowMs },
+      didReorder: true,
+      hasPendingDrift: false,
+    };
+  }
+
+  if (sortMode === 'name') {
+    const ordered = list.sort(
+      (a, b) =>
+        String(a.name || '').localeCompare(String(b.name || ''), 'zh-Hans-CN') ||
+        (a.origIdx ?? 0) - (b.origIdx ?? 0)
+    );
+    return {
+      orderedProjects: ordered,
+      nextSnapshot: { mode: 'name', orderIds: ordered.map((p) => p.id), lastSortedAt: nowMs },
+      didReorder: true,
+      hasPendingDrift: false,
+    };
+  }
+
+  if (sortMode === 'usage') {
+    const ordered = list.sort((a, b) => {
+      const uA = Number(usageByProject?.[a.id]?.totalTokens || 0);
+      const uB = Number(usageByProject?.[b.id]?.totalTokens || 0);
+      if (uB !== uA) return uB - uA;
+      return (a.origIdx ?? 0) - (b.origIdx ?? 0);
+    });
+    return {
+      orderedProjects: ordered,
+      nextSnapshot: { mode: 'usage', orderIds: ordered.map((p) => p.id), lastSortedAt: nowMs },
+      didReorder: true,
+      hasPendingDrift: false,
+    };
+  }
+
+  // `recent` mode with anti-jump order snapshot
+  const fresh = list.sort((a, b) => {
+    const ta = a.chats?.[0]?.updatedAt || 0;
+    const tb = b.chats?.[0]?.updatedAt || 0;
+    if (tb !== ta) return tb - ta;
+    return (a.origIdx ?? 0) - (b.origIdx ?? 0);
+  });
+  const freshIds = fresh.map((p) => p.id);
+  const prevIds = Array.isArray(snapshot?.orderIds) ? snapshot.orderIds : [];
+  const prevSet = new Set(prevIds);
+  const sameSet =
+    snapshot?.mode === 'recent' &&
+    prevIds.length === freshIds.length &&
+    freshIds.every((id) => prevSet.has(id));
+  const cooldownExpired =
+    cooldownSec > 0 &&
+    Number.isFinite(snapshot?.lastSortedAt) &&
+    nowMs - snapshot.lastSortedAt >= cooldownSec * 1000;
+
+  if (forceRefresh || !sameSet || cooldownExpired) {
+    return {
+      orderedProjects: fresh,
+      nextSnapshot: { mode: 'recent', orderIds: freshIds, lastSortedAt: nowMs },
+      didReorder: true,
+      hasPendingDrift: false,
+    };
+  }
+
+  const byId = new Map(fresh.map((p) => [p.id, p]));
+  const locked = prevIds.map((id) => byId.get(id)).filter(Boolean);
+  const hasPendingDrift = freshIds.join(',') !== prevIds.join(',');
+  return {
+    orderedProjects: locked,
+    nextSnapshot: snapshot,
+    didReorder: false,
+    hasPendingDrift,
+  };
+}
+
 function hasIndexKey(idxCol, id) {
   if (!idxCol || !id) return false;
   if (typeof idxCol.has === 'function') return idxCol.has(id);
@@ -138,6 +247,14 @@ export function createSidebarProjectsModule(rt) {
   let standaloneLimit = DEFAULT_STANDALONE_LIMIT;
   let itemsById = new Map();
   let seededNativeCollapsed = false;
+  let sortSnapshot = null;
+  let forceSortRefresh = false;
+  let sortMenuOpen = false;
+  let sortMenuDocBound = false;
+  let sidebarUsageMap = Object.create(null);
+  let usageFetchedAt = 0;
+  let usageFetchSig = '';
+  let usageInFlightSig = '';
   const expandedProjectIds = new Set();
 
   function loadJsonSet(key, fallback) {
@@ -174,6 +291,61 @@ export function createSidebarProjectsModule(rt) {
       ? Math.max(0, Math.round(Number(rawTot)))
       : DEFAULT_MAX_TOTAL;
     return { enabled, maxPerProject, maxTotal };
+  }
+
+  function readSortPrefs() {
+    let localParsed = null;
+    try {
+      const raw = typeof localStorage === 'object' && localStorage ? localStorage.getItem(SORT_PREFS_KEY) : null;
+      if (raw) localParsed = JSON.parse(raw);
+    } catch {}
+
+    const attrMode = docRoot?.getAttribute?.('data-agy-sb-sort');
+    const attrCd = docRoot?.getAttribute?.('data-agy-sb-sort-cd');
+    const sortMode = VALID_SORT_MODES.has(attrMode)
+      ? attrMode
+      : VALID_SORT_MODES.has(localParsed?.sortMode)
+        ? localParsed.sortMode
+        : DEFAULT_SORT_MODE;
+
+    const parseCd = (v) => {
+      if (v === null || v === undefined || v === '') return null;
+      const n = Number(v);
+      return Number.isFinite(n) && VALID_SORT_COOLDOWNS.has(Math.round(n)) ? Math.round(n) : null;
+    };
+    const cooldownSec = parseCd(attrCd) ?? parseCd(localParsed?.cooldownSec) ?? DEFAULT_SORT_COOLDOWN_SEC;
+    return { sortMode, cooldownSec };
+  }
+
+  function persistLocalSortPrefs(sortMode, cooldownSec) {
+    try {
+      if (typeof localStorage === 'object' && localStorage) {
+        localStorage.setItem(SORT_PREFS_KEY, JSON.stringify({ sortMode, cooldownSec }));
+      }
+    } catch {}
+    if (docRoot) {
+      docRoot.setAttribute('data-agy-sb-sort', sortMode);
+      docRoot.setAttribute('data-agy-sb-sort-cd', String(cooldownSec));
+    }
+  }
+
+  function applySortPrefUpdate({ sortMode, cooldownSec } = {}) {
+    const cur = readSortPrefs();
+    const nextMode = VALID_SORT_MODES.has(sortMode) ? sortMode : cur.sortMode;
+    const nextCd = VALID_SORT_COOLDOWNS.has(cooldownSec) ? cooldownSec : cur.cooldownSec;
+    persistLocalSortPrefs(nextMode, nextCd);
+    try {
+      if (typeof window === 'object' && window.__agyStudioPrefs && typeof window.__agyStudioPrefs.patch === 'function') {
+        window.__agyStudioPrefs.patch({
+          sidebarProjectSortMode: nextMode,
+          sidebarProjectSortCooldownSec: nextCd,
+        });
+      }
+    } catch {}
+    forceSortRefresh = true;
+    lastSig = '';
+    if (sortMenuOpen) renderSortMenu();
+    hooks.scheduleSidebarSync?.();
   }
 
   function isCapActive() {
@@ -218,10 +390,185 @@ export function createSidebarProjectsModule(rt) {
     if (changed) saveJsonSet(COLLAPSED_PROJS_KEY, collapsedProjects);
   }
 
+  function closeSortMenu() {
+    sortMenuOpen = false;
+    if (typeof document !== 'undefined') {
+      const menu = document.getElementById('ag-sbp-sort-menu');
+      if (menu) menu.remove();
+      const btn = document.querySelector('#ag-claude-sidebar-projects [data-ag-sbp-sort-toggle]');
+      if (btn) btn.setAttribute('aria-expanded', 'false');
+    }
+    if (sortMenuDocBound && typeof document !== 'undefined') {
+      document.removeEventListener('mousedown', onSortMenuDocDown, true);
+      document.removeEventListener('keydown', onSortMenuDocKey, true);
+      if (typeof window !== 'undefined') window.removeEventListener('resize', closeSortMenu);
+      sortMenuDocBound = false;
+    }
+  }
+
+  function onSortMenuDocDown(ev) {
+    const t = ev && ev.target;
+    if (t && t.closest && t.closest('#ag-sbp-sort-menu, [data-ag-sbp-sort-toggle]')) return;
+    closeSortMenu();
+  }
+
+  function onSortMenuDocKey(ev) {
+    if (ev && ev.key === 'Escape') {
+      ev.preventDefault();
+      ev.stopPropagation();
+      closeSortMenu();
+    }
+  }
+
+  function renderSortMenu(anchorBtn = null) {
+    if (typeof document === 'undefined' || !document.body) return;
+    const trigger = anchorBtn || document.querySelector('#ag-claude-sidebar-projects [data-ag-sbp-sort-toggle]');
+    if (!trigger) {
+      closeSortMenu();
+      return;
+    }
+    let menu = document.getElementById('ag-sbp-sort-menu');
+    if (!menu) {
+      menu = document.createElement('div');
+      menu.id = 'ag-sbp-sort-menu';
+      menu.setAttribute('role', 'menu');
+      menu.setAttribute('data-maga-own', '1');
+      menu.setAttribute('data-ag-i18n-ignore', '1');
+      menu.addEventListener('click', (ev) => {
+        const modeBtn = ev.target?.closest?.('[data-ag-sbp-sort-mode]');
+        if (modeBtn) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          const nextMode = modeBtn.getAttribute('data-ag-sbp-sort-mode');
+          applySortPrefUpdate({ sortMode: nextMode });
+          closeSortMenu();
+          return;
+        }
+        const cdBtn = ev.target?.closest?.('[data-ag-sbp-sort-cd]');
+        if (cdBtn) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          const nextCd = Number(cdBtn.getAttribute('data-ag-sbp-sort-cd'));
+          if (VALID_SORT_COOLDOWNS.has(nextCd)) {
+            applySortPrefUpdate({ cooldownSec: nextCd });
+          }
+          return;
+        }
+        const refreshNow = ev.target?.closest?.('[data-ag-sbp-menu-refresh]');
+        if (refreshNow) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          forceSortRefresh = true;
+          usageFetchedAt = 0;
+          lastSig = '';
+          closeSortMenu();
+          hooks.scheduleSidebarSync?.();
+        }
+      });
+      document.body.appendChild(menu);
+    }
+
+    const { sortMode, cooldownSec } = readSortPrefs();
+    const modeOpts = [
+      ['recent', L('最近活跃', 'Recent activity')],
+      ['fixed', L('固定顺序', 'Fixed order')],
+      ['name', L('按名称 (A–Z)', 'Name (A–Z)')],
+      ['usage', L('按用量 (Token)', 'Token usage')],
+    ];
+    const itemsHtml = modeOpts
+      .map(([val, lbl]) => {
+        const active = sortMode === val;
+        return `<button type="button" class="ag-sbp-sm-item" role="menuitemradio" aria-checked="${active ? 'true' : 'false'}" data-ag-sbp-sort-mode="${val}"><span>${escapeHtml(lbl)}</span><span class="ag-sbp-sm-check" aria-hidden="true">${active ? '✓' : ''}</span></button>`;
+      })
+      .join('');
+
+    const cdHtml =
+      sortMode === 'recent'
+        ? `<div class="ag-sbp-sm-sep"></div>` +
+          `<div class="ag-sbp-sm-cd-wrap">` +
+          `<div class="ag-sbp-sm-cd-hdr"><span>${escapeHtml(L('重排冷却', 'Reorder cooldown'))}</span><button type="button" class="ag-sbp-sm-now" data-ag-sbp-menu-refresh="1">${escapeHtml(L('立即重排', 'Refresh'))}</button></div>` +
+          `<div class="ag-sbp-sm-cd-pills">${[
+            [60, '1m'],
+            [300, '5m'],
+            [0, L('仅手动', 'Manual')],
+          ]
+            .map(
+              ([val, lbl]) =>
+                `<button type="button" class="ag-sbp-sm-cd-pill" data-active="${cooldownSec === val ? 'true' : 'false'}" data-ag-sbp-sort-cd="${val}">${escapeHtml(lbl)}</button>`
+            )
+            .join('')}</div></div>`
+        : '';
+
+    menu.innerHTML = `<div class="ag-sbp-sm-hdr">${escapeHtml(L('项目排序', 'Sort Projects'))}</div>${itemsHtml}${cdHtml}`;
+
+    const r = trigger.getBoundingClientRect ? trigger.getBoundingClientRect() : { left: 16, right: 180, bottom: 40 };
+    const menuW = 196;
+    const menuH = Math.max(132, menu.offsetHeight || 168);
+    const vw = typeof window !== 'undefined' ? window.innerWidth || 1200 : 1200;
+    const vh = typeof window !== 'undefined' ? window.innerHeight || 800 : 800;
+    const left = Math.min(Math.max(8, (r.right || 180) - menuW), Math.max(8, vw - menuW - 8));
+    const top = (r.bottom || 40) + 4 + menuH > vh - 8 ? Math.max(8, (r.top || 40) - menuH - 4) : Math.max(8, (r.bottom || 40) + 4);
+    menu.style.left = `${Math.round(left)}px`;
+    menu.style.top = `${Math.round(top)}px`;
+    trigger.setAttribute('aria-expanded', 'true');
+
+    if (!sortMenuDocBound) {
+      document.addEventListener('mousedown', onSortMenuDocDown, true);
+      document.addEventListener('keydown', onSortMenuDocKey, true);
+      if (typeof window !== 'undefined') window.addEventListener('resize', closeSortMenu);
+      sortMenuDocBound = true;
+    }
+  }
+
+  function toggleSortMenu(btn) {
+    if (sortMenuOpen) {
+      closeSortMenu();
+    } else {
+      sortMenuOpen = true;
+      renderSortMenu(btn);
+    }
+  }
+
+  function ensureSidebarUsageIfNeeded(projects, force = false) {
+    if (typeof window === 'undefined' || typeof window.__agProjectCall !== 'function') return;
+    const projectGroups = {};
+    const sigParts = [];
+    let hasIds = false;
+    for (const p of projects || []) {
+      const ids = Array.isArray(p?.chats) ? p.chats.map((c) => c.id).filter(Boolean) : [];
+      projectGroups[p.id] = ids;
+      sigParts.push(`${p.id}:${ids.join(',')}`);
+      if (ids.length > 0) hasIds = true;
+    }
+    if (!hasIds) return;
+    sigParts.sort();
+    const sig = sigParts.join('|');
+    const now = Date.now();
+    if (!force && sig === usageFetchSig && now - usageFetchedAt < USAGE_CACHE_TTL_MS) return;
+    if (usageInFlightSig === sig) return;
+    usageInFlightSig = sig;
+    const activeId = hooks.getActiveCascadeId?.() || '';
+    Promise.resolve(window.__agProjectCall('getUsageStats', { projectGroups, activeId, force }, 12000))
+      .then((res) => {
+        if (rtState.disposed || !res || !res.ok || !res.byProject) return;
+        Object.assign(sidebarUsageMap, res.byProject);
+        usageFetchSig = sig;
+        usageFetchedAt = Date.now();
+        lastSig = '';
+        hooks.scheduleSidebarSync?.();
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (usageInFlightSig === sig) usageInFlightSig = '';
+      });
+  }
+
   function remove() {
+    closeSortMenu();
     const el = typeof document !== 'undefined' ? document.getElementById('ag-claude-sidebar-projects') : null;
     if (el) el.remove();
     lastSig = '';
+    sortSnapshot = null;
     itemsById.clear();
   }
 
@@ -337,12 +684,6 @@ export function createSidebarProjectsModule(rt) {
     for (const proj of projects) {
       proj.chats.sort((a, b) => b.updatedAt - a.updatedAt);
     }
-    projects.sort((a, b) => {
-      const ta = a.chats[0]?.updatedAt || 0;
-      const tb = b.chats[0]?.updatedAt || 0;
-      if (tb !== ta) return tb - ta;
-      return a.origIdx - b.origIdx;
-    });
     standaloneChats.sort((a, b) => b.updatedAt - a.updatedAt);
 
     return { projects, standaloneChats };
@@ -355,7 +696,9 @@ export function createSidebarProjectsModule(rt) {
       return `<span class="ag-claude-folder-badge" data-kind="pending">${svg}</span>`;
     }
     if (item.status && item.status.kind === 'running') {
-      return '<span class="ag-folder-orbit"></span>';
+      return hooks.renderRunningGlyphHtml
+        ? hooks.renderRunningGlyphHtml(item.status.subkind)
+        : renderRunningGlyphHtml(item.status.subkind);
     }
     if (item.status && item.status.kind === 'unread') {
       return `<span class="ag-claude-unread-dot"></span>${age ? `<span>${escapeHtml(age)}</span>` : ''}`;
@@ -365,6 +708,7 @@ export function createSidebarProjectsModule(rt) {
 
   function renderCollapsedProjBadgesHtml(chats) {
     const counts = { pending: 0, running: 0, unread: 0, subkind: null };
+    const runSubkinds = [];
     for (const c of chats) {
       const k = c.status?.kind;
       if (k === 'pending') {
@@ -372,6 +716,7 @@ export function createSidebarProjectsModule(rt) {
         if (!counts.subkind) counts.subkind = c.status.subkind;
       } else if (k === 'running') {
         counts.running += 1;
+        runSubkinds.push(c.status.subkind || 'orbit');
       } else if (k === 'unread') {
         counts.unread += 1;
       }
@@ -382,12 +727,36 @@ export function createSidebarProjectsModule(rt) {
       parts.push(`<span class="ag-claude-folder-badge" data-kind="pending">${svg}<span>${counts.pending}</span></span>`);
     }
     if (counts.running > 0) {
-      parts.push(`<span class="ag-claude-folder-badge" data-kind="running"><span class="ag-folder-orbit"></span><span>${counts.running}</span></span>`);
+      const domSub = (hooks.pickDominantRunningSubkind || pickDominantRunningSubkind)(runSubkinds);
+      const glyph = (hooks.renderRunningGlyphHtml || renderRunningGlyphHtml)(domSub);
+      parts.push(`<span class="ag-claude-folder-badge" data-kind="running" data-subkind="${escapeHtml(domSub)}">${glyph}<span>${counts.running}</span></span>`);
     }
     if (counts.unread > 0 && parts.length < 2) {
       parts.push(`<span class="ag-claude-folder-badge" data-kind="unread"><span class="ag-claude-unread-dot"></span><span>${counts.unread}</span></span>`);
     }
     return parts.slice(0, 2).join('');
+  }
+
+  function buildCollapsedProjHeaderTitle(p) {
+    const base = `${p.name} (${p.chats.length})`;
+    if (!p.collapsed) return base;
+    const runningItems = [];
+    let pendingCount = 0;
+    for (const c of p.chats) {
+      if (c.status?.kind === 'running') {
+        runningItems.push({ subkind: c.status.subkind || 'orbit', detail: c.status.detail || '', title: c.title });
+      } else if (c.status?.kind === 'pending') {
+        pendingCount += 1;
+      }
+    }
+    if (!runningItems.length && !pendingCount) return base;
+    const runTip = runningItems.length
+      ? (hooks.formatRunningBreakdownTooltip || formatRunningBreakdownTooltip)(runningItems, L)
+      : '';
+    const parts = [base];
+    if (pendingCount > 0) parts.push(L(`${pendingCount} 个待确认`, `${pendingCount} pending`));
+    if (runTip) parts.push(runTip);
+    return parts.join('\n');
   }
 
   function renderRowHtml(it, activeId, nowSec, indented) {
@@ -396,6 +765,9 @@ export function createSidebarProjectsModule(rt) {
     const branchPillHtml = wtBranch ? `<span class="ag-sbp-branch">${escapeHtml(wtBranch)}</span>` : '';
     const sideHtml = renderSideHtml(it, nowSec);
     const tipParts = [it.title];
+    if (it.status && it.status.kind === 'running') {
+      tipParts.push((hooks.formatRunningStatusTooltip || formatRunningStatusTooltip)(it.status, L));
+    }
     if (it.project) tipParts.push(`${L('所属项目：', 'Project: ')}${it.project}`);
     if (wtBranch) tipParts.push(`Worktree: ${wtBranch}`);
     const pinSvg = hooks.RECENT_PIN_SVG || '';
@@ -430,13 +802,32 @@ export function createSidebarProjectsModule(rt) {
     seedCollapsedFromNative(bindings.sidebar);
 
     const { maxPerProject, maxTotal } = readCapPrefs();
-    const { projects, standaloneChats } = collectSectionsData(bindings, state, activeId, hasFocus);
-    if (!projects.length && !standaloneChats.length) {
+    const { sortMode, cooldownSec } = readSortPrefs();
+    const { projects: rawProjects, standaloneChats } = collectSectionsData(bindings, state, activeId, hasFocus);
+    if (!rawProjects.length && !standaloneChats.length) {
       remove();
       return false;
     }
 
-    const allocated = computeSidebarProjectAllocation(projects, { maxPerProject, maxTotal, activeId });
+    if (sortMode === 'usage') {
+      ensureSidebarUsageIfNeeded(rawProjects, forceSortRefresh);
+    }
+
+    const orderRes = resolveSidebarProjectOrder(rawProjects, sortSnapshot, {
+      sortMode,
+      cooldownSec,
+      usageByProject: sidebarUsageMap,
+      nowMs: Date.now(),
+      forceRefresh: forceSortRefresh,
+    });
+    sortSnapshot = orderRes.nextSnapshot;
+    forceSortRefresh = false;
+
+    const allocated = computeSidebarProjectAllocation(orderRes.orderedProjects, {
+      maxPerProject,
+      maxTotal,
+      activeId,
+    });
     const standaloneShown = standaloneChats.slice(0, standaloneLimit);
 
     itemsById = new Map();
@@ -454,6 +845,9 @@ export function createSidebarProjectsModule(rt) {
       FEAT.i18n ? 1 : 0,
       maxPerProject,
       maxTotal,
+      sortMode,
+      cooldownSec,
+      orderRes.hasPendingDrift ? 1 : 0,
       projSecCollapsed ? 1 : 0,
       convSecCollapsed ? 1 : 0,
       standaloneLimit,
@@ -462,12 +856,12 @@ export function createSidebarProjectsModule(rt) {
       allocated.items
         .map((p) =>
           `${p.id}:${p.name}:${p.collapsed ? 1 : 0}:${p.expandedOverride ? 1 : 0}:${p.hiddenCount}:${p.visibleChats
-            .map((c) => `${c.id}:${c.title}:${hooks.getConversationBranchBadge?.(c.id) || ''}:${c.status ? `${c.status.kind}-${c.status.subkind}` : 'idle'}:${Math.floor(c.updatedAt / 60)}`)
+            .map((c) => `${c.id}:${c.title}:${hooks.getConversationBranchBadge?.(c.id) || ''}:${c.status ? `${c.status.kind}-${c.status.subkind}-${c.status.detail || ''}` : 'idle'}:${Math.floor(c.updatedAt / 60)}`)
             .join(',')}`
         )
         .join('|'),
       `${standaloneChats.length}:${standaloneShown
-        .map((c) => `${c.id}:${c.title}:${hooks.getConversationBranchBadge?.(c.id) || ''}:${c.status ? `${c.status.kind}-${c.status.subkind}` : 'idle'}:${Math.floor(c.updatedAt / 60)}`)
+        .map((c) => `${c.id}:${c.title}:${hooks.getConversationBranchBadge?.(c.id) || ''}:${c.status ? `${c.status.kind}-${c.status.subkind}-${c.status.detail || ''}` : 'idle'}:${Math.floor(c.updatedAt / 60)}`)
         .join(',')}`,
     ].join('||');
 
@@ -499,10 +893,32 @@ export function createSidebarProjectsModule(rt) {
           return;
         }
 
+        const sortRefreshBtn = t.closest('[data-ag-sbp-sort-refresh]');
+        if (sortRefreshBtn) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          closeSortMenu();
+          forceSortRefresh = true;
+          usageFetchedAt = 0;
+          lastSig = '';
+          hooks.scheduleSidebarSync?.();
+          return;
+        }
+
+        const sortToggleBtn = t.closest('[data-ag-sbp-sort-toggle]');
+        if (sortToggleBtn) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          hooks.closeRecentRowMenu?.();
+          toggleSortMenu(sortToggleBtn);
+          return;
+        }
+
         const newProjBtn = t.closest('[data-ag-sbp-new-proj]');
         if (newProjBtn) {
           ev.preventDefault();
           ev.stopPropagation();
+          closeSortMenu();
           hooks.closeRecentRowMenu?.();
           hooks.triggerNativeNewProject?.();
           return;
@@ -512,6 +928,7 @@ export function createSidebarProjectsModule(rt) {
         if (newConvBtn) {
           ev.preventDefault();
           ev.stopPropagation();
+          closeSortMenu();
           hooks.closeRecentRowMenu?.();
           if (rtState.projectsViewOpen) hooks.closeProjectsView?.();
           hooks.triggerNewConversationFromSidebar?.(hooks.findSidebarBindings?.() || bindings);
@@ -693,9 +1110,10 @@ export function createSidebarProjectsModule(rt) {
             const cockpitBtnHtml = FEAT.projects
               ? `<button type="button" class="ag-sbp-act-btn" data-ag-sbp-proj-open="${escapeHtml(p.id)}" title="${escapeHtml(L('在项目页打开', 'Open in Projects'))}" aria-label="${escapeHtml(L('在项目页打开', 'Open in Projects'))}">${SvgCockpit}</button>`
               : '';
+            const hdrTitle = buildCollapsedProjHeaderTitle(p);
             const hdrHtml =
               `<div class="ag-sbp-proj-hdr-wrap" data-collapsed="${collapsedAttr}">` +
-              `<button type="button" class="ag-sbp-proj-hdr" data-ag-sbp-proj-toggle="${escapeHtml(p.id)}" aria-expanded="${p.collapsed ? 'false' : 'true'}" title="${escapeHtml(`${p.name} (${p.chats.length})`)}">` +
+              `<button type="button" class="ag-sbp-proj-hdr" data-ag-sbp-proj-toggle="${escapeHtml(p.id)}" aria-expanded="${p.collapsed ? 'false' : 'true'}" title="${escapeHtml(hdrTitle)}">` +
               `<span class="ag-sbp-proj-chev">${SvgChev}</span>` +
               `<span class="ag-sbp-proj-ico">${SvgFolder}</span>` +
               `<span class="ag-sbp-proj-name">${escapeHtml(p.name)}</span>` +
@@ -725,14 +1143,35 @@ export function createSidebarProjectsModule(rt) {
           })
           .join('');
 
+    const sortModeLabel =
+      sortMode === 'fixed'
+        ? L('固定顺序', 'Fixed')
+        : sortMode === 'name'
+          ? L('按名称', 'Name')
+          : sortMode === 'usage'
+            ? L('按用量', 'Usage')
+            : L('最近活跃', 'Recent');
+    const refreshTip =
+      sortMode === 'usage'
+        ? L('刷新项目用量排序', 'Refresh usage sort')
+        : orderRes.hasPendingDrift
+          ? L('有新的活跃项目 · 点击立即重排', 'Recent activity changed · Click to reorder now')
+          : L('手动刷新项目排序', 'Refresh project order');
+    const refreshBtnHtml =
+      sortMode === 'recent' || sortMode === 'usage'
+        ? `<button type="button" class="ag-sbp-sec-tool ag-sbp-refresh-btn" data-ag-sbp-sort-refresh="1" data-stale="${orderRes.hasPendingDrift ? '1' : '0'}" title="${escapeHtml(refreshTip)}" aria-label="${escapeHtml(refreshTip)}">${SvgRefresh}</button>`
+        : '';
+    const sortBtnHtml = `<button type="button" class="ag-sbp-sec-tool ag-sbp-sort-btn" data-ag-sbp-sort-toggle="1" data-sort-mode="${escapeHtml(sortMode)}" aria-haspopup="menu" aria-expanded="${sortMenuOpen ? 'true' : 'false'}" title="${escapeHtml(L(`排序方式：${sortModeLabel}`, `Sort: ${sortModeLabel}`))}" aria-label="${escapeHtml(L('切换项目排序方式', 'Sort projects'))}">${SvgSort}</button>`;
+
     const projectsSecHtml = allocated.items.length
       ? `<div class="ag-sbp-section" data-section="projects" data-collapsed="${projSecCollapsed ? '1' : '0'}">` +
         `<div class="ag-sbp-sec-hdr-bar">` +
         `<button type="button" class="ag-sbp-sec-hdr" data-ag-sbp-sec-toggle="projects" aria-expanded="${!projSecCollapsed}">` +
         `<span>${escapeHtml(L('项目', 'Projects'))}</span>${projCountHint}<span class="ag-sbp-sec-chev">${SvgChev}</span>` +
         `</button>` +
+        `<div class="ag-sbp-sec-tools">${refreshBtnHtml}${sortBtnHtml}` +
         `<button type="button" class="ag-sbp-sec-add" data-ag-sbp-new-proj="1" title="${escapeHtml(L('新建项目', 'New project'))}" aria-label="${escapeHtml(L('新建项目', 'New project'))}">${SvgPlus}</button>` +
-        `</div>` +
+        `</div></div>` +
         `<div class="ag-sbp-proj-list">${projectsBodyHtml}</div></div>`
       : '';
 
@@ -760,21 +1199,36 @@ export function createSidebarProjectsModule(rt) {
       : '';
 
     sec.innerHTML = `${projectsSecHtml}${standaloneSecHtml}`;
+    if (sortMenuOpen) renderSortMenu();
     return true;
   }
 
   const onPrefsChanged = () => {
+    forceSortRefresh = true;
     lastSig = '';
+    if (sortMenuOpen) renderSortMenu();
     hooks.scheduleSidebarSync?.();
     hooks.syncSidebarHideNativeProjects?.();
   };
+  const onProjectsUsageUpdated = (e) => {
+    const next = e?.detail?.byProject;
+    if (!next || typeof next !== 'object') return;
+    Object.assign(sidebarUsageMap, next);
+    usageFetchedAt = Date.now();
+    if (readSortPrefs().sortMode === 'usage') {
+      lastSig = '';
+      hooks.scheduleSidebarSync?.();
+    }
+  };
   if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
     window.addEventListener('agy:sidebar-cap-prefs-changed', onPrefsChanged);
+    window.addEventListener('agy:projects-usage-updated', onProjectsUsageUpdated);
   }
 
   function dispose() {
     if (typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
       window.removeEventListener('agy:sidebar-cap-prefs-changed', onPrefsChanged);
+      window.removeEventListener('agy:projects-usage-updated', onProjectsUsageUpdated);
     }
     remove();
   }

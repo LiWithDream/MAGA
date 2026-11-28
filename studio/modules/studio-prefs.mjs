@@ -102,14 +102,20 @@ export function createStudioPrefsRuntime({ initialPrefs, defaultPrefs, effortEff
     const sbCapOn = cur.sidebarProjectCapEnabled !== false ? '1' : '0';
     const sbCapPer = String(cur.sidebarProjectMaxPerProject ?? 4);
     const sbCapTotal = String(cur.sidebarProjectMaxTotal ?? 8);
+    const sbSort = cur.sidebarProjectSortMode || 'recent';
+    const sbSortCd = String(cur.sidebarProjectSortCooldownSec ?? 300);
     const sbCapChanged =
       docRoot.getAttribute('data-agy-sb-cap') !== sbCapOn ||
       docRoot.getAttribute('data-agy-sb-cap-per') !== sbCapPer ||
-      docRoot.getAttribute('data-agy-sb-cap-total') !== sbCapTotal;
+      docRoot.getAttribute('data-agy-sb-cap-total') !== sbCapTotal ||
+      docRoot.getAttribute('data-agy-sb-sort') !== sbSort ||
+      docRoot.getAttribute('data-agy-sb-sort-cd') !== sbSortCd;
     if (sbCapChanged) {
       docRoot.setAttribute('data-agy-sb-cap', sbCapOn);
       docRoot.setAttribute('data-agy-sb-cap-per', sbCapPer);
       docRoot.setAttribute('data-agy-sb-cap-total', sbCapTotal);
+      docRoot.setAttribute('data-agy-sb-sort', sbSort);
+      docRoot.setAttribute('data-agy-sb-sort-cd', sbSortCd);
       if (typeof window === 'object' && window && typeof window.dispatchEvent === 'function') {
         try {
           const Ctor = window.CustomEvent || (typeof CustomEvent === 'function' ? CustomEvent : null);

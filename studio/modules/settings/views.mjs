@@ -802,7 +802,35 @@ export function renderL2Workspace(p, base, { state, L }) {
                       ['10', '10'],
                       ['12', '12'],
                       ['0', L('不限', 'All')],
-                    ], String(p.sidebarProjectMaxTotal ?? 8))}`
+                    ], String(p.sidebarProjectMaxTotal ?? 8))}${renderSegRow(
+                      'sidebarProjectSortMode',
+                      'studio',
+                      L('侧栏项目排序方式', 'Sidebar Project Order'),
+                      L('控制左侧栏项目列表排序，避免后台任务刷新导致项目乱跳', 'Controls sidebar project ordering to prevent jumping during background activity'),
+                      [
+                        ['recent', L('最近活跃', 'Recent')],
+                        ['fixed', L('固定顺序', 'Fixed')],
+                        ['name', L('按名称', 'Name')],
+                        ['usage', L('按用量', 'Usage')],
+                      ],
+                      p.sidebarProjectSortMode || 'recent',
+                      true
+                    )}${
+                      (p.sidebarProjectSortMode || 'recent') === 'recent'
+                        ? renderSegRow(
+                            'sidebarProjectSortCooldownSec',
+                            'studio-num',
+                            L('最近活跃重排冷却', 'Recent Reorder Cooldown'),
+                            L('冷却期内锁定项目顺序，仅在超时、增删项目或点击手动刷新时重排', 'Locks project order during cooldown; reorders on expiry, project add/remove, or manual refresh'),
+                            [
+                              ['60', '1m'],
+                              ['300', '5m'],
+                              ['0', L('仅手动刷新', 'Manual only')],
+                            ],
+                            String(p.sidebarProjectSortCooldownSec ?? 300)
+                          )
+                        : ''
+                    }`
                   : ''
               }`
             : ''

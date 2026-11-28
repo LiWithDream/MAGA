@@ -18,29 +18,41 @@ Keep long-horizon research and engineering sessions immune to multi-compaction d
   "schema": 1,
   "lockedFiles": [
     {
-      "id": "eval-harness",
-      "path": "scripts/eval.py",
-      "quote": "严禁修改评测脚本刷分",
-      "source": "turn#74"
+      "id": "auth-verify",
+      "path": "src/auth/verify.ts",
+      "quote": "Do not modify token verification logic without security review",
+      "source": "turn#12"
     }
   ],
   "paramLocks": [
     {
-      "id": "max-epochs",
-      "key": "MAX_EPOCHS",
-      "expected": "3",
-      "quote": "不能改最大epoch，必须同赛道3个epoch对比",
-      "source": "turn#74"
+      "id": "node-env",
+      "key": "NODE_ENV",
+      "expected": "production",
+      "quote": "Keep release build strictly in production mode",
+      "source": "turn#12"
     }
   ],
   "bannedPatterns": [
     {
-      "id": "tombstone-res-640",
-      "pattern": "(?:--image-size|--resolution|IMG_SIZE)[=\\s]+640\\b",
-      "quote": "640分辨率已经证伪掉点，不要再跑",
-      "source": "turn#108",
-      "reopenIf": "new multi-scale pos-embed recipe"
+      "id": "no-force-reset",
+      "appliesTo": ["shell"],
+      "pattern": "db:reset\\s+--force",
+      "quote": "Destructive database reset is disabled in this workspace",
+      "source": "turn#19",
+      "reopenIf": "dedicated ephemeral staging DB"
+    },
+    {
+      "id": "no-private-ip",
+      "appliesTo": ["file"],
+      "excludeFiles": ["ENV.md"],
+      "pattern": "\\b10\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\b",
+      "quote": "Do not write private network IPs into tracked files",
+      "source": "turn#22"
     }
   ]
 }
 ```
+
+- Domain workflows (such as experiment harnesses using `tombstone_rules` / `locked_files` / `param_locks` / `exclude_files` aliases) share the exact same schema.
+- `excludeFiles` matches both repo-relative paths and basenames (e.g. `"ENV.md"` exempts `ENV.md` at any depth; keep exempted files untracked).

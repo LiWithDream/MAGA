@@ -18,6 +18,7 @@ import {
   buildChevronSvg,
   buildRefreshIconSvg,
   buildUsageBodyHtml,
+  resolveUsageInteraction,
   createSharedUsageTooltip,
 } from './usage-card-core.mjs';
 
@@ -51,9 +52,10 @@ export function createOverviewUsageRuntime({ motionThemes, studioPrefs } = {}) {
         open: typeof parsed.open === 'boolean' ? parsed.open : true,
         period: SPANS[parsed.period] ? parsed.period : defaultPeriodPref(),
         shift: 0,
+        selectedBarIdx: null,
       };
     } catch {
-      return { open: true, period: defaultPeriodPref(), shift: 0 };
+      return { open: true, period: defaultPeriodPref(), shift: 0, selectedBarIdx: null };
     }
   }
 
@@ -79,6 +81,7 @@ export function createOverviewUsageRuntime({ motionThemes, studioPrefs } = {}) {
       lastDefaultPeriod = nextDef;
       uiState.period = nextDef;
       uiState.shift = 0;
+      uiState.selectedBarIdx = null;
       saveUiState();
       needRerender = true;
     }
@@ -103,6 +106,7 @@ export function createOverviewUsageRuntime({ motionThemes, studioPrefs } = {}) {
         today,
         period: uiState.period,
         shift: uiState.shift,
+        selectedBarIdx: uiState.selectedBarIdx,
         colorForModel,
       });
       todayTotals = res.totals;
@@ -125,6 +129,45 @@ export function createOverviewUsageRuntime({ motionThemes, studioPrefs } = {}) {
     </div>${bodyHtml}`;
   }
 
+  function applyInteraction(act) {
+    if (!act) return;
+    if (act.type === 'toggle') {
+      uiState.open = !uiState.open;
+      saveUiState();
+      renderCard();
+      if (uiState.open && !usageData) fetchUsage(false);
+      return;
+    }
+    if (act.type === 'refresh') {
+      fetchUsage(true);
+      return;
+    }
+    if (act.type === 'period' || act.type === 'kpi') {
+      uiState.period = act.period;
+      uiState.shift = 0;
+      uiState.selectedBarIdx = null;
+      saveUiState();
+      renderCard();
+      return;
+    }
+    if (act.type === 'shift') {
+      uiState.shift = Math.min(0, uiState.shift + act.delta);
+      uiState.selectedBarIdx = null;
+      renderCard();
+      return;
+    }
+    if (act.type === 'bar') {
+      uiState.selectedBarIdx = act.index;
+      renderCard();
+      return;
+    }
+    if (act.type === 'reset') {
+      uiState.shift = 0;
+      uiState.selectedBarIdx = null;
+      renderCard();
+    }
+  }
+
   function ensureCardElement() {
     if (cardEl) return cardEl;
     cardEl = document.createElement('section');
@@ -135,32 +178,16 @@ export function createOverviewUsageRuntime({ motionThemes, studioPrefs } = {}) {
     cardEl.setAttribute('data-ag-i18n-ignore', '1');
 
     cardEl.addEventListener('click', (e) => {
-      const btn = e.target?.closest?.('button');
-      if (!btn || !cardEl.contains(btn)) return;
-      const action = btn.getAttribute('data-agy-usage-action');
-      if (action === 'toggle') {
-        uiState.open = !uiState.open;
-        saveUiState();
-        renderCard();
-        if (uiState.open && !usageData) fetchUsage(false);
-        return;
-      }
-      if (action === 'refresh') {
-        fetchUsage(true);
-        return;
-      }
-      const period = btn.getAttribute('data-agy-usage-period');
-      if (period && SPANS[period]) {
-        uiState.period = period;
-        uiState.shift = 0;
-        saveUiState();
-        renderCard();
-        return;
-      }
-      const shiftDelta = Number(btn.getAttribute('data-agy-usage-shift'));
-      if (Number.isFinite(shiftDelta) && shiftDelta !== 0) {
-        uiState.shift = Math.min(0, uiState.shift + shiftDelta);
-        renderCard();
+      applyInteraction(resolveUsageInteraction(e.target, cardEl));
+    });
+    cardEl.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      const barEl = e.target?.closest?.('[data-agy-usage-bar]');
+      if (!barEl || !cardEl.contains(barEl) || e.target?.closest?.('button')) return;
+      const act = resolveUsageInteraction(barEl, cardEl);
+      if (act?.type === 'bar') {
+        e.preventDefault();
+        applyInteraction(act);
       }
     });
 

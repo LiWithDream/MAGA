@@ -18,6 +18,7 @@ import {
   buildRefreshIconSvg,
   formatShareLabel,
   buildUsageBodyHtml,
+  resolveUsageInteraction,
   createSharedUsageTooltip,
 } from './usage-card-core.mjs';
 
@@ -87,9 +88,10 @@ export function createProjectUsageRuntime({ motionThemes, studioPrefs } = {}) {
         open: typeof parsed.open === 'boolean' ? parsed.open : true,
         period: SPANS[parsed.period] ? parsed.period : defaultPeriodPref(),
         shift: 0,
+        selectedBarIdx: null,
       };
     } catch {
-      return { open: true, period: defaultPeriodPref(), shift: 0 };
+      return { open: true, period: defaultPeriodPref(), shift: 0, selectedBarIdx: null };
     }
   }
 
@@ -120,6 +122,50 @@ export function createProjectUsageRuntime({ motionThemes, studioPrefs } = {}) {
     };
   }
 
+  function applyDetailInteraction(act) {
+    if (!act) return;
+    const target = readActiveDetailTarget();
+    if (act.type === 'toggle') {
+      uiState.open = !uiState.open;
+      saveUiState();
+      if (target) {
+        renderDetailCard(target);
+        if (uiState.open && target.chatIds.length > 0 && !detailCache.has(target.cacheKey)) {
+          fetchDetailUsage(target, false);
+        }
+      }
+      return;
+    }
+    if (act.type === 'refresh') {
+      if (target) fetchDetailUsage(target, true);
+      return;
+    }
+    if (act.type === 'period' || act.type === 'kpi') {
+      uiState.period = act.period;
+      uiState.shift = 0;
+      uiState.selectedBarIdx = null;
+      saveUiState();
+      if (target) renderDetailCard(target);
+      return;
+    }
+    if (act.type === 'shift') {
+      uiState.shift = Math.min(0, uiState.shift + act.delta);
+      uiState.selectedBarIdx = null;
+      if (target) renderDetailCard(target);
+      return;
+    }
+    if (act.type === 'bar') {
+      uiState.selectedBarIdx = act.index;
+      if (target) renderDetailCard(target);
+      return;
+    }
+    if (act.type === 'reset') {
+      uiState.shift = 0;
+      uiState.selectedBarIdx = null;
+      if (target) renderDetailCard(target);
+    }
+  }
+
   function ensureDetailCard(slot) {
     if (!detailCardEl) {
       detailCardEl = document.createElement('section');
@@ -129,37 +175,16 @@ export function createProjectUsageRuntime({ motionThemes, studioPrefs } = {}) {
       detailCardEl.setAttribute('data-ag-i18n-ignore', '1');
 
       detailCardEl.addEventListener('click', (e) => {
-        const btn = e.target?.closest?.('button');
-        if (!btn || !detailCardEl.contains(btn)) return;
-        const target = readActiveDetailTarget();
-        const action = btn.getAttribute('data-agy-usage-action');
-        if (action === 'toggle') {
-          uiState.open = !uiState.open;
-          saveUiState();
-          if (target) {
-            renderDetailCard(target);
-            if (uiState.open && target.chatIds.length > 0 && !detailCache.has(target.cacheKey)) {
-              fetchDetailUsage(target, false);
-            }
-          }
-          return;
-        }
-        if (action === 'refresh') {
-          if (target) fetchDetailUsage(target, true);
-          return;
-        }
-        const period = btn.getAttribute('data-agy-usage-period');
-        if (period && SPANS[period]) {
-          uiState.period = period;
-          uiState.shift = 0;
-          saveUiState();
-          if (target) renderDetailCard(target);
-          return;
-        }
-        const shiftDelta = Number(btn.getAttribute('data-agy-usage-shift'));
-        if (Number.isFinite(shiftDelta) && shiftDelta !== 0) {
-          uiState.shift = Math.min(0, uiState.shift + shiftDelta);
-          if (target) renderDetailCard(target);
+        applyDetailInteraction(resolveUsageInteraction(e.target, detailCardEl));
+      });
+      detailCardEl.addEventListener('keydown', (e) => {
+        if (e.key !== 'Enter' && e.key !== ' ') return;
+        const barEl = e.target?.closest?.('[data-agy-usage-bar]');
+        if (!barEl || !detailCardEl.contains(barEl) || e.target?.closest?.('button')) return;
+        const act = resolveUsageInteraction(barEl, detailCardEl);
+        if (act?.type === 'bar') {
+          e.preventDefault();
+          applyDetailInteraction(act);
         }
       });
 
@@ -233,6 +258,7 @@ export function createProjectUsageRuntime({ motionThemes, studioPrefs } = {}) {
         today,
         period: uiState.period,
         shift: uiState.shift,
+        selectedBarIdx: uiState.selectedBarIdx,
         colorForModel,
         loadingText: L('正在汇总本项目用量…', 'Aggregating project token usage…'),
         emptyText: isEmptyChats
@@ -473,6 +499,7 @@ export function createProjectUsageRuntime({ motionThemes, studioPrefs } = {}) {
       lastDefaultPeriod = nextDef;
       uiState.period = nextDef;
       uiState.shift = 0;
+      uiState.selectedBarIdx = null;
       saveUiState();
       needRerender = true;
     }
@@ -524,6 +551,7 @@ export function createProjectUsageRuntime({ motionThemes, studioPrefs } = {}) {
       if (projectId !== activeProjectId) {
         activeProjectId = projectId;
         uiState.shift = 0;
+        uiState.selectedBarIdx = null;
       }
       const target = { view: plan.view, slot: plan.slot, projectId, rawChatIds, chatIds, cacheKey };
       const cached = detailCache.get(cacheKey);

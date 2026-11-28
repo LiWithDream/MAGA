@@ -214,6 +214,8 @@ export function createFooterUnifiedRuntime({ onTierChange, kernel } = {}) {
     const ring = footer.querySelector('#ag-claude-ctx-ring');
     const ringHasRatio = ring?.getAttribute('data-agy-has-ratio') || '';
     const ringHasTight = ring?.getAttribute('data-agy-has-tight') || '';
+    const ringHasGen = ring?.getAttribute('data-agy-has-gen') || '';
+    const ringGenText = ring?.querySelector('.agy-ctx-gen-badge')?.textContent || '';
     const ringCompacting = ring?.getAttribute('data-agy-ctx-compacting') || '';
     const ringFullText = ring?.querySelector('.agy-ctx-full')?.textContent || '';
 
@@ -255,6 +257,8 @@ export function createFooterUnifiedRuntime({ onTierChange, kernel } = {}) {
       modelEffort,
       ringHasRatio,
       ringHasTight,
+      ringHasGen,
+      ringGenText,
       ringCompacting,
       ringFullText,
       spdHidden,
@@ -327,7 +331,7 @@ export function createFooterUnifiedRuntime({ onTierChange, kernel } = {}) {
     const metricsPayload = snapshot ? snapshot.metrics : (typeof window !== 'undefined' ? window.__ag_last_metrics || null : null);
     const activeCid = snapshot ? snapshot.cid : getActiveRouteCid();
     const validGenPayload =
-      metricsPayload && metricsPayload.hasData && (!activeCid || !metricsPayload.cascadeId || metricsPayload.cascadeId === activeCid)
+      activeCid && metricsPayload && metricsPayload.hasData && (!metricsPayload.cascadeId || metricsPayload.cascadeId === activeCid)
         ? metricsPayload
         : null;
     const compactionCount = Math.max(0, Number(validGenPayload?.metrics?.compactionCount || validGenPayload?.stats?.compactions || 0));
@@ -388,9 +392,11 @@ export function createFooterUnifiedRuntime({ onTierChange, kernel } = {}) {
     if (showGen) {
       setLeafText(genSpan, `G${compactionCount}`);
       if (genSpan.hidden) genSpan.hidden = false;
+      setAttr(ring, 'data-agy-has-gen', 'true');
       setAttr(ring, 'data-agy-gen-warn', compactionCount >= 3 ? '1' : null);
     } else {
       if (!genSpan.hidden) genSpan.hidden = true;
+      setAttr(ring, 'data-agy-has-gen', null);
       setAttr(ring, 'data-agy-gen-warn', null);
     }
 
@@ -620,7 +626,10 @@ export function createFooterUnifiedRuntime({ onTierChange, kernel } = {}) {
       ring.removeAttribute('data-agy-ctx-compacting');
       ring.removeAttribute('data-agy-has-ratio');
       ring.removeAttribute('data-agy-has-tight');
+      ring.removeAttribute('data-agy-has-gen');
+      ring.removeAttribute('data-agy-gen-warn');
       ring.querySelector('.agy-ctx-ratio')?.remove();
+      ring.querySelector('.agy-ctx-gen-badge')?.remove();
     }
     document.getElementById('ag-claude-quota-popover')?.removeAttribute('data-agy-ctx-tier');
     document.querySelector('#ag-claude-ov-sections [data-ov-card="context"]')?.removeAttribute('data-agy-ctx-tier');

@@ -119,8 +119,10 @@ jobs:
           VER="${GITHUB_REF_NAME#v}"
           ls -lh dist/
           (cd dist && sha256sum -c "agy-studio-v${VER}-macos.tar.gz.sha256" && sha256sum -c "agy-studio-v${VER}-windows.zip.sha256")
-          tar -tzf "dist/agy-studio-v${VER}-macos.tar.gz" | grep -q "remote/pwa/dist/app.js"
-          unzip -l "dist/agy-studio-v${VER}-windows.zip" | grep -q "remote/pwa/dist/app.js"
+          tar -tzf "dist/agy-studio-v${VER}-macos.tar.gz" > /tmp/macos-tar.list
+          grep -Fq "remote/pwa/dist/app.js" /tmp/macos-tar.list
+          unzip -l "dist/agy-studio-v${VER}-windows.zip" > /tmp/windows-zip.list
+          grep -Fq "remote/pwa/dist/app.js" /tmp/windows-zip.list
 
       - name: Extract release notes from CHANGELOG.md
         shell: bash

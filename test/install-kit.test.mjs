@@ -372,6 +372,7 @@ test('pack-release extractChangelogNotes and CI release workflow stay aligned fo
   assert.match(ciYml, /contents:\s*write/);
   assert.match(ciYml, /npm run release:pack:all/);
   assert.match(ciYml, /sha256sum -c/);
+  assert.doesNotMatch(ciYml, /\b(?:tar|unzip)\b[^\n]*\|\s*grep\s+[^\n]*-[a-zA-Z]*q/);
   assert.match(ciYml, /gh release upload "\$TAG" "\$\{ASSETS\[@\]\}" --clobber/);
 });
 

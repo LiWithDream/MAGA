@@ -5220,3 +5220,241 @@ test('studio/shared/prefs-schema.mjs is the single source of truth across build,
   const embedded = JSON.parse(match[1]);
   assert.deepEqual(Object.keys(embedded).sort(), Object.keys(schemaDefaults).sort());
 });
+
+test('usage-card-core scopes model breakdown to active Day/Week/Month bucket and supports bar/KPI linkage', async () => {
+  const {
+    computeModelView,
+    buildUsageBodyHtml,
+    resolveUsageInteraction,
+  } = await import('../studio/modules/usage-card-core.mjs');
+  const { createOverviewUsageRuntime } = await import('../studio/modules/overview-usage.mjs');
+
+  const colorForModel = (_name, idx) => `#color${idx}`;
+  const today = '2026-11-28';
+  const sampleData = {
+    ok: true,
+    days: [
+      {
+        date: '2026-10-15',
+        requests: 8,
+        models: [{ name: 'Model Delta (High)', requests: 8, uncached: 4000, cacheRead: 3000, cacheWrite: 500, output: 500 }],
+      },
+      {
+        date: '2026-11-18',
+        requests: 4,
+        models: [{ name: 'Model Gamma (Medium)', requests: 4, uncached: 2000, cacheRead: 1500, cacheWrite: 0, output: 500 }],
+      },
+      {
+        date: '2026-11-25',
+        requests: 2,
+        models: [{ name: 'Model Beta (High)', requests: 2, uncached: 1000, cacheRead: 800, cacheWrite: 0, output: 200 }],
+      },
+      {
+        date: '2026-11-28',
+        requests: 1,
+        models: [{ name: 'Model Alpha (High)', requests: 1, uncached: 500, cacheRead: 400, cacheWrite: 0, output: 100 }],
+      },
+    ],
+  };
+
+  // Day period (default active = today 2026-11-28)
+  const dayView = computeModelView(sampleData, today, 'day', 0, colorForModel);
+  assert.equal(dayView.isCurrentBucket, true);
+  assert.equal(dayView.activeIndex, 13);
+  assert.equal(dayView.tokens, 1000);
+  assert.equal(dayView.requests, 1);
+  assert.equal(dayView.windowTokens, 7000);
+  assert.deepEqual(dayView.models.map((m) => [m.name, m.tokens]), [['Model Alpha', 1000]]);
+
+  // Week period (default active = this week 2026-11-23..2026-11-29)
+  const weekView = computeModelView(sampleData, today, 'week', 0, colorForModel);
+  assert.equal(weekView.isCurrentBucket, true);
+  assert.equal(weekView.activeIndex, 11);
+  assert.equal(weekView.tokens, 3000);
+  assert.equal(weekView.requests, 3);
+  assert.deepEqual(weekView.models.map((m) => [m.name, m.tokens]), [
+    ['Model Beta', 2000],
+    ['Model Alpha', 1000],
+  ]);
+
+  // Month period (default active = 2026-11)
+  const monthView = computeModelView(sampleData, today, 'month', 0, colorForModel);
+  assert.equal(monthView.isCurrentBucket, true);
+  assert.equal(monthView.activeIndex, 11);
+  assert.equal(monthView.tokens, 7000);
+  assert.equal(monthView.requests, 7);
+  assert.deepEqual(monthView.models.map((m) => [m.name, m.tokens]), [
+    ['Model Gamma', 4000],
+    ['Model Beta', 2000],
+    ['Model Alpha', 1000],
+  ]);
+
+  // Explicit selectedIndex -> historical bar (2026-10 at index 10 in month view)
+  const octView = computeModelView(sampleData, today, 'month', 0, colorForModel, 10);
+  assert.equal(octView.isCurrentBucket, false);
+  assert.equal(octView.activeIndex, 10);
+  assert.equal(octView.tokens, 8000);
+  assert.equal(octView.requests, 8);
+  assert.deepEqual(octView.models.map((m) => [m.name, m.tokens]), [['Model Delta', 8000]]);
+
+  // Historical page (shift = -1) picks rightmost non-empty bar on that page, or last bar if empty
+  const prevPageDay = computeModelView(sampleData, today, 'day', -1, colorForModel);
+  assert.equal(prevPageDay.isCurrentBucket, false);
+  assert.equal(prevPageDay.activeBar.from, '2026-11-14');
+  assert.equal(prevPageDay.tokens, 0);
+
+  const prevPageWeek = computeModelView(sampleData, today, 'week', -1, colorForModel);
+  assert.equal(prevPageWeek.isCurrentBucket, false);
+  assert.equal(prevPageWeek.activeBar.from, '2026-08-31');
+
+  const olderWeekWithData = computeModelView(
+    {
+      ok: true,
+      days: [
+        { date: '2026-08-10', requests: 3, models: [{ name: 'Model Alpha', requests: 3, uncached: 500, cacheRead: 0, cacheWrite: 0, output: 0 }] },
+        { date: '2026-11-28', requests: 1, models: [{ name: 'Model Alpha', requests: 1, uncached: 100, cacheRead: 0, cacheWrite: 0, output: 0 }] },
+      ],
+    },
+    today,
+    'week',
+    -1,
+    colorForModel
+  );
+  assert.equal(olderWeekWithData.activeBar.from, '2026-08-10');
+  assert.equal(olderWeekWithData.tokens, 500);
+
+  // JSDOM interaction & bilingual rendering test
+  const { JSDOM } = await import('jsdom');
+  const dNow = new Date();
+  const pad2 = (n) => String(n).padStart(2, '0');
+  const fmtD = (dt) => `${dt.getFullYear()}-${pad2(dt.getMonth() + 1)}-${pad2(dt.getDate())}`;
+  const todayStr = fmtD(dNow);
+  const prevMonthDate = new Date(dNow.getFullYear(), dNow.getMonth() - 1, 15);
+  const prevMonthStr = fmtD(prevMonthDate);
+
+  const dom = new JSDOM(
+    `<!doctype html><html data-ag-ux-lang="zh-CN"><body>
+      <div data-testid="overview-panel"><div id="ag-claude-ov-sections"></div></div>
+    </body></html>`,
+    { url: 'http://127.0.0.1/' }
+  );
+  const w = dom.window;
+  const d = w.document;
+  const keys = ['window', 'document', 'location', 'localStorage', 'CustomEvent'];
+  const prev = new Map(keys.map((k) => [k, Object.getOwnPropertyDescriptor(globalThis, k)]));
+  globalThis.window = w;
+  globalThis.document = d;
+  globalThis.location = w.location;
+  globalThis.localStorage = w.localStorage;
+  globalThis.CustomEvent = w.CustomEvent;
+
+  try {
+    w.__agProjectCall = async (action) => {
+      if (action === 'getUsageStats') {
+        return {
+          ok: true,
+          generatedAt: Date.now(),
+          days: [
+            {
+              date: prevMonthStr,
+              requests: 6,
+              uncached: 4000,
+              cacheRead: 0,
+              cacheWrite: 0,
+              output: 0,
+              models: [{ name: 'Prev Month Model', requests: 6, uncached: 4000, cacheRead: 0, cacheWrite: 0, output: 0 }],
+            },
+            {
+              date: todayStr,
+              requests: 2,
+              uncached: 1500,
+              cacheRead: 0,
+              cacheWrite: 0,
+              output: 0,
+              models: [{ name: 'Today Model', requests: 2, uncached: 1500, cacheRead: 0, cacheWrite: 0, output: 0 }],
+            },
+          ],
+        };
+      }
+      return { ok: false };
+    };
+
+    const studioPrefs = { get: () => ({ overviewUsageEnabled: true, overviewUsageDefaultPeriod: 'day' }), subscribe: () => () => {} };
+    const ovUsage = createOverviewUsageRuntime({ motionThemes: () => motionThemes, studioPrefs });
+    ovUsage.sync();
+    await new Promise((r) => setTimeout(r, 20));
+
+    const card = d.getElementById('agy-ov-usage-card');
+    assert.ok(card, 'mounts #agy-ov-usage-card');
+
+    // Zh segmented labels & data-lang="zh"
+    const seg = card.querySelector('.agy-usage-seg');
+    assert.equal(seg.getAttribute('data-lang'), 'zh');
+    assert.deepEqual([...seg.querySelectorAll('button')].map((b) => b.textContent), ['按日', '按周', '按月']);
+
+    // Day default -> only Today Model
+    assert.equal(card.querySelector('.agy-usage-breakdown-title')?.textContent, '今日明细');
+    assert.deepEqual([...card.querySelectorAll('.agy-usage-model-name')].map((n) => n.textContent), ['Today Model']);
+    assert.equal(card.querySelector('[data-agy-usage-kpi="today"]').getAttribute('aria-pressed'), 'true');
+    assert.equal(card.querySelector('[data-agy-usage-bar="13"]').getAttribute('data-agy-active'), '1');
+    assert.equal(card.querySelector('.agy-usage-foot > span')?.textContent, '今日 1.5k · 2 次请求');
+
+    // Switch to Week via segmented button -> scoped to this week
+    card.querySelector('[data-agy-usage-period="week"]').click();
+    assert.equal(card.querySelector('.agy-usage-chart')?.getAttribute('data-period'), 'week');
+    assert.equal(card.querySelector('.agy-usage-breakdown-title')?.textContent, '本周明细');
+    assert.equal(card.querySelector('[data-agy-usage-kpi="week"]').getAttribute('aria-pressed'), 'true');
+    assert.equal(card.querySelector('[data-agy-usage-bar="11"]').getAttribute('data-agy-active'), '1');
+
+    // Switch to Month via KPI card -> includes Today Model (and any same-month) but NOT Prev Month Model
+    card.querySelector('[data-agy-usage-kpi="month"]').click();
+    assert.equal(card.querySelector('.agy-usage-chart')?.getAttribute('data-period'), 'month');
+    assert.equal(card.querySelector('.agy-usage-breakdown-title')?.textContent, '本月明细');
+    assert.equal(card.querySelector('[data-agy-usage-kpi="month"]').getAttribute('aria-pressed'), 'true');
+    assert.deepEqual([...card.querySelectorAll('.agy-usage-model-name')].map((n) => n.textContent), ['Today Model']);
+
+    // Click previous month bar (index 10) -> only Prev Month Model + reset button
+    const bar10 = card.querySelector('[data-agy-usage-bar="10"]');
+    assert.deepEqual(resolveUsageInteraction(bar10, card), { type: 'bar', index: 10 });
+    bar10.click();
+    assert.equal(card.querySelector('[data-agy-usage-bar="10"]').getAttribute('data-agy-active'), '1');
+    assert.equal(card.querySelector('[data-agy-usage-kpi="month"]').getAttribute('aria-pressed'), 'false');
+    assert.deepEqual([...card.querySelectorAll('.agy-usage-model-name')].map((n) => n.textContent), ['Prev Month Model']);
+    assert.equal(card.querySelector('.agy-usage-foot > span')?.textContent, '已选 4.0k · 6 次请求');
+
+    // Reset back to current month
+    const resetBtn = card.querySelector('[data-agy-usage-action="reset-current"]');
+    assert.ok(resetBtn, 'shows reset-current button when viewing non-current bar');
+    assert.equal(resetBtn.textContent, '回到本月');
+    resetBtn.click();
+    assert.equal(card.querySelector('[data-agy-usage-action="reset-current"]'), null);
+    assert.equal(card.querySelector('.agy-usage-breakdown-title')?.textContent, '本月明细');
+    assert.equal(card.querySelector('[data-agy-usage-bar="11"]').getAttribute('data-agy-active'), '1');
+
+    // Keyboard activation (Enter) on bar 10
+    card.querySelector('[data-agy-usage-bar="10"]').dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    assert.deepEqual([...card.querySelectorAll('.agy-usage-model-name')].map((n) => n.textContent), ['Prev Month Model']);
+
+    // English UI switch -> D/W/M & data-lang="en"
+    d.documentElement.setAttribute('data-ag-ux-lang', 'en');
+    ovUsage.sync();
+    const segEn = card.querySelector('.agy-usage-seg');
+    assert.equal(segEn.getAttribute('data-lang'), 'en');
+    assert.deepEqual([...segEn.querySelectorAll('button')].map((b) => b.textContent), ['D', 'W', 'M']);
+
+    // Verify buildUsageBodyHtml static output for English historical slot
+    const enHtml = buildUsageBodyHtml({ data: sampleData, today, period: 'month', shift: 0, selectedBarIdx: 10, colorForModel }).bodyHtml;
+    assert.match(enHtml, /2026-10/);
+    assert.match(enHtml, />This month</);
+    assert.match(enHtml, />Selected 8\.0k · 8 req</);
+
+    ovUsage.dispose();
+  } finally {
+    for (const k of keys) {
+      const desc = prev.get(k);
+      if (desc) Object.defineProperty(globalThis, k, desc);
+      else delete globalThis[k];
+    }
+    w.close();
+  }
+});

@@ -8,6 +8,7 @@ import { isZhUi, L } from '../core/env.mjs';
 export const TOOLTIP_ID = 'agy-usage-tooltip';
 export const COUNTERS = ['uncached', 'cacheRead', 'cacheWrite', 'output'];
 export const SPANS = { day: 14, week: 12, month: 12 };
+export const KPI_TO_PERIOD = Object.freeze({ today: 'day', week: 'week', month: 'month' });
 export const FALLBACK_PALETTE = ['#388bfd', '#e07b53', '#16a34a', '#d97706', '#8b5cf6', '#e14d67'];
 
 const TIER_LABEL = {
@@ -136,7 +137,7 @@ export function buildPeriodSpans(today, period, shift) {
   });
 }
 
-export function computeModelView(data, today, period, shift, colorForModel) {
+export function computeModelView(data, today, period, shift, colorForModel, selectedIndex = null) {
   const days = (data?.days || []).filter((d) => !(d.date > today));
   const allTime = new Map();
   const familyLabel = new Map();
@@ -166,7 +167,8 @@ export function computeModelView(data, today, period, shift, colorForModel) {
     };
   });
 
-  const bars = buildPeriodSpans(today, period, Math.min(0, shift)).map((s) => ({
+  const safeShift = Math.min(0, Number(shift) || 0);
+  const bars = buildPeriodSpans(today, period, safeShift).map((s) => ({
     ...s,
     tokens: 0,
     ...emptyParts(),
@@ -186,12 +188,42 @@ export function computeModelView(data, today, period, shift, colorForModel) {
       bar.tokens += tok;
       addParts(bar, m);
       addParts(pageParts, m);
-      const entry = series[slot];
-      addParts(entry, m);
-      if (slot < MAX_SLOTS) {
-        const tb = entry.tiersMap.get(parsed.tier) || emptyParts();
-        addParts(tb, m);
-        entry.tiersMap.set(parsed.tier, tb);
+    }
+  }
+
+  let activeIndex;
+  if (Number.isInteger(selectedIndex) && selectedIndex >= 0 && selectedIndex < bars.length) {
+    activeIndex = selectedIndex;
+  } else if (safeShift === 0) {
+    activeIndex = Math.max(0, bars.length - 1);
+  } else {
+    let rightmostNonEmpty = -1;
+    for (let i = bars.length - 1; i >= 0; i -= 1) {
+      if (bars[i].tokens > 0) {
+        rightmostNonEmpty = i;
+        break;
+      }
+    }
+    activeIndex = rightmostNonEmpty >= 0 ? rightmostNonEmpty : Math.max(0, bars.length - 1);
+  }
+
+  const activeBar = bars[activeIndex] || null;
+  const isCurrentBucket = safeShift === 0 && activeIndex === bars.length - 1;
+
+  if (activeBar) {
+    for (const day of days) {
+      if (day.date < activeBar.from || day.date > activeBar.to) continue;
+      for (const m of day.models || []) {
+        const parsed = splitModelName(m.name);
+        const slot = slotOf.get(parsed.key);
+        if (slot === undefined) continue;
+        const entry = series[slot];
+        addParts(entry, m);
+        if (slot < MAX_SLOTS) {
+          const tb = entry.tiersMap.get(parsed.tier) || emptyParts();
+          addParts(tb, m);
+          entry.tiersMap.set(parsed.tier, tb);
+        }
       }
     }
   }
@@ -218,19 +250,61 @@ export function computeModelView(data, today, period, shift, colorForModel) {
   const last = bars[bars.length - 1];
   const start = period === 'month' ? first.name : first.from.slice(5);
   const end = period === 'month' ? last.name : last.to.slice(5);
+  const activeParts = activeBar
+    ? {
+        requests: activeBar.requests,
+        uncached: activeBar.uncached,
+        cacheRead: activeBar.cacheRead,
+        cacheWrite: activeBar.cacheWrite,
+        output: activeBar.output,
+      }
+    : emptyParts();
 
   return {
     bars,
     series,
     max: Math.max(...bars.map((b) => b.tokens), 0),
-    tokens: tokensOf(pageParts),
-    requests: pageParts.requests,
-    parts: pageParts,
+    activeIndex,
+    activeBar,
+    isCurrentBucket,
+    tokens: activeBar ? activeBar.tokens : 0,
+    requests: activeBar ? activeBar.requests : 0,
+    parts: activeParts,
+    windowTokens: tokensOf(pageParts),
+    windowRequests: pageParts.requests,
+    windowParts: pageParts,
     models,
     range: `${start} – ${end}`,
     older: days.length > 0 && first.from > days[0].date,
-    newer: shift < 0,
+    newer: safeShift < 0,
   };
+}
+
+export function resolveUsageInteraction(targetEl, cardEl) {
+  if (!targetEl || (cardEl && !cardEl.contains(targetEl))) return null;
+  const btn = targetEl.closest?.('button');
+  if (btn && (!cardEl || cardEl.contains(btn))) {
+    const action = btn.getAttribute('data-agy-usage-action');
+    if (action === 'toggle') return { type: 'toggle' };
+    if (action === 'refresh') return { type: 'refresh' };
+    if (action === 'reset-current') return { type: 'reset' };
+    const period = btn.getAttribute('data-agy-usage-period');
+    if (period && SPANS[period]) return { type: 'period', period };
+    const kpiKey = btn.getAttribute('data-agy-usage-kpi');
+    if (kpiKey && KPI_TO_PERIOD[kpiKey]) return { type: 'kpi', period: KPI_TO_PERIOD[kpiKey] };
+    const shiftRaw = btn.getAttribute('data-agy-usage-shift');
+    if (shiftRaw !== null) {
+      const delta = Number(shiftRaw);
+      if (Number.isFinite(delta) && delta !== 0) return { type: 'shift', delta };
+    }
+    return null;
+  }
+  const barEl = targetEl.closest?.('[data-agy-usage-bar]');
+  if (barEl && (!cardEl || cardEl.contains(barEl))) {
+    const index = Number(barEl.getAttribute('data-agy-usage-bar'));
+    if (Number.isInteger(index) && index >= 0) return { type: 'bar', index };
+  }
+  return null;
 }
 
 export function buildChevronSvg(open) {
@@ -252,6 +326,7 @@ export function buildUsageBodyHtml({
   today,
   period,
   shift,
+  selectedBarIdx = null,
   colorForModel,
   emptyText,
   loadingText,
@@ -273,12 +348,15 @@ export function buildUsageBodyHtml({
     };
   }
 
-  const view = computeModelView(data, today, period, shift, colorForModel);
+  const view = computeModelView(data, today, period, shift, colorForModel, selectedBarIdx);
   const nameOf = (e) => (e.name === null ? L('其他模型', 'Other') : e.name || L('未知模型', 'Unknown'));
   const renderCtx = { totals, view, nameOf };
+  const zh = isZhUi();
 
-  const kpi = (key, label, val) =>
-    `<div class="agy-usage-kpi" data-agy-tip-kpi="${key}"><span class="agy-usage-kpi-lbl">${esc(label)}</span><span class="agy-usage-kpi-val">${esc(fmtTokens(val))}</span></div>`;
+  const kpi = (key, label, val) => {
+    const isActive = view.isCurrentBucket && KPI_TO_PERIOD[key] === period;
+    return `<button type="button" class="agy-usage-kpi" data-agy-usage-kpi="${key}" data-agy-tip-kpi="${key}" aria-pressed="${isActive ? 'true' : 'false'}"><span class="agy-usage-kpi-lbl">${esc(label)}</span><span class="agy-usage-kpi-val">${esc(fmtTokens(val))}</span></button>`;
+  };
 
   const stride = period === 'week' ? 3 : 2;
   const barsHtml = view.bars
@@ -295,11 +373,51 @@ export function buildUsageBodyHtml({
         : `<span class="agy-usage-bar-zero"></span>`;
       const showX = (view.bars.length - 1 - idx) % stride === 0;
       const xLabel = showX
-        ? (period === 'month' && isZhUi() ? `${item.label}月` : item.label)
+        ? (period === 'month' && zh ? `${item.label}月` : item.label)
         : '';
-      return `<div class="agy-usage-bar" data-agy-tip-bar="${idx}"><div class="agy-usage-bar-track">${colHtml}</div><span class="agy-usage-bar-x">${esc(xLabel)}</span></div>`;
+      const isActive = idx === view.activeIndex;
+      const barAria = item.fullName || item.name || '';
+      return `<div class="agy-usage-bar" role="button" tabindex="0" data-agy-usage-bar="${idx}" data-agy-tip-bar="${idx}" aria-label="${esc(barAria)}" aria-pressed="${isActive ? 'true' : 'false'}"${isActive ? ' data-agy-active="1"' : ''}><div class="agy-usage-bar-track">${colHtml}</div><span class="agy-usage-bar-x">${esc(xLabel)}</span></div>`;
     })
     .join('');
+
+  const activeBar = view.activeBar;
+  let breakdownTitle = '';
+  let breakdownRightHtml = '';
+  if (view.isCurrentBucket) {
+    breakdownTitle = period === 'day'
+      ? L('今日明细', 'Today')
+      : period === 'week'
+        ? L('本周明细', 'This Week')
+        : L('本月明细', 'This Month');
+    const currentDateMeta = activeBar
+      ? (period === 'day' ? activeBar.from.slice(5) : activeBar.name)
+      : '';
+    if (currentDateMeta) {
+      breakdownRightHtml = `<span class="agy-usage-breakdown-meta">${esc(currentDateMeta)}</span>`;
+    }
+  } else {
+    const slotTag = activeBar
+      ? (period === 'day' ? (zh ? activeBar.from.slice(5) : activeBar.from) : activeBar.name)
+      : '';
+    breakdownTitle = slotTag
+      ? (zh ? `${slotTag} 明细` : slotTag)
+      : L('区间明细', 'Selection');
+    const resetLabel = period === 'day'
+      ? L('回到今日', 'Today')
+      : period === 'week'
+        ? L('回到本周', 'This week')
+        : L('回到本月', 'This month');
+    breakdownRightHtml = `<button type="button" class="agy-usage-reset-btn" data-agy-usage-action="reset-current">${esc(resetLabel)}</button>`;
+  }
+
+  const emptyBucketMsg = view.isCurrentBucket
+    ? (period === 'day'
+        ? L('今日暂无用量', 'No usage today')
+        : period === 'week'
+          ? L('本周暂无用量', 'No usage this week')
+          : L('本月暂无用量', 'No usage this month'))
+    : L('该时段暂无用量', 'No usage in this slot');
 
   const modelsHtml = view.models.length
     ? `<div class="agy-usage-models">${view.models
@@ -320,12 +438,20 @@ export function buildUsageBodyHtml({
           </div>`;
         })
         .join('')}</div>`
-    : `<div class="agy-usage-empty">${esc(L('当前区间暂无用量', 'No usage in this period'))}</div>`;
+    : `<div class="agy-usage-empty">${esc(emptyBucketMsg)}</div>`;
+
+  const breakdownHtml = `<div class="agy-usage-breakdown">
+    <div class="agy-usage-breakdown-hdr">
+      <span class="agy-usage-breakdown-title">${esc(breakdownTitle)}</span>
+      ${breakdownRightHtml}
+    </div>
+    ${modelsHtml}
+  </div>`;
 
   const segHtml = [
-    ['day', L('日', 'D')],
-    ['week', L('周', 'W')],
-    ['month', L('月', 'M')],
+    ['day', L('按日', 'D')],
+    ['week', L('按周', 'W')],
+    ['month', L('按月', 'M')],
   ]
     .map(
       ([val, lbl]) =>
@@ -335,8 +461,12 @@ export function buildUsageBodyHtml({
 
   const shareLbl = totals.all > 0 ? formatShareLabel(shareOfGlobalPct) : '';
   const shareHtml = shareLbl
-    ? `<span class="agy-usage-share-tag"> · ${esc(isZhUi() ? `占全局 ${shareLbl}` : `${shareLbl} of all`)}</span>`
+    ? `<span class="agy-usage-share-tag"> · ${esc(zh ? `占全局 ${shareLbl}` : `${shareLbl} of all`)}</span>`
     : '';
+
+  const footScope = view.isCurrentBucket
+    ? (period === 'day' ? L('今日', 'Today') : period === 'week' ? L('本周', 'Week') : L('本月', 'Month'))
+    : L('已选', 'Selected');
 
   const bodyHtml = `<div class="ag-ov-card-body">
     <div class="agy-usage-kpi-grid">
@@ -345,7 +475,7 @@ export function buildUsageBodyHtml({
       ${kpi('month', L('本月', 'Month'), totals.month)}
     </div>
     <div class="agy-usage-toolbar">
-      <span class="agy-usage-seg" role="group">${segHtml}</span>
+      <span class="agy-usage-seg" data-lang="${zh ? 'zh' : 'en'}" role="group">${segHtml}</span>
       <span class="agy-usage-nav">
         <button type="button" data-agy-usage-shift="-1" aria-label="${esc(L('更早', 'Older'))}"${view.older ? '' : ' disabled'}>‹</button>
         <span class="agy-usage-range">${esc(view.range)}</span>
@@ -363,9 +493,9 @@ export function buildUsageBodyHtml({
         <div class="agy-usage-bars">${barsHtml}</div>
       </div>
     </div>
-    ${modelsHtml}
+    ${breakdownHtml}
     <div class="agy-usage-foot">
-      <span>${esc(L('本期', 'Period'))} ${esc(fmtTokens(view.tokens))} · ${esc(reqFmt(view.requests))}</span>
+      <span>${esc(footScope)} ${esc(fmtTokens(view.tokens))} · ${esc(reqFmt(view.requests))}</span>
       <span data-agy-tip-kpi="all">${esc(L('累计', 'All'))} ${esc(fmtTokens(totals.all))}${shareHtml}</span>
     </div>
   </div>`;

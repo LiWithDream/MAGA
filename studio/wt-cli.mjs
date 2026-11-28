@@ -19,10 +19,8 @@ function parseArgs(argv) {
     const tok = argv[i];
     if (tok === '--delete-branch' || tok === '--force-active' || tok === '--json') {
       flags.set(tok, true);
-    } else if (tok === '--base' && i + 1 < argv.length) {
-      flags.set('--base', argv[++i]);
-    } else if (tok === '--repo' && i + 1 < argv.length) {
-      flags.set('--repo', argv[++i]);
+    } else if ((tok === '--base' || tok === '--repo' || tok === '--cid') && i + 1 < argv.length) {
+      flags.set(tok, argv[++i]);
     } else if (!tok.startsWith('-')) {
       positional.push(tok);
     }
@@ -77,10 +75,12 @@ async function main() {
         normalizeRealPath(w.path) === targetNorm
     );
     const worktreePath = matched ? matched.realPath : target;
+    const callerCid = String(flags.get('--cid') || process.env.ANTIGRAVITY_CONVERSATION_ID || '').trim();
     const res = await removeRepoWorktreeAsync(repoDir, {
       worktreePath,
       deleteBranch: Boolean(flags.get('--delete-branch')),
       forceActive: Boolean(flags.get('--force-active')),
+      callerCid,
       allowUnregistered: true,
     });
     console.log(JSON.stringify(res, null, 2));

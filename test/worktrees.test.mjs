@@ -964,3 +964,194 @@ test('worktree UI (Topbar, #agy-wt-menu, Cockpit strip, chat badges) & compiled 
     domB.window.close();
   }
 });
+
+test('wt:clean self-bound merged clean-worktree exemption enforces strict safety invariants', async () => {
+  const { createRepoWorktreeAsync, removeRepoWorktreeAsync } = await import(
+    pathToFileURL(path.join(REPO, 'core', 'daemon', 'worktrees.mjs')).href
+  );
+
+  const mainRepo = createTempGitRepo('main');
+  const nmDir = path.join(mainRepo, 'node_modules', 'demo-pkg');
+  fs.mkdirSync(nmDir, { recursive: true });
+  fs.writeFileSync(path.join(nmDir, 'index.js'), 'module.exports = 1;\n', 'utf8');
+
+  const wtParent = `${mainRepo}-wt`;
+  const tmpState = realpathNative(fs.mkdtempSync(path.join(os.tmpdir(), 'maga-wt-self-bypass-')));
+  const convWtDir = path.join(tmpState, 'conv-worktrees');
+  const nativeProjectsDir = path.join(tmpState, 'native-projects');
+  fs.mkdirSync(convWtDir, { recursive: true });
+  createNativeProjectFile(nativeProjectsDir, 'self-bypass', mainRepo);
+
+  const writeHookBinding = (cid, wtPath, branch) => {
+    fs.writeFileSync(
+      path.join(convWtDir, `${cid}.json`),
+      JSON.stringify({
+        schema: 1,
+        cid,
+        worktreePath: wtPath,
+        branch,
+        repoRoot: mainRepo,
+        source: 'hook',
+        updatedAt: Date.now(),
+      }),
+      'utf8'
+    );
+  };
+  const clearHookBindings = () => {
+    for (const name of fs.readdirSync(convWtDir)) {
+      if (name.endsWith('.json') && name !== 'pins.json') {
+        fs.rmSync(path.join(convWtDir, name), { force: true });
+      }
+    }
+  };
+
+  const callerCid = 'cid-self-111111';
+  const otherCid = 'cid-other-222222';
+  const wtCliPath = path.join(REPO, 'studio', 'wt-cli.mjs');
+
+  try {
+    // 1. Self-bound + unmerged commit -> BLOCKED
+    const wt1 = await createRepoWorktreeAsync(mainRepo, {
+      type: 'fix',
+      slug: 'self-unmerged',
+      cid: '',
+      nativeProjectsDir,
+      convWtDir,
+    });
+    assert.equal(wt1.ok, true);
+    writeHookBinding(callerCid, wt1.worktreePath, wt1.branch);
+
+    fs.writeFileSync(path.join(wt1.worktreePath, 'feature.txt'), 'change 1\n', 'utf8');
+    gitSync(wt1.worktreePath, ['add', 'feature.txt']);
+    gitSync(wt1.worktreePath, ['commit', '-m', 'work in wt1']);
+
+    const unmergedBlocked = await removeRepoWorktreeAsync(mainRepo, {
+      worktreePath: wt1.worktreePath,
+      deleteBranch: true,
+      callerCid,
+      nativeProjectsDir,
+      convWtDir,
+    });
+    assert.equal(unmergedBlocked.ok, false);
+    assert.equal(unmergedBlocked.error, 'worktree_active_in_conversation');
+
+    // Merge wt1 into main, then dirty wt1 -> STILL BLOCKED
+    gitSync(mainRepo, ['merge', '--no-ff', wt1.branch, '-m', 'merge wt1']);
+    fs.writeFileSync(path.join(wt1.worktreePath, 'scratch.tmp'), 'dirty\n', 'utf8');
+    const dirtyBlocked = await removeRepoWorktreeAsync(mainRepo, {
+      worktreePath: wt1.worktreePath,
+      deleteBranch: true,
+      callerCid,
+      nativeProjectsDir,
+      convWtDir,
+    });
+    assert.equal(dirtyBlocked.ok, false);
+    assert.equal(dirtyBlocked.error, 'worktree_active_in_conversation');
+
+    // Clean untracked file -> now merged + clean + bound to callerCid only, yet:
+    fs.rmSync(path.join(wt1.worktreePath, 'scratch.tmp'));
+
+    // 2. Empty callerCid -> BLOCKED
+    const emptyCallerBlocked = await removeRepoWorktreeAsync(mainRepo, {
+      worktreePath: wt1.worktreePath,
+      deleteBranch: true,
+      callerCid: '',
+      nativeProjectsDir,
+      convWtDir,
+    });
+    assert.equal(emptyCallerBlocked.ok, false);
+    assert.equal(emptyCallerBlocked.error, 'worktree_active_in_conversation');
+
+    // 3. Shared binding ([callerCid, otherCid]) or foreign binding -> BLOCKED
+    writeHookBinding(otherCid, wt1.worktreePath, wt1.branch);
+    const sharedBlocked = await removeRepoWorktreeAsync(mainRepo, {
+      worktreePath: wt1.worktreePath,
+      deleteBranch: true,
+      callerCid,
+      nativeProjectsDir,
+      convWtDir,
+    });
+    assert.equal(sharedBlocked.ok, false);
+    assert.equal(sharedBlocked.error, 'worktree_active_in_conversation');
+
+    fs.rmSync(path.join(convWtDir, `${callerCid}.json`), { force: true });
+    const foreignBlocked = await removeRepoWorktreeAsync(mainRepo, {
+      worktreePath: wt1.worktreePath,
+      deleteBranch: true,
+      callerCid,
+      nativeProjectsDir,
+      convWtDir,
+    });
+    assert.equal(foreignBlocked.ok, false);
+    assert.equal(foreignBlocked.error, 'worktree_active_in_conversation');
+
+    // 4. Sole self-bound + merged + clean (with symlinked node_modules) -> ALLOWED without forceActive
+    clearHookBindings();
+    writeHookBinding(callerCid, wt1.worktreePath, wt1.branch);
+    const okSelf = await removeRepoWorktreeAsync(mainRepo, {
+      worktreePath: wt1.worktreePath,
+      deleteBranch: true,
+      callerCid,
+      nativeProjectsDir,
+      convWtDir,
+    });
+    assert.equal(okSelf.ok, true, okSelf.detail || okSelf.error);
+    assert.equal(okSelf.selfActiveBypass, true);
+    assert.equal(okSelf.branchDeleted, true);
+    assert.equal(fs.existsSync(wt1.worktreePath), false);
+
+    // 5. CLI integration: studio/wt-cli.mjs reads ANTIGRAVITY_CONVERSATION_ID safely in isolated ANTI_CLAUDE_STATE_DIR
+    clearHookBindings();
+    const wt2 = await createRepoWorktreeAsync(mainRepo, {
+      type: 'fix',
+      slug: 'cli-self-bypass',
+      cid: '',
+      nativeProjectsDir,
+      convWtDir,
+    });
+    assert.equal(wt2.ok, true);
+    writeHookBinding(callerCid, wt2.worktreePath, wt2.branch);
+
+    let unsetErr = null;
+    try {
+      execFileSync(process.execPath, [wtCliPath, 'clean', wt2.branch, '--repo', mainRepo, '--delete-branch'], {
+        encoding: 'utf8',
+        env: { ...process.env, ANTI_CLAUDE_STATE_DIR: tmpState, ANTIGRAVITY_CONVERSATION_ID: '' },
+      });
+    } catch (err) {
+      unsetErr = err;
+    }
+    assert.ok(unsetErr, 'wt-cli must fail when ANTIGRAVITY_CONVERSATION_ID is unset');
+    assert.equal(JSON.parse(unsetErr.stdout).error, 'worktree_active_in_conversation');
+
+    let mismatchErr = null;
+    try {
+      execFileSync(process.execPath, [wtCliPath, 'clean', wt2.branch, '--repo', mainRepo, '--delete-branch'], {
+        encoding: 'utf8',
+        env: { ...process.env, ANTI_CLAUDE_STATE_DIR: tmpState, ANTIGRAVITY_CONVERSATION_ID: otherCid },
+      });
+    } catch (err) {
+      mismatchErr = err;
+    }
+    assert.ok(mismatchErr, 'wt-cli must fail when ANTIGRAVITY_CONVERSATION_ID belongs to another chat');
+    assert.equal(JSON.parse(mismatchErr.stdout).error, 'worktree_active_in_conversation');
+
+    const cliOkOut = execFileSync(
+      process.execPath,
+      [wtCliPath, 'clean', wt2.branch, '--repo', mainRepo, '--delete-branch'],
+      {
+        encoding: 'utf8',
+        env: { ...process.env, ANTI_CLAUDE_STATE_DIR: tmpState, ANTIGRAVITY_CONVERSATION_ID: callerCid },
+      }
+    );
+    const cliOk = JSON.parse(cliOkOut);
+    assert.equal(cliOk.ok, true);
+    assert.equal(cliOk.selfActiveBypass, true);
+    assert.equal(cliOk.branchDeleted, true);
+    assert.equal(fs.existsSync(wt2.worktreePath), false);
+  } finally {
+    fs.rmSync(wtParent, { recursive: true, force: true });
+    fs.rmSync(mainRepo, { recursive: true, force: true });
+    fs.rmSync(tmpState, { recursive: true, force: true });
+  }
+});

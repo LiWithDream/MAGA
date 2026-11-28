@@ -1891,12 +1891,17 @@ test('MagaKernel routes dirty topics with 1 root observer, filters data-maga-own
     events.length = 0;
     const ownBadge = doc.getElementById('test-own-badge');
     ownBadge.appendChild(doc.createElement('i'));
+    await new Promise((r) => queueMicrotask(r));
     await new Promise((r) => setTimeout(r, 30));
     assert.equal(events.length, 0, 'Own data-maga-own subtree mutations must be ignored');
 
     // Mutate overview panel -> wakes only overview-mod, NOT composer-mod
     doc.querySelector('[data-testid="overview-panel"]').appendChild(doc.createElement('div'));
-    await new Promise((r) => setTimeout(r, 30));
+    const deadline = Date.now() + 1000;
+    while (events.length < 2 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 15));
+    }
+    await new Promise((r) => setTimeout(r, 20));
     assert.deepEqual(events, ['read:overview', 'write:overview']);
 
     kernel.dispose();
